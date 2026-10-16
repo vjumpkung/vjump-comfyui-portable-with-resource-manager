@@ -3,8 +3,8 @@
 //! prepared plans by opaque IDs and never supplies resolved metadata or paths.
 
 use application::custom_nodes::{
-    CachedPage, NodeAppError, NodeOperation, NodeOutcome, OperationKind, OperationPhase,
-    PlanReview, RegistryNode,
+    CachedPage, NodeAppError, NodeGitStatus, NodeOperation, NodeOutcome, OperationKind,
+    OperationPhase, PlanReview, RegistryNode,
 };
 use domain::custom_nodes::{
     DependencyState, InstalledNode, NodeId, NodeSource, ProvenanceOrigin, Support,
@@ -156,6 +156,8 @@ impl From<OperationKind> for OperationKindDto {
 #[serde(rename_all = "camelCase")]
 pub struct OperationDto {
     pub id: String,
+    pub node_id: String,
+    pub blocks_start: bool,
     pub kind: OperationKindDto,
     /// One of the journal phases, for example `publish_intent` or `completed`.
     pub phase: String,
@@ -167,6 +169,8 @@ impl OperationDto {
     pub fn new(op: &NodeOperation, log_tail: Vec<String>) -> Self {
         Self {
             id: op.id.as_str().to_owned(),
+            node_id: op.node.id.as_str().to_owned(),
+            blocks_start: op.blocks_start(),
             kind: op.kind.into(),
             phase: op.phase.as_str().to_owned(),
             node_name: op.node.name.as_str().to_owned(),
@@ -180,10 +184,40 @@ impl OperationDto {
 #[serde(rename_all = "camelCase")]
 pub struct NodeListDto {
     pub nodes: Vec<InstalledNodeDto>,
-    /// Operations that are not completed or failed; a start is blocked while one is unresolved.
+    /// Unfinished operations; ordinary cleanup does not block launch. See each `blocksStart`.
     pub unresolved: Vec<OperationDto>,
+    pub pending_reviews: Vec<PlanReviewDto>,
+    /// The newest 16 terminal operations, newest first.
+    pub recent: Vec<OperationDto>,
     /// The selected environment needs repair; most node operations are limited until then.
     pub repair_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeGitStatusDto {
+    pub commit: String,
+    pub branch: Option<String>,
+    pub dirty: bool,
+    pub unfinished_operation: bool,
+    pub ahead: f64,
+    pub behind: f64,
+    pub has_upstream: bool,
+    pub status: String,
+}
+impl From<&NodeGitStatus> for NodeGitStatusDto {
+    fn from(value: &NodeGitStatus) -> Self {
+        Self {
+            commit: value.revision.commit.clone(),
+            branch: value.revision.branch.clone(),
+            dirty: value.state.dirty,
+            unfinished_operation: value.state.unfinished_operation,
+            ahead: value.state.ahead as f64,
+            behind: value.state.behind as f64,
+            has_upstream: value.state.has_upstream,
+            status: value.state.status.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -208,6 +242,10 @@ pub struct RegistryNodeDto {
     pub github_stars: Option<f64>,
     pub latest_version: Option<String>,
     pub repository: Option<String>,
+    pub supported_os: Option<Vec<String>>,
+    pub supported_accelerators: Option<Vec<String>>,
+    pub supported_comfyui_version: Option<String>,
+    pub status: Option<String>,
     pub os: SupportDto,
     pub accelerator: SupportDto,
     pub comfyui: SupportDto,
@@ -226,6 +264,10 @@ impl From<&RegistryNode> for RegistryNodeDto {
             github_stars: node.github_stars.map(|v| v as f64),
             latest_version: node.latest_version.clone(),
             repository: node.repository.clone(),
+            supported_os: node.compatibility.supported_os.clone(),
+            supported_accelerators: node.compatibility.supported_accelerators.clone(),
+            supported_comfyui_version: node.compatibility.comfyui_expression.clone(),
+            status: node.compatibility.status.clone(),
             os: node.evaluated.os.into(),
             accelerator: node.evaluated.accelerator.into(),
             comfyui: node.evaluated.comfyui.into(),
@@ -496,6 +538,10 @@ pub fn describe(error: NodeAppError) -> (&'static str, String) {
             "node_git_refused",
             "The repository has local changes, an unfinished operation, a diverged branch or no selected upstream, so it was not changed.",
         ),
+        E::GitUnavailable => fixed(
+            "node_git_unavailable",
+            "Git is unavailable. Complete tool setup on Windows or install Git on Linux.",
+        ),
         E::RegistryStatus(code) => (
             "registry_refused",
             format!("The registry answered with HTTP {code}."),
@@ -543,4 +589,103 @@ impl From<NodeAppError> for IpcError {
 /// Whether a phase string means the operation is finished.
 pub fn is_final(phase: OperationPhase) -> bool {
     matches!(phase, OperationPhase::Completed | OperationPhase::Failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use domain::custom_nodes::{Compatibility, CompatibilityMetadata};
+
+    #[test]
+    fn registry_dto_preserves_raw_metadata_and_unknown_values() {
+        let mut node = RegistryNode {
+            id: "pack".into(),
+            name: "Pack".into(),
+            publisher: None,
+            description: None,
+            downloads: Some(0),
+            github_stars: None,
+            latest_version: None,
+            repository: None,
+            compatibility: CompatibilityMetadata {
+                supported_os: Some(vec!["Mystery OS".into()]),
+                supported_accelerators: Some(vec!["Future accelerator".into()]),
+                comfyui_expression: Some(">=0.3.50".into()),
+                status: Some("unknown-status".into()),
+                deprecated: None,
+            },
+            evaluated: Compatibility {
+                os: Support::Unknown,
+                accelerator: Support::Unknown,
+                comfyui: Support::Compatible,
+                flagged: true,
+                deprecated: false,
+            },
+        };
+        let dto = RegistryNodeDto::from(&node);
+        assert_eq!(dto.supported_os, node.compatibility.supported_os);
+        assert_eq!(
+            dto.supported_accelerators,
+            node.compatibility.supported_accelerators
+        );
+        assert_eq!(
+            dto.supported_comfyui_version,
+            node.compatibility.comfyui_expression
+        );
+        assert_eq!(dto.status, node.compatibility.status);
+        assert_eq!(dto.os, SupportDto::Unknown);
+        assert_eq!(dto.accelerator, SupportDto::Unknown);
+        assert_eq!(dto.comfyui, SupportDto::Compatible);
+        assert!(dto.flagged && !dto.deprecated);
+        assert_eq!(dto.warnings, node.evaluated.warnings());
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["downloads"], 0.0);
+        assert!(json["githubStars"].is_null());
+        assert_eq!(json["supportedComfyuiVersion"], ">=0.3.50");
+        node.compatibility = CompatibilityMetadata::default();
+        let json = serde_json::to_value(RegistryNodeDto::from(&node)).unwrap();
+        for field in [
+            "supportedOs",
+            "supportedAccelerators",
+            "supportedComfyuiVersion",
+            "status",
+        ] {
+            assert!(json[field].is_null(), "{field}");
+        }
+    }
+
+    #[test]
+    fn git_status_dto_and_unavailable_error_preserve_the_contract() {
+        let status = NodeGitStatus {
+            revision: domain::comfy_runtime::Revision {
+                commit: "a".repeat(40),
+                branch: None,
+                tag: None,
+            },
+            state: domain::comfy_runtime::RepoState {
+                dirty: true,
+                unfinished_operation: true,
+                ahead: 2,
+                behind: 3,
+                has_upstream: false,
+                status: " M requirements.txt\n".into(),
+            },
+        };
+        let json = serde_json::to_value(NodeGitStatusDto::from(&status)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "commit": "a".repeat(40), "branch": null, "dirty": true,
+                "unfinishedOperation": true, "ahead": 2.0, "behind": 3.0,
+                "hasUpstream": false, "status": " M requirements.txt\n",
+            })
+        );
+        assert_eq!(
+            IpcError::from(NodeAppError::GitUnavailable),
+            IpcError::new(
+                "node_git_unavailable",
+                "Git is unavailable. Complete tool setup on Windows or install Git on Linux.",
+            )
+        );
+    }
 }

@@ -5,13 +5,8 @@ use super::{
     provenance::{observed_identity, read_manager_registry, read_marker},
     tree::{is_link, read_text},
 };
-use crate::{
-    environment::source::valid_ref_name, shared::download::sha256_hex,
-};
-use domain::{
-    custom_nodes::*,
-    shared::model_values::SafeFileName,
-};
+use crate::{environment::source::valid_ref_name, shared::download::sha256_hex};
+use domain::{custom_nodes::*, shared::model_values::SafeFileName};
 use std::{fs, path::Path};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,7 +114,10 @@ fn classify(dir: &Path) -> (NodeSource, bool) {
 /// every other dot-prefixed name are never nodes.
 pub fn scan(custom_nodes: &Path) -> Vec<InstalledNode> {
     let mut nodes = Vec::new();
-    for (location, enabled) in [(custom_nodes.to_path_buf(), true), (custom_nodes.join(".disabled"), false)] {
+    for (location, enabled) in [
+        (custom_nodes.to_path_buf(), true),
+        (custom_nodes.join(".disabled"), false),
+    ] {
         let Ok(entries) = fs::read_dir(&location) else {
             continue;
         };
@@ -165,7 +163,12 @@ pub fn scan(custom_nodes: &Path) -> Vec<InstalledNode> {
             });
         }
     }
-    nodes.sort_by(|a, b| a.name.as_str().to_lowercase().cmp(&b.name.as_str().to_lowercase()));
+    nodes.sort_by(|a, b| {
+        a.name
+            .as_str()
+            .to_lowercase()
+            .cmp(&b.name.as_str().to_lowercase())
+    });
     nodes
 }
 
@@ -185,15 +188,24 @@ mod tests {
         let cn = directory.path();
         // A manual single-file node and a manual directory node, one disabled.
         write(&cn.join("solo.py"), "raise SystemExit('must never run')");
-        write(&cn.join("pack/__init__.py"), "raise SystemExit('must never run')");
+        write(
+            &cn.join("pack/__init__.py"),
+            "raise SystemExit('must never run')",
+        );
         write(&cn.join(".disabled/off/__init__.py"), "x");
         // A Manager registry node.
-        write(&cn.join("reg/pyproject.toml"), "[project]\nname = \"reg\"\nversion = \"2.0.0\"\n");
+        write(
+            &cn.join("reg/pyproject.toml"),
+            "[project]\nname = \"reg\"\nversion = \"2.0.0\"\n",
+        );
         write(&cn.join("reg").join(TRACKING), "pyproject.toml\n");
         // A Git node with a branch and an HTTPS remote.
         let commit = "a".repeat(40);
         write(&cn.join("gitnode/.git/HEAD"), "ref: refs/heads/main\n");
-        write(&cn.join("gitnode/.git/refs/heads/main"), &format!("{commit}\n"));
+        write(
+            &cn.join("gitnode/.git/refs/heads/main"),
+            &format!("{commit}\n"),
+        );
         write(
             &cn.join("gitnode/.git/config"),
             "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = https://GitHub.com/o/r.git\n",
@@ -213,13 +225,26 @@ mod tests {
         assert!(!by_name("off").enabled);
         assert_eq!(
             by_name("reg").source,
-            NodeSource::Registry { id: "reg".into(), publisher: None, version: "2.0.0".into(), repository: None }
+            NodeSource::Registry {
+                id: "reg".into(),
+                publisher: None,
+                version: "2.0.0".into(),
+                repository: None
+            }
         );
         assert_eq!(
             by_name("gitnode").source,
-            NodeSource::Git { repository: "https://github.com/o/r".into(), commit, branch: Some("main".into()) }
+            NodeSource::Git {
+                repository: "https://github.com/o/r".into(),
+                commit,
+                branch: Some("main".into())
+            }
         );
-        assert!(nodes.iter().all(|n| n.origin == ProvenanceOrigin::ExternallyObserved));
+        assert!(
+            nodes
+                .iter()
+                .all(|n| n.origin == ProvenanceOrigin::ExternallyObserved)
+        );
         assert_eq!(by_name("pack").id, scan_id("pack", false));
     }
 
@@ -228,11 +253,18 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let node = directory.path().join("n");
         write(&node.join(".git/HEAD"), &format!("{}\n", "b".repeat(40)));
-        write(&node.join(".git/config"), "[remote \"origin\"]\n\turl = https://github.com/o/real\n");
+        write(
+            &node.join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://github.com/o/real\n",
+        );
         write_marker(
             &node,
             "n",
-            &NodeSource::Git { repository: "https://github.com/o/claimed".into(), commit: "c".repeat(40), branch: None },
+            &NodeSource::Git {
+                repository: "https://github.com/o/claimed".into(),
+                commit: "c".repeat(40),
+                branch: None,
+            },
             None,
         )
         .unwrap();
@@ -240,7 +272,11 @@ mod tests {
         assert!(nodes[0].conflict);
         assert_eq!(
             nodes[0].source,
-            NodeSource::Git { repository: "https://github.com/o/real".into(), commit: "b".repeat(40), branch: None }
+            NodeSource::Git {
+                repository: "https://github.com/o/real".into(),
+                commit: "b".repeat(40),
+                branch: None
+            }
         );
         assert!(node.join(MARKER).exists());
     }

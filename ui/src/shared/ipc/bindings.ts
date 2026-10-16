@@ -89,8 +89,14 @@ export const commands = {
 	 */
 	modelSubscribe: (onEvent: Channel<ModelEventDto>) => typedError<number, IpcError>(__TAURI_INVOKE("model_subscribe", { onEvent })),
 	modelUnsubscribe: (subscriptionId: number) => typedError<null, IpcError>(__TAURI_INVOKE("model_unsubscribe", { subscriptionId })),
+	/**
+	 *  Opens a validated repository in the system browser. Manager links use this command
+	 *  because automatic webview link opening is disabled.
+	 */
+	nodeOpenRepository: (repository: string) => typedError<null, IpcError>(__TAURI_INVOKE("node_open_repository", { repository })),
 	nodeRegistrySearch: (input: RegistrySearchInput) => typedError<RegistryPageDto, IpcError>(__TAURI_INVOKE("node_registry_search", { input })),
 	nodeList: () => typedError<NodeListDto, IpcError>(__TAURI_INVOKE("node_list")),
+	nodeGitStatus: (input: NodeIdInput) => typedError<NodeGitStatusDto, IpcError>(__TAURI_INVOKE("node_git_status", { input })),
 	/**
 	 *  Finishes interrupted operations, then reads the folders again. Also runs after every verified
 	 *  ComfyUI stop, because Manager or the user may have changed the folders meanwhile.
@@ -534,14 +540,28 @@ export type MoveInput = {
  */
 export type NodeEventDto = { kind: "snapshot"; epoch: string; sequence: number | null } | { kind: "changed"; epoch: string; sequence: number | null } | { kind: "log"; epoch: string; sequence: number | null; operationId: string; line: string } | { kind: "gap"; epoch: string; sequence: number | null };
 
+export type NodeGitStatusDto = {
+	commit: string,
+	branch: string | null,
+	dirty: boolean,
+	unfinishedOperation: boolean,
+	ahead: number | null,
+	behind: number | null,
+	hasUpstream: boolean,
+	status: string,
+};
+
 export type NodeIdInput = {
 	nodeId: string,
 };
 
 export type NodeListDto = {
 	nodes: InstalledNodeDto[],
-	/**  Operations that are not completed or failed; a start is blocked while one is unresolved. */
+	/**  Unfinished operations; ordinary cleanup does not block launch. See each `blocksStart`. */
 	unresolved: OperationDto[],
+	pendingReviews: PlanReviewDto[],
+	/**  The newest 16 terminal operations, newest first. */
+	recent: OperationDto[],
 	/**  The selected environment needs repair; most node operations are limited until then. */
 	repairRequired: boolean,
 };
@@ -557,6 +577,8 @@ export type NodeSourceDto = { kind: "registry"; id: string; publisher: string | 
 
 export type OperationDto = {
 	id: string,
+	nodeId: string,
+	blocksStart: boolean,
 	kind: OperationKindDto,
 	/**  One of the journal phases, for example `publish_intent` or `completed`. */
 	phase: string,
@@ -768,6 +790,10 @@ export type RegistryNodeDto = {
 	githubStars: number | null,
 	latestVersion: string | null,
 	repository: string | null,
+	supportedOs: string[] | null,
+	supportedAccelerators: string[] | null,
+	supportedComfyuiVersion: string | null,
+	status: string | null,
 	os: SupportDto,
 	accelerator: SupportDto,
 	comfyui: SupportDto,

@@ -1,7 +1,7 @@
 //! Offline tests: a loopback registry, zip fixtures and local Git repositories created with the
 //! `git` binary (skipped with a message when it is missing). No Python is ever executed.
 use super::{
-    files::{node_limits, LocalNodeFiles, Recycler},
+    files::{LocalNodeFiles, Recycler, node_limits},
     git::GitNodes,
     registry::RegistryHttp,
     scan,
@@ -220,7 +220,10 @@ impl Fixture {
 
 fn node(name: &str, source: NodeSource, enabled: bool) -> InstalledNode {
     InstalledNode {
-        id: node_id(&format!("n-{}", &crate::shared::download::sha256_hex(name.as_bytes())[..12])),
+        id: node_id(&format!(
+            "n-{}",
+            &crate::shared::download::sha256_hex(name.as_bytes())[..12]
+        )),
         name: SafeFileName::new(name).unwrap(),
         source,
         origin: ProvenanceOrigin::App,
@@ -498,12 +501,16 @@ async fn a_registry_release_is_staged_published_and_recorded_with_provenance() {
     assert!(!fixture.cn().join("good-node").exists());
     // "Latest" was resolved once and then requested by exact version.
     let requests = fixture.server.requests.lock().unwrap().clone();
-    assert!(requests
-        .iter()
-        .any(|r| r.starts_with("GET /nodes/good-node/install HTTP")));
-    assert!(requests
-        .iter()
-        .any(|r| r.starts_with("GET /nodes/good-node/install?version=1.0.0 HTTP")));
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.starts_with("GET /nodes/good-node/install HTTP"))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.starts_with("GET /nodes/good-node/install?version=1.0.0 HTTP"))
+    );
     // The consent snapshot matches what is on disk, and publication is a no-replace move.
     let mut installed = node("good-node", staged.source.clone(), true);
     installed.tree_digest = staged.tree_digest.clone();
@@ -589,7 +596,8 @@ async fn incompatible_registry_metadata_becomes_review_warnings() {
 
 fn malicious_corpus() -> Vec<(&'static str, Vec<u8>)> {
     let symlink = {
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         writer.add_symlink("link", "/etc/passwd", options).unwrap();
         writer.finish().unwrap().into_inner()
@@ -796,10 +804,12 @@ async fn a_registry_update_stages_the_new_release_and_reports_up_to_date() {
         .unwrap();
     operation.phase = OperationPhase::OldBackedUp;
     assert!(!fixture.cn().join("good-node").exists());
-    assert!(fixture
-        .disabled()
-        .join(".vjump-backup-node-upd/__init__.py")
-        .is_file());
+    assert!(
+        fixture
+            .disabled()
+            .join(".vjump-backup-node-upd/__init__.py")
+            .is_file()
+    );
     fixture
         .files
         .publish(&fixture.root, &operation)
@@ -972,13 +982,15 @@ async fn linked_node_folders_are_never_moved_or_backed_up() {
         "important"
     );
     // Scanning still lists it, as an externally observed manual node.
-    assert!(fixture
-        .files
-        .scan(&fixture.root)
-        .await
-        .unwrap()
-        .iter()
-        .any(|n| n.name.as_str() == "linked"));
+    assert!(
+        fixture
+            .files
+            .scan(&fixture.root)
+            .await
+            .unwrap()
+            .iter()
+            .any(|n| n.name.as_str() == "linked")
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1276,10 +1288,12 @@ async fn startup_scan_never_treats_owned_staging_as_installed() {
         .await
         .unwrap();
     assert!(!fixture.disabled().join(".vjump-staging-node-s").exists());
-    assert!(!fixture
-        .disabled()
-        .join(".vjump-staging-node-s.zip")
-        .exists());
+    assert!(
+        !fixture
+            .disabled()
+            .join(".vjump-staging-node-s.zip")
+            .exists()
+    );
     assert!(
         fixture.disabled().join(".vjump-backup-node-s").is_dir(),
         "backups are never discarded"
@@ -1361,11 +1375,13 @@ async fn nodes_operations_dependencies_and_trust_round_trip() {
             .unwrap()
             .allow_install_py
     );
-    assert!(store
-        .trust(&b.trust_namespace().unwrap())
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        store
+            .trust(&b.trust_namespace().unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
     // Dependency outcomes are per environment and source revision.
     for (env, state) in [
         ("env-1", DependencyState::Ok),
@@ -1594,6 +1610,180 @@ async fn git_install_resolves_one_immutable_commit_and_tracks_a_branch() {
         )
         .await;
     assert_eq!(again.unwrap_err(), NodeAppError::TargetExists);
+}
+
+#[tokio::test]
+async fn git_status_is_read_only_and_reports_relative_changes() {
+    let git = locate_git().expect("Git must be available for the status regression");
+    let g = git_fixture(git.clone()).await;
+    let installed = g.install("status-install", None).await;
+    let live = g.fixture.cn().join(installed.name.as_str());
+    let checkout = Repo {
+        dir: live.clone(),
+        git,
+    };
+    let remote_head = g
+        .repo
+        .commit("remote.py", "remote = True\n", "remote change");
+    checkout.run(&["fetch", "origin"]);
+    let local_head = checkout.commit("local.py", "local = True\n", "local change");
+    fs::write(live.join("requirements.txt"), "edited requirement\n").unwrap();
+    fs::write(
+        live.join("install.py"),
+        "raise Exception('must never execute')\n",
+    )
+    .unwrap();
+    // A later remote commit must remain unseen: status never fetches.
+    g.repo
+        .commit("later.py", "later = True\n", "later remote change");
+    let status = g
+        .fixture
+        .files
+        .git_status(&g.fixture.root, &installed)
+        .await
+        .unwrap();
+    assert_eq!(status.revision.commit, local_head);
+    assert_eq!(status.revision.branch.as_deref(), Some("main"));
+    assert!(status.state.dirty && status.state.has_upstream);
+    assert!(!status.state.unfinished_operation);
+    assert_eq!((status.state.ahead, status.state.behind), (1, 1));
+    assert!(status.state.status.contains("requirements.txt"));
+    assert!(status.state.status.contains("install.py"));
+    assert!(
+        !status
+            .state
+            .status
+            .contains(g.fixture.root.to_string_lossy().as_ref())
+    );
+    assert_eq!(checkout.run(&["rev-parse", "HEAD"]), local_head);
+    assert_eq!(checkout.run(&["rev-parse", "origin/main"]), remote_head);
+    assert_eq!(
+        fs::read_to_string(live.join("requirements.txt")).unwrap(),
+        "edited requirement\n"
+    );
+    assert!(g.fixture.owned().is_empty());
+
+    checkout.run(&["branch", "--unset-upstream"]);
+    let status = g
+        .fixture
+        .files
+        .git_status(&g.fixture.root, &installed)
+        .await
+        .unwrap();
+    assert!(!status.state.has_upstream);
+    assert_eq!((status.state.ahead, status.state.behind), (0, 0));
+    fs::write(live.join(".git/MERGE_HEAD"), format!("{remote_head}\n")).unwrap();
+    assert!(
+        g.fixture
+            .files
+            .git_status(&g.fixture.root, &installed)
+            .await
+            .unwrap()
+            .state
+            .unfinished_operation
+    );
+    fs::remove_file(live.join(".git/MERGE_HEAD")).unwrap();
+    checkout.run(&["checkout", "--detach"]);
+    assert!(
+        g.fixture
+            .files
+            .git_status(&g.fixture.root, &installed)
+            .await
+            .unwrap()
+            .revision
+            .branch
+            .is_none()
+    );
+
+    let secret = "node-git-status-secret-7392";
+    crate::shared::logging::register_secret(secret);
+    fs::write(live.join(format!("000-{secret}.txt")), "secret filename").unwrap();
+    for index in 0..100 {
+        fs::write(
+            live.join(format!("status-file-{index:03}-long-relative-name.txt")),
+            "x",
+        )
+        .unwrap();
+    }
+    let status = g
+        .fixture
+        .files
+        .git_status(&g.fixture.root, &installed)
+        .await
+        .unwrap();
+    assert_eq!(status.state.status.chars().count(), 2000);
+    assert!(!status.state.status.contains(secret));
+    assert!(status.state.status.contains("[REDACTED]"));
+}
+
+#[tokio::test]
+async fn git_status_rejects_links_and_reports_missing_git() {
+    let git = locate_git().expect("Git must be available for the status regression");
+    let mut g = git_fixture(git).await;
+    let installed = g.install("status-links", None).await;
+    let live = g.fixture.cn().join(installed.name.as_str());
+    let link = g.fixture.cn().join("linked");
+    #[cfg(windows)]
+    assert!(
+        Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&live)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&live, &link).unwrap();
+    let mut linked = installed.clone();
+    linked.name = SafeFileName::new("linked").unwrap();
+    assert_eq!(
+        g.fixture
+            .files
+            .git_status(&g.fixture.root, &linked)
+            .await
+            .unwrap_err(),
+        NodeAppError::UnsafeSource
+    );
+    g.fixture.files.git = Arc::new(GitNodes::with_program(
+        g.fixture.root.join("missing-git.exe"),
+        false,
+    ));
+    assert_eq!(
+        g.fixture
+            .files
+            .git_status(&g.fixture.root, &installed)
+            .await
+            .unwrap_err(),
+        NodeAppError::GitUnavailable
+    );
+    let mut missing = installed.clone();
+    missing.name = SafeFileName::new("missing-node").unwrap();
+    assert_eq!(
+        g.fixture
+            .files
+            .git_status(&g.fixture.root, &missing)
+            .await
+            .unwrap_err(),
+        NodeAppError::NotFound
+    );
+    // Querying a disabled node uses its retained location, without creating layout or staging.
+    g.fixture
+        .files
+        .move_enabled(&g.fixture.root, &installed, false)
+        .await
+        .unwrap();
+    let mut disabled = installed;
+    disabled.enabled = false;
+    assert_eq!(
+        g.fixture
+            .files
+            .git_status(&g.fixture.root, &disabled)
+            .await
+            .unwrap_err(),
+        NodeAppError::GitUnavailable
+    );
 }
 
 #[tokio::test]
@@ -1999,8 +2189,9 @@ fn git_commands_disable_hooks_and_every_protocol_but_https() {
         assert!(joined.contains(needle), "{needle} missing: {joined}");
     }
     assert!(!joined.contains("protocol.file.allow=always"));
-    assert!(spec
-        .env
-        .iter()
-        .any(|(k, v)| k == "GIT_TERMINAL_PROMPT" && v == "0"));
+    assert!(
+        spec.env
+            .iter()
+            .any(|(k, v)| k == "GIT_TERMINAL_PROMPT" && v == "0")
+    );
 }

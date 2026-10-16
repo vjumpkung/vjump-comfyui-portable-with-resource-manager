@@ -69,6 +69,7 @@
     "allow-node-open-repository",
     "allow-node-registry-search",
     "allow-node-list",
+    "allow-node-git-status",
     "allow-node-rescan",
     "allow-node-prepare-registry",
     "allow-node-prepare-git",

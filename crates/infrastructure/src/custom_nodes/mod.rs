@@ -8,7 +8,7 @@ pub mod provenance;
 pub mod registry;
 pub mod scan;
 pub mod sqlite;
-pub mod tree;
 pub mod stack;
 #[cfg(test)]
 mod tests;
+pub mod tree;

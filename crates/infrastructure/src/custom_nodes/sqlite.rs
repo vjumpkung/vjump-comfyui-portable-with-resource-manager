@@ -1,18 +1,15 @@
 //! SQLite persistence for installed nodes, the operation journal, dependency outcomes, the
 //! registry response cache and remembered trust.
 use crate::shared::{clock::SystemClock, sqlite::Db};
-use application::{
-    custom_nodes::*,
-    shared::Clock,
-};
+use application::{custom_nodes::*, shared::Clock};
 use async_trait::async_trait;
 use domain::{
     custom_nodes::*,
     environment::{DistName, EnvId, PinSet},
     shared::model_values::SafeFileName,
 };
-use rusqlite::{params, OptionalExtension};
-use serde_json::{json, Value};
+use rusqlite::{OptionalExtension, params};
+use serde_json::{Value, json};
 
 pub struct SqliteNodes {
     pub db: Db,

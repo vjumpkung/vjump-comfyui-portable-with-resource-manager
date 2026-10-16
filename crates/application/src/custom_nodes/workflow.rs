@@ -183,15 +183,15 @@ impl NodeService {
             op.hook_digest = snapshot.hook_digest;
             requirement_lines = snapshot.requirement_lines;
             // Retain registry-only requirements for retry even when no requirements.txt exists.
-            if kind == OperationKind::RetryDependencies {
-                if let NodeSource::Registry { id, version, .. } = &op.node.source {
-                    op.dependency_requirements = self
-                        .deps
-                        .registry
-                        .install(id, Some(version))
-                        .await?
-                        .dependencies;
-                }
+            if kind == OperationKind::RetryDependencies
+                && let NodeSource::Registry { id, version, .. } = &op.node.source
+            {
+                op.dependency_requirements = self
+                    .deps
+                    .registry
+                    .install(id, Some(version))
+                    .await?
+                    .dependencies;
             }
             if kind == OperationKind::Enable {
                 op.node.enabled = true;
@@ -520,16 +520,16 @@ impl NodeService {
         } else {
             self.deps.store.save_node(&op.node).await?;
         }
-        if decision.consent.remember_source {
-            if let Some(namespace) = op.node.source.trust_namespace() {
-                self.deps
-                    .store
-                    .save_trust(&Trust {
-                        namespace,
-                        allow_install_py: decision.consent.remember_install_py,
-                    })
-                    .await?;
-            }
+        if decision.consent.remember_source
+            && let Some(namespace) = op.node.source.trust_namespace()
+        {
+            self.deps
+                .store
+                .save_trust(&Trust {
+                    namespace,
+                    allow_install_py: decision.consent.remember_install_py,
+                })
+                .await?;
         }
         self.phase(&mut op, OperationPhase::CleanupPending).await?;
         let cleanup_pending = self.deps.files.recycle(&root, &op).await.is_err();

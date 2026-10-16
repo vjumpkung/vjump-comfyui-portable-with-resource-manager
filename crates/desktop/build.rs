@@ -63,6 +63,7 @@ fn main() {
             "node_open_repository",
             "node_registry_search",
             "node_list",
+            "node_git_status",
             "node_rescan",
             "node_prepare_registry",
             "node_prepare_git",

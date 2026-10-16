@@ -23,7 +23,11 @@ use std::{
 };
 
 /// Unreserved characters stay readable; everything else in a path or query value is encoded.
-const COMPONENT: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'.').remove(b'_').remove(b'~');
+const COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 
 pub const REGISTRY_BASE: &str = "https://api.comfy.org";
 /// Bump when the stored normalized shape changes.
@@ -136,7 +140,11 @@ impl RegistryHttp {
 
     /// Resolves an exact release. `None` asks for the latest release once; callers then pin the
     /// returned version for every later request.
-    pub async fn release(&self, id: &str, exact: Option<&str>) -> Result<ReleaseInfo, NodeAppError> {
+    pub async fn release(
+        &self,
+        id: &str,
+        exact: Option<&str>,
+    ) -> Result<ReleaseInfo, NodeAppError> {
         let encoded = Self::encode(id)?;
         let path = match exact {
             Some(version) => format!(
@@ -194,7 +202,8 @@ impl RegistryHttp {
                 return Err(NodeAppError::UnsafeSource);
             }
             hasher.update(&chunk);
-            file.write_all(&chunk).map_err(|_| NodeAppError::Filesystem)?;
+            file.write_all(&chunk)
+                .map_err(|_| NodeAppError::Filesystem)?;
         }
         file.sync_all().map_err(|_| NodeAppError::Filesystem)?;
         if announced.is_some_and(|length| length != received) {
@@ -326,10 +335,10 @@ pub(crate) fn parse_page(value: &Value, requested: &RegistryQuery) -> Option<Reg
             .get("page")
             .and_then(Value::as_u64)
             .map_or(requested.page, |v| v as u32),
-        total_pages: value
-            .get("totalPages")
-            .and_then(Value::as_u64)
-            .map_or_else(|| total.div_ceil(u64::from(limit.max(1))) as u32, |v| v as u32),
+        total_pages: value.get("totalPages").and_then(Value::as_u64).map_or_else(
+            || total.div_ceil(u64::from(limit.max(1))) as u32,
+            |v| v as u32,
+        ),
         limit,
         total,
         nodes,
@@ -461,7 +470,9 @@ impl RegistryClient for RegistryHttp {
     }
 
     async fn node(&self, id: &str) -> Result<RegistryNode, NodeAppError> {
-        let value = self.get_json(&format!("/nodes/{}", Self::encode(id)?)).await?;
+        let value = self
+            .get_json(&format!("/nodes/{}", Self::encode(id)?))
+            .await?;
         let mut node = parse_node(&value).ok_or(NodeAppError::InvalidRegistry)?;
         if node.id != id {
             return Err(NodeAppError::InvalidRegistry);
@@ -489,7 +500,11 @@ impl RegistryClient for RegistryHttp {
         Ok(releases)
     }
 
-    async fn install(&self, id: &str, exact: Option<&str>) -> Result<RegistryRelease, NodeAppError> {
+    async fn install(
+        &self,
+        id: &str,
+        exact: Option<&str>,
+    ) -> Result<RegistryRelease, NodeAppError> {
         Ok(self.release(id, exact).await?.release)
     }
 }

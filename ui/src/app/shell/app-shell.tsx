@@ -1,6 +1,12 @@
 import { useState } from 'react'
 
-import { CloseRequestDialog, ComfyPage } from '@/features/comfy-runtime'
+import {
+  CloseRequestDialog,
+  ComfyPage,
+  useRuntime,
+  useRuntimeActions,
+} from '@/features/comfy-runtime'
+import { CustomNodesPage } from '@/features/custom-nodes'
 import { DownloadsPage } from '@/features/downloads'
 import { LibraryPage } from '@/features/library'
 import { OverviewPage } from '@/features/overview'
@@ -22,6 +28,33 @@ async function stopComfy(): Promise<void> {
   await gateway.comfyStop()
 }
 
+/** Features cannot import each other, so the shell wires the runtime facade into Custom Nodes. */
+function CustomNodesRoute({
+  maintenanceBusy,
+  onRepair,
+  onOpenComfy,
+}: {
+  maintenanceBusy: boolean
+  onRepair: () => void
+  onOpenComfy: () => void
+}) {
+  const runtime = useRuntime()
+  const { start, stop, restart } = useRuntimeActions()
+  return (
+    <CustomNodesPage
+      maintenanceBusy={maintenanceBusy}
+      runtime={runtime.status}
+      runtimeBusy={start.isPending || stop.isPending || restart.isPending}
+      onRepair={onRepair}
+      onStopComfy={async () => {
+        await stop.mutateAsync()
+      }}
+      onRestartComfy={() => restart.mutateAsync()}
+      onOpenComfy={onOpenComfy}
+    />
+  )
+}
+
 interface PageActions {
   status: SetupStatusDto
   onSetup: (mode: SetupModeDto) => void
@@ -30,6 +63,7 @@ interface PageActions {
 
 interface Navigation {
   onOpenSettings: () => void
+  onOpenComfy: () => void
 }
 
 function Page({
@@ -38,12 +72,21 @@ function Page({
   onSetup,
   onResume,
   onOpenSettings,
+  onOpenComfy,
 }: PageActions & Navigation & { active: NavId }) {
   if (active === 'overview') return <OverviewPage />
   if (active === 'comfyui') return <ComfyPage />
   if (active === 'downloads')
     return <DownloadsPage onOpenSettings={onOpenSettings} />
   if (active === 'models') return <LibraryPage onStopComfy={stopComfy} />
+  if (active === 'custom-nodes')
+    return (
+      <CustomNodesRoute
+        maintenanceBusy={status.phase === 'run_in_progress'}
+        onRepair={() => onSetup('repair')}
+        onOpenComfy={onOpenComfy}
+      />
+    )
   if (active === 'settings')
     return (
       <SettingsPage
@@ -82,6 +125,7 @@ export function AppShell({ status, onSetup, onResume }: PageActions) {
             onSetup={onSetup}
             onResume={onResume}
             onOpenSettings={() => setActive('settings')}
+            onOpenComfy={() => setActive('comfyui')}
           />
         </main>
       </div>

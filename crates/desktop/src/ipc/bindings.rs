@@ -71,6 +71,7 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
             node_commands::node_open_repository,
             node_commands::node_registry_search,
             node_commands::node_list,
+            node_commands::node_git_status,
             node_commands::node_rescan,
             node_commands::node_prepare_registry,
             node_commands::node_prepare_git,

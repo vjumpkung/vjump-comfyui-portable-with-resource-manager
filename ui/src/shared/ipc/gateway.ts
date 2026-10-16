@@ -29,6 +29,7 @@ import type {
   CommitInput,
   SetEnabledInput,
   NodeEventDto,
+  NodeGitStatusDto,
 } from './bindings'
 export type * from './bindings'
 import type {
@@ -215,6 +216,10 @@ export const gateway = {
   nodeRegistrySearch: (input: RegistrySearchInput) =>
     unwrap(() => commands.nodeRegistrySearch(input)),
   nodeList: () => unwrap(() => commands.nodeList()),
+  nodeOpenRepository: (repository: string): Promise<null> =>
+    unwrap(() => commands.nodeOpenRepository(repository)),
+  nodeGitStatus: (nodeId: string): Promise<NodeGitStatusDto> =>
+    unwrap(() => commands.nodeGitStatus({ nodeId })),
   nodeRescan: () => unwrap(() => commands.nodeRescan()),
   nodePrepareRegistry: (input: PrepareRegistryInput) =>
     unwrap(() => commands.nodePrepareRegistry(input)),

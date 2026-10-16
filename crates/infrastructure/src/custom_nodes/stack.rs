@@ -35,12 +35,15 @@ pub enum NodeEvent {
     Changed,
 }
 
+/// The global log tail and the per-operation log tails.
+type NodeLogs = (VecDeque<String>, HashMap<String, VecDeque<String>>);
+
 /// Fan-out of node events. Queues are bounded: a subscriber that falls behind receives a gap
 /// and must take a fresh snapshot instead of replaying what it missed.
 pub struct NodeHub {
     sender: broadcast::Sender<(u64, NodeEvent)>,
     sequence: AtomicU64,
-    logs: Mutex<(VecDeque<String>, HashMap<String, VecDeque<String>>)>,
+    logs: Mutex<NodeLogs>,
     pub epoch: String,
 }
 
@@ -127,7 +130,7 @@ impl Default for NodeOptions {
             downloader: Downloader::new(),
             registry_base: REGISTRY_BASE.to_owned(),
             git: Arc::new(GitNodes::new()),
-            recycler: Arc::new(|path| crate::shared::trash::recycle(path)),
+            recycler: Arc::new(crate::shared::trash::recycle),
         }
     }
 }

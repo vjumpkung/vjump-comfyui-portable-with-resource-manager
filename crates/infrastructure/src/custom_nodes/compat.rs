@@ -90,11 +90,7 @@ pub fn comfyui_support(expression: &str, version: &Version) -> Support {
             result = Support::Incompatible;
         }
     }
-    if any {
-        result
-    } else {
-        Support::Unknown
-    }
+    if any { result } else { Support::Unknown }
 }
 
 pub fn evaluate(metadata: &CompatibilityMetadata, host: &Host) -> Compatibility {

@@ -25,6 +25,64 @@ impl NodeService {
     pub async fn list(&self) -> Result<Vec<InstalledNode>, NodeAppError> {
         self.deps.store.nodes().await
     }
+    pub async fn git_status(&self, id: &NodeId) -> Result<NodeGitStatus, NodeAppError> {
+        let _lease = self
+            .deps
+            .environment
+            .gate
+            .try_acquire()
+            .await
+            .map_err(|_| NodeAppError::Busy)?;
+        let node = self
+            .deps
+            .store
+            .nodes()
+            .await?
+            .into_iter()
+            .find(|node| &node.id == id)
+            .ok_or(NodeAppError::NotFound)?;
+        if node.single_file || !matches!(node.source, NodeSource::Git { .. }) {
+            return Err(NodeAppError::InvalidRequest);
+        }
+        let root = self.deps.environment.root.current().root;
+        self.deps.files.git_status(&root, &node).await
+    }
+    /// Process-local reviews only; discovering a review never restores consent.
+    pub fn pending_reviews(&self) -> Result<Vec<PlanReview>, NodeAppError> {
+        let plans = self
+            .deps
+            .plans
+            .0
+            .lock()
+            .map_err(|_| NodeAppError::Storage)?;
+        let mut reviews: Vec<_> = plans
+            .values()
+            .filter(|plan| {
+                matches!(
+                    plan.review.kind,
+                    OperationKind::Install
+                        | OperationKind::Update
+                        | OperationKind::RetryDependencies
+                )
+            })
+            .map(|plan| plan.review.clone())
+            .collect();
+        reviews.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(reviews)
+    }
+    /// Newest first, bounded to the latest 16 terminal journal records.
+    pub async fn recent_operations(&self) -> Result<Vec<NodeOperation>, NodeAppError> {
+        Ok(self
+            .deps
+            .store
+            .operations()
+            .await?
+            .into_iter()
+            .rev()
+            .filter(|op| matches!(op.phase, OperationPhase::Completed | OperationPhase::Failed))
+            .take(16)
+            .collect())
+    }
     pub async fn operation_status(&self, id: &str) -> Result<NodeOperation, NodeAppError> {
         self.deps
             .store
@@ -119,7 +177,8 @@ impl NodeService {
             },
             protected_changes: review.protected_changes.clone(),
         };
-        self.commit_held(&review.id, decision, ctx, &mut *lease).await
+        self.commit_held(&review.id, decision, ctx, &mut *lease)
+            .await
     }
     /// Drops a reviewed-but-unused plan and removes its owned staging.
     pub async fn discard(&self, id: &str) -> Result<(), NodeAppError> {
@@ -265,7 +324,10 @@ impl NodeService {
             .map_err(|_| NodeAppError::Busy)?;
         self.reconcile_held(&mut *lease).await
     }
-    pub async fn reconcile_held(&self, _lease: &mut dyn MaintenanceLease) -> Result<(), NodeAppError> {
+    pub async fn reconcile_held(
+        &self,
+        _lease: &mut dyn MaintenanceLease,
+    ) -> Result<(), NodeAppError> {
         let d = &self.deps.environment;
         let root = d.root.current().root;
         d.runtime
@@ -387,7 +449,7 @@ impl NodeService {
             .operations()
             .await?
             .iter()
-            .any(|op| op.phase.blocks_start())
+            .any(NodeOperation::blocks_start)
         {
             Err(NodeAppError::RecoveryRequired)
         } else {

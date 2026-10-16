@@ -3,8 +3,8 @@
 use super::*;
 use crate::{
     environment::{
-        tests::fakes::{World, ROOT},
         EnvironmentRepository, ProvisionError, ResolutionPreview,
+        tests::fakes::{ROOT, World},
     },
     shared::CancelToken,
     test_support::block_on,
@@ -40,6 +40,33 @@ struct FakeFiles {
 
 #[async_trait]
 impl NodeFiles for FakeFiles {
+    async fn git_status(
+        &self,
+        root: &Path,
+        node: &InstalledNode,
+    ) -> Result<NodeGitStatus, NodeAppError> {
+        assert_eq!(root, Path::new(ROOT));
+        assert!(
+            self.world
+                .gate
+                .busy
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+        self.world
+            .call(&format!("files:git_status:{}", node.id.as_str()));
+        Ok(NodeGitStatus {
+            revision: domain::comfy_runtime::Revision {
+                commit: "a".repeat(40),
+                branch: Some("main".into()),
+                tag: None,
+            },
+            state: domain::comfy_runtime::RepoState {
+                dirty: true,
+                status: " M requirements.txt\n".into(),
+                ..Default::default()
+            },
+        })
+    }
     async fn prepare(
         &self,
         _root: &Path,
@@ -134,6 +161,122 @@ impl NodeFiles for FakeFiles {
     async fn scan(&self, _root: &Path) -> Result<Vec<InstalledNode>, NodeAppError> {
         Ok(self.state.lock().unwrap().scan.clone())
     }
+}
+
+#[test]
+fn git_status_resolves_stored_nodes_under_the_gate_and_rejects_non_git() {
+    let h = Harness::new();
+    let mut node = interrupted(&h, OperationPhase::Completed, OperationKind::Install).node;
+    assert_eq!(
+        block_on(h.service.git_status(&node.id)),
+        Err(NodeAppError::NotFound)
+    );
+    block_on(h.store.save_node(&node)).unwrap();
+    assert_eq!(
+        block_on(h.service.git_status(&node.id)),
+        Err(NodeAppError::InvalidRequest)
+    );
+    node.source = NodeSource::Git {
+        repository: "https://github.com/example/node".into(),
+        commit: "a".repeat(40),
+        branch: Some("main".into()),
+    };
+    node.single_file = true;
+    block_on(h.store.save_node(&node)).unwrap();
+    assert_eq!(
+        block_on(h.service.git_status(&node.id)),
+        Err(NodeAppError::InvalidRequest)
+    );
+    node.single_file = false;
+    block_on(h.store.save_node(&node)).unwrap();
+    assert!(
+        block_on(h.service.git_status(&node.id))
+            .unwrap()
+            .state
+            .dirty
+    );
+    assert_eq!(h.world.calls(), ["files:git_status:n-1"]);
+    let _lease = block_on(h.service.deps.environment.gate.try_acquire()).unwrap();
+    assert_eq!(
+        block_on(h.service.git_status(&node.id)),
+        Err(NodeAppError::Busy)
+    );
+}
+
+#[test]
+fn pending_reviews_exclude_direct_operations_and_restore_no_consent() {
+    let h = Harness::new();
+    let review = h.prepare();
+    {
+        let mut plans = h.service.deps.plans.0.lock().unwrap();
+        let template = plans.get(&review.id).unwrap().clone();
+        plans.clear();
+        for (id, kind) in [
+            ("review-c", OperationKind::RetryDependencies),
+            ("review-a", OperationKind::Install),
+            ("review-b", OperationKind::Update),
+            ("direct-enable", OperationKind::Enable),
+            ("direct-disable", OperationKind::Disable),
+            ("direct-uninstall", OperationKind::Uninstall),
+        ] {
+            let mut plan = template.clone();
+            plan.review.id = id.into();
+            plan.review.kind = kind;
+            plan.operation.kind = kind;
+            plans.insert(id.into(), plan);
+        }
+        plans.insert(review.id.clone(), template);
+    }
+    let mut reviews = h.service.pending_reviews().unwrap();
+    let ids: Vec<_> = reviews.iter().map(|r| r.id.clone()).collect();
+    let mut expected = vec![
+        review.id.clone(),
+        "review-a".into(),
+        "review-b".into(),
+        "review-c".into(),
+    ];
+    expected.sort();
+    assert_eq!(ids, expected);
+    reviews[0].binding = "changed".into();
+    assert_ne!(h.service.pending_reviews().unwrap()[0].binding, "changed");
+    let mut decision = Harness::decision(&review);
+    decision.consent.execute_node_code = false;
+    assert_eq!(
+        block_on(h.service.commit(&review.id, decision, &h.ctx())).unwrap_err(),
+        NodeAppError::ConsentRequired
+    );
+    let mut deps = h.service.deps.clone();
+    deps.plans = Arc::default();
+    assert!(NodeService::new(deps).pending_reviews().unwrap().is_empty());
+}
+
+#[test]
+fn recent_operations_are_terminal_newest_first_and_bounded() {
+    let h = Harness::new();
+    for index in 0..20 {
+        let mut op = interrupted(
+            &h,
+            if index % 2 == 0 {
+                OperationPhase::Completed
+            } else {
+                OperationPhase::Failed
+            },
+            OperationKind::Install,
+        );
+        op.id = NodeId::new(format!("op-{index:02}")).unwrap();
+        block_on(h.store.save_operation(&op)).unwrap();
+    }
+    block_on(h.store.save_operation(&interrupted(
+        &h,
+        OperationPhase::CleanupPending,
+        OperationKind::Install,
+    )))
+    .unwrap();
+    let recent = block_on(h.service.recent_operations()).unwrap();
+    assert_eq!(recent.len(), 16);
+    assert_eq!(recent[0].id.as_str(), "op-19");
+    assert_eq!(recent[15].id.as_str(), "op-04");
+    assert!(recent.iter().all(|op| !op.blocks_start()));
 }
 
 struct FakeRegistry;
@@ -759,28 +902,30 @@ fn install_py_runs_only_with_consent_after_requirements_and_trust_is_namespaced(
     );
     // The remembered permission belongs to this publisher/node/repository only.
     let remembered = registry_source("1.0.0").trust_namespace().unwrap();
-    assert!(h
-        .store
-        .state
-        .lock()
-        .unwrap()
-        .trusts
-        .iter()
-        .any(|t| t.namespace == remembered && t.allow_install_py));
+    assert!(
+        h.store
+            .state
+            .lock()
+            .unwrap()
+            .trusts
+            .iter()
+            .any(|t| t.namespace == remembered && t.allow_install_py)
+    );
     let other = NodeSource::Registry {
         id: "other".into(),
         publisher: Some("pub".into()),
         version: "1".into(),
         repository: Some("https://github.com/pub/pack".into()),
     };
-    assert!(h
-        .store
-        .state
-        .lock()
-        .unwrap()
-        .trusts
-        .iter()
-        .all(|t| Some(&t.namespace) != other.trust_namespace().as_ref()));
+    assert!(
+        h.store
+            .state
+            .lock()
+            .unwrap()
+            .trusts
+            .iter()
+            .all(|t| Some(&t.namespace) != other.trust_namespace().as_ref())
+    );
     // A second plan for the same source shows the remembered decision but still needs consent.
     let again = block_on(h.service.prepare(
         PrepareRequest::Registry {
@@ -1210,10 +1355,12 @@ fn rescan_keeps_ids_flags_provenance_conflicts_and_prunes_missing_nodes() {
     assert_eq!(pack.source, registry_source("2.0.0"));
     assert_eq!(pack.dependencies, DependencyState::NotRun);
     assert!(!pack.conflict);
-    assert!(block_on(h.service.list())
-        .unwrap()
-        .iter()
-        .all(|n| n.name.as_str() != "gone"));
+    assert!(
+        block_on(h.service.list())
+            .unwrap()
+            .iter()
+            .all(|n| n.name.as_str() != "gone")
+    );
     // A different origin on disk is a conflict; the stored record stays authoritative.
     let other = NodeSource::Git {
         repository: "https://github.com/evil/pack".into(),
@@ -1238,14 +1385,16 @@ fn rescan_keeps_ids_flags_provenance_conflicts_and_prunes_missing_nodes() {
         assert_eq!(result.unwrap_err(), NodeAppError::UnsafeSource);
     }
     // But it can still be disabled.
-    assert!(block_on(h.service.prepare(
-        PrepareRequest::SetEnabled {
-            node: nodes[0].id.clone(),
-            enabled: false
-        },
-        &h.ctx()
-    ))
-    .is_ok());
+    assert!(
+        block_on(h.service.prepare(
+            PrepareRequest::SetEnabled {
+                node: nodes[0].id.clone(),
+                enabled: false
+            },
+            &h.ctx()
+        ))
+        .is_ok()
+    );
 }
 
 #[test]

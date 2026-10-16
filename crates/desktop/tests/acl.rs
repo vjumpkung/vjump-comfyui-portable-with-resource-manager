@@ -284,6 +284,11 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
             HandlerError,
         ),
         ("node_list", json!({}), HandlerError),
+        (
+            "node_git_status",
+            json!({ "input": { "nodeId": "node-unknown" } }),
+            HandlerError,
+        ),
         ("node_rescan", json!({}), HandlerError),
         (
             "node_prepare_registry",
@@ -480,6 +485,140 @@ fn manager_window_with_local_origin_can_invoke_all_commands() {
             "manager/local: `{cmd}` must reach an application port"
         );
     }
+}
+
+#[test]
+fn repository_browser_urls_reject_empty_authority_and_userinfo() {
+    let app = build_app();
+    let window = manager_window(&app);
+    for repository in [
+        "",
+        "not a URL",
+        "https:////@github.com/example/node",
+        "https:///github.com/x/y",
+        "https:////github.com/x/y",
+        "https://@github.com/x/y",
+        "https://github.com@evil.com/x",
+        r"https://\github.com/x/y",
+        r"https:\\github.com/x/y",
+        "http://github.com/example/node",
+        "file:///C:/Windows/win.ini",
+        "javascript:alert(1)",
+        "git@github.com:example/node.git",
+        "https://user:secret@github.com/example/node",
+        "https://user@github.com/example/node",
+        "https://github.com/example/node?token=secret",
+        "https://github.com/example/node#secret",
+        "https://github.com:444/example/node",
+        "https://github.com/",
+        "https://github.com/example/\nnode",
+    ] {
+        let before = app.calls.count();
+        let response = get_ipc_response(
+            &window,
+            request(
+                "node_open_repository",
+                local_url(),
+                json!({ "repository": repository }),
+            ),
+        );
+        assert_eq!(
+            response.unwrap_err(),
+            json!({
+                "code": "validation", "message": "The repository URL is not valid."
+            })
+        );
+        assert_eq!(app.calls.count(), before, "shell must not be invoked");
+    }
+}
+
+#[test]
+fn node_list_exposes_recent_failures_and_correct_launch_blocking() {
+    use application::custom_nodes::{NodeOperation, NodeRepository, OperationKind, OperationPhase};
+    use desktop::ipc::node_dto::NodeListDto;
+    use domain::{
+        custom_nodes::{DependencyState, InstalledNode, NodeId, NodeSource, ProvenanceOrigin},
+        environment::{EnvId, PinSet},
+        shared::model_values::SafeFileName,
+    };
+    use infrastructure::{custom_nodes::sqlite::SqliteNodes, shared::sqlite::Db};
+
+    let app = build_app();
+    let window = manager_window(&app);
+    tauri::async_runtime::block_on(async {
+        let store = SqliteNodes {
+            db: Db::open(app.root.join("data/app.db")).await.unwrap(),
+        };
+        let node = InstalledNode {
+            id: NodeId::new("node-1").unwrap(),
+            name: SafeFileName::new("pack").unwrap(),
+            source: NodeSource::Manual,
+            origin: ProvenanceOrigin::App,
+            enabled: true,
+            single_file: false,
+            tree_digest: "tree".into(),
+            dependencies: DependencyState::NotRun,
+            conflict: false,
+            dirty: None,
+        };
+        store.save_node(&node).await.unwrap();
+        for index in 0..23 {
+            let phase = match index {
+                20 => OperationPhase::CleanupPending,
+                21 => OperationPhase::Published,
+                22 => OperationPhase::Prepared,
+                n if n % 2 == 0 => OperationPhase::Completed,
+                _ => OperationPhase::Failed,
+            };
+            let id = format!("op-{index:02}");
+            let op = NodeOperation {
+                id: NodeId::new(&id).unwrap(),
+                kind: OperationKind::Install,
+                phase,
+                node: node.clone(),
+                prior: None,
+                environment: EnvId::new("env-1").unwrap(),
+                pins: PinSet::new(),
+                binding: "binding".into(),
+                artifact_digest: None,
+                requirements_digest: None,
+                hook_digest: None,
+                consent_identity: None,
+                failure: (phase == OperationPhase::Failed).then(|| "Installation failed".into()),
+                staging: format!(".disabled/.vjump-staging-{id}"),
+                backup: format!(".disabled/.vjump-backup-{id}"),
+                dependency_requirements: Vec::new(),
+            };
+            store.save_operation(&op).await.unwrap();
+        }
+    });
+    let response = get_ipc_response(&window, request("node_list", local_url(), json!({}))).unwrap();
+    let list: NodeListDto = response.deserialize().unwrap();
+    assert_eq!(list.nodes[0].id, "node-1");
+    assert!(list.pending_reviews.is_empty());
+    assert_eq!(list.recent.len(), 16);
+    assert_eq!(list.recent[0].id, "op-19");
+    assert_eq!(list.recent[15].id, "op-04");
+    assert_eq!(
+        list.recent[0].failure.as_deref(),
+        Some("Installation failed")
+    );
+    assert!(
+        list.recent
+            .iter()
+            .all(|op| op.node_id == "node-1" && !op.blocks_start)
+    );
+    assert_eq!(list.unresolved.len(), 2);
+    assert!(
+        list.unresolved
+            .iter()
+            .any(|op| op.phase == "cleanup_pending" && !op.blocks_start)
+    );
+    assert!(
+        list.unresolved
+            .iter()
+            .any(|op| op.phase == "published" && op.blocks_start)
+    );
 }
 
 #[test]

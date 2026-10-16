@@ -14,10 +14,11 @@ use tauri::{State, ipc::Channel};
 use super::{
     error::IpcError,
     node_dto::{
-        BatchItemDto, BatchOutcomeDto, CommitInput, InstalledNodeDto, NodeEventDto, NodeIdInput,
-        NodeListDto, NodeOutcomeDto, OperationDto, PlanReviewDto, PrepareGitInput,
-        PrepareRegistryInput, PrepareRetryInput, PrepareUpdateInput, RegistryPageDto,
-        RegistrySearchInput, SetEnabledInput, UpdateAllInput, node_id, request_key,
+        BatchItemDto, BatchOutcomeDto, CommitInput, InstalledNodeDto, NodeEventDto,
+        NodeGitStatusDto, NodeIdInput, NodeListDto, NodeOutcomeDto, OperationDto, PlanReviewDto,
+        PrepareGitInput, PrepareRegistryInput, PrepareRetryInput, PrepareUpdateInput,
+        RegistryPageDto, RegistrySearchInput, SetEnabledInput, UpdateAllInput, node_id,
+        request_key,
     },
 };
 use crate::state::{AppState, NodeServices};
@@ -76,6 +77,19 @@ async fn list(nodes: &NodeServices) -> Result<NodeListDto, IpcError> {
     Ok(NodeListDto {
         nodes: installed.iter().map(InstalledNodeDto::from).collect(),
         unresolved,
+        pending_reviews: nodes
+            .service
+            .pending_reviews()?
+            .iter()
+            .map(PlanReviewDto::from)
+            .collect(),
+        recent: nodes
+            .service
+            .recent_operations()
+            .await?
+            .iter()
+            .map(|op| OperationDto::new(op, nodes.stack.hub.tail(op.id.as_str())))
+            .collect(),
         repair_required: nodes.service.repair_required().await?,
     })
 }
@@ -88,7 +102,7 @@ fn repository_url(repository: &str) -> Result<tauri::Url, IpcError> {
         .trim()
         .split_once("://")
         .map(|(_, rest)| rest.split(['/', '\\', '?', '#']).next().unwrap_or_default());
-    if authority.is_none_or(|authority| authority.contains('@')) {
+    if authority.is_none_or(|authority| authority.is_empty() || authority.contains('@')) {
         return Err(invalid());
     }
     let remote = validate_remote(repository, false).ok_or_else(invalid)?;
@@ -141,6 +155,21 @@ pub async fn node_registry_search(
 #[specta::specta]
 pub async fn node_list(state: State<'_, AppState>) -> Result<NodeListDto, IpcError> {
     list(&state.services()?.nodes).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn node_git_status(
+    state: State<'_, AppState>,
+    input: NodeIdInput,
+) -> Result<NodeGitStatusDto, IpcError> {
+    let status = state
+        .services()?
+        .nodes
+        .service
+        .git_status(&node_id(&input.node_id)?)
+        .await?;
+    Ok(NodeGitStatusDto::from(&status))
 }
 
 /// Finishes interrupted operations, then reads the folders again. Also runs after every verified
@@ -444,6 +473,22 @@ mod tests {
             "https://github.com:444/example/node",
             "https://github.com/",
             "https://github.com/example/\nnode",
+        ] {
+            assert_eq!(
+                repository_url(repository).unwrap_err(),
+                IpcError::new("validation", "The repository URL is not valid.")
+            );
+        }
+    }
+
+    #[test]
+    fn repository_browser_urls_reject_empty_raw_authority() {
+        for repository in [
+            "https:////@github.com/example/node",
+            "https:///github.com/x/y",
+            "https:////github.com/x/y",
+            r"https://\github.com/x/y",
+            r"https:\\github.com/x/y",
         ] {
             assert_eq!(
                 repository_url(repository).unwrap_err(),

@@ -32,6 +32,11 @@ pub trait NodeRepository: Send + Sync {
 /// Mutations use shared pinned parents/no-replace primitives, never unchecked rename paths.
 #[async_trait]
 pub trait NodeFiles: Send + Sync {
+    async fn git_status(
+        &self,
+        root: &Path,
+        node: &InstalledNode,
+    ) -> Result<NodeGitStatus, NodeAppError>;
     async fn prepare(
         &self,
         root: &Path,

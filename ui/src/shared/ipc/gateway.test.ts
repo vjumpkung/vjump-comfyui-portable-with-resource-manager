@@ -9,6 +9,8 @@ const commands = vi.hoisted(() => ({
   secretStatus: vi.fn(),
   setupRun: vi.fn(),
   envPipApply: vi.fn(),
+  nodeOpenRepository: vi.fn(),
+  nodeGitStatus: vi.fn(),
 }))
 
 vi.mock('./bindings', () => ({ commands }))
@@ -23,6 +25,25 @@ import { gateway, IpcClientError } from './gateway'
 describe('gateway', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+  })
+
+  it('node_repository_open_uses_generated_command', async () => {
+    commands.nodeOpenRepository.mockResolvedValue({ status: 'ok', data: null })
+    await expect(gateway.nodeOpenRepository('https://github.com/example/node'))
+      .resolves.toBeNull()
+    expect(commands.nodeOpenRepository)
+      .toHaveBeenCalledWith('https://github.com/example/node')
+  })
+
+  it('node_git_status_wraps_node_id', async () => {
+    const status = {
+      commit: 'a'.repeat(40), branch: 'main', dirty: true,
+      unfinishedOperation: false, ahead: 0, behind: 1,
+      hasUpstream: true, status: ' M requirements.txt\n',
+    }
+    commands.nodeGitStatus.mockResolvedValue({ status: 'ok', data: status })
+    await expect(gateway.nodeGitStatus('node-1')).resolves.toEqual(status)
+    expect(commands.nodeGitStatus).toHaveBeenCalledWith({ nodeId: 'node-1' })
   })
 
   it('unwraps ok results', async () => {

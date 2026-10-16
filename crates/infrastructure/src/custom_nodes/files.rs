@@ -58,7 +58,8 @@ impl Paths {
         }
     }
     fn staging(&self, op: &NodeId) -> PathBuf {
-        self.disabled.join(format!(".vjump-staging-{}", op.as_str()))
+        self.disabled
+            .join(format!(".vjump-staging-{}", op.as_str()))
     }
     fn staging_zip(&self, op: &NodeId) -> PathBuf {
         self.disabled
@@ -92,7 +93,9 @@ impl Paths {
         }
         for directory in [&self.cn, &self.disabled] {
             match directory.symlink_metadata() {
-                Ok(meta) if is_link(&meta) || !meta.is_dir() => return Err(NodeAppError::UnsafeSource),
+                Ok(meta) if is_link(&meta) || !meta.is_dir() => {
+                    return Err(NodeAppError::UnsafeSource);
+                }
                 Ok(_) => {}
                 Err(_) => fs::create_dir(directory).map_err(|_| NodeAppError::Filesystem)?,
             }
@@ -187,12 +190,18 @@ fn hoist_single_root(staging: &Path, hoist: &Path) -> Result<(), NodeAppError> {
     let [only] = entries.as_slice() else {
         return Ok(());
     };
-    let meta = only.path().symlink_metadata().map_err(|_| NodeAppError::Filesystem)?;
+    let meta = only
+        .path()
+        .symlink_metadata()
+        .map_err(|_| NodeAppError::Filesystem)?;
     if !meta.is_dir() || is_link(&meta) {
         return Ok(());
     }
     rename_no_replace(&only.path(), hoist).map_err(|_| NodeAppError::Filesystem)?;
-    for child in fs::read_dir(hoist).map_err(|_| NodeAppError::Filesystem)?.flatten() {
+    for child in fs::read_dir(hoist)
+        .map_err(|_| NodeAppError::Filesystem)?
+        .flatten()
+    {
         rename_no_replace(&child.path(), &staging.join(child.file_name()))
             .map_err(|_| NodeAppError::Filesystem)?;
     }
@@ -248,7 +257,10 @@ impl LocalNodeFiles {
         {
             return Err(NodeAppError::UpToDate);
         }
-        let url = info.download_url.clone().ok_or(NodeAppError::InvalidRegistry)?;
+        let url = info
+            .download_url
+            .clone()
+            .ok_or(NodeAppError::InvalidRegistry)?;
         let node = self.registry.node(id).await.ok();
         let (publisher, repository) = match (&node, prior.map(|p| &p.source)) {
             (Some(n), _) => (n.publisher.clone(), n.repository.clone()),
@@ -285,7 +297,8 @@ impl LocalNodeFiles {
             );
             let tree = blocking(move || {
                 fs::create_dir(&staging_path).map_err(|_| NodeAppError::Filesystem)?;
-                extract(&zip_path, ArchiveKind::Zip, &staging_path, limits).map_err(archive_error)?;
+                extract(&zip_path, ArchiveKind::Zip, &staging_path, limits)
+                    .map_err(archive_error)?;
                 hoist_single_root(&staging_path, &hoist_path)?;
                 // The app owns these two files; an archive may not supply them.
                 if exists(&staging_path.join(MARKER)) {
@@ -295,8 +308,13 @@ impl LocalNodeFiles {
                 remove_owned(&staging_path.join(TRACKING));
                 let snapshot = read_tree(&staging_path, false)?;
                 provenance::write_tracking(&staging_path).map_err(|_| NodeAppError::Filesystem)?;
-                provenance::write_marker(&staging_path, &marker_name, &marker_source, Some(&digest))
-                    .map_err(|_| NodeAppError::Filesystem)?;
+                provenance::write_marker(
+                    &staging_path,
+                    &marker_name,
+                    &marker_source,
+                    Some(&digest),
+                )
+                .map_err(|_| NodeAppError::Filesystem)?;
                 let _ = fs::remove_file(&zip_path);
                 Ok(snapshot)
             })
@@ -315,7 +333,9 @@ impl LocalNodeFiles {
         };
         let host = self.registry.host();
         let mut warnings = evaluate(&info.metadata, &host).warnings();
-        if info.metadata.deprecated == Some(true) && !warnings.iter().any(|w| w.contains("deprecated")) {
+        if info.metadata.deprecated == Some(true)
+            && !warnings.iter().any(|w| w.contains("deprecated"))
+        {
             warnings.push("This node version is deprecated".into());
         }
         Ok(StagedNode {
@@ -434,7 +454,10 @@ impl LocalNodeFiles {
             blocking(move || layout.ensure_layout()).await?;
         }
         let dir = paths.live(prior);
-        let NodeSource::Git { repository, branch, .. } = &prior.source else {
+        let NodeSource::Git {
+            repository, branch, ..
+        } = &prior.source
+        else {
             return Err(NodeAppError::InvalidRequest);
         };
         {
@@ -465,7 +488,8 @@ impl LocalNodeFiles {
         blocking(move || {
             fs::create_dir(&stub).map_err(|_| NodeAppError::Filesystem)?;
             if let Some(text) = &requirements_text {
-                fs::write(stub.join("requirements.txt"), text).map_err(|_| NodeAppError::Filesystem)?;
+                fs::write(stub.join("requirements.txt"), text)
+                    .map_err(|_| NodeAppError::Filesystem)?;
             }
             if let Some(text) = &hook_text {
                 fs::write(stub.join("install.py"), text).map_err(|_| NodeAppError::Filesystem)?;
@@ -491,7 +515,10 @@ impl LocalNodeFiles {
             name: prior.name.clone(),
             tree_digest: format!("git:{target}"),
             artifact_digest: None,
-            requirement_lines: requirements.as_deref().map(parse_requirement_lines).unwrap_or_default(),
+            requirement_lines: requirements
+                .as_deref()
+                .map(parse_requirement_lines)
+                .unwrap_or_default(),
             requirements_digest: requirements.as_ref().map(|t| sha256_hex(t.as_bytes())),
             hook_digest: hook.as_ref().map(|t| sha256_hex(t.as_bytes())),
             dependencies: Vec::new(),
@@ -514,6 +541,46 @@ fn is_git(node: &InstalledNode) -> bool {
 
 #[async_trait]
 impl NodeFiles for LocalNodeFiles {
+    async fn git_status(
+        &self,
+        root: &Path,
+        node: &InstalledNode,
+    ) -> Result<NodeGitStatus, NodeAppError> {
+        if node.single_file || !is_git(node) {
+            return Err(NodeAppError::InvalidRequest);
+        }
+        let paths = self.paths(root);
+        let location = paths.live(node);
+        let checked = location.clone();
+        let enabled = node.enabled;
+        let validation = Paths::new(root);
+        blocking(move || {
+            for path in [
+                &validation.root,
+                &validation.root.join("ComfyUI"),
+                &validation.cn,
+            ] {
+                not_link(path)?;
+            }
+            if !enabled {
+                not_link(&validation.disabled)?;
+            }
+            not_link(&checked)?;
+            not_link(&checked.join(".git"))?;
+            validate_tree(&checked)
+        })
+        .await?;
+        let mut inspection = self.git.inspect(root, &paths.hooks(), &location).await?;
+        inspection.state.status = crate::shared::logging::redact(&inspection.state.status)
+            .chars()
+            .take(2000)
+            .collect();
+        Ok(NodeGitStatus {
+            revision: inspection.revision,
+            state: inspection.state,
+        })
+    }
+
     async fn prepare(
         &self,
         root: &Path,
@@ -527,7 +594,13 @@ impl NodeFiles for LocalNodeFiles {
                 self.prepare_registry(root, operation, id, version.as_deref(), None, ctx)
                     .await
             }
-            (PrepareRequest::Git { repository, reference }, None) => {
+            (
+                PrepareRequest::Git {
+                    repository,
+                    reference,
+                },
+                None,
+            ) => {
                 self.prepare_git_install(root, operation, repository, reference.as_deref(), ctx)
                     .await
             }
@@ -569,9 +642,7 @@ impl NodeFiles for LocalNodeFiles {
             Some(op) => paths.staging(op),
             None => paths.live(&node),
         };
-        let git_update_stub = staged.is_some()
-            && is_git(&node)
-            && !location.join(".git").exists();
+        let git_update_stub = staged.is_some() && is_git(&node) && !location.join(".git").exists();
         blocking(move || {
             if node.single_file {
                 not_link(&location)?;
@@ -753,7 +824,10 @@ fn read_tree_files_only(stub: &Path) -> Result<TreeSnapshot, NodeAppError> {
         digest: String::new(),
         requirements_digest: requirements.as_ref().map(|t| sha256_hex(t.as_bytes())),
         hook_digest: hook.as_ref().map(|t| sha256_hex(t.as_bytes())),
-        requirement_lines: requirements.as_deref().map(parse_requirement_lines).unwrap_or_default(),
+        requirement_lines: requirements
+            .as_deref()
+            .map(parse_requirement_lines)
+            .unwrap_or_default(),
     })
 }
 
@@ -790,7 +864,10 @@ fn recover_blocking(
         remove_owned(&paths.staging_zip(&op.id));
         remove_owned(&paths.staging_hoist(&op.id));
     };
-    if matches!(op.phase, OperationPhase::Verified | OperationPhase::CleanupPending) {
+    if matches!(
+        op.phase,
+        OperationPhase::Verified | OperationPhase::CleanupPending
+    ) {
         discard(paths);
         if exists(&backup) && (recycler(&backup).is_err() || exists(&backup)) {
             return Ok(RecoveryAction::CleanupPending);
@@ -806,7 +883,10 @@ fn recover_blocking(
     match op.kind {
         OperationKind::Enable | OperationKind::Disable => {
             let prior = op.prior.as_ref().ok_or(NodeAppError::Storage)?;
-            let (from, to) = (paths.live(prior), paths.location(&prior.name, op.node.enabled));
+            let (from, to) = (
+                paths.live(prior),
+                paths.location(&prior.name, op.node.enabled),
+            );
             Ok(match (exists(&from), exists(&to)) {
                 (true, false) => RecoveryAction::RolledBack,
                 (false, true) => RecoveryAction::RolledForward,
@@ -846,7 +926,8 @@ fn recover_blocking(
             let final_path = paths.live(&op.node);
             let (f, b, s) = (exists(&final_path), exists(&backup), exists(&staging));
             let new_digest = &op.node.tree_digest;
-            let published = || digest_of(&final_path, &op.node).as_deref() == Some(new_digest.as_str());
+            let published =
+                || digest_of(&final_path, &op.node).as_deref() == Some(new_digest.as_str());
             let is_prior = || {
                 op.prior.as_ref().is_some_and(|p| {
                     digest_of(&final_path, p).as_deref() == Some(p.tree_digest.as_str())

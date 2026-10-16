@@ -100,11 +100,21 @@ impl GitNodes {
             .program
             .clone()
             .or_else(|| git_program(&layout))
-            .ok_or_else(|| failed("Git is not available; complete setup first"))?;
+            .ok_or(NodeAppError::GitUnavailable)?;
         let mut spec = command(&layout, Tool::Git, program)
-            .args(["-c", "core.longpaths=true", "-c", "advice.detachedHead=false"])
+            .args([
+                "-c",
+                "core.longpaths=true",
+                "-c",
+                "advice.detachedHead=false",
+            ])
             .args(["-c", "core.symlinks=false", "-c", "submodule.recurse=false"])
-            .args(["-c", "protocol.allow=never", "-c", "protocol.https.allow=always"])
+            .args([
+                "-c",
+                "protocol.allow=never",
+                "-c",
+                "protocol.https.allow=always",
+            ])
             .args(["-c", "credential.helper=", "-c", "core.fsmonitor=false"])
             .arg("-c")
             .arg(format!("core.hooksPath={}", hooks.display()));
@@ -117,6 +127,7 @@ impl GitNodes {
         Ok(spec.args(args.iter().copied()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run(
         &self,
         root: &Path,
@@ -148,6 +159,7 @@ impl GitNodes {
                     Err(failed(format!("Git failed: {}", tail[start..].join(" "))))
                 }
             }
+            Err(RunError::Spawn(std::io::ErrorKind::NotFound)) => Err(NodeAppError::GitUnavailable),
             Err(_) => Err(failed("Git could not be run")),
         }
     }
@@ -210,7 +222,8 @@ impl GitNodes {
                         commit = Some(sha.to_owned());
                     }
                 }
-                let commit = commit.ok_or_else(|| failed("The repository has no default branch"))?;
+                let commit =
+                    commit.ok_or_else(|| failed("The repository has no default branch"))?;
                 Ok(Resolved {
                     commit,
                     branch,
@@ -291,7 +304,13 @@ impl GitNodes {
             root,
             hooks,
             None,
-            &["clone", "--no-checkout", "--progress", &remote.clone_url, &staging_text],
+            &[
+                "clone",
+                "--no-checkout",
+                "--progress",
+                &remote.clone_url,
+                &staging_text,
+            ],
             &ctx.cancel,
             Some(ctx),
             timeout,
@@ -330,7 +349,11 @@ impl GitNodes {
                         root,
                         hooks,
                         Some(staging),
-                        &["branch", &format!("--set-upstream-to=origin/{branch}"), branch],
+                        &[
+                            "branch",
+                            &format!("--set-upstream-to=origin/{branch}"),
+                            branch,
+                        ],
                         &ctx.cancel,
                         None,
                         timeout,
@@ -356,9 +379,19 @@ impl GitNodes {
         Ok(())
     }
 
-    pub async fn head(&self, root: &Path, hooks: &Path, dir: &Path) -> Result<String, NodeAppError> {
+    pub async fn head(
+        &self,
+        root: &Path,
+        hooks: &Path,
+        dir: &Path,
+    ) -> Result<String, NodeAppError> {
         let out = self
-            .read(root, hooks, dir, &["rev-parse", "--verify", "HEAD^{commit}"])
+            .read(
+                root,
+                hooks,
+                dir,
+                &["rev-parse", "--verify", "HEAD^{commit}"],
+            )
             .await?;
         let head = out.trim();
         if is_object_id(head) {
@@ -385,7 +418,12 @@ impl GitNodes {
             .ok()
     }
 
-    pub async fn origin(&self, root: &Path, hooks: &Path, dir: &Path) -> Result<Remote, NodeAppError> {
+    pub async fn origin(
+        &self,
+        root: &Path,
+        hooks: &Path,
+        dir: &Path,
+    ) -> Result<Remote, NodeAppError> {
         let out = self
             .read(root, hooks, dir, &["config", "--get", "remote.origin.url"])
             .await?;
@@ -423,7 +461,12 @@ impl GitNodes {
                 root,
                 hooks,
                 dir,
-                &["rev-parse", "--verify", "--symbolic-full-name", "@{upstream}"],
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--symbolic-full-name",
+                    "@{upstream}",
+                ],
             )
             .await;
         let has_upstream = upstream.is_ok();
@@ -441,11 +484,21 @@ impl GitNodes {
             (0, 0)
         };
         let status = self
-            .read(root, hooks, dir, &["status", "--short", "--untracked-files=all"])
+            .read(
+                root,
+                hooks,
+                dir,
+                &["status", "--short", "--untracked-files=all"],
+            )
             .await
             .unwrap_or_default();
         let branch = self
-            .read(root, hooks, dir, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .read(
+                root,
+                hooks,
+                dir,
+                &["symbolic-ref", "--quiet", "--short", "HEAD"],
+            )
             .await
             .ok()
             .map(|s| s.trim().to_owned())
@@ -534,7 +587,12 @@ impl GitNodes {
                     return Err(NodeAppError::GitRefused);
                 }
                 let out = self
-                    .read(root, hooks, dir, &["rev-parse", "--verify", "@{upstream}^{commit}"])
+                    .read(
+                        root,
+                        hooks,
+                        dir,
+                        &["rev-parse", "--verify", "@{upstream}^{commit}"],
+                    )
                     .await?;
                 out.trim().to_owned()
             }
@@ -553,7 +611,12 @@ impl GitNodes {
                     root,
                     hooks,
                     dir,
-                    &["merge-base", "--is-ancestor", &after.revision.commit, &target],
+                    &[
+                        "merge-base",
+                        "--is-ancestor",
+                        &after.revision.commit,
+                        &target,
+                    ],
                 )
                 .await
                 .is_ok();
@@ -575,7 +638,12 @@ impl GitNodes {
     ) -> Result<String, NodeAppError> {
         if is_object_id(reference) {
             let out = self
-                .read(root, hooks, dir, &["rev-parse", "--verify", &format!("{reference}^{{commit}}")])
+                .read(
+                    root,
+                    hooks,
+                    dir,
+                    &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
+                )
                 .await
                 .map_err(|_| failed("The commit was not found after fetching"))?;
             return Ok(out.trim().to_owned());
@@ -588,7 +656,12 @@ impl GitNodes {
                 root,
                 hooks,
                 dir,
-                &["rev-parse", "--verify", "--quiet", &format!("refs/tags/{reference}^{{commit}}")],
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/tags/{reference}^{{commit}}"),
+                ],
             )
             .await
             .ok();

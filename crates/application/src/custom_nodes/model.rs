@@ -43,6 +43,8 @@ pub enum NodeAppError {
     UnsafeSource,
     #[error("node repository has local changes, conflicts, divergence or no selected upstream")]
     GitRefused,
+    #[error("Git is unavailable")]
+    GitUnavailable,
     #[error("registry request failed with HTTP {0}")]
     RegistryStatus(u16),
     #[error("registry is unavailable")]
@@ -205,6 +207,17 @@ pub struct NodeOperation {
     pub staging: String,
     pub backup: String,
     pub dependency_requirements: Vec<String>,
+}
+impl NodeOperation {
+    pub fn blocks_start(&self) -> bool {
+        self.phase.blocks_start()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeGitStatus {
+    pub revision: domain::comfy_runtime::Revision,
+    pub state: domain::comfy_runtime::RepoState,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanReview {

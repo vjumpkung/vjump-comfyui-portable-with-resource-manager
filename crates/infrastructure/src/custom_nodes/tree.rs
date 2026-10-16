@@ -121,7 +121,7 @@ pub fn tree_digest(root: &Path) -> Result<String, NodeAppError> {
         hasher.update(relative.as_bytes());
         hasher.update([0]);
         hasher.update(file.as_bytes());
-        hasher.update([b'\n']);
+        hasher.update(*b"\n");
     }
     Ok(format!(
         "tree:{}",

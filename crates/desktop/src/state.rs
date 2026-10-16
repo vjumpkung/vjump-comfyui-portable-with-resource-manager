@@ -10,13 +10,13 @@ use std::{
 };
 
 use application::{
-    custom_nodes::{NodeAppError, NodeContext, NodeService, PrepareRequest},
     comfy_runtime::{
         ComfyRepository, ExtraModelPaths, GetComfyDiagnostics, GetComfyStatus, GetLaunchOptions,
         LaunchPreflight, ListComfyVersions, PortProbe, ReadExtraModelPaths, RestartComfy,
         RuntimeDeps, RuntimeEvents, RuntimeStore, RuntimeSupervisor, SetLaunchOptions, StartComfy,
         StopComfy, UpdateComfy,
     },
+    custom_nodes::{NodeAppError, NodeContext, NodeService, PrepareRequest},
     environment::{
         ActiveRuns, ApplyPackageChange, CancelSetup, DeleteEnvironment, DetectHardware,
         EnvironmentDeps, ExecuteSetup, GetEnvironmentInfo, GetSetupStatus, ListPackages,
@@ -356,7 +356,6 @@ impl LibraryServices {
     }
 }
 
-
 /// A running node operation registered for cancellation. Dropping it unregisters the key.
 pub struct ActiveOperation<'a> {
     services: &'a NodeServices,
@@ -539,6 +538,7 @@ impl Services {
         self.library.start();
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         deps: EnvironmentDeps,
         settings: Arc<dyn SettingsRepository>,
