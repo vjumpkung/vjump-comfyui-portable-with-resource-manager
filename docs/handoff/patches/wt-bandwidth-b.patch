@@ -1,0 +1,1670 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index a9d1138..ec5a319 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2187,6 +2187,7 @@ version = "0.1.0"
+ dependencies = [
+  "application",
+  "async-trait",
++ "base64 0.22.1",
+  "dirs",
+  "domain",
+  "file-rotate",
+@@ -2200,6 +2201,7 @@ dependencies = [
+  "reqwest",
+  "rusqlite",
+  "rusqlite_migration",
++ "rustls-native-certs",
+  "scraper",
+  "semver",
+  "serde",
+@@ -2212,6 +2214,7 @@ dependencies = [
+  "thiserror 2.0.21",
+  "time",
+  "tokio",
++ "tokio-rustls",
+  "toml 1.1.8+spec-1.1.0",
+  "tracing",
+  "tracing-appender",
+diff --git a/crates/desktop/src/ipc/commands.rs b/crates/desktop/src/ipc/commands.rs
+index b155ed1..296f4ce 100644
+--- a/crates/desktop/src/ipc/commands.rs
++++ b/crates/desktop/src/ipc/commands.rs
+@@ -55,6 +55,12 @@ pub async fn settings_set(
+         .stack
+         .supervisor
+         .set_concurrency(settings.download_concurrency.get() as usize);
++    state
++        .services()?
++        .downloads
++        .stack
++        .bandwidth
++        .set_limit(settings.bandwidth_cap_kib_s);
+     Ok(SettingsDto::from(&settings))
+ }
+ 
+diff --git a/crates/desktop/src/ipc/download_dto.rs b/crates/desktop/src/ipc/download_dto.rs
+index 1e3a663..1a87132 100644
+--- a/crates/desktop/src/ipc/download_dto.rs
++++ b/crates/desktop/src/ipc/download_dto.rs
+@@ -302,6 +302,10 @@ pub fn describe(code: DownloadErrorCode) -> (&'static str, &'static str) {
+             "The server answered a resume request incorrectly.",
+         ),
+         E::ToolLaunch => ("tool_launch", "The Hugging Face tool could not be started."),
++        E::BandwidthProxyUnavailable => (
++            "bandwidth_proxy_unavailable",
++            "The Hugging Face bandwidth relay is unavailable. Check proxy settings and retry.",
++        ),
+         E::ToolRuntime => ("tool_runtime", "The Hugging Face tool reported an error."),
+         E::ProcessCleanupFailed => (
+             "process_cleanup_failed",
+diff --git a/crates/desktop/src/state.rs b/crates/desktop/src/state.rs
+index 5737abe..4afe6dc 100644
+--- a/crates/desktop/src/state.rs
++++ b/crates/desktop/src/state.rs
+@@ -10,13 +10,13 @@ use std::{
+ };
+ 
+ use application::{
+-    custom_nodes::{NodeAppError, NodeContext, NodeService, PrepareRequest},
+     comfy_runtime::{
+         ComfyRepository, ExtraModelPaths, GetComfyDiagnostics, GetComfyStatus, GetLaunchOptions,
+         LaunchPreflight, ListComfyVersions, PortProbe, ReadExtraModelPaths, RestartComfy,
+         RuntimeDeps, RuntimeEvents, RuntimeStore, RuntimeSupervisor, SetLaunchOptions, StartComfy,
+         StopComfy, UpdateComfy,
+     },
++    custom_nodes::{NodeAppError, NodeContext, NodeService, PrepareRequest},
+     environment::{
+         ActiveRuns, ApplyPackageChange, CancelSetup, DeleteEnvironment, DetectHardware,
+         EnvironmentDeps, ExecuteSetup, GetEnvironmentInfo, GetSetupStatus, ListPackages,
+@@ -356,7 +356,6 @@ impl LibraryServices {
+     }
+ }
+ 
+-
+ /// A running node operation registered for cancellation. Dropping it unregisters the key.
+ pub struct ActiveOperation<'a> {
+     services: &'a NodeServices,
+@@ -709,17 +708,18 @@ impl AppState {
+             extra_paths: Arc::new(YamlExtraModelPaths),
+             hub,
+         };
+-        let concurrency = match settings.load().await {
+-            Ok(saved) => saved.unwrap_or_default().download_concurrency.get() as usize,
+-            Err(_) => Settings::default().download_concurrency.get() as usize,
++        let saved = match settings.load().await {
++            Ok(saved) => saved.unwrap_or_default(),
++            Err(_) => Settings::default(),
+         };
+         let locks = path_locks();
+-        let downloads = DownloadStack::open(
++        let downloads = DownloadStack::open_with_bandwidth(
+             &resolved.root,
+             download_db.clone(),
+             credentials.clone(),
+-            concurrency,
++            saved.download_concurrency.get() as usize,
+             locks.clone(),
++            saved.bandwidth_cap_kib_s,
+         )
+         .map_err(|error| format!("downloads could not be opened: {error}"))?;
+         let library = LibraryStack::open(
+diff --git a/crates/domain/src/models/acquisition/mod.rs b/crates/domain/src/models/acquisition/mod.rs
+index 24f3677..234d971 100644
+--- a/crates/domain/src/models/acquisition/mod.rs
++++ b/crates/domain/src/models/acquisition/mod.rs
+@@ -231,6 +231,7 @@ pub enum DownloadErrorCode {
+     LengthMismatch,
+     InvalidRange,
+     ToolLaunch,
++    BandwidthProxyUnavailable,
+     ToolRuntime,
+     ProcessCleanupFailed,
+     NativeUnsupportedUseHf,
+diff --git a/crates/infrastructure/Cargo.toml b/crates/infrastructure/Cargo.toml
+index cd0261c..e823803 100644
+--- a/crates/infrastructure/Cargo.toml
++++ b/crates/infrastructure/Cargo.toml
+@@ -22,6 +22,9 @@ serde.workspace = true
+ serde_json.workspace = true
+ tempfile.workspace = true
+ reqwest.workspace = true
++tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
++rustls-native-certs = "=0.8.5"
++base64 = "=0.22.1"
+ sha2.workspace = true
+ zip.workspace = true
+ tar.workspace = true
+diff --git a/crates/infrastructure/src/models/acquisition/bandwidth.rs b/crates/infrastructure/src/models/acquisition/bandwidth.rs
+new file mode 100644
+index 0000000..e235852
+--- /dev/null
++++ b/crates/infrastructure/src/models/acquisition/bandwidth.rs
+@@ -0,0 +1,157 @@
++//! One live token bucket for native writes and opaque HF relay downloads.
++use application::shared::CancelToken;
++use std::{
++    collections::VecDeque,
++    num::NonZeroU32,
++    sync::{Arc, Mutex},
++    time::{Duration, Instant},
++};
++use tokio::sync::Notify;
++
++/// Every grant is bounded, including while unlimited.
++pub const MAX_GRANT: usize = 16 * 1024;
++const NANOS: u128 = 1_000_000_000;
++
++#[derive(Debug, thiserror::Error, PartialEq, Eq)]
++pub enum BandwidthError {
++    #[error("bandwidth wait cancelled")]
++    Cancelled,
++}
++
++struct Bucket {
++    rate: Option<u64>,
++    credit: u128,
++    at: Instant,
++    queue: VecDeque<Arc<()>>,
++}
++impl Bucket {
++    // Burst: at most 100 ms of traffic, capped at 16 KiB (at least one byte).
++    fn capacity(&self) -> u128 {
++        self.rate
++            .map_or(MAX_GRANT as u64, |r| (r / 10).clamp(1, MAX_GRANT as u64)) as u128
++            * NANOS
++    }
++    fn refill(&mut self) {
++        let now = Instant::now();
++        if let Some(rate) = self.rate {
++            self.credit = self
++                .credit
++                .saturating_add(
++                    now.duration_since(self.at)
++                        .as_nanos()
++                        .saturating_mul(rate as u128),
++                )
++                .min(self.capacity());
++        }
++        self.at = now;
++    }
++}
++
++pub struct BandwidthLimiter {
++    bucket: Mutex<Bucket>,
++    changed: Notify,
++}
++impl BandwidthLimiter {
++    pub fn new(limit_kib_s: Option<NonZeroU32>) -> Self {
++        let mut bucket = Bucket {
++            rate: limit_kib_s.map(|n| u64::from(n.get()) * 1024),
++            credit: 0,
++            at: Instant::now(),
++            queue: VecDeque::new(),
++        };
++        bucket.credit = bucket.capacity();
++        Self {
++            bucket: Mutex::new(bucket),
++            changed: Notify::new(),
++        }
++    }
++
++    pub fn set_limit(&self, limit_kib_s: Option<NonZeroU32>) {
++        let mut bucket = self.bucket.lock().expect("bandwidth bucket");
++        bucket.refill();
++        let was_unlimited = bucket.rate.is_none();
++        bucket.rate = limit_kib_s.map(|n| u64::from(n.get()) * 1024);
++        // Enabling a cap does not bank unlimited time or mint another burst.
++        bucket.credit = if was_unlimited {
++            0
++        } else {
++            bucket.credit.min(bucket.capacity())
++        };
++        drop(bucket);
++        self.changed.notify_waiters();
++    }
++
++    pub async fn acquire(
++        &self,
++        max_bytes: usize,
++        cancel: &CancelToken,
++    ) -> Result<usize, BandwidthError> {
++        if cancel.is_cancelled() {
++            return Err(BandwidthError::Cancelled);
++        }
++        if max_bytes == 0 {
++            return Ok(0);
++        }
++        let ticket = Arc::new(());
++        self.bucket
++            .lock()
++            .expect("bandwidth bucket")
++            .queue
++            .push_back(ticket.clone());
++        let _waiting = Waiting {
++            limiter: self,
++            ticket: ticket.clone(),
++        };
++        loop {
++            if cancel.is_cancelled() {
++                return Err(BandwidthError::Cancelled);
++            }
++            {
++                let mut bucket = self.bucket.lock().expect("bandwidth bucket");
++                bucket.refill();
++                if bucket
++                    .queue
++                    .front()
++                    .is_some_and(|head| Arc::ptr_eq(head, &ticket))
++                {
++                    let available = if bucket.rate.is_none() {
++                        MAX_GRANT
++                    } else {
++                        (bucket.credit / NANOS) as usize
++                    };
++                    let grant = max_bytes.min(MAX_GRANT).min(available);
++                    if grant > 0 {
++                        if bucket.rate.is_some() {
++                            bucket.credit -= grant as u128 * NANOS;
++                        }
++                        return Ok(grant);
++                    }
++                }
++            }
++            tokio::select! {
++                _ = self.changed.notified() => {},
++                _ = tokio::time::sleep(Duration::from_millis(10)) => {},
++            }
++        }
++    }
++}
++
++// Also removes a waiter when its future is dropped by select!/task cancellation.
++struct Waiting<'a> {
++    limiter: &'a BandwidthLimiter,
++    ticket: Arc<()>,
++}
++impl Drop for Waiting<'_> {
++    fn drop(&mut self) {
++        self.limiter
++            .bucket
++            .lock()
++            .expect("bandwidth bucket")
++            .queue
++            .retain(|ticket| !Arc::ptr_eq(ticket, &self.ticket));
++        self.limiter.changed.notify_waiters();
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/infrastructure/src/models/acquisition/bandwidth/tests.rs b/crates/infrastructure/src/models/acquisition/bandwidth/tests.rs
+new file mode 100644
+index 0000000..ae646d6
+--- /dev/null
++++ b/crates/infrastructure/src/models/acquisition/bandwidth/tests.rs
+@@ -0,0 +1,88 @@
++use super::*;
++
++#[tokio::test]
++async fn small_limits_split_large_chunks_without_deadlock() {
++    let limiter = BandwidthLimiter::new(NonZeroU32::new(1));
++    let cancel = CancelToken::new();
++    let started = Instant::now();
++    let mut left = 512;
++    tokio::time::timeout(Duration::from_secs(3), async {
++        while left > 0 {
++            let grant = limiter.acquire(left, &cancel).await.unwrap();
++            assert!((1..=102).contains(&grant));
++            left -= grant;
++        }
++    })
++    .await
++    .unwrap();
++    assert!(512.0 <= 1024.0 * started.elapsed().as_secs_f64() + 102.0);
++    let maximum = BandwidthLimiter::new(NonZeroU32::new(u32::MAX));
++    assert_eq!(
++        maximum.acquire(usize::MAX, &cancel).await.unwrap(),
++        MAX_GRANT
++    );
++}
++
++#[tokio::test]
++async fn queued_waiters_cancel_without_leaking_capacity() {
++    let limiter = Arc::new(BandwidthLimiter::new(NonZeroU32::new(1)));
++    let cancel = CancelToken::new();
++    assert_eq!(limiter.acquire(1024, &cancel).await.unwrap(), 102);
++    let first_cancel = CancelToken::new();
++    let first = {
++        let limiter = limiter.clone();
++        let cancel = first_cancel.clone();
++        tokio::spawn(async move { limiter.acquire(1024, &cancel).await })
++    };
++    // Queue the head before its successor, then drop another queued future.
++    tokio::task::yield_now().await;
++    let dropped = {
++        let limiter = limiter.clone();
++        tokio::spawn(async move { limiter.acquire(1024, &CancelToken::new()).await })
++    };
++    tokio::task::yield_now().await;
++    dropped.abort();
++    let _ = dropped.await;
++    let second = {
++        let limiter = limiter.clone();
++        tokio::spawn(async move { limiter.acquire(1024, &CancelToken::new()).await })
++    };
++    first_cancel.cancel();
++    assert_eq!(first.await.unwrap(), Err(BandwidthError::Cancelled));
++    let grant = tokio::time::timeout(Duration::from_secs(1), second)
++        .await
++        .unwrap()
++        .unwrap()
++        .unwrap();
++    assert!(grant > 0);
++    assert!(limiter.bucket.lock().unwrap().queue.is_empty());
++    // Cancelling a waiter did not deduct its requested 1024 bytes.
++    assert!(limiter.acquire(1, &cancel).await.unwrap() > 0);
++}
++
++#[tokio::test]
++async fn fifo_grants_and_live_limit_changes_wake_waiters() {
++    let limiter = Arc::new(BandwidthLimiter::new(NonZeroU32::new(1)));
++    limiter.acquire(1024, &CancelToken::new()).await.unwrap();
++    let mut tasks = Vec::new();
++    for index in 0..3 {
++        let limiter = limiter.clone();
++        tasks.push(tokio::spawn(async move {
++            let grant = limiter.acquire(1, &CancelToken::new()).await.unwrap();
++            (index, grant)
++        }));
++        tokio::task::yield_now().await;
++    }
++    limiter.set_limit(None);
++    for (index, task) in tasks.into_iter().enumerate() {
++        assert_eq!(task.await.unwrap(), (index, 1));
++    }
++    limiter.set_limit(NonZeroU32::new(1));
++    assert!(
++        limiter
++            .acquire(MAX_GRANT, &CancelToken::new())
++            .await
++            .unwrap()
++            <= 102
++    );
++}
+diff --git a/crates/infrastructure/src/models/acquisition/codec.rs b/crates/infrastructure/src/models/acquisition/codec.rs
+index 47b4b40..2541a96 100644
+--- a/crates/infrastructure/src/models/acquisition/codec.rs
++++ b/crates/infrastructure/src/models/acquisition/codec.rs
+@@ -28,7 +28,7 @@ string_enum!(
+ );
+ string_enum!(phase, FinalizePhase, [Verified, Published, Cataloged]);
+ string_enum!(
+-    error,
++    legacy_error,
+     DownloadErrorCode,
+     [
+         InvalidSource,
+@@ -71,6 +71,21 @@ string_enum!(
+         SubscriptionGap
+     ]
+ );
++fn error(value: &str) -> Result<DownloadErrorCode> {
++    if value == "bandwidth_proxy_unavailable" {
++        Ok(DownloadErrorCode::BandwidthProxyUnavailable)
++    } else {
++        legacy_error(value)
++    }
++}
++
++fn error_value(code: DownloadErrorCode) -> String {
++    if code == DownloadErrorCode::BandwidthProxyUnavailable {
++        "bandwidth_proxy_unavailable".to_owned()
++    } else {
++        format!("{code:?}")
++    }
++}
+ fn bad() -> DownloadError {
+     DownloadErrorCode::Storage.into()
+ }
+@@ -212,7 +227,7 @@ pub fn encode(j: &DownloadJob) -> Result<String> {
+         }
+     };
+     let publication=j.publication.as_ref().map(|p|json!({"phase":format!("{:?}",p.phase),"staged_key":p.staged_key,"staged_identity":identity_value(&p.staged_identity),"digest":p.digest.as_str(),"external_verified":p.external_verified,"backup_name":p.backup_name.as_str(),"published_identity":p.published_identity.as_ref().map(identity_value)}));
+-    serde_json::to_string(&json!({"id":j.id.as_str(),"source":source_value(&j.source),"identity":j.identity.0,"destination":destination_value(&j.destination),"state":format!("{:?}",j.state),"requested_engine":format!("{:?}",j.requested_engine),"effective_engine":format!("{:?}",j.effective_engine),"generation":j.generation,"size":size_value(j.size),"expected_sha256":j.expected_sha256.as_ref().map(Sha256::as_str),"bytes_done":j.bytes_done,"validator":j.validator.as_ref().map(|ResumeValidator::StrongEtag(s)|s),"retry_count":j.retry_count,"retry_at":j.retry_at,"stop_intent":j.stop_intent.map(|s|format!("{s:?}")),"error":j.error.map(|e|format!("{e:?}")),"conflict":conflict,"decision_id":j.decision_id,"observed":j.observed.as_ref().map(identity_value),"publication":publication,"created_at":j.created_at,"updated_at":j.updated_at})).map_err(|_|bad())
++    serde_json::to_string(&json!({"id":j.id.as_str(),"source":source_value(&j.source),"identity":j.identity.0,"destination":destination_value(&j.destination),"state":format!("{:?}",j.state),"requested_engine":format!("{:?}",j.requested_engine),"effective_engine":format!("{:?}",j.effective_engine),"generation":j.generation,"size":size_value(j.size),"expected_sha256":j.expected_sha256.as_ref().map(Sha256::as_str),"bytes_done":j.bytes_done,"validator":j.validator.as_ref().map(|ResumeValidator::StrongEtag(s)|s),"retry_count":j.retry_count,"retry_at":j.retry_at,"stop_intent":j.stop_intent.map(|s|format!("{s:?}")),"error":j.error.map(error_value),"conflict":conflict,"decision_id":j.decision_id,"observed":j.observed.as_ref().map(identity_value),"publication":publication,"created_at":j.created_at,"updated_at":j.updated_at})).map_err(|_|bad())
+ }
+ pub fn decode(raw: &str) -> Result<DownloadJob> {
+     let v: Value = serde_json::from_str(raw).map_err(|_| bad())?;
+diff --git a/crates/infrastructure/src/models/acquisition/hf_engine.rs b/crates/infrastructure/src/models/acquisition/hf_engine.rs
+index b0cdce2..315fd3f 100644
+--- a/crates/infrastructure/src/models/acquisition/hf_engine.rs
++++ b/crates/infrastructure/src/models/acquisition/hf_engine.rs
+@@ -1,5 +1,9 @@
+ //! The only adapter allowed to construct an HF child containing HF_TOKEN.
+-use super::finalize::StagingArea;
++use super::{
++    bandwidth::BandwidthLimiter,
++    finalize::StagingArea,
++    hf_proxy::{HfProxyConfig, HfRelay, ProxyUnavailable},
++};
+ use crate::{
+     settings::secrets::CredentialVault,
+     shared::process::{self, CommandSpec, DiscardSink, RunError, RunLimits},
+@@ -86,6 +90,8 @@ impl HfDownloadCommand {
+     }
+ }
+ pub struct HfDownloader {
++    pub bandwidth: Arc<BandwidthLimiter>,
++    pub proxy: std::result::Result<HfProxyConfig, ProxyUnavailable>,
+     pub root: PathBuf,
+     pub staging: Arc<StagingArea>,
+     pub vault: Arc<dyn CredentialVault>,
+@@ -108,13 +114,23 @@ impl Downloader for HfDownloader {
+         else {
+             return Err(DownloadErrorCode::InvalidSource.into());
+         };
+-        let command = HfDownloadCommand::for_job(
++        let relay = HfRelay::start(
++            self.bandwidth.clone(),
++            self.proxy
++                .clone()
++                .map_err(|_| DownloadErrorCode::BandwidthProxyUnavailable)?,
++        )
++        .await
++        .map_err(|_| DownloadErrorCode::BandwidthProxyUnavailable)?;
++        let result = async {
++        let mut command = HfDownloadCommand::for_job(
+             &self.root,
+             job,
+             directory.path.clone(),
+             self.vault.as_ref(),
+         )
+         .await?;
++        relay.configure_child(&mut command.spec.env);
+         let limits = RunLimits::default();
+         let line_sink = DiscardSink;
+         let future = process::run(&command.spec, &line_sink, &cancel, &limits);
+@@ -137,6 +153,21 @@ impl Downloader for HfDownloader {
+                 }
+             }
+         }
++        Ok(())
++        }.await;
++        let proxy_failed = relay.failed();
++        relay.shutdown().await;
++        if proxy_failed
++            && result.as_ref().is_err_and(|error: &DownloadError| {
++                !matches!(
++                    error.0,
++                    DownloadErrorCode::Cancelled | DownloadErrorCode::ProcessCleanupFailed
++                )
++            })
++        {
++            return Err(DownloadErrorCode::BandwidthProxyUnavailable.into());
++        }
++        result?;
+         let key = format!("hf/{}/{}", job.id.as_str(), path.as_string());
+         let (_, _, file) = self
+             .staging
+diff --git a/crates/infrastructure/src/models/acquisition/hf_proxy.rs b/crates/infrastructure/src/models/acquisition/hf_proxy.rs
+new file mode 100644
+index 0000000..79a26fe
+--- /dev/null
++++ b/crates/infrastructure/src/models/acquisition/hf_proxy.rs
+@@ -0,0 +1,513 @@
++//! Attempt-scoped CONNECT relay. Only the upstream TLS envelope is decrypted;
++//! destination TLS and credentials remain opaque and are never logged.
++use super::{bandwidth::BandwidthLimiter, native_engine::cancelled};
++use application::shared::CancelToken;
++use base64::{Engine, engine::general_purpose::STANDARD};
++use percent_encoding::percent_decode_str;
++use std::{
++    ffi::OsString,
++    io,
++    net::{IpAddr, SocketAddr},
++    sync::{
++        Arc,
++        atomic::{AtomicBool, Ordering},
++    },
++    time::Duration,
++};
++use tokio::{
++    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
++    net::{TcpListener, TcpStream, lookup_host},
++    sync::oneshot,
++    task::{JoinHandle, JoinSet},
++    time::timeout,
++};
++use tokio_rustls::{
++    TlsConnector,
++    rustls::{self, pki_types::ServerName},
++};
++use url::Url;
++
++const MAX_HEADER: usize = 16 * 1024;
++const MAX_CONNECTIONS: usize = 64;
++const HANDSHAKE: Duration = Duration::from_secs(15);
++const IDLE: Duration = Duration::from_secs(120);
++
++#[derive(Clone, Copy, Debug, thiserror::Error)]
++#[error("bandwidth_proxy_unavailable")]
++pub struct ProxyUnavailable;
++
++#[derive(Clone)]
++struct Upstream {
++    host: String,
++    port: u16,
++    tls: Option<TlsConnector>,
++    authorization: Option<String>,
++}
++
++/// Captured before child overrides; unsupported configuration is retained as an
++/// error for HF attempts, without preventing native downloads from starting.
++#[derive(Clone, Default)]
++pub struct HfProxyConfig {
++    upstream: Option<Upstream>,
++    bypass: Vec<String>,
++    #[cfg(test)]
++    resolved: Option<Vec<SocketAddr>>,
++}
++impl HfProxyConfig {
++    pub fn capture() -> Result<Self, ProxyUnavailable> {
++        Self::from_environment(std::env::vars_os())
++    }
++
++    fn from_environment(
++        env: impl IntoIterator<Item = (OsString, OsString)>,
++    ) -> Result<Self, ProxyUnavailable> {
++        let values: Vec<_> = env.into_iter().collect();
++        let get = |name: &str| -> Result<Option<String>, ProxyUnavailable> {
++            values
++                .iter()
++                .find(|(k, _)| k == name)
++                .map(|(_, v)| v.to_str().map(str::to_owned).ok_or(ProxyUnavailable))
++                .transpose()
++                .map(|v| v.filter(|s| !s.is_empty()))
++        };
++        let proxy = get("https_proxy")?
++            .or(get("HTTPS_PROXY")?)
++            .or(get("all_proxy")?)
++            .or(get("ALL_PROXY")?);
++        let bypass = get("no_proxy")?.or(get("NO_PROXY")?).unwrap_or_default();
++        let mut config = Self::default();
++        for entry in bypass.split(',').map(str::trim).filter(|s| !s.is_empty()) {
++            if entry != "*"
++                && (!entry.is_ascii()
++                    || entry.contains(['/', '@', '?', '#'])
++                    || entry.chars().any(char::is_whitespace))
++            {
++                return Err(ProxyUnavailable);
++            }
++            config.bypass.push(entry.to_ascii_lowercase());
++        }
++        if let Some(proxy) = proxy {
++            let url = Url::parse(&proxy).map_err(|_| ProxyUnavailable)?;
++            if !matches!(url.scheme(), "http" | "https")
++                || url.host_str().is_none()
++                || !matches!(url.path(), "" | "/")
++                || url.query().is_some()
++                || url.fragment().is_some()
++            {
++                return Err(ProxyUnavailable);
++            }
++            let authorization = if !url.username().is_empty() || url.password().is_some() {
++                let user = percent_decode_str(url.username())
++                    .decode_utf8()
++                    .map_err(|_| ProxyUnavailable)?;
++                let password = percent_decode_str(url.password().unwrap_or(""))
++                    .decode_utf8()
++                    .map_err(|_| ProxyUnavailable)?;
++                Some(format!(
++                    "Basic {}",
++                    STANDARD.encode(format!("{user}:{password}"))
++                ))
++            } else {
++                None
++            };
++            let tls = if url.scheme() == "https" {
++                let mut roots = rustls::RootCertStore::empty();
++                let loaded = rustls_native_certs::load_native_certs();
++                roots.add_parsable_certificates(loaded.certs);
++                if roots.is_empty() {
++                    return Err(ProxyUnavailable);
++                }
++                let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
++                let client = rustls::ClientConfig::builder_with_provider(provider)
++                    .with_safe_default_protocol_versions()
++                    .map_err(|_| ProxyUnavailable)?
++                    .with_root_certificates(roots)
++                    .with_no_client_auth();
++                Some(TlsConnector::from(Arc::new(client)))
++            } else {
++                None
++            };
++            config.upstream = Some(Upstream {
++                host: url
++                    .host_str()
++                    .ok_or(ProxyUnavailable)?
++                    .trim_matches(['[', ']'])
++                    .to_owned(),
++                port: url.port_or_known_default().ok_or(ProxyUnavailable)?,
++                tls,
++                authorization,
++            });
++        }
++        Ok(config)
++    }
++
++    fn bypasses(&self, host: &str) -> bool {
++        self.bypass.iter().any(|entry| {
++            if entry == "*" {
++                return true;
++            }
++            let (domain, port) = entry
++                .split_once(':')
++                .map_or((entry.as_str(), None), |(d, p)| (d, Some(p)));
++            if port.is_some_and(|p| p != "443") {
++                return false;
++            }
++            let domain = domain.trim_start_matches('.');
++            host == domain
++                || host
++                    .strip_suffix(domain)
++                    .is_some_and(|prefix| prefix.ends_with('.'))
++        })
++    }
++}
++
++pub struct HfRelay {
++    address: SocketAddr,
++    stop: Option<oneshot::Sender<()>>,
++    task: Option<JoinHandle<()>>,
++    failed: Arc<AtomicBool>,
++}
++impl HfRelay {
++    pub async fn start(
++        limiter: Arc<BandwidthLimiter>,
++        config: HfProxyConfig,
++    ) -> Result<Self, ProxyUnavailable> {
++        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
++            .await
++            .map_err(|_| ProxyUnavailable)?;
++        let address = listener.local_addr().map_err(|_| ProxyUnavailable)?;
++        let (stop, mut stopped) = oneshot::channel();
++        let failed = Arc::new(AtomicBool::new(false));
++        let failures = failed.clone();
++        let config = Arc::new(config);
++        let task = tokio::spawn(async move {
++            let mut connections = JoinSet::new();
++            loop {
++                tokio::select! {
++                    biased;
++                    _ = &mut stopped => break,
++                    _ = connections.join_next(), if !connections.is_empty() => {},
++                    accepted = listener.accept() => {
++                        let Ok((child, _)) = accepted else { failures.store(true, Ordering::SeqCst); break; };
++                        if connections.len() >= MAX_CONNECTIONS { drop(child); continue; }
++                        let limiter = limiter.clone();
++                        let config = config.clone();
++                        let failures = failures.clone();
++                        connections.spawn(async move {
++                            if serve(child, limiter, &config).await.is_err() {
++                                failures.store(true, Ordering::SeqCst);
++                            }
++                        });
++                    }
++                }
++            }
++            connections.abort_all();
++            while connections.join_next().await.is_some() {}
++        });
++        Ok(Self {
++            address,
++            stop: Some(stop),
++            task: Some(task),
++            failed,
++        })
++    }
++
++    pub fn configure_child(&self, env: &mut Vec<(OsString, OsString)>) {
++        // process::run uses env_clear. Remove all proxy spellings defensively,
++        // then provide exactly these values; no bypass reaches Python or Xet.
++        env.retain(|(key, _)| {
++            !matches!(
++                key.to_string_lossy().to_ascii_uppercase().as_str(),
++                "HTTP_PROXY"
++                    | "HTTPS_PROXY"
++                    | "ALL_PROXY"
++                    | "NO_PROXY"
++                    | "FTP_PROXY"
++                    | "RSYNC_PROXY"
++            )
++        });
++        let proxy = format!("http://{}", self.address);
++        for key in [
++            "HTTP_PROXY",
++            "HTTPS_PROXY",
++            "http_proxy",
++            "https_proxy",
++            "ALL_PROXY",
++            "all_proxy",
++        ] {
++            env.push((key.into(), proxy.clone().into()));
++        }
++        for key in ["NO_PROXY", "no_proxy"] {
++            env.push((key.into(), "".into()));
++        }
++    }
++
++    pub fn failed(&self) -> bool {
++        self.failed.load(Ordering::SeqCst)
++    }
++
++    pub async fn shutdown(mut self) {
++        if let Some(stop) = self.stop.take() {
++            let _ = stop.send(());
++        }
++        if let Some(task) = self.task.take() {
++            let _ = task.await;
++        }
++    }
++}
++impl Drop for HfRelay {
++    fn drop(&mut self) {
++        if let Some(stop) = self.stop.take() {
++            let _ = stop.send(());
++        }
++        if let Some(task) = self.task.take() {
++            task.abort();
++        }
++    }
++}
++
++fn host_allowed(host: &str) -> bool {
++    host == "huggingface.co"
++        || host.ends_with(".huggingface.co")
++        || host == "hf.co"
++        || host.ends_with(".hf.co")
++}
++
++fn authority(request: &[u8]) -> Result<String, ProxyUnavailable> {
++    let text = std::str::from_utf8(request).map_err(|_| ProxyUnavailable)?;
++    let line = text.split("\r\n").next().ok_or(ProxyUnavailable)?;
++    let parts: Vec<_> = line.split(' ').collect();
++    if parts.len() != 3 || parts[0] != "CONNECT" || !matches!(parts[2], "HTTP/1.1" | "HTTP/1.0") {
++        return Err(ProxyUnavailable);
++    }
++    let host = parts[1]
++        .strip_suffix(":443")
++        .ok_or(ProxyUnavailable)?
++        .to_ascii_lowercase();
++    if host.len() > 253
++        || host.parse::<IpAddr>().is_ok()
++        || !host_allowed(&host)
++        || host.split('.').any(|label| {
++            label.is_empty()
++                || label.len() > 63
++                || label.starts_with('-')
++                || label.ends_with('-')
++                || !label
++                    .bytes()
++                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
++        })
++    {
++        return Err(ProxyUnavailable);
++    }
++    // Reject malformed headers, folding, and control characters. Never log them.
++    for line in text
++        .strip_suffix("\r\n\r\n")
++        .ok_or(ProxyUnavailable)?
++        .split("\r\n")
++        .skip(1)
++    {
++        let (key, value) = line.split_once(':').ok_or(ProxyUnavailable)?;
++        if key.is_empty()
++            || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
++            || value.bytes().any(|b| b.is_ascii_control() && b != b'\t')
++        {
++            return Err(ProxyUnavailable);
++        }
++    }
++    Ok(host)
++}
++
++fn public_address(ip: IpAddr) -> bool {
++    match ip {
++        IpAddr::V4(ip) => {
++            let [a, b, _, _] = ip.octets();
++            !ip.is_private()
++                && !ip.is_loopback()
++                && !ip.is_link_local()
++                && !ip.is_unspecified()
++                && !ip.is_multicast()
++                && !ip.is_broadcast()
++                && a != 0
++                && a < 240
++                && !(a == 100 && (64..=127).contains(&b))
++                && !(a == 198 && (18..=19).contains(&b))
++                && !ip.is_documentation()
++        }
++        IpAddr::V6(ip) => {
++            // Only global unicast; reject mapped/compatible IPv4, ULA/link local,
++            // documentation and transition prefixes that can hide private IPv4.
++            let segments = ip.segments();
++            segments[0] & 0xe000 == 0x2000
++                && segments[0] != 0x2002
++                && !(segments[0] == 0x2001 && (segments[1] < 0x200 || segments[1] == 0xdb8))
++        }
++    }
++}
++
++async fn read_header(
++    stream: &mut (impl AsyncRead + Unpin + ?Sized),
++) -> Result<Vec<u8>, ProxyUnavailable> {
++    let mut header = Vec::new();
++    // Single-byte reads avoid consuming destination TLS bytes after the header.
++    while header.len() < MAX_HEADER {
++        header.push(stream.read_u8().await.map_err(|_| ProxyUnavailable)?);
++        if header.ends_with(b"\r\n\r\n") {
++            return Ok(header);
++        }
++    }
++    Err(ProxyUnavailable)
++}
++
++trait Tunnel: AsyncRead + AsyncWrite + Unpin + Send {}
++impl<T: AsyncRead + AsyncWrite + Unpin + Send> Tunnel for T {}
++
++async fn connect(host: &str, config: &HfProxyConfig) -> Result<Box<dyn Tunnel>, ProxyUnavailable> {
++    #[cfg(test)]
++    let addresses = if let Some(addresses) = &config.resolved {
++        addresses.clone()
++    } else {
++        lookup_host((host, 443))
++            .await
++            .map_err(|_| ProxyUnavailable)?
++            .collect::<Vec<_>>()
++    };
++    #[cfg(not(test))]
++    let addresses: Vec<_> = lookup_host((host, 443))
++        .await
++        .map_err(|_| ProxyUnavailable)?
++        .collect();
++    if addresses.is_empty()
++        || addresses
++            .iter()
++            .any(|address| !public_address(address.ip()))
++    {
++        return Err(ProxyUnavailable);
++    }
++    if let Some(upstream) = config.upstream.as_ref().filter(|_| !config.bypasses(host)) {
++        let tcp = TcpStream::connect((upstream.host.as_str(), upstream.port))
++            .await
++            .map_err(|_| ProxyUnavailable)?;
++        let mut stream: Box<dyn Tunnel> = if let Some(tls) = &upstream.tls {
++            let name = ServerName::try_from(upstream.host.clone()).map_err(|_| ProxyUnavailable)?;
++            Box::new(tls.connect(name, tcp).await.map_err(|_| ProxyUnavailable)?)
++        } else {
++            Box::new(tcp)
++        };
++        let mut request = format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n");
++        if let Some(authorization) = &upstream.authorization {
++            request.push_str("Proxy-Authorization: ");
++            request.push_str(authorization);
++            request.push_str("\r\n");
++        }
++        request.push_str("\r\n");
++        stream
++            .write_all(request.as_bytes())
++            .await
++            .map_err(|_| ProxyUnavailable)?;
++        let header = read_header(&mut *stream).await?;
++        let status = std::str::from_utf8(&header)
++            .map_err(|_| ProxyUnavailable)?
++            .split("\r\n")
++            .next()
++            .ok_or(ProxyUnavailable)?;
++        let mut parts = status.split(' ');
++        if !matches!(parts.next(), Some("HTTP/1.0" | "HTTP/1.1")) || parts.next() != Some("200") {
++            return Err(ProxyUnavailable);
++        }
++        Ok(stream)
++    } else {
++        // Connect to the checked address, never resolve again (DNS rebinding).
++        for address in addresses {
++            if let Ok(stream) = TcpStream::connect(address).await {
++                return Ok(Box::new(stream));
++            }
++        }
++        Err(ProxyUnavailable)
++    }
++}
++
++async fn serve(
++    mut child: TcpStream,
++    limiter: Arc<BandwidthLimiter>,
++    config: &HfProxyConfig,
++) -> Result<(), ProxyUnavailable> {
++    let handshake = async {
++        let header = read_header(&mut child).await?;
++        let host = authority(&header)?;
++        connect(&host, config).await
++    };
++    let upstream = match timeout(HANDSHAKE, handshake).await {
++        Ok(Ok(stream)) => stream,
++        _ => {
++            let _ = timeout(
++                HANDSHAKE,
++                child.write_all(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n"),
++            )
++            .await;
++            return Err(ProxyUnavailable);
++        }
++    };
++    timeout(
++        HANDSHAKE,
++        child.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n"),
++    )
++    .await
++    .map_err(|_| ProxyUnavailable)?
++    .map_err(|_| ProxyUnavailable)?;
++    let (mut child_read, child_write) = child.into_split();
++    let (server_read, mut server_write) = tokio::io::split(upstream);
++    let cancel = CancelToken::new();
++    let upload = async {
++        let mut buffer = [0; 16 * 1024];
++        loop {
++            let n = timeout(IDLE, child_read.read(&mut buffer))
++                .await
++                .map_err(io::Error::other)??;
++            if n == 0 {
++                return server_write.shutdown().await;
++            }
++            timeout(IDLE, server_write.write_all(&buffer[..n]))
++                .await
++                .map_err(io::Error::other)??;
++        }
++    };
++    tokio::try_join!(
++        upload,
++        relay_download(server_read, child_write, &limiter, &cancel)
++    )
++    .map_err(|_| ProxyUnavailable)?;
++    Ok(())
++}
++
++pub(super) async fn relay_download(
++    mut server: impl AsyncRead + Unpin,
++    mut child: impl AsyncWrite + Unpin,
++    limiter: &BandwidthLimiter,
++    cancel: &CancelToken,
++) -> io::Result<()> {
++    let mut buffer = [0; 16 * 1024];
++    loop {
++        let n = tokio::select! {
++            _ = cancelled(cancel) => return Err(io::ErrorKind::Interrupted.into()),
++            n = timeout(IDLE, server.read(&mut buffer)) => n.map_err(io::Error::other)??,
++        };
++        if n == 0 {
++            return child.shutdown().await;
++        }
++        let mut offset = 0;
++        while offset < n {
++            let grant = limiter
++                .acquire(n - offset, cancel)
++                .await
++                .map_err(io::Error::other)?;
++            tokio::select! {
++                _ = cancelled(cancel) => return Err(io::ErrorKind::Interrupted.into()),
++                result = timeout(IDLE, child.write_all(&buffer[offset..offset + grant])) => result.map_err(io::Error::other)??,
++            }
++            offset += grant;
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/infrastructure/src/models/acquisition/hf_proxy/tests.rs b/crates/infrastructure/src/models/acquisition/hf_proxy/tests.rs
+new file mode 100644
+index 0000000..b5a7c13
+--- /dev/null
++++ b/crates/infrastructure/src/models/acquisition/hf_proxy/tests.rs
+@@ -0,0 +1,288 @@
++use super::*;
++use crate::shared::process::{self, CommandSpec, DiscardSink, RunLimits};
++
++fn environment(values: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
++    values
++        .iter()
++        .map(|(k, v)| ((*k).into(), (*v).into()))
++        .collect()
++}
++
++async fn mock_upstream() -> (TcpListener, HfProxyConfig) {
++    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++    let proxy = format!(
++        "http://user:secret-password@{}",
++        listener.local_addr().unwrap()
++    );
++    let mut config =
++        HfProxyConfig::from_environment(environment(&[("HTTPS_PROXY", &proxy)])).unwrap();
++    // Test-only DNS seam: no public network is required and production private
++    // address checks remain in force, even when chaining a proxy.
++    config.resolved = Some(vec!["1.1.1.1:443".parse().unwrap()]);
++    (listener, config)
++}
++
++async fn tunnel(relay: &HfRelay) -> TcpStream {
++    let mut child = TcpStream::connect(relay.address).await.unwrap();
++    child
++        .write_all(b"CONNECT huggingface.co:443 HTTP/1.1\r\nHost: huggingface.co:443\r\n\r\n")
++        .await
++        .unwrap();
++    assert!(
++        read_header(&mut child)
++            .await
++            .unwrap()
++            .starts_with(b"HTTP/1.1 200")
++    );
++    child
++}
++
++#[tokio::test]
++async fn relay_rejects_non_connect_and_invalid_authorities() {
++    let relay = HfRelay::start(
++        Arc::new(BandwidthLimiter::new(None)),
++        HfProxyConfig::default(),
++    )
++    .await
++    .unwrap();
++    for request in [
++        "GET https://huggingface.co/ HTTP/1.1\r\n\r\n",
++        "CONNECT huggingface.co:80 HTTP/1.1\r\n\r\n",
++        "CONNECT user@huggingface.co:443 HTTP/1.1\r\n\r\n",
++        "CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n",
++        "CONNECT [::1]:443 HTTP/1.1\r\n\r\n",
++        "CONNECT huggingface.co.:443 HTTP/1.1\r\n\r\n",
++        "CONNECT huggingface.co:443/path HTTP/1.1\r\n\r\n",
++        "CONNECT -bad.hf.co:443 HTTP/1.1\r\n\r\n",
++        "CONNECT huggingface.co:443 HTTP/1.1\r\n folded: value\r\n\r\n",
++    ] {
++        let mut child = TcpStream::connect(relay.address).await.unwrap();
++        child.write_all(request.as_bytes()).await.unwrap();
++        assert!(
++            read_header(&mut child)
++                .await
++                .unwrap()
++                .starts_with(b"HTTP/1.1 502")
++        );
++    }
++    let mut oversized = TcpStream::connect(relay.address).await.unwrap();
++    oversized.write_all(&vec![b'A'; MAX_HEADER]).await.unwrap();
++    assert!(
++        read_header(&mut oversized)
++            .await
++            .unwrap()
++            .starts_with(b"HTTP/1.1 502")
++    );
++    relay.shutdown().await;
++    for ip in [
++        "127.0.0.1",
++        "10.0.0.1",
++        "192.168.1.1",
++        "172.16.0.1",
++        "169.254.1.1",
++        "100.64.0.1",
++        "0.0.0.0",
++        "::1",
++        "::ffff:127.0.0.1",
++        "fc00::1",
++        "fe80::1",
++        "2001:db8::1",
++    ] {
++        assert!(!public_address(ip.parse().unwrap()), "{ip}");
++    }
++    let (listener, mut config) = mock_upstream().await;
++    config.resolved = Some(vec!["127.0.0.1:443".parse().unwrap()]);
++    assert!(connect("huggingface.co", &config).await.is_err());
++    assert!(
++        timeout(Duration::from_millis(30), listener.accept())
++            .await
++            .is_err()
++    );
++}
++
++#[test]
++fn relay_host_checks_use_dns_label_boundaries() {
++    for host in [
++        "huggingface.co",
++        "cdn.huggingface.co",
++        "hf.co",
++        "cas-bridge.xethub.hf.co",
++        "HF.CO",
++    ] {
++        assert!(
++            authority(format!("CONNECT {host}:443 HTTP/1.1\r\n\r\n").as_bytes()).is_ok(),
++            "{host}"
++        );
++    }
++    for host in [
++        "evilhuggingface.co",
++        "nothf.co",
++        "hf.co.evil.com",
++        "huggingface.co.evil",
++        "hf..co",
++        "evil/hf.co",
++        "user@hf.co",
++    ] {
++        assert!(
++            authority(format!("CONNECT {host}:443 HTTP/1.1\r\n\r\n").as_bytes()).is_err(),
++            "{host}"
++        );
++    }
++}
++
++#[tokio::test]
++async fn relay_chains_upstream_proxy_without_logging_credentials() {
++    let (listener, config) = mock_upstream().await;
++    let upstream = tokio::spawn(async move {
++        let (mut stream, _) = listener.accept().await.unwrap();
++        let header = read_header(&mut stream).await.unwrap();
++        // Assert without printing the credential-bearing request on failure.
++        assert!(header.starts_with(b"CONNECT huggingface.co:443 HTTP/1.1\r\n"));
++        assert!(
++            header
++                .windows(b"Proxy-Authorization: Basic ".len())
++                .any(|w| w == b"Proxy-Authorization: Basic ")
++        );
++        let expected = STANDARD.encode("user:secret-password");
++        assert!(
++            header
++                .windows(expected.len())
++                .any(|w| w == expected.as_bytes())
++        );
++        stream
++            .write_all(b"HTTP/1.1 200 Connection established\r\n\r\nopaque-server-tls")
++            .await
++            .unwrap();
++        let mut tls = [0; 16];
++        stream.read_exact(&mut tls).await.unwrap();
++        assert_eq!(&tls, b"opaque-child-tls");
++    });
++    let relay = HfRelay::start(Arc::new(BandwidthLimiter::new(None)), config)
++        .await
++        .unwrap();
++    let mut child = tunnel(&relay).await;
++    child.write_all(b"opaque-child-tls").await.unwrap();
++    let mut tls = [0; 17];
++    child.read_exact(&mut tls).await.unwrap();
++    assert_eq!(&tls, b"opaque-server-tls");
++    upstream.await.unwrap();
++    relay.shutdown().await;
++    // Every surfaced error is a fixed code; it cannot contain a URL, header,
++    // upstream password or raw io/TLS error. The relay has no logging calls.
++    assert_eq!(ProxyUnavailable.to_string(), "bandwidth_proxy_unavailable");
++    let bypass = HfProxyConfig::from_environment(environment(&[
++        ("HTTPS_PROXY", "http://127.0.0.1:1"),
++        ("NO_PROXY", ".hf.co,huggingface.co:443"),
++    ]))
++    .unwrap();
++    assert!(bypass.bypasses("cdn.hf.co"));
++    assert!(bypass.bypasses("huggingface.co"));
++    assert!(!bypass.bypasses("evilhf.co"));
++    for value in [
++        "socks5://localhost:8080",
++        "not a proxy",
++        "http://localhost/path",
++    ] {
++        assert!(HfProxyConfig::from_environment(environment(&[("HTTPS_PROXY", value)])).is_err());
++    }
++    assert!(
++        HfProxyConfig::from_environment(environment(&[("HTTPS_PROXY", "https://localhost:8443")]))
++            .unwrap()
++            .upstream
++            .unwrap()
++            .tls
++            .is_some()
++    );
++}
++
++#[tokio::test]
++async fn hf_proxy_configuration_changes_only_child_environment() {
++    let before: Vec<_> = std::env::vars_os().collect();
++    let captured = HfProxyConfig::from_environment(environment(&[
++        ("HTTPS_PROXY", "http://user:secret@localhost:1234"),
++        ("NO_PROXY", "hf.co"),
++    ]))
++    .unwrap();
++    let relay = HfRelay::start(Arc::new(BandwidthLimiter::new(None)), captured.clone())
++        .await
++        .unwrap();
++    let mut child = environment(&[
++        ("HTTPS_PROXY", "old"),
++        ("NO_PROXY", "*"),
++        ("all_proxy", "socks5://old"),
++        ("FTP_PROXY", "old"),
++        ("HF_TOKEN", "token"),
++    ]);
++    relay.configure_child(&mut child);
++    for key in [
++        "HTTP_PROXY",
++        "HTTPS_PROXY",
++        "http_proxy",
++        "https_proxy",
++        "ALL_PROXY",
++        "all_proxy",
++    ] {
++        let values: Vec<_> = child.iter().filter(|(k, _)| k == key).collect();
++        assert_eq!(values.len(), 1);
++        assert_eq!(
++            values[0].1,
++            OsString::from(format!("http://{}", relay.address))
++        );
++    }
++    for key in ["NO_PROXY", "no_proxy"] {
++        assert!(child.iter().any(|(k, v)| k == key && v.is_empty()));
++    }
++    assert!(!child.iter().any(|(k, _)| k == "FTP_PROXY"));
++    assert!(child.iter().any(|(k, v)| k == "HF_TOKEN" && v == "token"));
++    assert_eq!(std::env::vars_os().collect::<Vec<_>>(), before);
++    assert!(captured.bypasses("hf.co"));
++    assert_eq!(captured.upstream.unwrap().port, 1234);
++    relay.shutdown().await;
++}
++
++#[tokio::test]
++async fn hf_child_exit_closes_all_relay_connections() {
++    for failure in [false, true] {
++        let (listener, config) = mock_upstream().await;
++        let upstream = tokio::spawn(async move {
++            let (mut socket, _) = listener.accept().await.unwrap();
++            read_header(&mut socket).await.unwrap();
++            socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
++            let mut byte = [0];
++            // After relay shutdown the upstream must see EOF or a reset.
++            !matches!(
++                timeout(Duration::from_secs(3), socket.read(&mut byte)).await,
++                Ok(Ok(1..))
++            )
++        });
++        let relay = HfRelay::start(Arc::new(BandwidthLimiter::new(None)), config)
++            .await
++            .unwrap();
++        let address = relay.address;
++        let mut child_socket = tunnel(&relay).await;
++        #[cfg(windows)]
++        let spec = CommandSpec::new(std::env::var_os("COMSPEC").unwrap())
++            .args(["/C", if failure { "exit 1" } else { "exit 0" }])
++            .env_vars(process::system_baseline());
++        #[cfg(unix)]
++        let spec = CommandSpec::new("/bin/sh")
++            .args(["-c", if failure { "exit 1" } else { "exit 0" }])
++            .env_vars(process::system_baseline());
++        let result = process::run(
++            &spec,
++            &DiscardSink,
++            &CancelToken::new(),
++            &RunLimits::default(),
++        )
++        .await;
++        assert_eq!(result.is_err(), failure);
++        relay.shutdown().await;
++        assert!(upstream.await.unwrap());
++        let mut byte = [0];
++        assert!(!matches!(
++            timeout(Duration::from_secs(1), child_socket.read(&mut byte)).await,
++            Ok(Ok(1..))
++        ));
++        assert!(TcpStream::connect(address).await.is_err());
++    }
++}
+diff --git a/crates/infrastructure/src/models/acquisition/mod.rs b/crates/infrastructure/src/models/acquisition/mod.rs
+index f18143d..1d3e911 100644
+--- a/crates/infrastructure/src/models/acquisition/mod.rs
++++ b/crates/infrastructure/src/models/acquisition/mod.rs
+@@ -1,3 +1,4 @@
++pub mod bandwidth;
+ pub mod civitai;
+ pub mod codec;
+ pub mod credentials;
+@@ -5,6 +6,7 @@ pub mod direct;
+ pub mod finalize;
+ pub mod gdrive;
+ pub mod hf_engine;
++pub mod hf_proxy;
+ pub mod http;
+ pub mod huggingface;
+ pub mod native_engine;
+diff --git a/crates/infrastructure/src/models/acquisition/native_engine.rs b/crates/infrastructure/src/models/acquisition/native_engine.rs
+index 8d1a8c4..7355c48 100644
+--- a/crates/infrastructure/src/models/acquisition/native_engine.rs
++++ b/crates/infrastructure/src/models/acquisition/native_engine.rs
+@@ -1,4 +1,4 @@
+-use super::{finalize::StagingArea, http, resolver::ProviderResolver};
++use super::{bandwidth::BandwidthLimiter, finalize::StagingArea, http, resolver::ProviderResolver};
+ use application::{models::acquisition::*, shared::CancelToken};
+ use async_trait::async_trait;
+ use domain::models::acquisition::*;
+@@ -11,6 +11,7 @@ use std::{sync::Arc, time::Instant};
+ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+ 
+ pub struct NativeDownloader {
++    pub bandwidth: Arc<BandwidthLimiter>,
+     pub resolver: Arc<ProviderResolver>,
+     pub staging: Arc<StagingArea>,
+     pub repository: Arc<dyn JobRepository>,
+@@ -216,9 +217,24 @@ impl Downloader for NativeDownloader {
+             if expected_body.is_some_and(|n| body_bytes > n) {
+                 return Err(DownloadErrorCode::LengthMismatch.into());
+             }
+-            file.write_all(&chunk)
+-                .await
+-                .map_err(|_| DownloadErrorCode::Disk)?;
++            let mut consumed = 0;
++            while consumed < chunk.len() {
++                let grant = match self
++                    .bandwidth
++                    .acquire(chunk.len() - consumed, &cancel)
++                    .await
++                {
++                    Ok(grant) => grant,
++                    Err(_) => {
++                        file.sync_all().await.map_err(|_| DownloadErrorCode::Disk)?;
++                        return Err(DownloadErrorCode::Cancelled.into());
++                    }
++                };
++                file.write_all(&chunk[consumed..consumed + grant])
++                    .await
++                    .map_err(|_| DownloadErrorCode::Disk)?;
++                consumed += grant;
++            }
+             hash.update(&chunk);
+             let now = Instant::now();
+             if now.duration_since(sampled) >= PROGRESS_INTERVAL {
+diff --git a/crates/infrastructure/src/models/acquisition/stack.rs b/crates/infrastructure/src/models/acquisition/stack.rs
+index 1892d2c..a164844 100644
+--- a/crates/infrastructure/src/models/acquisition/stack.rs
++++ b/crates/infrastructure/src/models/acquisition/stack.rs
+@@ -1,9 +1,11 @@
+ //! Composition of the download adapters over one install root, shared by the desktop root and
+ //! its integration tests.
+ use super::{
++    bandwidth::BandwidthLimiter,
+     credentials::ProviderCredentialTester,
+     finalize::{LocalDownloadFiles, StagingArea},
+     hf_engine::HfDownloader,
++    hf_proxy::HfProxyConfig,
+     http::ArtifactHttp,
+     native_engine::NativeDownloader,
+     pack::ResourcePacks,
+@@ -23,12 +25,13 @@ use application::{
+     shared::{IdGenerator, path_locks::ModelPathLocks},
+ };
+ use domain::models::acquisition::DownloadErrorCode;
+-use std::{path::Path, sync::Arc};
++use std::{num::NonZeroU32, path::Path, sync::Arc};
+ 
+ /// The only authorized model root of this milestone: `<install root>/ComfyUI/models`.
+ pub const DEFAULT_MODEL_ROOT_ID: &str = "models";
+ 
+ pub struct DownloadStack {
++    pub bandwidth: Arc<BandwidthLimiter>,
+     pub repository: Arc<SqliteDownloads>,
+     pub resolver: Arc<ProviderResolver>,
+     pub ingress: Arc<SourceIngress>,
+@@ -46,6 +49,18 @@ impl DownloadStack {
+         concurrency: usize,
+         locks: Arc<dyn ModelPathLocks>,
+     ) -> Result<Self> {
++        Self::open_with_bandwidth(root, db, vault, concurrency, locks, None)
++    }
++
++    pub fn open_with_bandwidth(
++        root: &Path,
++        db: Db,
++        vault: Arc<dyn CredentialVault>,
++        concurrency: usize,
++        locks: Arc<dyn ModelPathLocks>,
++        limit_kib_s: Option<NonZeroU32>,
++    ) -> Result<Self> {
++        let bandwidth = Arc::new(BandwidthLimiter::new(limit_kib_s));
+         let layout = Layout::new(root);
+         let models = layout.comfyui_dir().join("models");
+         std::fs::create_dir_all(&models).map_err(|_| DownloadError(DownloadErrorCode::Disk))?;
+@@ -71,11 +86,14 @@ impl DownloadStack {
+             256,
+         ));
+         let native = Arc::new(NativeDownloader {
++            bandwidth: bandwidth.clone(),
+             resolver: resolver.clone(),
+             staging: staging.clone(),
+             repository: repository.clone(),
+         });
+         let hf = Arc::new(HfDownloader {
++            bandwidth: bandwidth.clone(),
++            proxy: HfProxyConfig::capture(),
+             root: root.to_owned(),
+             staging,
+             vault: vault.clone(),
+@@ -94,6 +112,7 @@ impl DownloadStack {
+         });
+         let tester = Arc::new(ProviderCredentialTester { http, vault, db });
+         Ok(Self {
++            bandwidth,
+             repository,
+             resolver,
+             ingress,
+diff --git a/crates/infrastructure/src/models/acquisition/tests.rs b/crates/infrastructure/src/models/acquisition/tests.rs
+index 6b3e7fa..66e1895 100644
+--- a/crates/infrastructure/src/models/acquisition/tests.rs
++++ b/crates/infrastructure/src/models/acquisition/tests.rs
+@@ -33,6 +33,89 @@ use std::{
+ };
+ 
+ struct NoCredentials;
++
++#[tokio::test]
++async fn shared_bucket_bounds_combined_native_and_relay_bytes() {
++    use std::{num::NonZeroU32, time::{Duration, Instant}};
++    use tokio::io::{AsyncReadExt, AsyncWriteExt};
++    let server = TestServer::start().await;
++    server.route("/limited", Route::ok(vec![7; 2048]));
++    let f = Fixture::new();
++    let job = f.insert(f.job("limited", &server.url("/limited"))).await;
++    let limiter = Arc::new(super::bandwidth::BandwidthLimiter::new(NonZeroU32::new(4)));
++    let mut native = f.native();
++    native.bandwidth = limiter.clone();
++    let (mut source, relay_source) = tokio::io::duplex(4096);
++    let (relay_child, mut child) = tokio::io::duplex(4096);
++    source.write_all(&vec![9; 2048]).await.unwrap();
++    source.shutdown().await.unwrap();
++    let cancel = CancelToken::new();
++    let started = Instant::now();
++    let (native_result, relay_result, bytes) = tokio::time::timeout(Duration::from_secs(10), async {
++        tokio::join!(
++            native.transfer(&job, f.hub.clone(), cancel.clone()),
++            super::hf_proxy::relay_download(relay_source, relay_child, &limiter, &cancel),
++            async { let mut bytes = Vec::new(); child.read_to_end(&mut bytes).await.unwrap(); bytes },
++        )
++    }).await.unwrap();
++    assert_eq!(native_result.unwrap().size, 2048);
++    relay_result.unwrap();
++    assert_eq!(bytes, vec![9; 2048]);
++    // 4 KiB/s, one shared burst of floor(rate/10) = 409 bytes.
++    assert!(4096.0 <= 4096.0 * started.elapsed().as_secs_f64() + 409.0);
++}
++
++#[tokio::test]
++async fn live_cap_changes_affect_already_running_hf_and_native_jobs() {
++    use std::{num::NonZeroU32, time::Duration};
++    use tokio::io::{AsyncReadExt, AsyncWriteExt};
++    // Hold the native response body until after the uncapped transfer started.
++    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++    let address = listener.local_addr().unwrap();
++    let (native_ready, native_wait) = tokio::sync::oneshot::channel();
++    let (release_native, released) = tokio::sync::oneshot::channel();
++    let server = tokio::spawn(async move {
++        let (mut stream, _) = listener.accept().await.unwrap();
++        let mut request = Vec::new();
++        while !request.ends_with(b"\r\n\r\n") { request.push(stream.read_u8().await.unwrap()); }
++        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8192\r\nConnection: close\r\n\r\n").await.unwrap();
++        native_ready.send(()).unwrap();
++        released.await.unwrap();
++        stream.write_all(&vec![1; 8192]).await.unwrap();
++    });
++    let f = Fixture::new();
++    let job = f.insert(f.job("live", &format!("http://{address}/file"))).await;
++    let limiter = Arc::new(super::bandwidth::BandwidthLimiter::new(None));
++    let mut native = f.native(); native.bandwidth = limiter.clone();
++    let native_hub = f.hub.clone();
++    let native_task = tokio::spawn(async move { native.transfer(&job, native_hub, CancelToken::new()).await });
++    let (mut source, relay_source) = tokio::io::duplex(16384);
++    let (relay_child, mut child) = tokio::io::duplex(16384);
++    let hf_limiter = limiter.clone();
++    let hf_task = tokio::spawn(async move { super::hf_proxy::relay_download(relay_source, relay_child, &hf_limiter, &CancelToken::new()).await });
++    native_wait.await.unwrap();
++    tokio::task::yield_now().await;
++    limiter.set_limit(NonZeroU32::new(1));
++    release_native.send(()).unwrap();
++    source.write_all(&vec![2; 8192]).await.unwrap(); source.shutdown().await.unwrap();
++    tokio::time::sleep(Duration::from_millis(150)).await;
++    assert!(!native_task.is_finished());
++    assert!(!hf_task.is_finished());
++    let written = fs::metadata(f.staging.root.path.join("live.part")).unwrap().len();
++    assert!(written < 8192);
++    // Raising the cap affects the existing attempts, then unlimited wakes them.
++    limiter.set_limit(NonZeroU32::new(2));
++    tokio::time::sleep(Duration::from_millis(50)).await;
++    assert!(!native_task.is_finished()); assert!(!hf_task.is_finished());
++    limiter.set_limit(None);
++    let (native_result, hf_result, bytes) = tokio::time::timeout(Duration::from_secs(5), async {
++        tokio::join!(native_task, hf_task, async { let mut bytes = Vec::new(); child.read_to_end(&mut bytes).await.unwrap(); bytes })
++    }).await.unwrap();
++    assert_eq!(native_result.unwrap().unwrap().size, 8192);
++    hf_result.unwrap().unwrap();
++    assert_eq!(bytes, vec![2; 8192]);
++    server.await.unwrap();
++}
+ #[test]
+ fn platform_no_replace_rename_uses_pinned_parent() {
+     let directory = tempfile::tempdir().unwrap();
+@@ -150,6 +233,7 @@ impl Fixture {
+     fn native(&self) -> NativeDownloader {
+         let http = ArtifactHttp::new(Arc::new(NoCredentials)).unwrap();
+         NativeDownloader {
++            bandwidth: Arc::new(super::bandwidth::BandwidthLimiter::new(None)),
+             resolver: Arc::new(ProviderResolver::new(
+                 http,
+                 Arc::new(SourceIngress::default()),
+@@ -444,6 +528,7 @@ fn persistence_never_contains_direct_signature_and_can_reuse_live_ingress() {
+     let f = Fixture::new();
+     let ingress = SourceIngress::default();
+     let mut job = f.job("secret", "https://x/model.bin");
++    job.error = Some(DownloadErrorCode::BandwidthProxyUnavailable);
+     job.source = ingress
+         .stage(
+             "https://x/model.bin?X-Amz-Signature=super-secret-signature",
+@@ -451,9 +536,11 @@ fn persistence_never_contains_direct_signature_and_can_reuse_live_ingress() {
+         )
+         .unwrap();
+     let raw = codec::encode(&job).unwrap();
++    assert!(raw.contains("\"error\":\"bandwidth_proxy_unavailable\""));
+     assert!(!raw.contains("super-secret-signature"));
+     assert!(!raw.contains("X-Amz"));
+     let read = codec::decode(&raw).unwrap();
++    assert_eq!(read.error, job.error);
+     assert!(ingress.executable(&read.source).is_ok());
+     assert!(SourceIngress::default().executable(&read.source).is_err());
+ }
+@@ -569,6 +656,11 @@ async fn supervisor_limits_admissions_and_only_falls_back_on_spawn_failure() {
+     for (error, expected_native, expected_state) in [
+         (DownloadErrorCode::ToolLaunch, 1, DownloadState::Completed),
+         (DownloadErrorCode::ToolRuntime, 0, DownloadState::Failed),
++        (
++            DownloadErrorCode::BandwidthProxyUnavailable,
++            0,
++            DownloadState::Failed,
++        ),
+     ] {
+         let f = Fixture::new();
+         let mut job = f.job("hf", "https://x/a.bin");
+diff --git a/ui/src/features/settings/settings-form.test.tsx b/ui/src/features/settings/settings-form.test.tsx
+new file mode 100644
+index 0000000..2689648
+--- /dev/null
++++ b/ui/src/features/settings/settings-form.test.tsx
+@@ -0,0 +1,52 @@
++// @vitest-environment jsdom
++import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
++import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
++import { afterEach, expect, it, vi } from 'vitest'
++
++import { gateway, type SettingsDto } from '@/shared/ipc/gateway'
++import { SettingsForm } from './settings-form'
++
++vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
++  ...(await importOriginal<typeof import('@/shared/ipc/gateway')>()),
++  gateway: { settingsGet: vi.fn(), settingsSet: vi.fn() },
++}))
++
++afterEach(cleanup)
++
++it('bandwidth_empty_means_unlimited_and_zero_is_invalid', async () => {
++  const settings: SettingsDto = {
++    downloadConcurrency: 2,
++    hfEngine: 'hf_cli',
++    closeBehavior: 'ask',
++    theme: 'system',
++    registryCacheTtl: 24,
++    bandwidthCapKibS: 128,
++  }
++  vi.mocked(gateway.settingsGet).mockResolvedValue(settings)
++  vi.mocked(gateway.settingsSet).mockImplementation(async (input) => input)
++  render(
++    <QueryClientProvider client={new QueryClient()}>
++      <SettingsForm />
++    </QueryClientProvider>,
++  )
++  const cap = await screen.findByLabelText('Bandwidth cap (KiB/s)')
++  expect(cap).toHaveProperty('disabled', false)
++  for (const invalid of ['0', '-1', '1.5', '4294967296']) {
++    fireEvent.change(cap, { target: { value: invalid } })
++    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
++    expect(screen.getByText('Enter KiB/s as 1 or more, or leave it empty.')).toBeTruthy()
++    expect(gateway.settingsSet).not.toHaveBeenCalled()
++  }
++  fireEvent.change(cap, { target: { value: '' } })
++  fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
++  await waitFor(() => expect(gateway.settingsSet).toHaveBeenCalledWith({
++    ...settings, bandwidthCapKibS: null,
++  }))
++  const updated = await screen.findByLabelText('Bandwidth cap (KiB/s)')
++  fireEvent.change(updated, { target: { value: '64' } })
++  await waitFor(() => expect(screen.getByRole('button', { name: 'Save settings' })).toHaveProperty('disabled', false))
++  fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
++  await waitFor(() => expect(gateway.settingsSet).toHaveBeenLastCalledWith({
++    ...settings, bandwidthCapKibS: 64,
++  }))
++})
+diff --git a/ui/src/features/settings/settings-form.tsx b/ui/src/features/settings/settings-form.tsx
+index 919ccdf..f3dc22c 100644
+--- a/ui/src/features/settings/settings-form.tsx
++++ b/ui/src/features/settings/settings-form.tsx
+@@ -188,12 +188,12 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
+             inputMode="numeric"
+             placeholder="Unlimited"
+             value={draft.bandwidthCap}
+-            disabled
++            onChange={(event) => patch('bandwidthCap', event.target.value)}
++            aria-invalid={errors.bandwidthCap ? true : undefined}
+             aria-describedby="bandwidth-cap-note"
+           />
+           <p id="bandwidth-cap-note" className="text-xs text-muted-foreground">
+-            A global cap needs to cover every download engine, including the hf CLI. It is not
+-            available yet and downloads run unthrottled.
++            Shared by all downloads. Leave empty for unlimited speed.
+           </p>
+         </Field>
+       </div>

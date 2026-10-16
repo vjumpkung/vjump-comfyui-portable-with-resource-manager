@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-node-git-status"
+description = "Enables the node_git_status command without any pre-configured scope."
+commands.allow = ["node_git_status"]
+
+[[permission]]
+identifier = "deny-node-git-status"
+description = "Denies the node_git_status command without any pre-configured scope."
+commands.deny = ["node_git_status"]
