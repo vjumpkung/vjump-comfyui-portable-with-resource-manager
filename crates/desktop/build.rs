@@ -60,6 +60,7 @@ fn main() {
             "model_operation_status",
             "model_subscribe",
             "model_unsubscribe",
+            "node_open_repository",
             "node_registry_search",
             "node_list",
             "node_rescan",

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-node-open-repository"
+description = "Enables the node_open_repository command without any pre-configured scope."
+commands.allow = ["node_open_repository"]
+
+[[permission]]
+identifier = "deny-node-open-repository"
+description = "Denies the node_open_repository command without any pre-configured scope."
+commands.deny = ["node_open_repository"]

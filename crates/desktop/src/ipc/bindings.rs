@@ -68,6 +68,7 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
             library_commands::model_operation_status,
             library_commands::model_subscribe,
             library_commands::model_unsubscribe,
+            node_commands::node_open_repository,
             node_commands::node_registry_search,
             node_commands::node_list,
             node_commands::node_rescan,

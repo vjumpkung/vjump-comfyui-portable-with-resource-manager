@@ -274,6 +274,11 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
             HandlerError,
         ),
         (
+            "node_open_repository",
+            json!({ "repository": "https://github.com/example/node" }),
+            Success,
+        ),
+        (
             "node_registry_search",
             json!({ "input": { "search": "", "page": 1, "limit": 50, "refresh": false } }),
             HandlerError,
@@ -350,7 +355,11 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
             }),
             HandlerError,
         ),
-        ("node_cancel", json!({ "key": "plan-unknown" }), HandlerError),
+        (
+            "node_cancel",
+            json!({ "key": "plan-unknown" }),
+            HandlerError,
+        ),
         (
             "node_operation_status",
             json!({ "operationId": "node-unknown" }),

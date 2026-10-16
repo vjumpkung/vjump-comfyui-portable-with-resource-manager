@@ -22,7 +22,7 @@ use application::{
 };
 use async_trait::async_trait;
 use desktop::{
-    AppState, MANAGER_WINDOW, RecoveryInfo, Services, app_lifecycle::TauriShell,
+    AppState, MANAGER_WINDOW, RecoveryInfo, Services, app_lifecycle::ShellActions,
     comfy_window::open_comfyui_window, ipc::bindings, picker::FilePicker, state::RuntimeAdapters,
 };
 use domain::{
@@ -41,10 +41,10 @@ use infrastructure::{
         process::{ComfyRuntimeSupervisor, PythonLaunchPreflight, SharedRuntimeRunner},
         sqlite::SqliteRuntimeStore,
     },
+    custom_nodes::stack::{NodeOptions, NodeStack},
     environment::{
         manifest::FsManifestStore, profiles::BundledProfiles, sqlite::SqliteEnvironmentStore,
     },
-    custom_nodes::stack::{NodeOptions, NodeStack},
     models::{
         acquisition::stack::{DownloadStack, path_locks},
         library::stack::LibraryStack,
@@ -150,6 +150,25 @@ impl CredentialVault for EmptyVault {
 pub struct FakePicker {
     pub calls: HandlerCalls,
     pub answer: Option<PathBuf>,
+}
+
+pub struct FakeShell {
+    pub calls: HandlerCalls,
+}
+
+impl ShellActions for FakeShell {
+    fn open_comfy_window(&self, _: tauri::Url) -> Result<(), desktop::ipc::error::IpcError> {
+        self.calls.hit();
+        Ok(())
+    }
+
+    fn open_browser(&self, _: tauri::Url) {
+        self.calls.hit();
+    }
+
+    fn perform(&self, _: application::comfy_runtime::CloseAction) {
+        self.calls.hit();
+    }
 }
 
 #[async_trait]
@@ -680,8 +699,9 @@ pub fn build_app_with(options: Options) -> TestApp {
         .invoke_handler(bindings::builder::<MockRuntime>().invoke_handler())
         .build(context)
         .expect("failed to build the mock app");
-    app.state::<AppState>()
-        .install_shell(Arc::new(TauriShell(app.handle().clone())));
+    app.state::<AppState>().install_shell(Arc::new(FakeShell {
+        calls: calls.clone(),
+    }));
     TestApp {
         app,
         calls,

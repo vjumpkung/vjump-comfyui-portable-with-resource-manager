@@ -21,6 +21,14 @@ import type {
   ModelLocationDto,
   MoveInput,
   RenameInput,
+  RegistrySearchInput,
+  PrepareRegistryInput,
+  PrepareGitInput,
+  PrepareUpdateInput,
+  PrepareRetryInput,
+  CommitInput,
+  SetEnabledInput,
+  NodeEventDto,
 } from './bindings'
 export type * from './bindings'
 import type {
@@ -204,6 +212,36 @@ export const gateway = {
     }),
   modelUnsubscribe: (subscriptionId: number) =>
     unwrap(() => commands.modelUnsubscribe(subscriptionId)),
+  nodeRegistrySearch: (input: RegistrySearchInput) =>
+    unwrap(() => commands.nodeRegistrySearch(input)),
+  nodeList: () => unwrap(() => commands.nodeList()),
+  nodeRescan: () => unwrap(() => commands.nodeRescan()),
+  nodePrepareRegistry: (input: PrepareRegistryInput) =>
+    unwrap(() => commands.nodePrepareRegistry(input)),
+  nodePrepareGit: (input: PrepareGitInput) =>
+    unwrap(() => commands.nodePrepareGit(input)),
+  nodePrepareUpdate: (input: PrepareUpdateInput) =>
+    unwrap(() => commands.nodePrepareUpdate(input)),
+  nodePrepareRetryDeps: (input: PrepareRetryInput) =>
+    unwrap(() => commands.nodePrepareRetryDeps(input)),
+  nodeCommit: (input: CommitInput) => unwrap(() => commands.nodeCommit(input)),
+  nodeSetEnabled: (input: SetEnabledInput) =>
+    unwrap(() => commands.nodeSetEnabled(input)),
+  nodeUninstall: (nodeId: string) =>
+    unwrap(() => commands.nodeUninstall({ nodeId })),
+  nodeUpdateAll: (items: CommitInput[]) =>
+    unwrap(() => commands.nodeUpdateAll({ items })),
+  nodeCancel: (key: string) => unwrap(() => commands.nodeCancel(key)),
+  nodeOperationStatus: (operationId: string) =>
+    unwrap(() => commands.nodeOperationStatus(operationId)),
+  nodeSubscribe: (onEvent: (event: NodeEventDto) => void) =>
+    unwrap(() => {
+      const channel = new Channel<NodeEventDto>()
+      channel.onmessage = onEvent
+      return commands.nodeSubscribe(channel)
+    }),
+  nodeUnsubscribe: (subscriptionId: number) =>
+    unwrap(() => commands.nodeUnsubscribe(subscriptionId)),
   pickFolder: (title: string) => unwrap(() => commands.pickFolder(title)),
   pickFile: (title: string, extensions: string[] = []) =>
     unwrap(() => commands.pickFile(title, extensions)),

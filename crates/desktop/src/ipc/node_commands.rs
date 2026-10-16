@@ -8,15 +8,16 @@ use application::custom_nodes::{
     CommitDecision, NodeAppError, OperationPhase, PrepareRequest, RegistryQuery,
 };
 use domain::custom_nodes::InstallConsent;
-use tauri::{ipc::Channel, State};
+use infrastructure::custom_nodes::provenance::validate_remote;
+use tauri::{State, ipc::Channel};
 
 use super::{
     error::IpcError,
     node_dto::{
-        node_id, request_key, BatchItemDto, BatchOutcomeDto, CommitInput, InstalledNodeDto,
-        NodeEventDto, NodeIdInput, NodeListDto, NodeOutcomeDto, OperationDto, PlanReviewDto, PrepareGitInput,
+        BatchItemDto, BatchOutcomeDto, CommitInput, InstalledNodeDto, NodeEventDto, NodeIdInput,
+        NodeListDto, NodeOutcomeDto, OperationDto, PlanReviewDto, PrepareGitInput,
         PrepareRegistryInput, PrepareRetryInput, PrepareUpdateInput, RegistryPageDto,
-        RegistrySearchInput, SetEnabledInput, UpdateAllInput,
+        RegistrySearchInput, SetEnabledInput, UpdateAllInput, node_id, request_key,
     },
 };
 use crate::state::{AppState, NodeServices};
@@ -77,6 +78,34 @@ async fn list(nodes: &NodeServices) -> Result<NodeListDto, IpcError> {
         unresolved,
         repair_required: nodes.service.repair_required().await?,
     })
+}
+
+fn repository_url(repository: &str) -> Result<tauri::Url, IpcError> {
+    let invalid = || IpcError::new("validation", "The repository URL is not valid.");
+    // The URL parser drops empty userinfo. Reject its raw delimiter as well as the
+    // nonempty credentials rejected by the shared repository validator.
+    let authority = repository
+        .trim()
+        .split_once("://")
+        .map(|(_, rest)| rest.split(['/', '\\', '?', '#']).next().unwrap_or_default());
+    if authority.is_none_or(|authority| authority.contains('@')) {
+        return Err(invalid());
+    }
+    let remote = validate_remote(repository, false).ok_or_else(invalid)?;
+    remote.identity.parse().map_err(|_| invalid())
+}
+
+/// Opens a validated repository in the system browser. Manager links use this command
+/// because automatic webview link opening is disabled.
+#[tauri::command]
+#[specta::specta]
+pub async fn node_open_repository(
+    state: State<'_, AppState>,
+    repository: String,
+) -> Result<(), IpcError> {
+    let url = repository_url(&repository)?;
+    state.shell()?.open_browser(url);
+    Ok(())
 }
 
 #[tauri::command]
@@ -382,4 +411,44 @@ pub async fn node_unsubscribe(
         handle.abort();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_browser_urls_use_normalized_https_identities() {
+        assert_eq!(
+            repository_url(" https://GitHub.com/example/node.git/ ")
+                .unwrap()
+                .as_str(),
+            "https://github.com/example/node"
+        );
+    }
+
+    #[test]
+    fn unsafe_repository_browser_urls_return_a_sanitized_error() {
+        for repository in [
+            "",
+            "not a URL",
+            "http://github.com/example/node",
+            "file:///C:/Windows/win.ini",
+            "javascript:alert(1)",
+            "git@github.com:example/node.git",
+            "https://user:secret@github.com/example/node",
+            "https://user@github.com/example/node",
+            "https://@github.com/example/node",
+            "https://github.com/example/node?token=secret",
+            "https://github.com/example/node#secret",
+            "https://github.com:444/example/node",
+            "https://github.com/",
+            "https://github.com/example/\nnode",
+        ] {
+            assert_eq!(
+                repository_url(repository).unwrap_err(),
+                IpcError::new("validation", "The repository URL is not valid.")
+            );
+        }
+    }
 }
