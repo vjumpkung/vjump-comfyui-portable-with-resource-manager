@@ -1,0 +1,159 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-brand-yellow: #fff89c;
+  --color-brand-cyan: #9ffaff;
+  --color-brand-pink: #ff9fed;
+  --font-sans: "Inter Variable", "Noto Sans Thai", ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono: "Geist Mono Variable", "Noto Sans Thai Looped", ui-monospace, monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  color-scheme: light;
+  --background: #e0e5ec;
+  --foreground: #2a313a;
+  --card: #edf1f5;
+  --card-foreground: #2a313a;
+  --popover: #edf1f5;
+  --popover-foreground: #2a313a;
+  --primary: #fff89c;
+  --primary-foreground: #2a313a;
+  --secondary: #9ffaff;
+  --secondary-foreground: #2a313a;
+  --muted: #d2d8e0;
+  --muted-foreground: #56606c;
+  --accent: #ff9fed;
+  --accent-foreground: #2a313a;
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: #aab3be;
+  --input: #aab3be;
+  --ring: #ff9fed;
+  --chart-1: #fff89c;
+  --chart-2: #9ffaff;
+  --chart-3: #ff9fed;
+  --chart-4: #56606c;
+  --chart-5: #2a313a;
+  --radius: 0.625rem;
+  --sidebar: #edf1f5;
+  --sidebar-foreground: #2a313a;
+  --sidebar-primary: #fff89c;
+  --sidebar-primary-foreground: #2a313a;
+  --sidebar-accent: #ff9fed;
+  --sidebar-accent-foreground: #2a313a;
+  --sidebar-border: #aab3be;
+  --sidebar-ring: #ff9fed;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #2a313a;
+  --foreground: #e0e5ec;
+  --card: #343d48;
+  --card-foreground: #e0e5ec;
+  --popover: #343d48;
+  --popover-foreground: #e0e5ec;
+  --primary: #fff89c;
+  --primary-foreground: #2a313a;
+  --secondary: #9ffaff;
+  --secondary-foreground: #2a313a;
+  --muted: #3b4652;
+  --muted-foreground: #b8c0c9;
+  --accent: #ff9fed;
+  --accent-foreground: #2a313a;
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: #596674;
+  --input: #596674;
+  --ring: #9ffaff;
+  --chart-1: #fff89c;
+  --chart-2: #9ffaff;
+  --chart-3: #ff9fed;
+  --chart-4: #b8c0c9;
+  --chart-5: #e0e5ec;
+  --sidebar: #343d48;
+  --sidebar-foreground: #e0e5ec;
+  --sidebar-primary: #fff89c;
+  --sidebar-primary-foreground: #2a313a;
+  --sidebar-accent: #ff9fed;
+  --sidebar-accent-foreground: #2a313a;
+  --sidebar-border: #596674;
+  --sidebar-ring: #9ffaff;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+  ::selection {
+    @apply bg-accent text-accent-foreground;
+  }
+}
+
+.setup-log {
+  background: #2a313a;
+}
+
+[data-slot="progress-indicator"] {
+  background: var(--secondary);
+}
+
+[data-slot="table-header"] {
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+}
+
+[data-slot="table-header"] [data-slot="table-head"] {
+  color: inherit;
+}
+
+[data-slot="table-body"] [data-slot="table-row"]:nth-child(even) {
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dl-enqueue"
+description = "Enables the dl_enqueue command without any pre-configured scope."
+commands.allow = ["dl_enqueue"]
+
+[[permission]]
+identifier = "deny-dl-enqueue"
+description = "Denies the dl_enqueue command without any pre-configured scope."
+commands.deny = ["dl_enqueue"]

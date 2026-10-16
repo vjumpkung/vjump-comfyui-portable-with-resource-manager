@@ -1,0 +1,51 @@
+[package]
+name = "infrastructure"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+application.workspace = true
+domain.workspace = true
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+keyring.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+file-rotate.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "process", "io-util", "fs", "time", "macros", "net"] }
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+zip.workspace = true
+tar.workspace = true
+flate2.workspace = true
+nvml-wrapper.workspace = true
+sysinfo.workspace = true
+serde_yaml_ng.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+scraper.workspace = true
+time.workspace = true
+notify.workspace = true
+walkdir.workspace = true
+image.workspace = true
+toml.workspace = true
+semver.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+windows.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+trash.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }

@@ -1,0 +1,6 @@
+/target/
+/ui/node_modules/
+/ui/dist/
+.ruff_cache/
+*.log
+/crates/desktop/gen/

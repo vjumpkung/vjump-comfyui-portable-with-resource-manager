@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-node-rescan"
+description = "Enables the node_rescan command without any pre-configured scope."
+commands.allow = ["node_rescan"]
+
+[[permission]]
+identifier = "deny-node-rescan"
+description = "Denies the node_rescan command without any pre-configured scope."
+commands.deny = ["node_rescan"]

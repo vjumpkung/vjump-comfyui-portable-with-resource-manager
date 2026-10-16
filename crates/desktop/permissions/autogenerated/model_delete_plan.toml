@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-model-delete-plan"
+description = "Enables the model_delete_plan command without any pre-configured scope."
+commands.allow = ["model_delete_plan"]
+
+[[permission]]
+identifier = "deny-model-delete-plan"
+description = "Denies the model_delete_plan command without any pre-configured scope."
+commands.deny = ["model_delete_plan"]

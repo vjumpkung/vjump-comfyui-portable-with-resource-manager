@@ -1,0 +1,258 @@
+{
+  "packages": [
+    {
+      "name": "domain",
+      "id": "fixture:domain",
+      "dependencies": [
+        {
+          "name": "thiserror",
+          "kind": null,
+          "rename": null,
+          "optional": false,
+          "target": null
+        }
+      ]
+    },
+    {
+      "name": "application",
+      "id": "fixture:application",
+      "dependencies": [
+        {
+          "name": "domain",
+          "kind": null,
+          "rename": null,
+          "optional": false,
+          "target": null
+        },
+        {
+          "name": "thiserror",
+          "kind": null,
+          "rename": null,
+          "optional": false,
+          "target": null
+        },
+        {
+          "name": "async-trait",
+          "kind": null,
+          "rename": null,
+          "optional": false,
+          "target": null
+        }
+      ]
+    },
+    {
+      "name": "infrastructure",
+      "id": "fixture:infrastructure",
+      "dependencies": [
+        {
+          "name": "application",
+          "kind": null,
+          "rename": null,
+          "optional": false,
+          "target": null
+        },
+        {
+          "name": "domain",
+          "kind": null,
+          "rename": null,
+          "optional": false,
+          "target": null
+        },
+        {
+          "name": "rusqlite",
+          "kind": null,
+          "rename": null,
+          "optional": false,
+          "target": null
+        },
+        {
+          "name": "tauri-plugin-log",
+          "kind": "build",
+          "rename": null,
+          "optional": true,
+          "target": null
+        }
+      ]
+    },
+    {
+      "name": "thiserror",
+      "id": "fixture:thiserror",
+      "dependencies": [
+        {
+          "name": "thiserror-impl",
+          "kind": null,
+          "rename": null,
+          "optional": false,
+          "target": null
+        }
+      ]
+    },
+    {
+      "name": "thiserror-impl",
+      "id": "fixture:thiserror-impl",
+      "dependencies": [
+        {
+          "name": "syn",
+          "kind": null,
+          "rename": null,
+          "optional": false,
+          "target": null
+        }
+      ]
+    },
+    {
+      "name": "async-trait",
+      "id": "fixture:async-trait",
+      "dependencies": []
+    },
+    {
+      "name": "rusqlite",
+      "id": "fixture:rusqlite",
+      "dependencies": []
+    },
+    {
+      "name": "syn",
+      "id": "fixture:syn",
+      "dependencies": []
+    },
+    {
+      "name": "serde",
+      "id": "fixture:serde",
+      "dependencies": []
+    },
+    {
+      "name": "tokio",
+      "id": "fixture:tokio",
+      "dependencies": []
+    },
+    {
+      "name": "tauri-plugin-log",
+      "id": "fixture:tauri-plugin-log",
+      "dependencies": []
+    }
+  ],
+  "workspace_members": [
+    "fixture:domain",
+    "fixture:application",
+    "fixture:infrastructure"
+  ],
+  "resolve": {
+    "nodes": [
+      {
+        "id": "fixture:domain",
+        "deps": [
+          {
+            "name": "thiserror",
+            "pkg": "fixture:thiserror",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "fixture:application",
+        "deps": [
+          {
+            "name": "domain",
+            "pkg": "fixture:domain",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "thiserror",
+            "pkg": "fixture:thiserror",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "async-trait",
+            "pkg": "fixture:async-trait",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "fixture:infrastructure",
+        "deps": [
+          {
+            "name": "application",
+            "pkg": "fixture:application",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "domain",
+            "pkg": "fixture:domain",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "rusqlite",
+            "pkg": "fixture:rusqlite",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "fixture:thiserror",
+        "deps": [
+          {
+            "name": "thiserror-impl",
+            "pkg": "fixture:thiserror-impl",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "fixture:thiserror-impl",
+        "deps": [
+          {
+            "name": "syn",
+            "pkg": "fixture:syn",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

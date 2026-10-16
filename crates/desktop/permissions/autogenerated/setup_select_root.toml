@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-setup-select-root"
+description = "Enables the setup_select_root command without any pre-configured scope."
+commands.allow = ["setup_select_root"]
+
+[[permission]]
+identifier = "deny-setup-select-root"
+description = "Denies the setup_select_root command without any pre-configured scope."
+commands.deny = ["setup_select_root"]

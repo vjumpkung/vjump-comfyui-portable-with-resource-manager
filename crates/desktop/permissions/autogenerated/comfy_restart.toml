@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-comfy-restart"
+description = "Enables the comfy_restart command without any pre-configured scope."
+commands.allow = ["comfy_restart"]
+
+[[permission]]
+identifier = "deny-comfy-restart"
+description = "Denies the comfy_restart command without any pre-configured scope."
+commands.deny = ["comfy_restart"]

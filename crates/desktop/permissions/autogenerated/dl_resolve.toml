@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dl-resolve"
+description = "Enables the dl_resolve command without any pre-configured scope."
+commands.allow = ["dl_resolve"]
+
+[[permission]]
+identifier = "deny-dl-resolve"
+description = "Denies the dl_resolve command without any pre-configured scope."
+commands.deny = ["dl_resolve"]

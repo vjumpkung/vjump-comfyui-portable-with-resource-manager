@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-model-subscribe"
+description = "Enables the model_subscribe command without any pre-configured scope."
+commands.allow = ["model_subscribe"]
+
+[[permission]]
+identifier = "deny-model-subscribe"
+description = "Denies the model_subscribe command without any pre-configured scope."
+commands.deny = ["model_subscribe"]

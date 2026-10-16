@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dl-retry"
+description = "Enables the dl_retry command without any pre-configured scope."
+commands.allow = ["dl_retry"]
+
+[[permission]]
+identifier = "deny-dl-retry"
+description = "Denies the dl_retry command without any pre-configured scope."
+commands.deny = ["dl_retry"]

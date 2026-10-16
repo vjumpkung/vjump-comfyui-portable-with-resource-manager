@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-node-subscribe"
+description = "Enables the node_subscribe command without any pre-configured scope."
+commands.allow = ["node_subscribe"]
+
+[[permission]]
+identifier = "deny-node-subscribe"
+description = "Denies the node_subscribe command without any pre-configured scope."
+commands.deny = ["node_subscribe"]

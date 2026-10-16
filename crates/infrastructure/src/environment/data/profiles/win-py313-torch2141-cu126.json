@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "id": "win-py313-torch2141-cu126",
+  "revision": 1,
+  "label": "Python 3.13, PyTorch 2.14.1, CUDA 12.6 (older drivers)",
+  "status": "stable",
+  "recommended": false,
+  "os": "windows",
+  "python": "3.13.16",
+  "torch": {
+    "torch": "2.14.1",
+    "torchvision": "0.29.1",
+    "torchaudio": null,
+    "cuda": "cu126",
+    "index_url": "https://download.pytorch.org/whl/cu126"
+  },
+  "min_driver_cuda": "12.6",
+  "min_cc": "8.0",
+  "torch_archs": [
+    "5.0",
+    "6.0",
+    "6.1",
+    "7.0",
+    "7.5",
+    "8.0",
+    "8.6",
+    "9.0"
+  ],
+  "triton": {
+    "package": "triton-windows",
+    "specifier": ">=3.8,<3.9"
+  },
+  "accelerators": [],
+  "constraints": [],
+  "verify": {
+    "torch_version_prefix": "2.14.1+cu126",
+    "require_cuda": true,
+    "require_triton": true
+  },
+  "disk": {
+    "env_bytes": 7516192768,
+    "other_bytes": 7516192768,
+    "margin_bytes": 4294967296,
+    "calibrated": false
+  },
+  "provenance": [
+    "download.pytorch.org/whl/cu126: torch 2.14.1, torchvision 0.29.1 cp313 wheels for win_amd64 and manylinux_2_28_x86_64 exist, and a uv pip compile of the pinned set resolved from that index alone with --only-binary (observed 2026-10-16)",
+    "No torchaudio 2.14.x wheel is published on download.pytorch.org (latest cu130 is 2.11.0, latest cu126 is 2.9.1) or PyPI (2.11.0), and each torchaudio pins its exact torch, so this profile installs torch and torchvision only. ComfyUI v0.40.0 requirements.txt does not list torchaudio (observed 2026-10-16).",
+    "PyTorch v2.14.1 .ci/pytorch/windows/build_env_setup.py TORCH_CUDA_ARCH_LIST_TABLE (observed 2026-10-16): CUDA 12.6 wheels ship SASS up to sm_90 only, so Blackwell GPUs are not covered",
+    "Triton 3.6 and 3.8 README: NVIDIA GPUs with compute capability 8.0 or newer; triton-windows dropped Turing after Triton 3.2 (woct0rdho/triton-windows README, section GPU)",
+    "triton-windows 3.8.0.post29 (PyPI, observed 2026-10-16) matches PyTorch 2.14.1 .ci/docker/triton_version.txt 3.8.0",
+    "ComfyUI v0.40.0 requirements.txt resolves with --only-binary on Python 3.13 for this platform with torch pinned (uv pip compile, observed 2026-10-16)",
+    "Python 3.13.16: uv 0.13.1 embedded python-build-standalone 20261013 metadata (SHA-256 pinned in python-downloads.json)",
+    "Driver floor: CUDA 12.6 wheels need a driver that supports CUDA 12.6; GPUs below compute capability 8.0 are not offered a Triton stack"
+  ]
+}

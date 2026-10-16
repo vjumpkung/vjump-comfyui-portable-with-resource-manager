@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-comfy-list-versions"
+description = "Enables the comfy_list_versions command without any pre-configured scope."
+commands.allow = ["comfy_list_versions"]
+
+[[permission]]
+identifier = "deny-comfy-list-versions"
+description = "Denies the comfy_list_versions command without any pre-configured scope."
+commands.deny = ["comfy_list_versions"]

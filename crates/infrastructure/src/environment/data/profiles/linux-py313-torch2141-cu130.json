@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "id": "linux-py313-torch2141-cu130",
+  "revision": 1,
+  "label": "Python 3.13, PyTorch 2.14.1, CUDA 13.0",
+  "status": "stable",
+  "recommended": true,
+  "os": "linux",
+  "python": "3.13.16",
+  "torch": {
+    "torch": "2.14.1",
+    "torchvision": "0.29.1",
+    "torchaudio": null,
+    "cuda": "cu130",
+    "index_url": "https://download.pytorch.org/whl/cu130"
+  },
+  "min_driver_cuda": "13.0",
+  "min_cc": "8.0",
+  "torch_archs": [
+    "7.5",
+    "8.0",
+    "8.6",
+    "9.0",
+    "10.0",
+    "12.0"
+  ],
+  "triton": {
+    "package": "triton",
+    "specifier": "==3.8.0"
+  },
+  "accelerators": [],
+  "constraints": [],
+  "verify": {
+    "torch_version_prefix": "2.14.1+cu130",
+    "require_cuda": true,
+    "require_triton": true
+  },
+  "disk": {
+    "env_bytes": 12884901888,
+    "other_bytes": 7516192768,
+    "margin_bytes": 4294967296,
+    "calibrated": false
+  },
+  "provenance": [
+    "download.pytorch.org/whl/cu130: torch 2.14.1, torchvision 0.29.1 cp313 wheels for win_amd64 and manylinux_2_28_x86_64 exist, and a uv pip compile of the pinned set resolved from that index alone with --only-binary (observed 2026-10-16)",
+    "Disk budget is an estimate; it has not been measured on Linux",
+    "No torchaudio 2.14.x wheel is published on download.pytorch.org (latest cu130 is 2.11.0, latest cu126 is 2.9.1) or PyPI (2.11.0), and each torchaudio pins its exact torch, so this profile installs torch and torchvision only. ComfyUI v0.40.0 requirements.txt does not list torchaudio (observed 2026-10-16).",
+    "PyTorch v2.14.1 .ci/manywheel/build_env_setup.py TORCH_CUDA_ARCH_LIST_TABLE x86_64 (observed 2026-10-16)",
+    "Triton 3.6 and 3.8 README: NVIDIA GPUs with compute capability 8.0 or newer; triton-windows dropped Turing after Triton 3.2 (woct0rdho/triton-windows README, section GPU)",
+    "triton 3.8.0 manylinux_2_27/2_28 x86_64 wheels (PyPI, observed 2026-10-16) match PyTorch 2.14.1 .ci/docker/triton_version.txt 3.8.0",
+    "ComfyUI v0.40.0 requirements.txt resolves with --only-binary on Python 3.13 for this platform with torch pinned (uv pip compile, observed 2026-10-16)",
+    "Python 3.13.16: uv 0.13.1 embedded python-build-standalone 20261013 metadata (SHA-256 pinned in python-downloads.json)",
+    "Driver floor: CUDA 13.0 wheels need a driver that supports CUDA 13.0 (profile minimum, spec 2.4)"
+  ]
+}

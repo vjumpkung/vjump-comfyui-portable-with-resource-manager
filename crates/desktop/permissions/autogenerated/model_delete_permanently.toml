@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-model-delete-permanently"
+description = "Enables the model_delete_permanently command without any pre-configured scope."
+commands.allow = ["model_delete_permanently"]
+
+[[permission]]
+identifier = "deny-model-delete-permanently"
+description = "Denies the model_delete_permanently command without any pre-configured scope."
+commands.deny = ["model_delete_permanently"]

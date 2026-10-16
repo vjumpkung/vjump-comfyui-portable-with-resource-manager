@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-comfy-update"
+description = "Enables the comfy_update command without any pre-configured scope."
+commands.allow = ["comfy_update"]
+
+[[permission]]
+identifier = "deny-comfy-update"
+description = "Denies the comfy_update command without any pre-configured scope."
+commands.deny = ["comfy_update"]

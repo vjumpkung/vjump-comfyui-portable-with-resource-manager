@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-comfy-status"
+description = "Enables the comfy_status command without any pre-configured scope."
+commands.allow = ["comfy_status"]
+
+[[permission]]
+identifier = "deny-comfy-status"
+description = "Denies the comfy_status command without any pre-configured scope."
+commands.deny = ["comfy_status"]

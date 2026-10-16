@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-env-packages"
+description = "Enables the env_packages command without any pre-configured scope."
+commands.allow = ["env_packages"]
+
+[[permission]]
+identifier = "deny-env-packages"
+description = "Denies the env_packages command without any pre-configured scope."
+commands.deny = ["env_packages"]

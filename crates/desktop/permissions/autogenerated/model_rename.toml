@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-model-rename"
+description = "Enables the model_rename command without any pre-configured scope."
+commands.allow = ["model_rename"]
+
+[[permission]]
+identifier = "deny-model-rename"
+description = "Denies the model_rename command without any pre-configured scope."
+commands.deny = ["model_rename"]

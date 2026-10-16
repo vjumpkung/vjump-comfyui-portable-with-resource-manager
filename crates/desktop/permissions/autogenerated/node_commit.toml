@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-node-commit"
+description = "Enables the node_commit command without any pre-configured scope."
+commands.allow = ["node_commit"]
+
+[[permission]]
+identifier = "deny-node-commit"
+description = "Denies the node_commit command without any pre-configured scope."
+commands.deny = ["node_commit"]

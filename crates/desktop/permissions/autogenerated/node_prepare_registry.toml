@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-node-prepare-registry"
+description = "Enables the node_prepare_registry command without any pre-configured scope."
+commands.allow = ["node_prepare_registry"]
+
+[[permission]]
+identifier = "deny-node-prepare-registry"
+description = "Denies the node_prepare_registry command without any pre-configured scope."
+commands.deny = ["node_prepare_registry"]

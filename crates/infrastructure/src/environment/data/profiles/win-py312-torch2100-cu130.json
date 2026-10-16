@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "id": "win-py312-torch2100-cu130",
+  "revision": 1,
+  "label": "Python 3.12, PyTorch 2.10.0, CUDA 13.0 (compatibility)",
+  "status": "stable",
+  "recommended": false,
+  "os": "windows",
+  "python": "3.12.15",
+  "torch": {
+    "torch": "2.10.0",
+    "torchvision": "0.25.0",
+    "torchaudio": "2.10.0",
+    "cuda": "cu130",
+    "index_url": "https://download.pytorch.org/whl/cu130"
+  },
+  "min_driver_cuda": "13.0",
+  "min_cc": "8.0",
+  "torch_archs": [
+    "7.5",
+    "8.0",
+    "8.6",
+    "9.0",
+    "10.0",
+    "12.0"
+  ],
+  "triton": {
+    "package": "triton-windows",
+    "specifier": ">=3.6,<3.7"
+  },
+  "accelerators": [],
+  "constraints": [],
+  "verify": {
+    "torch_version_prefix": "2.10.0+cu130",
+    "require_cuda": true,
+    "require_triton": true
+  },
+  "disk": {
+    "env_bytes": 6442450944,
+    "other_bytes": 7516192768,
+    "margin_bytes": 4294967296,
+    "calibrated": false
+  },
+  "provenance": [
+    "download.pytorch.org/whl/cu130: torch 2.10.0, torchvision 0.25.0, torchaudio 2.10.0 cp312 wheels for win_amd64 and manylinux_2_28_x86_64 exist, and a uv pip compile of the pinned set resolved from that index alone with --only-binary (observed 2026-10-16)",
+    "PyTorch v2.10.0 .ci/pytorch/windows/cuda130.bat TORCH_CUDA_ARCH_LIST (observed 2026-10-16)",
+    "Triton 3.6 and 3.8 README: NVIDIA GPUs with compute capability 8.0 or newer; triton-windows dropped Turing after Triton 3.2 (woct0rdho/triton-windows README, section GPU)",
+    "triton-windows 3.6.0.post26 cp312 win_amd64 (PyPI, observed 2026-10-16) matches PyTorch 2.10.0 .ci/docker/triton_version.txt 3.6.0 and the reference installer range >=3.6,<3.7",
+    "ComfyUI v0.40.0 requirements.txt resolves with --only-binary on Python 3.12 for this platform with torch pinned (uv pip compile, observed 2026-10-16)",
+    "Python 3.12.15: uv 0.13.1 embedded python-build-standalone 20261013 metadata (SHA-256 pinned in python-downloads.json); the reference installer's 3.12.7 embeddable build is not offered by uv",
+    "Reference stack: install_comfyui_3_12_uv_nvidia_torch_2100_portable.bat pins torch 2.10.0, torchvision 0.25.0, torchaudio 2.10.0 and triton-windows >=3.6,<3.7"
+  ]
+}

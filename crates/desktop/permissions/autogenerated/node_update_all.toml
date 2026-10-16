@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-node-update-all"
+description = "Enables the node_update_all command without any pre-configured scope."
+commands.allow = ["node_update_all"]
+
+[[permission]]
+identifier = "deny-node-update-all"
+description = "Denies the node_update_all command without any pre-configured scope."
+commands.deny = ["node_update_all"]
