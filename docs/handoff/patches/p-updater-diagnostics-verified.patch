@@ -1,0 +1,5031 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index a9d1138..7085187 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -101,6 +101,36 @@ dependencies = [
+  "thiserror 2.0.21",
+ ]
+ 
++[[package]]
++name = "arbitrary"
++version = "1.5.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
++dependencies = [
++ "derive_arbitrary",
++]
++
++[[package]]
++name = "arboard"
++version = "3.7.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "aeb9553e62312c8756a5979254fc6d7da8bbeb5986a1e17037fab932f7037917"
++dependencies = [
++ "clipboard-win",
++ "image",
++ "log",
++ "objc2",
++ "objc2-app-kit",
++ "objc2-core-foundation",
++ "objc2-core-graphics",
++ "objc2-foundation",
++ "parking_lot",
++ "percent-encoding",
++ "windows-sys 0.61.2",
++ "wl-clipboard-rs",
++ "x11rb",
++]
++
+ [[package]]
+ name = "async-broadcast"
+ version = "0.7.2"
+@@ -611,6 +641,15 @@ dependencies = [
+  "inout",
+ ]
+ 
++[[package]]
++name = "clipboard-win"
++version = "5.4.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
++dependencies = [
++ "error-code",
++]
++
+ [[package]]
+ name = "cmake"
+ version = "0.1.58"
+@@ -661,6 +700,16 @@ dependencies = [
+  "version_check",
+ ]
+ 
++[[package]]
++name = "core-foundation"
++version = "0.9.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
++dependencies = [
++ "core-foundation-sys",
++ "libc",
++]
++
+ [[package]]
+ name = "core-foundation"
+ version = "0.10.1"
+@@ -684,7 +733,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "064badf302c3194842cf2c5d61f56cc88e54a759313879cdf03abdd27d0c3b97"
+ dependencies = [
+  "bitflags 2.13.2",
+- "core-foundation",
++ "core-foundation 0.10.1",
+  "core-graphics-types",
+  "foreign-types",
+  "libc",
+@@ -697,7 +746,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "3d44a101f213f6c4cdc1853d4b78aef6db6bdfa3468798cc1d9912f4735013eb"
+ dependencies = [
+  "bitflags 2.13.2",
+- "core-foundation",
++ "core-foundation 0.10.1",
+  "libc",
+ ]
+ 
+@@ -749,6 +798,12 @@ version = "0.8.23"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
+ 
++[[package]]
++name = "crunchy"
++version = "0.2.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
++
+ [[package]]
+ name = "crypto-common"
+ version = "0.1.7"
+@@ -949,6 +1004,17 @@ dependencies = [
+  "serde_core",
+ ]
+ 
++[[package]]
++name = "derive_arbitrary"
++version = "1.5.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1b034bd7d5f032402a2479444dcc6f74e36a03f31854d41680fb240ef682a1ac"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 3.0.9",
++]
++
+ [[package]]
+ name = "derive_more"
+ version = "2.1.1"
+@@ -984,10 +1050,12 @@ dependencies = [
+  "specta-typescript",
+  "tauri",
+  "tauri-build",
++ "tauri-plugin-clipboard-manager",
+  "tauri-plugin-dialog",
+  "tauri-plugin-log",
+  "tauri-plugin-opener",
+  "tauri-plugin-single-instance",
++ "tauri-plugin-updater",
+  "tauri-specta",
+  "tempfile",
+  "tokio",
+@@ -1091,7 +1159,7 @@ checksum = "fac5fca71e65e94cc718a6e2af65d6e0f9c6027751c2aa562fbb5087fda639bc"
+ dependencies = [
+  "bit-set",
+  "cssparser 0.37.0",
+- "foldhash",
++ "foldhash 0.2.0",
+  "html5ever 0.39.0",
+  "precomputed-hash",
+  "selectors 0.38.0",
+@@ -1105,6 +1173,12 @@ dependencies = [
+  "thiserror 2.0.21",
+ ]
+ 
++[[package]]
++name = "downcast-rs"
++version = "1.2.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
++
+ [[package]]
+ name = "dpi"
+ version = "0.1.2"
+@@ -1231,6 +1305,12 @@ dependencies = [
+  "windows-sys 0.61.2",
+ ]
+ 
++[[package]]
++name = "error-code"
++version = "3.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0b5343afd4a8365a643ac588dab4cf234a190c7f6c88c9f6dd6ffe00837661b7"
++
+ [[package]]
+ name = "event-listener"
+ version = "5.4.2"
+@@ -1269,6 +1349,12 @@ version = "2.5.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+ 
++[[package]]
++name = "fax"
++version = "0.2.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "caf1079563223d5d59d83c85886a56e586cfd5c1a26292e971a0fa266531ac5a"
++
+ [[package]]
+ name = "fdeflate"
+ version = "0.3.7"
+@@ -1323,6 +1409,12 @@ version = "0.1.14"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
+ 
++[[package]]
++name = "fixedbitset"
++version = "0.5.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
++
+ [[package]]
+ name = "flate2"
+ version = "1.1.10"
+@@ -1340,6 +1432,12 @@ version = "1.0.7"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
+ 
++[[package]]
++name = "foldhash"
++version = "0.1.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
++
+ [[package]]
+ name = "foldhash"
+ version = "0.2.0"
+@@ -1591,6 +1689,16 @@ dependencies = [
+  "version_check",
+ ]
+ 
++[[package]]
++name = "gethostname"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
++dependencies = [
++ "rustix",
++ "windows-link 0.2.1",
++]
++
+ [[package]]
+ name = "getrandom"
+ version = "0.2.17"
+@@ -1778,19 +1886,39 @@ dependencies = [
+  "syn 2.0.119",
+ ]
+ 
++[[package]]
++name = "half"
++version = "2.7.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
++dependencies = [
++ "cfg-if",
++ "crunchy",
++ "zerocopy",
++]
++
+ [[package]]
+ name = "hashbrown"
+ version = "0.12.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
+ 
++[[package]]
++name = "hashbrown"
++version = "0.15.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
++dependencies = [
++ "foldhash 0.1.5",
++]
++
+ [[package]]
+ name = "hashbrown"
+ version = "0.16.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+ dependencies = [
+- "foldhash",
++ "foldhash 0.2.0",
+ ]
+ 
+ [[package]]
+@@ -1799,7 +1927,7 @@ version = "0.17.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+ dependencies = [
+- "foldhash",
++ "foldhash 0.2.0",
+ ]
+ 
+ [[package]]
+@@ -1974,9 +2102,11 @@ dependencies = [
+  "percent-encoding",
+  "pin-project-lite",
+  "socket2",
++ "system-configuration",
+  "tokio",
+  "tower-service",
+  "tracing",
++ "windows-registry",
+ ]
+ 
+ [[package]]
+@@ -2135,6 +2265,7 @@ dependencies = [
+  "moxcms",
+  "num-traits",
+  "png 0.18.1",
++ "tiff",
+  "zune-core",
+  "zune-jpeg",
+ ]
+@@ -2221,7 +2352,7 @@ dependencies = [
+  "walkdir",
+  "windows 0.62.2",
+  "windows-sys 0.61.2",
+- "zip",
++ "zip 9.0.3",
+ ]
+ 
+ [[package]]
+@@ -2706,6 +2837,12 @@ version = "0.3.17"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+ 
++[[package]]
++name = "minisign-verify"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "871285dc19d8d0ebe0eef3d0e99a205f2a71363b122632cbbfa4a6c370a960ce"
++
+ [[package]]
+ name = "miniz_oxide"
+ version = "0.8.9"
+@@ -2817,6 +2954,15 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "nom"
++version = "8.0.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
++dependencies = [
++ "memchr",
++]
++
+ [[package]]
+ name = "notify"
+ version = "8.2.0"
+@@ -3013,6 +3159,7 @@ dependencies = [
+  "block2",
+  "objc2",
+  "objc2-core-foundation",
++ "objc2-core-graphics",
+  "objc2-foundation",
+  "objc2-quartz-core",
+ ]
+@@ -3143,6 +3290,18 @@ dependencies = [
+  "objc2-core-foundation",
+ ]
+ 
++[[package]]
++name = "objc2-osa-kit"
++version = "0.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f112d1746737b0da274ef79a23aac283376f335f4095a083a267a082f21db0c0"
++dependencies = [
++ "bitflags 2.13.2",
++ "objc2",
++ "objc2-app-kit",
++ "objc2-foundation",
++]
++
+ [[package]]
+ name = "objc2-quartz-core"
+ version = "0.3.2"
+@@ -3239,6 +3398,30 @@ dependencies = [
+  "pin-project-lite",
+ ]
+ 
++[[package]]
++name = "os_pipe"
++version = "1.2.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
++dependencies = [
++ "libc",
++ "windows-sys 0.61.2",
++]
++
++[[package]]
++name = "osakit"
++version = "0.3.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "732c71caeaa72c065bb69d7ea08717bd3f4863a4f451402fc9513e29dbd5261b"
++dependencies = [
++ "objc2",
++ "objc2-foundation",
++ "objc2-osa-kit",
++ "serde",
++ "serde_json",
++ "thiserror 2.0.21",
++]
++
+ [[package]]
+ name = "pango"
+ version = "0.18.3"
+@@ -3305,6 +3488,17 @@ version = "2.3.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+ 
++[[package]]
++name = "petgraph"
++version = "0.8.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
++dependencies = [
++ "fixedbitset",
++ "hashbrown 0.15.5",
++ "indexmap 2.14.2",
++]
++
+ [[package]]
+ name = "phf"
+ version = "0.13.1"
+@@ -3389,7 +3583,7 @@ checksum = "2896bade328c13f7042a297ea5ac5b0951f6cf989dea5f32c2fd98da398195cb"
+ dependencies = [
+  "base64 0.23.1",
+  "indexmap 2.14.2",
+- "quick-xml",
++ "quick-xml 0.42.0",
+  "serde",
+  "time",
+ ]
+@@ -3544,6 +3738,15 @@ version = "2.0.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
+ 
++[[package]]
++name = "quick-xml"
++version = "0.41.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
++dependencies = [
++ "memchr",
++]
++
+ [[package]]
+ name = "quick-xml"
+ version = "0.42.0"
+@@ -3880,6 +4083,7 @@ checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
+ dependencies = [
+  "aws-lc-rs",
+  "once_cell",
++ "ring",
+  "rustls-pki-types",
+  "rustls-webpki",
+  "subtle",
+@@ -3914,7 +4118,7 @@ version = "0.7.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "1167586491e2b18b8bfbb293e8180ec17c201c4f076d7cb3070ca964e7598f98"
+ dependencies = [
+- "core-foundation",
++ "core-foundation 0.10.1",
+  "core-foundation-sys",
+  "jni 0.22.4",
+  "log",
+@@ -4074,7 +4278,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
+ dependencies = [
+  "bitflags 2.13.2",
+- "core-foundation",
++ "core-foundation 0.10.1",
+  "core-foundation-sys",
+  "libc",
+  "security-framework-sys",
+@@ -4655,6 +4859,27 @@ dependencies = [
+  "windows 0.62.2",
+ ]
+ 
++[[package]]
++name = "system-configuration"
++version = "0.7.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a13f3d0daba03132c0aa9767f98351b3488edc2c100cda2d2ec2b04f3d8d3c8b"
++dependencies = [
++ "bitflags 2.13.2",
++ "core-foundation 0.9.4",
++ "system-configuration-sys",
++]
++
++[[package]]
++name = "system-configuration-sys"
++version = "0.6.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
++dependencies = [
++ "core-foundation-sys",
++ "libc",
++]
++
+ [[package]]
+ name = "system-deps"
+ version = "6.2.2"
+@@ -4676,7 +4901,7 @@ checksum = "f37f381f4e048e6cdf038b5705f8cf14ad108279d46eb968140a7b291aba9400"
+ dependencies = [
+  "bitflags 2.13.2",
+  "block2",
+- "core-foundation",
++ "core-foundation 0.10.1",
+  "core-graphics",
+  "crossbeam-channel",
+  "dbus",
+@@ -4727,6 +4952,7 @@ checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+ dependencies = [
+  "filetime",
+  "libc",
++ "xattr",
+ ]
+ 
+ [[package]]
+@@ -4867,6 +5093,21 @@ dependencies = [
+  "walkdir",
+ ]
+ 
++[[package]]
++name = "tauri-plugin-clipboard-manager"
++version = "2.5.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9be5ed8d94c33afe8377e885119069f6508780659271d0a25cfc54d441f2bc81"
++dependencies = [
++ "arboard",
++ "log",
++ "serde",
++ "serde_json",
++ "tauri",
++ "tauri-plugin",
++ "thiserror 2.0.21",
++]
++
+ [[package]]
+ name = "tauri-plugin-dialog"
+ version = "2.8.3"
+@@ -4968,6 +5209,40 @@ dependencies = [
+  "zbus",
+ ]
+ 
++[[package]]
++name = "tauri-plugin-updater"
++version = "2.14.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7259989d4fe11b2bf51f7d671642249b1837c4ae2da1430dc713ae38f98ceeec"
++dependencies = [
++ "base64 0.22.1",
++ "dirs",
++ "flate2",
++ "futures-util",
++ "http",
++ "infer",
++ "libc",
++ "log",
++ "minisign-verify",
++ "osakit",
++ "percent-encoding",
++ "reqwest",
++ "rustls",
++ "semver",
++ "serde",
++ "serde_json",
++ "tar",
++ "tauri",
++ "tauri-plugin",
++ "tempfile",
++ "thiserror 2.0.21",
++ "time",
++ "tokio",
++ "url",
++ "windows-sys 0.61.2",
++ "zip 4.6.1",
++]
++
+ [[package]]
+ name = "tauri-runtime"
+ version = "2.12.2"
+@@ -5167,6 +5442,20 @@ dependencies = [
+  "cfg-if",
+ ]
+ 
++[[package]]
++name = "tiff"
++version = "0.11.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b63feaf3343d35b6ca4d50483f94843803b0f51634937cc2ec519fc32232bc52"
++dependencies = [
++ "fax",
++ "flate2",
++ "half",
++ "quick-error",
++ "weezl",
++ "zune-jpeg",
++]
++
+ [[package]]
+ name = "time"
+ version = "0.3.55"
+@@ -5519,6 +5808,17 @@ dependencies = [
+  "windows-sys 0.61.2",
+ ]
+ 
++[[package]]
++name = "tree_magic_mini"
++version = "3.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b8765b90061cba6c22b5831f675da109ae5561588290f9fa2317adab2714d5a6"
++dependencies = [
++ "memchr",
++ "nom",
++ "petgraph",
++]
++
+ [[package]]
+ name = "try-lock"
+ version = "0.2.5"
+@@ -5780,6 +6080,76 @@ dependencies = [
+  "web-sys",
+ ]
+ 
++[[package]]
++name = "wayland-backend"
++version = "0.3.17"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "38a91b4eaddff87b1cd1074985e3713da4af2c49742d1b356b2c01670a67a078"
++dependencies = [
++ "cc",
++ "downcast-rs",
++ "rustix",
++ "smallvec",
++ "wayland-sys",
++]
++
++[[package]]
++name = "wayland-client"
++version = "0.31.15"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e3c36a0f861ad76d0901f2800b46321410d9f73f2ea88aac0650d86c32688073"
++dependencies = [
++ "bitflags 2.13.2",
++ "rustix",
++ "wayland-backend",
++ "wayland-scanner",
++]
++
++[[package]]
++name = "wayland-protocols"
++version = "0.32.13"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "23d0c813de3daa2ed6520af85a3bd49b0e722a3078506899aa9686fea58dc4b6"
++dependencies = [
++ "bitflags 2.13.2",
++ "wayland-backend",
++ "wayland-client",
++ "wayland-scanner",
++]
++
++[[package]]
++name = "wayland-protocols-wlr"
++version = "0.3.12"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "eb04e52f7836d7c7976c78ca0250d61e33873c34156a2a1fc9474828ec268234"
++dependencies = [
++ "bitflags 2.13.2",
++ "wayland-backend",
++ "wayland-client",
++ "wayland-protocols",
++ "wayland-scanner",
++]
++
++[[package]]
++name = "wayland-scanner"
++version = "0.31.11"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "338e30461b3a2b67d70eb30a6d89f8e0c93a833e07d2ae89085cd070c4a00ac0"
++dependencies = [
++ "proc-macro2",
++ "quick-xml 0.41.0",
++ "quote",
++]
++
++[[package]]
++name = "wayland-sys"
++version = "0.31.11"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d8eab23fefc9e41f8e841df4a9c707e8a8c4ed26e944ef69297184de2785e3be"
++dependencies = [
++ "pkg-config",
++]
++
+ [[package]]
+ name = "web-sys"
+ version = "0.3.106"
+@@ -5899,6 +6269,12 @@ dependencies = [
+  "windows-core 0.62.2",
+ ]
+ 
++[[package]]
++name = "weezl"
++version = "0.1.12"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
++
+ [[package]]
+ name = "winapi"
+ version = "0.3.9"
+@@ -6104,6 +6480,17 @@ dependencies = [
+  "windows-link 0.2.1",
+ ]
+ 
++[[package]]
++name = "windows-registry"
++version = "0.6.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
++dependencies = [
++ "windows-link 0.2.1",
++ "windows-result 0.4.1",
++ "windows-strings 0.5.1",
++]
++
+ [[package]]
+ name = "windows-result"
+ version = "0.3.4"
+@@ -6423,6 +6810,24 @@ version = "0.57.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+ 
++[[package]]
++name = "wl-clipboard-rs"
++version = "0.9.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4d7888ccd4896447b2d14d3a9350a85df2aeb6f181e2e7a31349d104ac46cac1"
++dependencies = [
++ "libc",
++ "log",
++ "os_pipe",
++ "rustix",
++ "thiserror 2.0.21",
++ "tree_magic_mini",
++ "wayland-backend",
++ "wayland-client",
++ "wayland-protocols",
++ "wayland-protocols-wlr",
++]
++
+ [[package]]
+ name = "wrapcenum-derive"
+ version = "0.4.1"
+@@ -6506,6 +6911,33 @@ dependencies = [
+  "pkg-config",
+ ]
+ 
++[[package]]
++name = "x11rb"
++version = "0.13.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9993aa5be5a26815fe2c3eacfc1fde061fc1a1f094bf1ad2a18bf9c495dd7414"
++dependencies = [
++ "gethostname",
++ "rustix",
++ "x11rb-protocol",
++]
++
++[[package]]
++name = "x11rb-protocol"
++version = "0.13.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
++
++[[package]]
++name = "xattr"
++version = "1.6.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
++dependencies = [
++ "libc",
++ "rustix",
++]
++
+ [[package]]
+ name = "yoke"
+ version = "0.8.3"
+@@ -6610,6 +7042,26 @@ dependencies = [
+  "serde",
+ ]
+ 
++[[package]]
++name = "zerocopy"
++version = "0.8.63"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8"
++dependencies = [
++ "zerocopy-derive",
++]
++
++[[package]]
++name = "zerocopy-derive"
++version = "0.8.63"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.119",
++]
++
+ [[package]]
+ name = "zerofrom"
+ version = "0.1.8"
+@@ -6670,6 +7122,18 @@ dependencies = [
+  "syn 3.0.9",
+ ]
+ 
++[[package]]
++name = "zip"
++version = "4.6.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
++dependencies = [
++ "arbitrary",
++ "crc32fast",
++ "indexmap 2.14.2",
++ "memchr",
++]
++
+ [[package]]
+ name = "zip"
+ version = "9.0.3"
+diff --git a/Cargo.toml b/Cargo.toml
+index 9b6b683..7fa39dc 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -43,6 +43,8 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Secu
+ libc = "=0.2.190"
+ tauri-plugin-dialog = "=2.8.3"
+ tauri-plugin-opener = { version = "=2.5.4", default-features = false }
++tauri-plugin-updater = "=2.14.0"
++tauri-plugin-clipboard-manager = "=2.5.0"
+ serde_yaml_ng = { version = "=0.10.0", default-features = false }
+ url = "=2.5.8"
+ percent-encoding = "=2.3.2"
+diff --git a/crates/application/src/settings/diagnostics.rs b/crates/application/src/settings/diagnostics.rs
+new file mode 100644
+index 0000000..1c1b83c
+--- /dev/null
++++ b/crates/application/src/settings/diagnostics.rs
+@@ -0,0 +1,399 @@
++//! Complete diagnostics for support (REQUIREMENTS 6.7 "Copy diagnostics").
++//!
++//! The snapshot reuses the existing runtime and environment queries. It never runs setup,
++//! never imports custom node code and never fails as a whole: a section that cannot be read is
++//! left out and named in the availability warnings. Redaction of the rendered report belongs to
++//! the composition root, which sees the finished text.
++
++use std::{fmt::Write, sync::Arc};
++
++use async_trait::async_trait;
++use domain::environment::GpuProbe;
++use thiserror::Error;
++
++use crate::{
++    comfy_runtime::{GetComfyStatus, RuntimeDeps, RuntimeLogReader, RuntimeStatus},
++    environment::{
++        DetectHardware, EnvironmentAppError, EnvironmentInfo, GetEnvironmentInfo, ManifestState,
++    },
++};
++
++/// How many log lines each log section of the report carries.
++pub const LOG_TAIL_LINES: usize = 200;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
++pub enum DiagnosticsError {
++    #[error("the application log is unavailable")]
++    Unavailable,
++}
++
++/// The tail of the application's own log file.
++#[async_trait]
++pub trait AppLogTail: Send + Sync {
++    /// At most `limit` of the newest lines, oldest first.
++    async fn last_lines(&self, limit: usize) -> Result<Vec<String>, DiagnosticsError>;
++}
++
++/// A tool whose version is pinned by the application rather than observed on this machine.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct PinnedTool {
++    pub name: String,
++    pub version: String,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct EnvironmentSection {
++    pub id: String,
++    pub ownership: String,
++    pub state: String,
++    pub python: String,
++    pub python_source: String,
++    pub profile_id: String,
++    pub profile_revision: u32,
++    pub profile_label: Option<String>,
++    pub cuda_variant: Option<String>,
++    pub torch: Option<String>,
++    pub triton: Option<String>,
++    pub protected_pins: Vec<(String, String)>,
++    /// Accelerator outcomes as reported by the environment query; empty when the build does not
++    /// report any.
++    pub accelerators: Vec<String>,
++}
++
++impl From<&EnvironmentInfo> for EnvironmentSection {
++    fn from(info: &EnvironmentInfo) -> Self {
++        let env = &info.env;
++        Self {
++            id: env.id.to_string(),
++            ownership: env.ownership.as_str().to_owned(),
++            state: env.state.as_str().to_owned(),
++            python: env.python_version.to_string(),
++            python_source: env.source.as_str().to_owned(),
++            profile_id: env.profile_id.clone(),
++            profile_revision: env.profile_revision,
++            profile_label: info.profile_label.clone(),
++            cuda_variant: info.cuda_variant.clone(),
++            torch: info.torch_version.clone(),
++            triton: info.triton_version.clone(),
++            protected_pins: env
++                .pins
++                .iter()
++                .map(|(name, version)| (name.to_string(), version.to_owned()))
++                .collect(),
++            accelerators: info.accelerators.clone(),
++        }
++    }
++}
++
++/// The profile recorded in `install.json`.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ManifestSection {
++    pub profile_id: String,
++    pub profile_revision: u32,
++}
++
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub struct ComfySection {
++    /// Commit, tag and branch of the checkout, when it can be read.
++    pub revision: Option<String>,
++    pub status: Option<String>,
++}
++
++/// Everything the report states, as plain data. Sections that could not be read are `None` or
++/// empty and are named in `warnings`.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub struct DiagnosticsSnapshot {
++    pub app_version: String,
++    pub os: String,
++    pub gpus: Vec<String>,
++    pub driver_version: Option<String>,
++    pub driver_cuda: Option<String>,
++    pub environment: Option<EnvironmentSection>,
++    pub manifest: Option<ManifestSection>,
++    pub comfyui: ComfySection,
++    pub tools: Vec<PinnedTool>,
++    pub app_log: Vec<String>,
++    pub runtime_log: Vec<String>,
++    pub warnings: Vec<String>,
++}
++
++pub struct CollectDiagnostics {
++    deps: RuntimeDeps,
++    app_log: Arc<dyn AppLogTail>,
++    runtime_log: Arc<dyn RuntimeLogReader>,
++    app_version: String,
++    tools: Vec<PinnedTool>,
++}
++
++impl CollectDiagnostics {
++    pub fn new(
++        deps: RuntimeDeps,
++        app_log: Arc<dyn AppLogTail>,
++        runtime_log: Arc<dyn RuntimeLogReader>,
++        app_version: impl Into<String>,
++        tools: Vec<PinnedTool>,
++    ) -> Self {
++        Self {
++            deps,
++            app_log,
++            runtime_log,
++            app_version: app_version.into(),
++            tools,
++        }
++    }
++
++    pub async fn execute(&self) -> DiagnosticsSnapshot {
++        let environment = &self.deps.environment;
++        let root = environment.root.current().root;
++        let mut snapshot = DiagnosticsSnapshot {
++            app_version: self.app_version.clone(),
++            tools: self.tools.clone(),
++            ..DiagnosticsSnapshot::default()
++        };
++
++        let info = GetEnvironmentInfo::new(environment.clone()).execute().await;
++        let env_path = info.as_ref().ok().map(|info| info.env.path.clone());
++        match info {
++            Ok(info) => {
++                if info.accelerators.is_empty() {
++                    snapshot.warnings.push(
++                        "Accelerator outcomes are not available: this build does not report them."
++                            .into(),
++                    );
++                }
++                snapshot.environment = Some(EnvironmentSection::from(&info));
++            }
++            Err(EnvironmentAppError::NoActiveEnvironment) => snapshot.warnings.push(
++                "No environment is active yet (first run): environment details are not available."
++                    .into(),
++            ),
++            Err(_) => snapshot
++                .warnings
++                .push("The active environment could not be read.".into()),
++        }
++
++        let hardware = DetectHardware::new(environment.clone())
++            .execute(&root, env_path.as_deref())
++            .await;
++        snapshot.os = hardware.os_version;
++        snapshot.gpus = describe_gpus(&hardware.gpus);
++        snapshot.driver_version = hardware.driver_version;
++        snapshot.driver_cuda = hardware.driver_cuda.map(|cuda| cuda.to_string());
++
++        match environment.manifests.read(&root).await {
++            Ok(ManifestState::Valid(manifest)) => {
++                snapshot.manifest = Some(ManifestSection {
++                    profile_id: manifest.profile_id,
++                    profile_revision: manifest.profile_revision,
++                });
++            }
++            Ok(ManifestState::Absent) => snapshot.warnings.push(
++                "install.json does not exist yet: the manifest profile is not available.".into(),
++            ),
++            _ => snapshot.warnings.push(
++                "install.json could not be read: the manifest profile is not available.".into(),
++            ),
++        }
++
++        match self.deps.repository.revision(&root).await {
++            Ok(revision) => {
++                let mut text = revision.commit;
++                if let Some(tag) = revision.tag {
++                    let _ = write!(text, " (tag {tag})");
++                }
++                if let Some(branch) = revision.branch {
++                    let _ = write!(text, " (branch {branch})");
++                }
++                snapshot.comfyui.revision = Some(text);
++            }
++            Err(_) => snapshot.warnings.push(
++                "The ComfyUI checkout could not be read: its revision is not available.".into(),
++            ),
++        }
++        match GetComfyStatus::new(self.deps.clone()).execute().await {
++            Ok(status) => snapshot.comfyui.status = Some(describe_status(&status)),
++            Err(_) => snapshot
++                .warnings
++                .push("The ComfyUI runtime status could not be read.".into()),
++        }
++
++        match self.app_log.last_lines(LOG_TAIL_LINES).await {
++            Ok(lines) => snapshot.app_log = newest(lines),
++            Err(_) => snapshot
++                .warnings
++                .push("The application log could not be read.".into()),
++        }
++        snapshot.runtime_log = newest(self.runtime_log.last_lines(LOG_TAIL_LINES));
++        snapshot
++    }
++}
++
++/// The last [`LOG_TAIL_LINES`] lines, whatever the port returned.
++fn newest(mut lines: Vec<String>) -> Vec<String> {
++    let excess = lines.len().saturating_sub(LOG_TAIL_LINES);
++    lines.drain(..excess);
++    lines
++}
++
++fn describe_gpus(probe: &GpuProbe) -> Vec<String> {
++    match probe {
++        GpuProbe::Detected(gpus) => gpus
++            .iter()
++            .map(|gpu| {
++                format!(
++                    "{} ({} MiB)",
++                    gpu.name,
++                    gpu.vram_mib
++                        .map_or_else(|| "unknown".into(), |mib| mib.to_string())
++                )
++            })
++            .collect(),
++        GpuProbe::NoNvidiaGpu => vec!["No NVIDIA GPU detected".into()],
++        GpuProbe::Unavailable => vec!["GPU observation unavailable".into()],
++    }
++}
++
++fn describe_status(status: &RuntimeStatus) -> String {
++    let mut text = format!("{:?}", status.lifecycle).to_lowercase();
++    if let Some(failure) = &status.failure {
++        let _ = write!(text, "; last failure: {:?}", failure.kind);
++        if let Some(code) = failure.exit_code {
++            let _ = write!(text, " (exit code {code})");
++        }
++        let _ = write!(text, ": {}", failure.message);
++    }
++    if let Some(operation) = &status.pending_operation {
++        let _ = write!(text, "; pending operation: {operation}");
++    }
++    if let Some(recovery) = &status.recovery {
++        let _ = write!(text, "; recovery: {recovery}");
++    }
++    text
++}
++
++impl DiagnosticsSnapshot {
++    /// The plain-text report. Redaction is applied by the caller to this finished text.
++    pub fn render(&self) -> String {
++        const UNAVAILABLE: &str = "unavailable";
++        let mut out = String::new();
++        let _ = writeln!(out, "vjumpkung ComfyUI Desktop diagnostics");
++        let _ = writeln!(out, "App version: {}", self.app_version);
++        let _ = writeln!(out, "OS: {}", self.os);
++        for gpu in &self.gpus {
++            let _ = writeln!(out, "GPU: {gpu}");
++        }
++        let _ = writeln!(
++            out,
++            "NVIDIA driver: {}",
++            self.driver_version.as_deref().unwrap_or(UNAVAILABLE)
++        );
++        let _ = writeln!(
++            out,
++            "Driver CUDA: {}",
++            self.driver_cuda.as_deref().unwrap_or(UNAVAILABLE)
++        );
++
++        let _ = writeln!(out, "\n== Environment ==");
++        match &self.environment {
++            Some(env) => {
++                let _ = writeln!(out, "ID: {}", env.id);
++                let _ = writeln!(out, "Ownership: {}", env.ownership);
++                let _ = writeln!(out, "State: {}", env.state);
++                let _ = writeln!(out, "Python: {} ({})", env.python, env.python_source);
++                let _ = write!(
++                    out,
++                    "Profile: {} revision {}",
++                    env.profile_id, env.profile_revision
++                );
++                if let Some(label) = &env.profile_label {
++                    let _ = write!(out, " ({label})");
++                }
++                let _ = writeln!(out);
++                for (label, value) in [
++                    ("CUDA variant", &env.cuda_variant),
++                    ("PyTorch", &env.torch),
++                    ("Triton", &env.triton),
++                ] {
++                    let _ = writeln!(out, "{label}: {}", value.as_deref().unwrap_or(UNAVAILABLE));
++                }
++                let _ = writeln!(out, "Protected packages:");
++                if env.protected_pins.is_empty() {
++                    let _ = writeln!(out, "  none");
++                }
++                for (name, version) in &env.protected_pins {
++                    let _ = writeln!(out, "  {name}=={version}");
++                }
++                let _ = writeln!(out, "Accelerators:");
++                if env.accelerators.is_empty() {
++                    let _ = writeln!(out, "  {UNAVAILABLE} (not reported by this build)");
++                }
++                for accelerator in &env.accelerators {
++                    let _ = writeln!(out, "  {accelerator}");
++                }
++            }
++            None => {
++                let _ = writeln!(out, "{UNAVAILABLE}");
++            }
++        }
++
++        let _ = writeln!(out, "\n== Install manifest ==");
++        match &self.manifest {
++            Some(manifest) => {
++                let _ = writeln!(
++                    out,
++                    "Profile: {} revision {}",
++                    manifest.profile_id, manifest.profile_revision
++                );
++            }
++            None => {
++                let _ = writeln!(out, "{UNAVAILABLE}");
++            }
++        }
++
++        let _ = writeln!(out, "\n== ComfyUI ==");
++        let _ = writeln!(
++            out,
++            "Revision: {}",
++            self.comfyui.revision.as_deref().unwrap_or(UNAVAILABLE)
++        );
++        let _ = writeln!(
++            out,
++            "Status: {}",
++            self.comfyui.status.as_deref().unwrap_or(UNAVAILABLE)
++        );
++
++        let _ = writeln!(out, "\n== Tool versions ==");
++        for tool in &self.tools {
++            let _ = writeln!(
++                out,
++                "{} {} (pinned by this app, not probed)",
++                tool.name, tool.version
++            );
++        }
++
++        let _ = writeln!(out, "\n== Availability warnings ==");
++        if self.warnings.is_empty() {
++            let _ = writeln!(out, "none");
++        }
++        for warning in &self.warnings {
++            let _ = writeln!(out, "- {warning}");
++        }
++
++        for (title, lines) in [
++            ("Application log", &self.app_log),
++            ("ComfyUI runtime log", &self.runtime_log),
++        ] {
++            let _ = writeln!(out, "\n== {title} (last {LOG_TAIL_LINES} lines) ==");
++            if lines.is_empty() {
++                let _ = writeln!(out, "(no lines)");
++            }
++            for line in lines {
++                let _ = writeln!(out, "{line}");
++            }
++        }
++        out
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/application/src/settings/diagnostics/tests.rs b/crates/application/src/settings/diagnostics/tests.rs
+new file mode 100644
+index 0000000..a842fab
+--- /dev/null
++++ b/crates/application/src/settings/diagnostics/tests.rs
+@@ -0,0 +1,340 @@
++use std::{
++    path::Path,
++    sync::{Arc, Mutex},
++};
++
++use async_trait::async_trait;
++use domain::{
++    comfy_runtime::{LaunchCapabilities, Port, RepoState, Revision},
++    environment::{PythonEnvironment, PythonVersion},
++};
++
++use super::*;
++use crate::{
++    comfy_runtime::{
++        ComfyRepository, ExtraModelPaths, FrozenUpdate, InventoryState, LaunchPreflight, ModelRoot,
++        PortProbe, RuntimeBlock, RuntimeError, RuntimeMaintenance, RuntimeSession, RuntimeStore,
++        RuntimeSupervisor, UpdateRun, VersionList,
++    },
++    environment::{InstallManifest, ManifestState, RunId, StepContext},
++    shared::{CancelToken, MaintenanceLease},
++    test_support::block_on,
++};
++
++#[allow(dead_code, clippy::duplicate_mod)]
++#[path = "../../environment/tests/fakes.rs"]
++mod env_fakes;
++use env_fakes::World;
++
++/// Only the queries the report reuses are implemented; anything else is a test bug.
++struct Machine {
++    env: Arc<World>,
++    revision: Mutex<Result<Revision, RuntimeError>>,
++}
++
++impl Machine {
++    fn new() -> Arc<Self> {
++        Arc::new(Self {
++            env: World::new(),
++            revision: Mutex::new(Err(RuntimeError::Failed("no checkout".into()))),
++        })
++    }
++
++    fn deps(self: &Arc<Self>) -> RuntimeDeps {
++        RuntimeDeps {
++            environment: self.env.deps(),
++            supervisor: self.clone(),
++            store: self.clone(),
++            repository: self.clone(),
++            ports: self.clone(),
++            preflight: self.clone(),
++            extra_paths: self.clone(),
++        }
++    }
++
++    fn collect(
++        self: &Arc<Self>,
++        app_log: Result<Vec<String>, DiagnosticsError>,
++        runtime_log: Vec<String>,
++    ) -> DiagnosticsSnapshot {
++        block_on(
++            CollectDiagnostics::new(
++                self.deps(),
++                Arc::new(AppLog(app_log)),
++                Arc::new(RuntimeLines(runtime_log)),
++                "1.2.3",
++                vec![
++                    PinnedTool {
++                        name: "uv".into(),
++                        version: "0.13.1".into(),
++                    },
++                    PinnedTool {
++                        name: "hf".into(),
++                        version: "2.2.0".into(),
++                    },
++                ],
++            )
++            .execute(),
++        )
++    }
++}
++
++struct AppLog(Result<Vec<String>, DiagnosticsError>);
++
++#[async_trait]
++impl AppLogTail for AppLog {
++    async fn last_lines(&self, _: usize) -> Result<Vec<String>, DiagnosticsError> {
++        self.0.clone()
++    }
++}
++
++struct RuntimeLines(Vec<String>);
++
++impl RuntimeLogReader for RuntimeLines {
++    fn last_lines(&self, _: usize) -> Vec<String> {
++        self.0.clone()
++    }
++}
++
++#[async_trait]
++impl RuntimeMaintenance for Machine {
++    async fn ensure_stopped(&self, _: &Path) -> Result<(), RuntimeBlock> {
++        Ok(())
++    }
++}
++
++#[async_trait]
++impl RuntimeSupervisor for Machine {
++    async fn status(&self) -> RuntimeStatus {
++        RuntimeStatus::default()
++    }
++    async fn inventory(&self, _: &Path) -> Result<InventoryState, RuntimeError> {
++        unreachable!("diagnostics never inspect processes")
++    }
++    async fn start(
++        &self,
++        _: RuntimeSession,
++        _: Vec<String>,
++        _: Box<dyn MaintenanceLease>,
++    ) -> Result<RuntimeStatus, RuntimeError> {
++        unreachable!("diagnostics never start ComfyUI")
++    }
++    async fn stop(&self) -> Result<RuntimeStatus, RuntimeError> {
++        unreachable!("diagnostics never stop ComfyUI")
++    }
++}
++
++#[async_trait]
++impl RuntimeStore for Machine {
++    async fn launch_options(&self) -> Result<domain::comfy_runtime::LaunchOptions, RuntimeError> {
++        unreachable!()
++    }
++    async fn save_launch_options(
++        &self,
++        _: &domain::comfy_runtime::LaunchOptions,
++    ) -> Result<(), RuntimeError> {
++        unreachable!()
++    }
++    async fn save_session(&self, _: &RuntimeSession, _: bool) -> Result<(), RuntimeError> {
++        unreachable!()
++    }
++    async fn unfinished_sessions(&self) -> Result<Vec<RuntimeSession>, RuntimeError> {
++        unreachable!()
++    }
++    async fn save_update(&self, _: &UpdateRun) -> Result<(), RuntimeError> {
++        unreachable!()
++    }
++    async fn unfinished_update(&self) -> Result<Option<UpdateRun>, RuntimeError> {
++        Ok(None)
++    }
++}
++
++#[async_trait]
++impl ComfyRepository for Machine {
++    async fn revision(&self, _: &Path) -> Result<Revision, RuntimeError> {
++        self.revision.lock().unwrap().clone()
++    }
++    async fn status(&self, _: &Path) -> Result<RepoState, RuntimeError> {
++        unreachable!()
++    }
++    async fn fetch(&self, _: &Path, _: &StepContext) -> Result<(), RuntimeError> {
++        unreachable!("diagnostics never touch the network")
++    }
++    async fn freeze(
++        &self,
++        _: &Path,
++        _: &domain::comfy_runtime::UpdateTarget,
++    ) -> Result<FrozenUpdate, RuntimeError> {
++        unreachable!()
++    }
++    async fn apply(&self, _: &Path, _: &FrozenUpdate, _: &StepContext) -> Result<(), RuntimeError> {
++        unreachable!()
++    }
++    async fn versions(&self, _: &Path) -> Result<VersionList, RuntimeError> {
++        unreachable!()
++    }
++}
++
++#[async_trait]
++impl PortProbe for Machine {
++    async fn available(&self, _: Port, _: bool) -> Result<bool, RuntimeError> {
++        unreachable!()
++    }
++    async fn next_free(&self, _: Port, _: bool) -> Result<Option<Port>, RuntimeError> {
++        unreachable!()
++    }
++}
++
++#[async_trait]
++impl LaunchPreflight for Machine {
++    async fn capabilities(
++        &self,
++        _: &Path,
++        _: &PythonEnvironment,
++        _: &CancelToken,
++    ) -> Result<LaunchCapabilities, RuntimeError> {
++        unreachable!("diagnostics never run the environment's Python")
++    }
++}
++
++#[async_trait]
++impl ExtraModelPaths for Machine {
++    async fn read(&self, _: &Path) -> Result<Vec<ModelRoot>, RuntimeError> {
++        unreachable!()
++    }
++}
++
++fn seed_environment_and_manifest(machine: &Machine) {
++    let active = machine
++        .env
++        .seed_active_env("selected", PythonVersion::new(3, 13, 16));
++    *machine.env.manifest.lock().unwrap() = ManifestState::Valid(InstallManifest {
++        schema_version: 1,
++        install_root: env_fakes::ROOT.into(),
++        generation: 1,
++        env_id: active.id,
++        env_path: active.path,
++        ownership: active.ownership,
++        python_version: active.python_version,
++        profile_id: active.profile_id,
++        profile_revision: active.profile_revision,
++        comfyui_reference: Some("v1".into()),
++        comfyui_commit: Some("a".repeat(40)),
++        run_id: RunId::new("setup-1").unwrap(),
++        activated_at: "t".into(),
++    });
++}
++
++fn warned(snapshot: &DiagnosticsSnapshot, fragment: &str) -> bool {
++    snapshot
++        .warnings
++        .iter()
++        .any(|warning| warning.contains(fragment))
++}
++
++#[test]
++fn diagnostics_handles_first_run_and_missing_sections() {
++    // First run: no environment, no install.json, no checkout, no readable application log.
++    let machine = Machine::new();
++    let snapshot = machine.collect(Err(DiagnosticsError::Unavailable), Vec::new());
++
++    assert_eq!(snapshot.app_version, "1.2.3");
++    assert_eq!(snapshot.os, "Windows 11");
++    assert_eq!(snapshot.gpus, ["NVIDIA GeForce RTX 3060 (12288 MiB)"]);
++    assert_eq!(snapshot.driver_version.as_deref(), Some("591.86"));
++    assert_eq!(snapshot.driver_cuda.as_deref(), Some("13.1"));
++    assert!(snapshot.environment.is_none());
++    assert!(snapshot.manifest.is_none());
++    assert!(snapshot.comfyui.revision.is_none());
++    assert_eq!(snapshot.comfyui.status.as_deref(), Some("stopped"));
++    for fragment in [
++        "first run",
++        "install.json",
++        "ComfyUI checkout",
++        "application log",
++    ] {
++        assert!(warned(&snapshot, fragment), "{fragment}: {snapshot:?}");
++    }
++    let text = snapshot.render();
++    assert!(text.contains("== Environment ==\nunavailable\n"), "{text}");
++    assert!(
++        text.contains("== Install manifest ==\nunavailable\n"),
++        "{text}"
++    );
++    assert!(text.contains("Revision: unavailable"), "{text}");
++    assert!(text.contains("uv 0.13.1 (pinned by this app, not probed)"));
++    assert!(text.contains("hf 2.2.0 (pinned by this app, not probed)"));
++
++    // An environment exists, but its checkout is gone and the logs are unreadable.
++    let machine = Machine::new();
++    seed_environment_and_manifest(&machine);
++    let snapshot = machine.collect(Err(DiagnosticsError::Unavailable), Vec::new());
++    assert!(snapshot.environment.is_some());
++    assert!(snapshot.manifest.is_some());
++    assert!(snapshot.comfyui.revision.is_none());
++    assert!(warned(&snapshot, "ComfyUI checkout"));
++    assert!(warned(&snapshot, "application log"));
++    assert!(!warned(&snapshot, "first run"));
++}
++
++#[test]
++fn complete_installation_fills_every_section() {
++    let machine = Machine::new();
++    seed_environment_and_manifest(&machine);
++    *machine.revision.lock().unwrap() = Ok(Revision {
++        commit: "b".repeat(40),
++        tag: Some("v1.2".into()),
++        branch: None,
++    });
++    let snapshot = machine.collect(Ok(vec!["app line".into()]), vec!["runtime line".into()]);
++
++    let environment = snapshot.environment.as_ref().unwrap();
++    assert_eq!(environment.id, "selected");
++    assert_eq!(environment.ownership, "app_owned");
++    assert_eq!(environment.state, "verified");
++    assert_eq!(environment.python, "3.13.16");
++    assert_eq!(environment.profile_id, "win-py313-torch2141-cu130");
++    assert_eq!(environment.torch.as_deref(), Some("2.14.1+cu130"));
++    assert!(
++        environment
++            .protected_pins
++            .contains(&("torch".into(), "2.14.1+cu130".into()))
++    );
++    let manifest = snapshot.manifest.as_ref().unwrap();
++    assert_eq!(manifest.profile_id, "win-py313-torch2141-cu130");
++    assert_eq!(manifest.profile_revision, 1);
++    assert_eq!(
++        snapshot.comfyui.revision,
++        Some(format!("{} (tag v1.2)", "b".repeat(40)))
++    );
++    // The baseline environment query reports no accelerator outcomes: said, not invented.
++    assert_eq!(snapshot.warnings.len(), 1, "{:?}", snapshot.warnings);
++    assert!(warned(&snapshot, "Accelerator outcomes are not available"));
++
++    let text = snapshot.render();
++    assert!(text.contains("  torch==2.14.1+cu130"), "{text}");
++    assert!(text.contains("Ownership: app_owned"), "{text}");
++    assert!(text.contains("Profile: win-py313-torch2141-cu130 revision 1"));
++    assert!(text.contains("== Application log (last 200 lines) ==\napp line\n"));
++    assert!(text.contains("== ComfyUI runtime log (last 200 lines) ==\nruntime line\n"));
++}
++
++#[test]
++fn snapshot_keeps_only_the_newest_log_lines_of_each_section() {
++    let machine = Machine::new();
++    let lines = |prefix: &str| {
++        (0..500)
++            .map(|n| format!("{prefix}-{n}"))
++            .collect::<Vec<_>>()
++    };
++    let snapshot = machine.collect(Ok(lines("app")), lines("runtime"));
++
++    for (kept, prefix) in [
++        (&snapshot.app_log, "app"),
++        (&snapshot.runtime_log, "runtime"),
++    ] {
++        assert_eq!(kept.len(), LOG_TAIL_LINES);
++        assert_eq!(kept.first().unwrap(), &format!("{prefix}-300"));
++        assert_eq!(kept.last().unwrap(), &format!("{prefix}-499"));
++    }
++}
+diff --git a/crates/application/src/settings/mod.rs b/crates/application/src/settings/mod.rs
+index 3e4726a..718098c 100644
+--- a/crates/application/src/settings/mod.rs
++++ b/crates/application/src/settings/mod.rs
+@@ -1,5 +1,7 @@
+ use std::sync::Arc;
+ pub mod credential_tester;
++pub mod diagnostics;
++pub mod updates;
+ 
+ use async_trait::async_trait;
+ use domain::settings::{CredentialKind, Settings, SettingsError};
+diff --git a/crates/application/src/settings/updates.rs b/crates/application/src/settings/updates.rs
+new file mode 100644
+index 0000000..37de47d
+--- /dev/null
++++ b/crates/application/src/settings/updates.rs
+@@ -0,0 +1,153 @@
++//! Signed self-update of the application (FR-SET-4).
++//!
++//! The updater adapter retains the exact release the user reviewed. Installation names that
++//! release by an opaque, process-local id and can never resolve or install another one. The
++//! workflow here owns the maintenance gate and the stopped-runtime proof for the whole
++//! installation, including the adapter's cleanup before an installer may end the process.
++
++use std::sync::Arc;
++
++use async_trait::async_trait;
++use thiserror::Error;
++
++use crate::{
++    comfy_runtime::{RuntimeBlock, RuntimeMaintenance},
++    environment::{EnvironmentDeps, RootSwitcher},
++    shared::{GateError, MaintenanceGate},
++};
++
++/// A newer signed release awaiting the user's review. `update_id` is only meaningful to the
++/// updater that issued it and only until the next check or installation.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct UpdateOffer {
++    pub update_id: String,
++    pub version: String,
++    pub date: Option<String>,
++    pub notes: Option<String>,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
++pub enum UpdateError {
++    #[error("signed updates are not configured in this build")]
++    NotConfigured,
++    #[error("the reviewed update is no longer available; check again")]
++    Stale,
++    #[error("the update server could not be checked")]
++    CheckFailed,
++    #[error("the update signature is not valid")]
++    SignatureInvalid,
++    #[error("the update could not be installed")]
++    InstallFailed,
++    #[error(transparent)]
++    Gate(#[from] GateError),
++    #[error(transparent)]
++    Runtime(#[from] RuntimeBlock),
++}
++
++impl UpdateError {
++    /// The stable machine-readable code of the failure.
++    pub fn code(self) -> &'static str {
++        match self {
++            Self::NotConfigured => "updater_not_configured",
++            Self::Stale => "update_stale",
++            Self::CheckFailed => "update_check_failed",
++            Self::SignatureInvalid => "update_signature_invalid",
++            Self::InstallFailed => "update_install_failed",
++            Self::Gate(GateError::Busy) => "maintenance_busy",
++            Self::Gate(GateError::Unavailable) => "maintenance_unavailable",
++            Self::Runtime(RuntimeBlock::Running) => "comfyui_running",
++            Self::Runtime(RuntimeBlock::CannotAssess) => "comfyui_state_unknown",
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum UpdateProgress {
++    /// `total` is unknown when the server does not announce a length.
++    Downloading {
++        downloaded: u64,
++        total: Option<u64>,
++    },
++    Installing,
++    Restarting,
++    Failed(UpdateError),
++}
++
++/// Receives installation progress. A sink whose consumer is gone must drop events silently:
++/// losing the UI never cancels the installation.
++pub trait UpdateProgressSink: Send + Sync {
++    fn report(&self, progress: UpdateProgress);
++}
++
++#[async_trait]
++pub trait AppUpdater: Send + Sync {
++    /// False when the build carries no complete, valid updater configuration. An unconfigured
++    /// updater never touches the network.
++    fn configured(&self) -> bool;
++
++    /// The newer release, if any. Replaces every earlier offer.
++    async fn check(&self) -> Result<Option<UpdateOffer>, UpdateError>;
++
++    /// Downloads and verifies the release named by `update_id`, stops the application's own
++    /// background work, installs it and restarts. The id is consumed, and an id that is not the
++    /// retained reviewed offer fails with [`UpdateError::Stale`] before anything is downloaded.
++    /// The installer may end the process, so all cleanup happens before it is invoked.
++    async fn install(
++        &self,
++        update_id: &str,
++        sink: Arc<dyn UpdateProgressSink>,
++    ) -> Result<(), UpdateError>;
++}
++
++/// Installs the reviewed release under the maintenance gate. The lease is held until the
++/// updater returns, so no other maintenance operation can start while the application's
++/// background work is quiesced and the installer runs.
++pub struct InstallAppUpdate {
++    gate: Arc<dyn MaintenanceGate>,
++    runtime: Arc<dyn RuntimeMaintenance>,
++    root: Arc<dyn RootSwitcher>,
++}
++
++impl InstallAppUpdate {
++    pub fn new(deps: &EnvironmentDeps) -> Self {
++        Self {
++            gate: deps.gate.clone(),
++            runtime: deps.runtime.clone(),
++            root: deps.root.clone(),
++        }
++    }
++
++    pub async fn execute(
++        &self,
++        updater: &dyn AppUpdater,
++        update_id: &str,
++        sink: Arc<dyn UpdateProgressSink>,
++    ) -> Result<(), UpdateError> {
++        let result = self.run(updater, update_id, sink.clone()).await;
++        if let Err(error) = result {
++            sink.report(UpdateProgress::Failed(error));
++        }
++        result
++    }
++
++    async fn run(
++        &self,
++        updater: &dyn AppUpdater,
++        update_id: &str,
++        sink: Arc<dyn UpdateProgressSink>,
++    ) -> Result<(), UpdateError> {
++        if !updater.configured() {
++            return Err(UpdateError::NotConfigured);
++        }
++        let _lease = self.gate.try_acquire().await?;
++        // The process inventory is read only under the gate, so nothing can start meanwhile. A
++        // retained headless runtime is a running runtime: the installer would replace the
++        // application under it.
++        let root = self.root.current().root;
++        self.runtime.ensure_stopped(&root).await?;
++        updater.install(update_id, sink).await
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/application/src/settings/updates/tests.rs b/crates/application/src/settings/updates/tests.rs
+new file mode 100644
+index 0000000..349959a
+--- /dev/null
++++ b/crates/application/src/settings/updates/tests.rs
+@@ -0,0 +1,276 @@
++use std::{
++    path::Path,
++    sync::{
++        Arc, Mutex,
++        atomic::{AtomicBool, Ordering},
++    },
++};
++
++use async_trait::async_trait;
++
++use super::*;
++use crate::{
++    comfy_runtime::{RuntimeBlock, RuntimeMaintenance},
++    shared::MaintenanceGate,
++    test_support::block_on,
++};
++
++#[allow(dead_code, clippy::duplicate_mod)]
++#[path = "../../environment/tests/fakes.rs"]
++mod env_fakes;
++use env_fakes::World;
++
++type Events = Arc<Mutex<Vec<String>>>;
++
++/// A runtime proof that records whether the maintenance gate was already held.
++struct Runtime {
++    gate_busy: Arc<AtomicBool>,
++    events: Events,
++    block: Mutex<Option<RuntimeBlock>>,
++}
++
++#[async_trait]
++impl RuntimeMaintenance for Runtime {
++    async fn ensure_stopped(&self, _: &Path) -> Result<(), RuntimeBlock> {
++        self.events.lock().unwrap().push(format!(
++            "runtime:gate_busy={}",
++            self.gate_busy.load(Ordering::SeqCst)
++        ));
++        match *self.block.lock().unwrap() {
++            Some(block) => Err(block),
++            None => Ok(()),
++        }
++    }
++}
++
++struct Updater {
++    configured: bool,
++    gate_busy: Arc<AtomicBool>,
++    events: Events,
++    outcome: Result<(), UpdateError>,
++}
++
++#[async_trait]
++impl AppUpdater for Updater {
++    fn configured(&self) -> bool {
++        self.configured
++    }
++
++    async fn check(&self) -> Result<Option<UpdateOffer>, UpdateError> {
++        unreachable!("installing never checks for a different release")
++    }
++
++    async fn install(
++        &self,
++        update_id: &str,
++        sink: Arc<dyn UpdateProgressSink>,
++    ) -> Result<(), UpdateError> {
++        let busy = || self.gate_busy.load(Ordering::SeqCst);
++        self.events
++            .lock()
++            .unwrap()
++            .push(format!("install:{update_id}:gate_busy={}", busy()));
++        sink.report(UpdateProgress::Downloading {
++            downloaded: 10,
++            total: Some(10),
++        });
++        // Cleanup and the installer run while the caller still owns the gate.
++        sink.report(UpdateProgress::Installing);
++        self.events
++            .lock()
++            .unwrap()
++            .push(format!("cleanup:gate_busy={}", busy()));
++        self.outcome
++    }
++}
++
++#[derive(Default)]
++struct Recorded(Mutex<Vec<UpdateProgress>>);
++
++impl UpdateProgressSink for Recorded {
++    fn report(&self, progress: UpdateProgress) {
++        self.0.lock().unwrap().push(progress);
++    }
++}
++
++/// The consumer of the progress channel is gone: every event is dropped.
++struct Disconnected;
++
++impl UpdateProgressSink for Disconnected {
++    fn report(&self, _: UpdateProgress) {}
++}
++
++struct Fixture {
++    world: Arc<World>,
++    events: Events,
++    runtime: Arc<Runtime>,
++    workflow: InstallAppUpdate,
++}
++
++impl Fixture {
++    fn new() -> Self {
++        let world = World::new();
++        let events = Events::default();
++        let runtime = Arc::new(Runtime {
++            gate_busy: world.gate.busy.clone(),
++            events: events.clone(),
++            block: Mutex::default(),
++        });
++        let mut deps = world.deps();
++        deps.runtime = runtime.clone();
++        Self {
++            workflow: InstallAppUpdate::new(&deps),
++            world,
++            events,
++            runtime,
++        }
++    }
++
++    fn updater(&self, configured: bool, outcome: Result<(), UpdateError>) -> Updater {
++        Updater {
++            configured,
++            gate_busy: self.world.gate.busy.clone(),
++            events: self.events.clone(),
++            outcome,
++        }
++    }
++
++    fn events(&self) -> Vec<String> {
++        self.events.lock().unwrap().clone()
++    }
++}
++
++#[test]
++fn update_install_checks_runtime_after_acquiring_gate() {
++    let fixture = Fixture::new();
++    let sink = Arc::new(Recorded::default());
++    let updater = fixture.updater(true, Ok(()));
++
++    block_on(fixture.workflow.execute(&updater, "reviewed", sink.clone())).unwrap();
++
++    assert_eq!(
++        fixture.events(),
++        [
++            "runtime:gate_busy=true",
++            "install:reviewed:gate_busy=true",
++            "cleanup:gate_busy=true",
++        ]
++    );
++    assert!(!fixture.world.gate.busy.load(Ordering::SeqCst));
++    assert_eq!(fixture.world.gate.try_acquires.load(Ordering::SeqCst), 1);
++    assert!(
++        !sink
++            .0
++            .lock()
++            .unwrap()
++            .iter()
++            .any(|event| matches!(event, UpdateProgress::Failed(_)))
++    );
++}
++
++#[test]
++fn running_or_unassessable_runtime_refuses_before_the_updater_is_used() {
++    for (block, code) in [
++        (RuntimeBlock::Running, "comfyui_running"),
++        (RuntimeBlock::CannotAssess, "comfyui_state_unknown"),
++    ] {
++        let fixture = Fixture::new();
++        *fixture.runtime.block.lock().unwrap() = Some(block);
++        let sink = Arc::new(Recorded::default());
++
++        let error = block_on(fixture.workflow.execute(
++            &fixture.updater(true, Ok(())),
++            "reviewed",
++            sink.clone(),
++        ))
++        .unwrap_err();
++
++        assert_eq!(error, UpdateError::Runtime(block));
++        assert_eq!(error.code(), code);
++        assert_eq!(fixture.events(), ["runtime:gate_busy=true"]);
++        assert!(!fixture.world.gate.busy.load(Ordering::SeqCst));
++        assert_eq!(*sink.0.lock().unwrap(), [UpdateProgress::Failed(error)]);
++    }
++}
++
++#[test]
++fn busy_gate_refuses_without_inspecting_the_runtime() {
++    let fixture = Fixture::new();
++    let _other = block_on(fixture.world.gate.try_acquire()).unwrap();
++    let sink = Arc::new(Recorded::default());
++
++    let error = block_on(fixture.workflow.execute(
++        &fixture.updater(true, Ok(())),
++        "reviewed",
++        sink.clone(),
++    ))
++    .unwrap_err();
++
++    assert_eq!(error.code(), "maintenance_busy");
++    assert!(fixture.events().is_empty());
++    assert_eq!(*sink.0.lock().unwrap(), [UpdateProgress::Failed(error)]);
++}
++
++#[test]
++fn unconfigured_updater_never_takes_the_gate() {
++    let fixture = Fixture::new();
++    let error = block_on(fixture.workflow.execute(
++        &fixture.updater(false, Ok(())),
++        "reviewed",
++        Arc::new(Disconnected),
++    ))
++    .unwrap_err();
++    assert_eq!(error.code(), "updater_not_configured");
++    assert!(fixture.events().is_empty());
++    assert_eq!(fixture.world.gate.try_acquires.load(Ordering::SeqCst), 0);
++}
++
++#[test]
++fn disconnected_update_channel_does_not_release_ownership() {
++    let fixture = Fixture::new();
++    let updater = fixture.updater(true, Ok(()));
++
++    block_on(
++        fixture
++            .workflow
++            .execute(&updater, "reviewed", Arc::new(Disconnected)),
++    )
++    .unwrap();
++
++    // Every progress event was dropped, yet the installation ran to completion with the gate
++    // owned throughout, and the gate is only free once the workflow has returned.
++    assert_eq!(
++        fixture.events(),
++        [
++            "runtime:gate_busy=true",
++            "install:reviewed:gate_busy=true",
++            "cleanup:gate_busy=true",
++        ]
++    );
++    assert!(!fixture.world.gate.busy.load(Ordering::SeqCst));
++}
++
++#[test]
++fn updater_failures_are_reported_with_their_stable_codes() {
++    for (error, code) in [
++        (UpdateError::Stale, "update_stale"),
++        (UpdateError::SignatureInvalid, "update_signature_invalid"),
++        (UpdateError::InstallFailed, "update_install_failed"),
++        (UpdateError::CheckFailed, "update_check_failed"),
++    ] {
++        let fixture = Fixture::new();
++        let sink = Arc::new(Recorded::default());
++        let result = block_on(fixture.workflow.execute(
++            &fixture.updater(true, Err(error)),
++            "reviewed",
++            sink.clone(),
++        ));
++        assert_eq!(result, Err(error));
++        assert_eq!(error.code(), code);
++        assert_eq!(
++            sink.0.lock().unwrap().last(),
++            Some(&UpdateProgress::Failed(error))
++        );
++        assert!(!fixture.world.gate.busy.load(Ordering::SeqCst));
++    }
++}
+diff --git a/crates/desktop/Cargo.toml b/crates/desktop/Cargo.toml
+index ccae184..2511071 100644
+--- a/crates/desktop/Cargo.toml
++++ b/crates/desktop/Cargo.toml
+@@ -23,6 +23,8 @@ tauri-plugin-single-instance.workspace = true
+ tauri-plugin-log.workspace = true
+ tauri-plugin-dialog.workspace = true
+ tauri-plugin-opener.workspace = true
++tauri-plugin-updater.workspace = true
++tauri-plugin-clipboard-manager.workspace = true
+ tauri-specta.workspace = true
+ specta.workspace = true
+ specta-typescript.workspace = true
+diff --git a/crates/desktop/build.rs b/crates/desktop/build.rs
+index 83d64ed..bb28200 100644
+--- a/crates/desktop/build.rs
++++ b/crates/desktop/build.rs
+@@ -1,4 +1,8 @@
+ fn main() {
++    // The signed updater exists only in builds that carry both values (see `updates.rs`).
++    println!("cargo:rerun-if-env-changed=VJUMP_UPDATER_PUBKEY");
++    println!("cargo:rerun-if-env-changed=VJUMP_UPDATER_ENDPOINT");
++
+     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
+         tauri_build::AppManifest::new().commands(&[
+             "app_info",
+@@ -77,6 +81,11 @@ fn main() {
+             "node_operation_status",
+             "node_subscribe",
+             "node_unsubscribe",
++            "app_update_status",
++            "app_update_check",
++            "app_update_install",
++            "app_diagnostics",
++            "app_copy_diagnostics",
+         ]),
+     ))
+     .expect("failed to run tauri build script");
+diff --git a/crates/desktop/capabilities/manager.json b/crates/desktop/capabilities/manager.json
+index a29136c..6f6d11e 100644
+--- a/crates/desktop/capabilities/manager.json
++++ b/crates/desktop/capabilities/manager.json
+@@ -82,6 +82,11 @@
+     "allow-node-cancel",
+     "allow-node-operation-status",
+     "allow-node-subscribe",
+-    "allow-node-unsubscribe"
++    "allow-node-unsubscribe",
++    "allow-app-update-status",
++    "allow-app-update-check",
++    "allow-app-update-install",
++    "allow-app-diagnostics",
++    "allow-app-copy-diagnostics"
+   ]
+ }
+diff --git a/crates/desktop/src/diagnostics.rs b/crates/desktop/src/diagnostics.rs
+new file mode 100644
+index 0000000..963ea3d
+--- /dev/null
++++ b/crates/desktop/src/diagnostics.rs
+@@ -0,0 +1,139 @@
++//! The diagnostics report as the user receives it: rendered by the application layer, shown
++//! relative to the install root, redacted as a whole, and handed to the system clipboard.
++
++use std::{path::Path, sync::Arc};
++
++use application::settings::diagnostics::DiagnosticsSnapshot;
++use infrastructure::shared::logging::redact;
++use tauri::{AppHandle, Runtime};
++use tauri_plugin_clipboard_manager::ClipboardExt;
++
++use crate::state::AppState;
++
++/// Writes text to the system clipboard. Failure is expected (no clipboard service, a locked
++/// clipboard) and only means the UI must offer the text for manual selection.
++pub trait Clipboard: Send + Sync {
++    fn write_text(&self, text: &str) -> Result<(), ClipboardError>;
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct ClipboardError;
++
++/// The clipboard plugin, used from Rust only; no webview holds its permissions.
++pub struct TauriClipboard<R: Runtime>(AppHandle<R>);
++
++impl<R: Runtime> TauriClipboard<R> {
++    pub fn new(app: AppHandle<R>) -> Self {
++        Self(app)
++    }
++}
++
++impl<R: Runtime> Clipboard for TauriClipboard<R> {
++    fn write_text(&self, text: &str) -> Result<(), ClipboardError> {
++        self.0
++            .clipboard()
++            .write_text(text.to_owned())
++            .map_err(|_| ClipboardError)
++    }
++}
++
++/// Stands in until the application handle exists.
++pub struct UnavailableClipboard;
++
++impl Clipboard for UnavailableClipboard {
++    fn write_text(&self, _: &str) -> Result<(), ClipboardError> {
++        Err(ClipboardError)
++    }
++}
++
++/// The finished text of the report and whether it was copied.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct CopyOutcome {
++    pub text: String,
++    pub copied: bool,
++}
++
++/// Presents the install root as `<root>`, then redacts the entire rendered report. This is the
++/// last step before the text is returned or copied, so nothing a section contains can bypass it.
++pub fn finalize(rendered: &str, root: &Path) -> String {
++    redact(&replace_root(rendered, root)).into_owned()
++}
++
++fn replace_root(text: &str, root: &Path) -> String {
++    let root = root.to_string_lossy();
++    let root = root.strip_prefix(r"\\?\").unwrap_or(&root);
++    let root = root.trim_end_matches(['/', '\\']);
++    if root.is_empty() {
++        return text.to_owned();
++    }
++    // The root may be printed with either separator, or in the Windows verbatim form.
++    let mut variants = vec![
++        root.to_owned(),
++        root.replace('\\', "/"),
++        root.replace('/', "\\"),
++        format!(r"\\?\{}", root.replace('/', "\\")),
++    ];
++    // Longest first, so the verbatim form is replaced before its shorter plain spelling.
++    variants.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
++    variants.dedup();
++    variants.iter().fold(text.to_owned(), |text, variant| {
++        replace_all(&text, variant, "<root>", cfg!(windows))
++    })
++}
++
++fn replace_all(haystack: &str, needle: &str, with: &str, ignore_ascii_case: bool) -> String {
++    if !ignore_ascii_case {
++        return haystack.replace(needle, with);
++    }
++    // ASCII lowercasing keeps byte offsets, and a valid UTF-8 needle only matches at boundaries.
++    let lower = haystack.to_ascii_lowercase();
++    let needle_lower = needle.to_ascii_lowercase();
++    let mut out = String::with_capacity(haystack.len());
++    let mut cursor = 0;
++    for (start, _) in lower.match_indices(&needle_lower) {
++        out.push_str(&haystack[cursor..start]);
++        out.push_str(with);
++        cursor = start + needle.len();
++    }
++    out.push_str(&haystack[cursor..]);
++    out
++}
++
++/// Collects the report and finalizes it. A start without a usable install root still reports
++/// what is known, with the recovery reason as its availability warning.
++pub(crate) async fn collect_report(state: &AppState) -> String {
++    match state.services() {
++        Ok(services) => {
++            let snapshot = services.diagnostics.execute().await;
++            finalize(&snapshot.render(), &services.root.root)
++        }
++        Err(_) => {
++            let mut snapshot = DiagnosticsSnapshot {
++                app_version: env!("CARGO_PKG_VERSION").to_owned(),
++                os: std::env::consts::OS.to_owned(),
++                ..DiagnosticsSnapshot::default()
++            };
++            if let Some(recovery) = state.recovery() {
++                snapshot.warnings.push(format!(
++                    "The app started without a usable install root ({}): {}",
++                    recovery.code, recovery.message
++                ));
++            }
++            finalize(&snapshot.render(), Path::new(""))
++        }
++    }
++}
++
++/// Puts the report on the clipboard on a blocking thread. The returned text is exactly the text
++/// that was offered to the clipboard.
++pub(crate) async fn copy_report(clipboard: Arc<dyn Clipboard>, text: String) -> CopyOutcome {
++    let payload = text.clone();
++    let copied =
++        tauri::async_runtime::spawn_blocking(move || clipboard.write_text(&payload).is_ok())
++            .await
++            .unwrap_or(false);
++    CopyOutcome { text, copied }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/desktop/src/diagnostics/tests.rs b/crates/desktop/src/diagnostics/tests.rs
+new file mode 100644
+index 0000000..a80cd70
+--- /dev/null
++++ b/crates/desktop/src/diagnostics/tests.rs
+@@ -0,0 +1,188 @@
++use std::{path::PathBuf, sync::Mutex};
++
++use application::settings::diagnostics::{
++    ComfySection, DiagnosticsSnapshot, EnvironmentSection, ManifestSection, PinnedTool,
++};
++use infrastructure::shared::logging::register_secret;
++
++use super::*;
++
++fn root() -> PathBuf {
++    PathBuf::from(if cfg!(windows) {
++        r"C:\Users\someone\vjump install ไทย"
++    } else {
++        "/home/someone/vjump install ไทย"
++    })
++}
++
++/// A secret-bearing value for `section`, in a form the shared redactor must recognise.
++fn leak(section: &str) -> String {
++    format!("https://host.test/file?safe=1&X-Amz-Signature=sec-{section}&token=sec-{section}-t")
++}
++
++/// Every part of the report carries a secret, an authorization header or a path in the root.
++fn snapshot_with_a_secret_everywhere() -> DiagnosticsSnapshot {
++    let root = root();
++    let inside = |tail: &str| format!("{}/{tail}", root.display());
++    DiagnosticsSnapshot {
++        app_version: format!("1.0.0 {}", leak("version")),
++        os: format!("Windows {}", leak("os")),
++        gpus: vec![format!("GPU {}", leak("gpu"))],
++        driver_version: Some(format!("591 {}", leak("driver"))),
++        driver_cuda: Some(format!("13.1 {}", leak("cuda"))),
++        environment: Some(EnvironmentSection {
++            id: inside("envs/main"),
++            ownership: format!("app_owned {}", leak("ownership")),
++            state: format!("verified {}", leak("state")),
++            python: format!("3.13.16 {}", leak("python")),
++            python_source: format!("managed {}", leak("source")),
++            profile_id: format!("profile {}", leak("profile")),
++            profile_revision: 1,
++            profile_label: Some(format!("label {}", leak("label"))),
++            cuda_variant: Some(format!("cu130 {}", leak("variant"))),
++            torch: Some(format!("2.14.1 {}", leak("torch"))),
++            triton: Some(format!("3.8.0 {}", leak("triton"))),
++            protected_pins: vec![("torch".into(), format!("2.14.1 {}", leak("pin")))],
++            accelerators: vec![format!("sageattention failed {}", leak("accelerator"))],
++        }),
++        manifest: Some(ManifestSection {
++            profile_id: format!("manifest {}", leak("manifest")),
++            profile_revision: 2,
++        }),
++        comfyui: ComfySection {
++            revision: Some(format!("abc123 {}", leak("revision"))),
++            status: Some(format!("stopped {}", leak("status"))),
++        },
++        tools: vec![PinnedTool {
++            name: "uv".into(),
++            version: format!("0.13.1 {}", leak("tool")),
++        }],
++        app_log: vec![
++            format!("opened {}", inside("data/app.db")),
++            format!(
++                "Authorization: Bearer sec-app-log-bearer {}",
++                leak("app-log")
++            ),
++        ],
++        runtime_log: vec![
++            format!("loading {}", inside("models/a.safetensors")),
++            format!("hf_{} {}", "a".repeat(30), leak("runtime-log")),
++        ],
++        warnings: vec![format!("warning {}", leak("warning"))],
++    }
++}
++
++fn report() -> String {
++    finalize(&snapshot_with_a_secret_everywhere().render(), &root())
++}
++
++#[derive(Default)]
++struct Recording {
++    written: Mutex<Vec<String>>,
++}
++
++impl Clipboard for Recording {
++    fn write_text(&self, text: &str) -> Result<(), ClipboardError> {
++        self.written.lock().unwrap().push(text.to_owned());
++        Ok(())
++    }
++}
++
++struct Failing;
++
++impl Clipboard for Failing {
++    fn write_text(&self, _: &str) -> Result<(), ClipboardError> {
++        Err(ClipboardError)
++    }
++}
++
++fn assert_clean(text: &str) {
++    for leaked in ["sec-", "hf_aaaa"] {
++        assert!(!text.contains(leaked), "`{leaked}` leaked:\n{text}");
++    }
++    let root = root();
++    let root = root.display().to_string();
++    assert!(!text.contains(&root), "the install root leaked:\n{text}");
++    assert!(!text.contains(&root.replace('\\', "/")));
++}
++
++#[test]
++fn diagnostics_redacts_every_section_and_clipboard_payload() {
++    register_secret("registered-session-secret-value");
++    let mut snapshot = snapshot_with_a_secret_everywhere();
++    snapshot
++        .warnings
++        .push("also registered-session-secret-value".into());
++    let text = finalize(&snapshot.render(), &root());
++
++    assert_clean(&text);
++    // Safe context survives: only the credentials and the root are replaced.
++    assert!(text.contains("safe=1"), "{text}");
++    assert!(text.contains("<root>/data/app.db"), "{text}");
++    assert!(text.contains("<root>/models/a.safetensors"), "{text}");
++    assert!(text.contains("ID: <root>/envs/main"), "{text}");
++    assert!(!text.contains("registered-session-secret-value"));
++    for header in [
++        "App version",
++        "== Environment ==",
++        "== Install manifest ==",
++        "== ComfyUI ==",
++        "== Tool versions ==",
++        "== Availability warnings ==",
++        "== Application log",
++        "== ComfyUI runtime log",
++    ] {
++        assert!(text.contains(header), "{header} missing:\n{text}");
++    }
++
++    // The clipboard receives exactly the redacted text that is returned.
++    let clipboard = Arc::new(Recording::default());
++    let outcome = tauri::async_runtime::block_on(copy_report(clipboard.clone(), text.clone()));
++    assert!(outcome.copied);
++    assert_eq!(outcome.text, text);
++    assert_eq!(*clipboard.written.lock().unwrap(), [text]);
++}
++
++#[test]
++fn clipboard_failure_returns_selectable_redacted_text() {
++    let text = report();
++    assert_clean(&text);
++
++    let outcome = tauri::async_runtime::block_on(copy_report(Arc::new(Failing), text.clone()));
++    assert!(!outcome.copied);
++    assert_eq!(outcome.text, text);
++    assert_clean(&outcome.text);
++    assert!(
++        UnavailableClipboard.write_text(&text).is_err(),
++        "the fallback clipboard never claims success"
++    );
++}
++
++#[test]
++fn install_root_is_presented_as_root_in_every_spelling() {
++    let root = root();
++    let shown = root.display().to_string();
++    let forward = shown.replace('\\', "/");
++    let backward = shown.replace('/', "\\");
++    let text = format!(
++        "a {shown}\\x b {forward}/y c \\\\?\\{backward}\\z d {shown} e {}-suffix",
++        shown.to_uppercase()
++    );
++    let replaced = replace_root(&text, &root);
++    assert!(replaced.starts_with("a <root>\\x b <root>/y c <root>\\z d <root> e "));
++    if cfg!(windows) {
++        assert!(replaced.ends_with("e <root>-suffix"), "{replaced}");
++    }
++    assert!(!replaced.contains(&shown));
++    assert!(!replaced.contains(&forward));
++
++    // Nothing is rewritten when no root is known.
++    assert_eq!(
++        replace_root("keep / and \\", Path::new("")),
++        "keep / and \\"
++    );
++    assert_eq!(
++        replace_root("keep / and \\", Path::new("/")),
++        "keep / and \\"
++    );
++}
+diff --git a/crates/desktop/src/ipc/app_commands.rs b/crates/desktop/src/ipc/app_commands.rs
+new file mode 100644
+index 0000000..27a58ae
+--- /dev/null
++++ b/crates/desktop/src/ipc/app_commands.rs
+@@ -0,0 +1,87 @@
++//! Application-level commands: signed self-update and diagnostics. Plugin access stays on the
++//! Rust side; no capability grants the updater or clipboard plugin commands to a webview.
++
++use std::sync::Arc;
++
++use application::settings::updates::{UpdateProgress, UpdateProgressSink};
++use tauri::{State, ipc::Channel};
++
++use super::{
++    app_dto::{CopyDiagnosticsDto, UpdateOfferDto, UpdateProgressDto, UpdateStatusDto},
++    error::IpcError,
++};
++use crate::{
++    diagnostics::{collect_report, copy_report},
++    state::AppState,
++};
++
++/// Forwards progress to the UI. A channel the UI has lost drops events: the installation goes on.
++struct ChannelSink(Channel<UpdateProgressDto>);
++
++impl UpdateProgressSink for ChannelSink {
++    fn report(&self, progress: UpdateProgress) {
++        let _ = self.0.send(UpdateProgressDto::from(progress));
++    }
++}
++
++#[tauri::command]
++#[specta::specta]
++pub async fn app_update_status(state: State<'_, AppState>) -> Result<UpdateStatusDto, IpcError> {
++    Ok(UpdateStatusDto {
++        configured: state.updater().configured(),
++        current_version: env!("CARGO_PKG_VERSION").to_owned(),
++    })
++}
++
++/// Looks for a newer signed release. The offer it returns replaces every earlier one.
++#[tauri::command]
++#[specta::specta]
++pub async fn app_update_check(
++    state: State<'_, AppState>,
++) -> Result<Option<UpdateOfferDto>, IpcError> {
++    let offer = state.updater().check().await?;
++    Ok(offer.map(UpdateOfferDto::from))
++}
++
++/// Installs the release the user reviewed, named by the `update_id` of its offer. Success means
++/// the application is restarting.
++#[tauri::command]
++#[specta::specta]
++pub async fn app_update_install(
++    state: State<'_, AppState>,
++    update_id: String,
++    on_event: Channel<UpdateProgressDto>,
++) -> Result<(), IpcError> {
++    let services = state.services()?;
++    let updater = state.updater();
++    services
++        .install_update
++        .execute(
++            updater.as_ref(),
++            &update_id,
++            Arc::new(ChannelSink(on_event)),
++        )
++        .await?;
++    Ok(())
++}
++
++#[tauri::command]
++#[specta::specta]
++pub async fn app_diagnostics(state: State<'_, AppState>) -> Result<String, IpcError> {
++    Ok(collect_report(&state).await)
++}
++
++/// Collects the same redacted report, puts it on the clipboard and returns it, so the UI can
++/// offer it for manual selection when the clipboard is unavailable.
++#[tauri::command]
++#[specta::specta]
++pub async fn app_copy_diagnostics(
++    state: State<'_, AppState>,
++) -> Result<CopyDiagnosticsDto, IpcError> {
++    let text = collect_report(&state).await;
++    let outcome = copy_report(state.clipboard(), text).await;
++    Ok(CopyDiagnosticsDto {
++        text: outcome.text,
++        copied: outcome.copied,
++    })
++}
+diff --git a/crates/desktop/src/ipc/app_dto.rs b/crates/desktop/src/ipc/app_dto.rs
+new file mode 100644
+index 0000000..3bce46e
+--- /dev/null
++++ b/crates/desktop/src/ipc/app_dto.rs
+@@ -0,0 +1,158 @@
++//! IPC DTOs of the application-level commands: signed self-update and diagnostics. Byte counts
++//! are `f64` because JavaScript numbers are exact up to 2^53 and no installer is that large.
++
++use application::settings::updates::{UpdateError, UpdateOffer, UpdateProgress};
++use serde::{Deserialize, Serialize};
++use specta::Type;
++
++use super::error::IpcError;
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
++#[serde(rename_all = "camelCase")]
++pub struct UpdateStatusDto {
++    /// False when this build carries no complete signed-update configuration.
++    pub configured: bool,
++    pub current_version: String,
++}
++
++/// A newer release for the user to review. `update_id` must be echoed back to install exactly
++/// this release.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
++#[serde(rename_all = "camelCase")]
++pub struct UpdateOfferDto {
++    pub update_id: String,
++    pub version: String,
++    pub date: Option<String>,
++    /// Plain text from the update server; never markup.
++    pub notes: Option<String>,
++}
++
++impl From<UpdateOffer> for UpdateOfferDto {
++    fn from(offer: UpdateOffer) -> Self {
++        Self {
++            update_id: offer.update_id,
++            version: offer.version,
++            date: offer.date,
++            notes: offer.notes,
++        }
++    }
++}
++
++/// Installation progress. `failed` carries the stable error code of the failure.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
++#[serde(tag = "kind", rename_all = "camelCase")]
++pub enum UpdateProgressDto {
++    #[serde(rename_all = "camelCase")]
++    Downloading {
++        downloaded_bytes: f64,
++        total_bytes: Option<f64>,
++    },
++    Installing,
++    Restarting,
++    Failed {
++        code: String,
++    },
++}
++
++impl From<UpdateProgress> for UpdateProgressDto {
++    fn from(progress: UpdateProgress) -> Self {
++        match progress {
++            UpdateProgress::Downloading { downloaded, total } => Self::Downloading {
++                downloaded_bytes: downloaded as f64,
++                total_bytes: total.map(|total| total as f64),
++            },
++            UpdateProgress::Installing => Self::Installing,
++            UpdateProgress::Restarting => Self::Restarting,
++            UpdateProgress::Failed(error) => Self::Failed {
++                code: error.code().to_owned(),
++            },
++        }
++    }
++}
++
++/// The redacted report and whether it reached the system clipboard. When `copied` is false the
++/// UI shows `text` for manual selection.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
++#[serde(rename_all = "camelCase")]
++pub struct CopyDiagnosticsDto {
++    pub text: String,
++    pub copied: bool,
++}
++
++impl From<UpdateError> for IpcError {
++    fn from(error: UpdateError) -> Self {
++        use application::{comfy_runtime::RuntimeBlock, shared::GateError};
++        let message = match error {
++            UpdateError::NotConfigured => "This build has no signed update source configured.",
++            UpdateError::Stale => {
++                "The reviewed update is no longer available. Check for updates again."
++            }
++            UpdateError::CheckFailed => "The update server could not be checked.",
++            UpdateError::SignatureInvalid => {
++                "The downloaded update failed signature verification and was not installed."
++            }
++            UpdateError::InstallFailed => {
++                "The update could not be downloaded or installed. Restart the app before trying again."
++            }
++            UpdateError::Gate(GateError::Busy) => {
++                "Another maintenance operation is running. Wait for it to finish."
++            }
++            UpdateError::Gate(GateError::Unavailable) => "The maintenance gate is unavailable.",
++            UpdateError::Runtime(RuntimeBlock::Running) => {
++                "ComfyUI from this installation is running. Stop it first."
++            }
++            UpdateError::Runtime(RuntimeBlock::CannotAssess) => {
++                "The state of ComfyUI could not be determined, so nothing was changed."
++            }
++        };
++        Self::new(error.code(), message)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn progress_serializes_as_the_documented_union() {
++        let json = |progress: UpdateProgress| {
++            serde_json::to_value(UpdateProgressDto::from(progress)).unwrap()
++        };
++        assert_eq!(
++            json(UpdateProgress::Downloading {
++                downloaded: 5,
++                total: None
++            }),
++            serde_json::json!({ "kind": "downloading", "downloadedBytes": 5.0, "totalBytes": null })
++        );
++        assert_eq!(
++            json(UpdateProgress::Installing),
++            serde_json::json!({ "kind": "installing" })
++        );
++        assert_eq!(
++            json(UpdateProgress::Restarting),
++            serde_json::json!({ "kind": "restarting" })
++        );
++        assert_eq!(
++            json(UpdateProgress::Failed(UpdateError::SignatureInvalid)),
++            serde_json::json!({ "kind": "failed", "code": "update_signature_invalid" })
++        );
++    }
++
++    #[test]
++    fn every_update_error_has_its_code_and_a_sanitized_message() {
++        for error in [
++            UpdateError::NotConfigured,
++            UpdateError::Stale,
++            UpdateError::CheckFailed,
++            UpdateError::SignatureInvalid,
++            UpdateError::InstallFailed,
++            UpdateError::Gate(application::shared::GateError::Busy),
++            UpdateError::Runtime(application::comfy_runtime::RuntimeBlock::Running),
++        ] {
++            let ipc = IpcError::from(error);
++            assert_eq!(ipc.code, error.code());
++            assert!(!ipc.message.is_empty());
++        }
++    }
++}
+diff --git a/crates/desktop/src/ipc/bindings.rs b/crates/desktop/src/ipc/bindings.rs
+index 6a7c4a0..0caed2c 100644
+--- a/crates/desktop/src/ipc/bindings.rs
++++ b/crates/desktop/src/ipc/bindings.rs
+@@ -1,7 +1,8 @@
+ use tauri_specta::{Builder, ErrorHandlingMode, collect_commands};
+ 
+ use super::{
+-    comfy_commands, commands, download_commands, env_commands, library_commands, node_commands,
++    app_commands, comfy_commands, commands, download_commands, env_commands, library_commands,
++    node_commands,
+ };
+ 
+ /// The single source of truth for the command list. It is used by `run()`, the binding
+@@ -85,6 +86,11 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
+             node_commands::node_operation_status,
+             node_commands::node_subscribe,
+             node_commands::node_unsubscribe,
++            app_commands::app_update_status,
++            app_commands::app_update_check,
++            app_commands::app_update_install,
++            app_commands::app_diagnostics,
++            app_commands::app_copy_diagnostics,
+         ])
+         .error_handling(ErrorHandlingMode::Result)
+ }
+diff --git a/crates/desktop/src/ipc/mod.rs b/crates/desktop/src/ipc/mod.rs
+index d3f758d..3e13fd1 100644
+--- a/crates/desktop/src/ipc/mod.rs
++++ b/crates/desktop/src/ipc/mod.rs
+@@ -1,3 +1,5 @@
++pub mod app_commands;
++pub mod app_dto;
+ pub mod bindings;
+ pub mod comfy_commands;
+ pub mod comfy_dto;
+diff --git a/crates/desktop/src/lib.rs b/crates/desktop/src/lib.rs
+index 2a70033..3f584fc 100644
+--- a/crates/desktop/src/lib.rs
++++ b/crates/desktop/src/lib.rs
+@@ -1,12 +1,15 @@
+ pub mod app_lifecycle;
+ pub mod comfy_window;
++pub mod diagnostics;
+ pub mod ipc;
+ pub mod picker;
+ pub mod state;
++pub mod updates;
+ 
+ use std::sync::{Arc, Mutex};
+ 
+ use infrastructure::shared::{
++    clock::RandomIds,
+     logging,
+     paths::{AppPaths, resolve_root},
+ };
+@@ -22,7 +25,7 @@ pub fn run() {
+     let logging_guard: Arc<Mutex<Option<logging::LoggingGuard>>> = Arc::new(Mutex::new(None));
+     let setup_guard = logging_guard.clone();
+ 
+-    let app = tauri::Builder::default()
++    let mut builder = tauri::Builder::default()
+         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+             // A second launch restores the manager, which is absent in background mode.
+             app_lifecycle::restore_manager(app);
+@@ -36,6 +39,24 @@ pub fn run() {
+         // Registered for the native pickers. The manager calls the app's own pick commands;
+         // no capability grants the plugin's commands to any webview.
+         .plugin(tauri_plugin_dialog::init())
++        // Used from Rust only, for Copy diagnostics; no capability grants its commands either.
++        .plugin(tauri_plugin_clipboard_manager::init());
++    // The signed updater exists only in builds that carry both the public key and the HTTPS
++    // endpoint. Without them nothing is registered and the update commands refuse.
++    let updater_config = updates::UpdaterBuildConfig::from_build_env();
++    if updater_config.is_some() {
++        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
++    }
++    let mut context = tauri::generate_context!();
++    if let Some(config) = &updater_config {
++        context
++            .config_mut()
++            .plugins
++            .0
++            .insert("updater".to_owned(), config.plugin_config());
++    }
++
++    let app = builder
+         .invoke_handler(bindings.invoke_handler())
+         .on_window_event(|window, event| {
+             if window.label() == MANAGER_WINDOW
+@@ -81,11 +102,20 @@ pub fn run() {
+                 ))?,
+             };
+             state.install_shell(Arc::new(app_lifecycle::TauriShell(app.handle().clone())));
++            state.install_clipboard(Arc::new(diagnostics::TauriClipboard::new(
++                app.handle().clone(),
++            )));
++            state.install_updater(Arc::new(updates::SignedUpdater::new(
++                updater_config.clone(),
++                |_| Box::new(updates::PluginChannel::new(app.handle().clone())),
++                Arc::new(updates::AppQuiesce::new(app.handle().clone())),
++                Arc::new(RandomIds::default()),
++            )));
+             app.manage(state);
+             app_lifecycle::spawn_runtime_watch(app.handle().clone());
+             Ok(())
+         })
+-        .build(tauri::generate_context!())
++        .build(context)
+         .expect("error while building the application");
+ 
+     let code = app.run_return(|app, event| {
+diff --git a/crates/desktop/src/state.rs b/crates/desktop/src/state.rs
+index 1d26f85..63b29b6 100644
+--- a/crates/desktop/src/state.rs
++++ b/crates/desktop/src/state.rs
+@@ -39,6 +39,8 @@ use application::{
+         ClearCredential, CredentialStore, GetCredentialStatus, GetSettings, SetCredential,
+         SettingsRepository, UpdateSettings,
+         credential_tester::{CredentialTester, TestCredential},
++        diagnostics::{CollectDiagnostics, PinnedTool},
++        updates::{AppUpdater, InstallAppUpdate},
+     },
+     shared::{CancelToken, IdGenerator},
+ };
+@@ -54,7 +56,7 @@ use infrastructure::{
+     },
+     custom_nodes::stack::{HubSink, NodeEvent, NodeStack},
+     environment::{
+-        hardware::SystemHardware, manifest::FsManifestStore, packages::UvPackages,
++        hardware::SystemHardware, manifest::FsManifestStore, packages::UvPackages, pins,
+         profiles::BundledProfiles, python::PythonAdapter, source::GitSource,
+         sqlite::SqliteEnvironmentStore, switcher::FsRootSwitcher, tools::Tools,
+         verify::PythonVerifier,
+@@ -70,17 +72,20 @@ use infrastructure::{
+     shared::{
+         clock::{RandomIds, SystemClock},
+         gate::TokioMaintenanceGate,
++        log_tail::FileLogTail,
+         paths::{AppPaths, ResolvedRoot, RootError, bootstrap_path},
+     },
+ };
+ 
+ use crate::{
+     app_lifecycle::{CloseCoordinator, ShellActions},
++    diagnostics::{Clipboard, UnavailableClipboard},
+     ipc::{
+         error::IpcError,
+         node_dto::{NodeOutcomeDto, PlanReviewDto},
+     },
+     picker::FilePicker,
++    updates::SignedUpdater,
+ };
+ 
+ /// Why the app started without an install root. Only recovery guidance is available then.
+@@ -530,6 +535,8 @@ pub struct Services {
+     pub(crate) downloads: DownloadServices,
+     pub(crate) library: LibraryServices,
+     pub(crate) nodes: NodeServices,
++    pub(crate) install_update: InstallAppUpdate,
++    pub(crate) diagnostics: CollectDiagnostics,
+ }
+ 
+ impl Services {
+@@ -549,7 +556,35 @@ impl Services {
+         library: LibraryStack,
+         nodes: NodeStack,
+     ) -> Self {
++        let diagnostics = CollectDiagnostics::new(
++            RuntimeDeps {
++                environment: deps.clone(),
++                supervisor: runtime.supervisor.clone(),
++                store: runtime.store.clone(),
++                repository: runtime.repository.clone(),
++                ports: runtime.ports.clone(),
++                preflight: runtime.preflight.clone(),
++                extra_paths: runtime.extra_paths.clone(),
++            },
++            Arc::new(FileLogTail::new(&logs_dir)),
++            Arc::new(runtime.hub.clone()),
++            env!("CARGO_PKG_VERSION"),
++            // Pinned and verified when provisioned, not probed at report time.
++            vec![
++                PinnedTool {
++                    name: "uv".to_owned(),
++                    version: pins::UV_VERSION.to_owned(),
++                },
++                PinnedTool {
++                    name: "hf".to_owned(),
++                    version: pins::HF_VERSION.to_owned(),
++                },
++            ],
++        );
++        let install_update = InstallAppUpdate::new(&deps);
+         Self {
++            diagnostics,
++            install_update,
+             comfy: ComfyServices::new(deps.clone(), runtime),
+             downloads: DownloadServices::new(downloads),
+             library: LibraryServices::new(library),
+@@ -587,6 +622,8 @@ pub struct AppState {
+     pub(crate) data_dir: PathBuf,
+     pub(crate) close: Arc<CloseCoordinator>,
+     shell: OnceLock<Arc<dyn ShellActions>>,
++    updater: OnceLock<Arc<dyn AppUpdater>>,
++    clipboard: OnceLock<Arc<dyn Clipboard>>,
+ }
+ 
+ impl AppState {
+@@ -608,6 +645,8 @@ impl AppState {
+             data_dir,
+             close: Arc::new(CloseCoordinator::default()),
+             shell: OnceLock::new(),
++            updater: OnceLock::new(),
++            clipboard: OnceLock::new(),
+         }
+     }
+ 
+@@ -622,6 +661,32 @@ impl AppState {
+         let _ = self.shell.set(shell);
+     }
+ 
++    /// Installs the signed updater once the application handle exists.
++    pub fn install_updater(&self, updater: Arc<dyn AppUpdater>) {
++        let _ = self.updater.set(updater);
++    }
++
++    /// The installed updater, or one that refuses everything as not configured.
++    pub(crate) fn updater(&self) -> Arc<dyn AppUpdater> {
++        self.updater
++            .get()
++            .cloned()
++            .unwrap_or_else(|| Arc::new(SignedUpdater::disabled()))
++    }
++
++    /// Installs the system clipboard once the application handle exists.
++    pub fn install_clipboard(&self, clipboard: Arc<dyn Clipboard>) {
++        let _ = self.clipboard.set(clipboard);
++    }
++
++    /// The installed clipboard, or one that reports every copy as failed.
++    pub(crate) fn clipboard(&self) -> Arc<dyn Clipboard> {
++        self.clipboard
++            .get()
++            .cloned()
++            .unwrap_or_else(|| Arc::new(UnavailableClipboard))
++    }
++
+     pub(crate) fn shell(&self) -> Result<&Arc<dyn ShellActions>, IpcError> {
+         self.shell
+             .get()
+diff --git a/crates/desktop/src/updates.rs b/crates/desktop/src/updates.rs
+new file mode 100644
+index 0000000..2c503a8
+--- /dev/null
++++ b/crates/desktop/src/updates.rs
+@@ -0,0 +1,364 @@
++//! The signed self-updater: complete-or-nothing build-time configuration and the adapter over
++//! `tauri-plugin-updater`.
++//!
++//! The plugin is used from Rust only (no capability grants its commands to a webview) and is
++//! registered only when the build carries a public key and an HTTPS endpoint. The adapter
++//! retains the exact release the user reviewed behind an opaque id; installing consumes that id
++//! and can never resolve, download or install any other release. Windows installers end the
++//! process from inside `install()`, so the application's own background work is stopped before
++//! `install()` is called.
++
++use std::{
++    sync::{Arc, Mutex},
++    time::{Duration, Instant},
++};
++
++use application::{
++    settings::updates::{AppUpdater, UpdateError, UpdateOffer, UpdateProgress, UpdateProgressSink},
++    shared::IdGenerator,
++};
++use async_trait::async_trait;
++use infrastructure::shared::clock::RandomIds;
++use tauri::{AppHandle, Manager, Runtime};
++use tauri_plugin_updater::UpdaterExt;
++
++use crate::state::AppState;
++
++/// At most one progress event per interval, plus the final one.
++const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
++
++/// The public key and HTTPS endpoint compiled into this build (`VJUMP_UPDATER_PUBKEY` and
++/// `VJUMP_UPDATER_ENDPOINT`). Either one alone, or an invalid one, means "not configured".
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct UpdaterBuildConfig {
++    pubkey: String,
++    endpoint: tauri::Url,
++}
++
++impl UpdaterBuildConfig {
++    pub fn from_build_env() -> Option<Self> {
++        Self::parse(
++            option_env!("VJUMP_UPDATER_PUBKEY"),
++            option_env!("VJUMP_UPDATER_ENDPOINT"),
++        )
++    }
++
++    /// The public key must be the base64 text of a minisign key; the endpoint must be an HTTPS
++    /// URL with a host.
++    pub fn parse(pubkey: Option<&str>, endpoint: Option<&str>) -> Option<Self> {
++        let pubkey = pubkey?.trim();
++        if pubkey.is_empty()
++            || !pubkey
++                .bytes()
++                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
++        {
++            return None;
++        }
++        let endpoint: tauri::Url = endpoint?.trim().parse().ok()?;
++        if endpoint.scheme() != "https" || endpoint.host_str().is_none() {
++            return None;
++        }
++        Some(Self {
++            pubkey: pubkey.to_owned(),
++            endpoint,
++        })
++    }
++
++    /// The `plugins.updater` configuration the plugin reads when it is set up. Everything else
++    /// keeps its default: HTTPS only, no downgrades, signatures always verified.
++    pub fn plugin_config(&self) -> serde_json::Value {
++        serde_json::json!({
++            "pubkey": self.pubkey,
++            "endpoints": [self.endpoint.as_str()],
++        })
++    }
++}
++
++/// Why a plugin step failed, as far as the adapter distinguishes it.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ReleaseFault {
++    /// The package does not verify against the build's public key.
++    Signature,
++    Other,
++}
++
++/// What the user is shown about a release.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ReleaseSummary {
++    pub version: String,
++    pub date: Option<String>,
++    pub notes: Option<String>,
++}
++
++/// Looks for a newer release on the configured endpoint.
++#[async_trait]
++pub trait ReleaseChannel: Send + Sync {
++    async fn check(&self) -> Result<Option<Box<dyn Release>>, ReleaseFault>;
++}
++
++/// One release found by a check, retained as it was found.
++#[async_trait]
++pub trait Release: Send + Sync {
++    fn summary(&self) -> ReleaseSummary;
++
++    /// Downloads the package and verifies its signature. `on_chunk` receives the size of each
++    /// chunk and the announced total, when there is one.
++    async fn download(
++        &self,
++        on_chunk: &mut (dyn FnMut(u64, Option<u64>) + Send),
++    ) -> Result<Vec<u8>, ReleaseFault>;
++
++    /// Installs a verified package. On Windows this ends the process after starting the
++    /// installer, which then relaunches the application.
++    fn install(&self, package: Vec<u8>) -> Result<(), ReleaseFault>;
++
++    /// Restarts the application after an installation that returned (not on Windows). The real
++    /// restart does not return, so the caller keeps the maintenance gate until the process ends.
++    fn restart(&self);
++}
++
++/// Stops the application's own background work before an installer may replace it or end the
++/// process.
++#[async_trait]
++pub trait Quiesce: Send + Sync {
++    async fn quiesce(&self);
++}
++
++struct NoQuiesce;
++
++#[async_trait]
++impl Quiesce for NoQuiesce {
++    async fn quiesce(&self) {}
++}
++
++pub struct SignedUpdater {
++    channel: Option<Box<dyn ReleaseChannel>>,
++    quiesce: Arc<dyn Quiesce>,
++    ids: Arc<dyn IdGenerator>,
++    /// The one release the user may install: the latest successful check.
++    reviewed: Mutex<Option<(String, Box<dyn Release>)>>,
++}
++
++impl SignedUpdater {
++    /// `make_channel` runs only for a complete configuration, so an unconfigured updater owns
++    /// nothing that could reach the network.
++    pub fn new(
++        config: Option<UpdaterBuildConfig>,
++        make_channel: impl FnOnce(UpdaterBuildConfig) -> Box<dyn ReleaseChannel>,
++        quiesce: Arc<dyn Quiesce>,
++        ids: Arc<dyn IdGenerator>,
++    ) -> Self {
++        Self {
++            channel: config.map(make_channel),
++            quiesce,
++            ids,
++            reviewed: Mutex::new(None),
++        }
++    }
++
++    /// The updater of a build without configuration.
++    pub fn disabled() -> Self {
++        Self::new(
++            None,
++            |_| unreachable!("a disabled updater has no configuration"),
++            Arc::new(NoQuiesce),
++            Arc::new(RandomIds::default()),
++        )
++    }
++
++    fn reviewed(&self) -> std::sync::MutexGuard<'_, Option<(String, Box<dyn Release>)>> {
++        self.reviewed
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++    }
++
++    /// Takes the reviewed release if `update_id` names it. Any other id leaves it in place.
++    fn take_reviewed(&self, update_id: &str) -> Result<Box<dyn Release>, UpdateError> {
++        let mut reviewed = self.reviewed();
++        match reviewed.take() {
++            Some((id, release)) if id == update_id => Ok(release),
++            other => {
++                *reviewed = other;
++                Err(UpdateError::Stale)
++            }
++        }
++    }
++}
++
++fn install_error(fault: ReleaseFault) -> UpdateError {
++    match fault {
++        ReleaseFault::Signature => UpdateError::SignatureInvalid,
++        ReleaseFault::Other => UpdateError::InstallFailed,
++    }
++}
++
++#[async_trait]
++impl AppUpdater for SignedUpdater {
++    fn configured(&self) -> bool {
++        self.channel.is_some()
++    }
++
++    async fn check(&self) -> Result<Option<UpdateOffer>, UpdateError> {
++        let channel = self.channel.as_ref().ok_or(UpdateError::NotConfigured)?;
++        let release = channel
++            .check()
++            .await
++            .map_err(|_| UpdateError::CheckFailed)?;
++        let Some(release) = release else {
++            *self.reviewed() = None;
++            return Ok(None);
++        };
++        let summary = release.summary();
++        let update_id = self.ids.new_id();
++        *self.reviewed() = Some((update_id.clone(), release));
++        Ok(Some(UpdateOffer {
++            update_id,
++            version: summary.version,
++            date: summary.date,
++            notes: summary.notes,
++        }))
++    }
++
++    async fn install(
++        &self,
++        update_id: &str,
++        sink: Arc<dyn UpdateProgressSink>,
++    ) -> Result<(), UpdateError> {
++        if self.channel.is_none() {
++            return Err(UpdateError::NotConfigured);
++        }
++        // The id is consumed: a failure needs a new check and a new review.
++        let release = self.take_reviewed(update_id)?;
++
++        let mut downloaded = 0u64;
++        let mut last_report: Option<Instant> = None;
++        let report = sink.clone();
++        let package = release
++            .download(&mut |chunk, total| {
++                downloaded += chunk;
++                let finished = total.is_some_and(|total| downloaded >= total);
++                let now = Instant::now();
++                if finished || last_report.is_none_or(|at| now - at >= PROGRESS_INTERVAL) {
++                    last_report = Some(now);
++                    report.report(UpdateProgress::Downloading { downloaded, total });
++                }
++            })
++            .await
++            .map_err(install_error)?;
++
++        // Cleanup precedes the installer: on Windows `install` does not return on success.
++        self.quiesce.quiesce().await;
++        sink.report(UpdateProgress::Installing);
++        release.install(package).map_err(install_error)?;
++        sink.report(UpdateProgress::Restarting);
++        release.restart();
++        Ok(())
++    }
++}
++
++/// Classifies a plugin error: anything about the signature or the signed version is a
++/// verification failure, everything else a plain failure.
++fn fault(error: &tauri_plugin_updater::Error) -> ReleaseFault {
++    use tauri_plugin_updater::Error;
++    match error {
++        Error::Minisign(_)
++        | Error::Base64(_)
++        | Error::SignatureUtf8(_)
++        | Error::SignedVersionMismatch { .. }
++        | Error::MissingSignedVersion => ReleaseFault::Signature,
++        _ => ReleaseFault::Other,
++    }
++}
++
++/// The plugin's endpoint check.
++pub struct PluginChannel<R: Runtime>(AppHandle<R>);
++
++impl<R: Runtime> PluginChannel<R> {
++    /// The updater plugin must have been registered with a complete configuration.
++    pub fn new(app: AppHandle<R>) -> Self {
++        Self(app)
++    }
++}
++
++#[async_trait]
++impl<R: Runtime> ReleaseChannel for PluginChannel<R> {
++    async fn check(&self) -> Result<Option<Box<dyn Release>>, ReleaseFault> {
++        let updater = self.0.updater().map_err(|error| {
++            tracing::warn!(%error, "the updater could not be prepared");
++            fault(&error)
++        })?;
++        match updater.check().await {
++            Ok(Some(update)) => Ok(Some(Box::new(PluginRelease {
++                update,
++                app: self.0.clone(),
++            }))),
++            Ok(None) => Ok(None),
++            Err(error) => {
++                tracing::warn!(%error, "the update check failed");
++                Err(fault(&error))
++            }
++        }
++    }
++}
++
++/// The exact `Update` the plugin returned.
++struct PluginRelease<R: Runtime> {
++    update: tauri_plugin_updater::Update,
++    app: AppHandle<R>,
++}
++
++#[async_trait]
++impl<R: Runtime> Release for PluginRelease<R> {
++    fn summary(&self) -> ReleaseSummary {
++        ReleaseSummary {
++            version: self.update.version.clone(),
++            date: self.update.date.map(|date| date.date().to_string()),
++            notes: self.update.body.clone(),
++        }
++    }
++
++    async fn download(
++        &self,
++        on_chunk: &mut (dyn FnMut(u64, Option<u64>) + Send),
++    ) -> Result<Vec<u8>, ReleaseFault> {
++        // The plugin verifies the package signature against the build's public key.
++        self.update
++            .download(|chunk, total| on_chunk(chunk as u64, total), || {})
++            .await
++            .map_err(|error| {
++                tracing::warn!(%error, "the update could not be downloaded and verified");
++                fault(&error)
++            })
++    }
++
++    fn install(&self, package: Vec<u8>) -> Result<(), ReleaseFault> {
++        self.update.install(package).map_err(|error| {
++            tracing::error!(%error, "the update could not be installed");
++            fault(&error)
++        })
++    }
++
++    fn restart(&self) {
++        self.app.restart();
++    }
++}
++
++/// Stops downloads, the one background writer with a shutdown path, and waits for their
++/// transfer cleanup.
++pub struct AppQuiesce<R: Runtime>(AppHandle<R>);
++
++impl<R: Runtime> AppQuiesce<R> {
++    pub fn new(app: AppHandle<R>) -> Self {
++        Self(app)
++    }
++}
++
++#[async_trait]
++impl<R: Runtime> Quiesce for AppQuiesce<R> {
++    async fn quiesce(&self) {
++        self.0.state::<AppState>().shutdown_downloads().await;
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/desktop/src/updates/tests.rs b/crates/desktop/src/updates/tests.rs
+new file mode 100644
+index 0000000..c6abef2
+--- /dev/null
++++ b/crates/desktop/src/updates/tests.rs
+@@ -0,0 +1,427 @@
++use std::{
++    collections::VecDeque,
++    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
++};
++
++use super::*;
++
++type Events = Arc<Mutex<Vec<String>>>;
++
++fn block_on<F: std::future::Future>(future: F) -> F::Output {
++    tauri::async_runtime::block_on(future)
++}
++
++fn log(events: &Events, entry: impl Into<String>) {
++    events.lock().unwrap().push(entry.into());
++}
++
++fn entries(events: &Events) -> Vec<String> {
++    events.lock().unwrap().clone()
++}
++
++fn position(events: &Events, entry: &str) -> usize {
++    entries(events)
++        .iter()
++        .position(|logged| logged == entry)
++        .unwrap_or_else(|| panic!("`{entry}` was never logged: {:?}", entries(events)))
++}
++
++struct FakeRelease {
++    version: &'static str,
++    events: Events,
++    chunks: Vec<(u64, Option<u64>)>,
++    download: Result<(), ReleaseFault>,
++    install: Result<(), ReleaseFault>,
++}
++
++impl FakeRelease {
++    fn new(version: &'static str, events: &Events) -> Self {
++        Self {
++            version,
++            events: events.clone(),
++            chunks: vec![(4, Some(4))],
++            download: Ok(()),
++            install: Ok(()),
++        }
++    }
++}
++
++#[async_trait]
++impl Release for FakeRelease {
++    fn summary(&self) -> ReleaseSummary {
++        ReleaseSummary {
++            version: self.version.to_owned(),
++            date: Some("2026-10-17".into()),
++            notes: Some("<b>notes</b>".into()),
++        }
++    }
++
++    async fn download(
++        &self,
++        on_chunk: &mut (dyn FnMut(u64, Option<u64>) + Send),
++    ) -> Result<Vec<u8>, ReleaseFault> {
++        log(&self.events, format!("download:{}", self.version));
++        for (chunk, total) in &self.chunks {
++            on_chunk(*chunk, *total);
++        }
++        self.download.map(|()| vec![0; 4])
++    }
++
++    fn install(&self, _: Vec<u8>) -> Result<(), ReleaseFault> {
++        // On Windows the real installer ends the process here; the order is what matters.
++        log(&self.events, format!("install:{}", self.version));
++        self.install
++    }
++
++    fn restart(&self) {
++        log(&self.events, "restart");
++    }
++}
++
++/// Answers each check with the next prepared release (or none).
++struct FakeChannel {
++    events: Events,
++    answers: Mutex<VecDeque<Option<FakeRelease>>>,
++    failing: Arc<AtomicBool>,
++}
++
++#[async_trait]
++impl ReleaseChannel for FakeChannel {
++    async fn check(&self) -> Result<Option<Box<dyn Release>>, ReleaseFault> {
++        log(&self.events, "check");
++        if self.failing.load(Ordering::SeqCst) {
++            return Err(ReleaseFault::Other);
++        }
++        let answer = self.answers.lock().unwrap().pop_front().flatten();
++        Ok(answer.map(|release| Box::new(release) as Box<dyn Release>))
++    }
++}
++
++struct Quiescer(Events);
++
++#[async_trait]
++impl Quiesce for Quiescer {
++    async fn quiesce(&self) {
++        log(&self.0, "quiesce");
++    }
++}
++
++#[derive(Default)]
++struct CountingIds(AtomicUsize);
++
++impl IdGenerator for CountingIds {
++    fn new_id(&self) -> String {
++        format!("id-{}", self.0.fetch_add(1, Ordering::SeqCst) + 1)
++    }
++}
++
++struct LoggingSink(Events);
++
++impl UpdateProgressSink for LoggingSink {
++    fn report(&self, progress: UpdateProgress) {
++        log(&self.0, format!("sink:{progress:?}"));
++    }
++}
++
++fn config() -> UpdaterBuildConfig {
++    UpdaterBuildConfig::parse(
++        Some("dW50cnVzdGVkIGNvbW1lbnQ6IHRlc3Q="),
++        Some("https://updates.example.test/{{target}}/{{arch}}/{{current_version}}"),
++    )
++    .unwrap()
++}
++
++fn configured_updater(events: &Events, answers: Vec<Option<FakeRelease>>) -> SignedUpdater {
++    SignedUpdater::new(
++        Some(config()),
++        |_| {
++            Box::new(FakeChannel {
++                events: events.clone(),
++                answers: Mutex::new(answers.into()),
++                failing: Arc::default(),
++            })
++        },
++        Arc::new(Quiescer(events.clone())),
++        Arc::new(CountingIds::default()),
++    )
++}
++
++fn sink(events: &Events) -> Arc<dyn UpdateProgressSink> {
++    Arc::new(LoggingSink(events.clone()))
++}
++
++#[test]
++fn updater_without_complete_config_never_checks_network() {
++    // Each of these is incomplete or invalid and leaves the build unconfigured.
++    let key = Some("dW50cnVzdGVkIGNvbW1lbnQ6IHRlc3Q=");
++    let endpoint = Some("https://updates.example.test/latest.json");
++    for (pubkey, endpoint) in [
++        (None, None),
++        (key, None),
++        (None, endpoint),
++        (Some("  "), endpoint),
++        (Some("not base64 !"), endpoint),
++        (key, Some("")),
++        (key, Some("not a url")),
++        (key, Some("http://updates.example.test/latest.json")),
++        (key, Some("file:///C:/updates/latest.json")),
++        (key, Some("https://")),
++    ] {
++        assert_eq!(
++            UpdaterBuildConfig::parse(pubkey, endpoint),
++            None,
++            "{pubkey:?} {endpoint:?}"
++        );
++    }
++
++    let channels_made = AtomicUsize::new(0);
++    let events = Events::default();
++    let unconfigured = SignedUpdater::new(
++        UpdaterBuildConfig::parse(key, None),
++        |_| {
++            channels_made.fetch_add(1, Ordering::SeqCst);
++            Box::new(FakeChannel {
++                events: events.clone(),
++                answers: Mutex::default(),
++                failing: Arc::default(),
++            })
++        },
++        Arc::new(Quiescer(events.clone())),
++        Arc::new(CountingIds::default()),
++    );
++    assert!(!unconfigured.configured());
++    assert_eq!(
++        block_on(unconfigured.check()),
++        Err(UpdateError::NotConfigured)
++    );
++    assert_eq!(
++        block_on(unconfigured.install("any", sink(&events))),
++        Err(UpdateError::NotConfigured)
++    );
++    assert_eq!(channels_made.load(Ordering::SeqCst), 0);
++    assert!(entries(&events).is_empty());
++    assert!(!SignedUpdater::disabled().configured());
++    assert_eq!(
++        block_on(SignedUpdater::disabled().check()),
++        Err(UpdateError::NotConfigured)
++    );
++
++    // A complete configuration is surrounded by whitespace-tolerant parsing and exposes
++    // exactly the key and the one HTTPS endpoint to the plugin.
++    let complete = UpdaterBuildConfig::parse(
++        Some(" dW50cnVzdGVkIGNvbW1lbnQ6IHRlc3Q= \n"),
++        Some("https://updates.example.test/latest.json"),
++    )
++    .unwrap();
++    assert_eq!(
++        complete.plugin_config(),
++        serde_json::json!({
++            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IHRlc3Q=",
++            "endpoints": ["https://updates.example.test/latest.json"],
++        })
++    );
++    assert!(configured_updater(&events, Vec::new()).configured());
++}
++
++#[test]
++fn update_install_requires_the_reviewed_offer() {
++    let events = Events::default();
++    let updater = configured_updater(
++        &events,
++        vec![
++            Some(FakeRelease::new("1.1.0", &events)),
++            Some(FakeRelease::new("1.2.0", &events)),
++            None,
++        ],
++    );
++
++    // No offer exists yet: nothing is checked, downloaded or installed.
++    assert_eq!(
++        block_on(updater.install("id-1", sink(&events))),
++        Err(UpdateError::Stale)
++    );
++    assert!(entries(&events).is_empty());
++
++    let first = block_on(updater.check()).unwrap().unwrap();
++    assert_eq!(first.update_id, "id-1");
++    assert_eq!(first.version, "1.1.0");
++    assert_eq!(first.notes.as_deref(), Some("<b>notes</b>"));
++
++    // A different id never touches the reviewed release, and leaves the offer in place.
++    assert_eq!(
++        block_on(updater.install("id-2", sink(&events))),
++        Err(UpdateError::Stale)
++    );
++    assert_eq!(entries(&events), ["check"]);
++
++    // A newer check supersedes the offer: the earlier id is now stale.
++    let second = block_on(updater.check()).unwrap().unwrap();
++    assert_eq!(second.update_id, "id-2");
++    assert_eq!(
++        block_on(updater.install(&first.update_id, sink(&events))),
++        Err(UpdateError::Stale)
++    );
++
++    // Installing names the reviewed offer and installs exactly that release, once.
++    assert_eq!(
++        block_on(updater.install(&second.update_id, sink(&events))),
++        Ok(())
++    );
++    let logged = entries(&events);
++    assert!(logged.contains(&"download:1.2.0".to_owned()), "{logged:?}");
++    assert!(logged.contains(&"install:1.2.0".to_owned()));
++    assert!(!logged.iter().any(|entry| entry.contains("1.1.0")));
++    assert_eq!(
++        block_on(updater.install(&second.update_id, sink(&events))),
++        Err(UpdateError::Stale)
++    );
++
++    // A check that finds nothing withdraws the offer.
++    let third = SignedUpdater::new(
++        Some(config()),
++        |_| {
++            Box::new(FakeChannel {
++                events: events.clone(),
++                answers: Mutex::new(vec![Some(FakeRelease::new("1.3.0", &events)), None].into()),
++                failing: Arc::default(),
++            })
++        },
++        Arc::new(Quiescer(events.clone())),
++        Arc::new(CountingIds::default()),
++    );
++    let offer = block_on(third.check()).unwrap().unwrap();
++    assert_eq!(block_on(third.check()), Ok(None));
++    assert_eq!(
++        block_on(third.install(&offer.update_id, sink(&events))),
++        Err(UpdateError::Stale)
++    );
++}
++
++#[test]
++fn failed_check_reports_check_failed_and_keeps_the_reviewed_offer() {
++    let events = Events::default();
++    let failing = Arc::new(AtomicBool::new(false));
++    let updater = SignedUpdater::new(
++        Some(config()),
++        |_| {
++            Box::new(FakeChannel {
++                events: events.clone(),
++                answers: Mutex::new(vec![Some(FakeRelease::new("1.1.0", &events))].into()),
++                failing: failing.clone(),
++            })
++        },
++        Arc::new(Quiescer(events.clone())),
++        Arc::new(CountingIds::default()),
++    );
++    let offer = block_on(updater.check()).unwrap().unwrap();
++
++    failing.store(true, Ordering::SeqCst);
++    assert_eq!(block_on(updater.check()), Err(UpdateError::CheckFailed));
++
++    // The reviewed release survives a check that could not reach the server.
++    assert_eq!(
++        block_on(updater.install(&offer.update_id, sink(&events))),
++        Ok(())
++    );
++}
++
++#[test]
++fn invalid_signature_never_invokes_installer() {
++    let events = Events::default();
++    let mut release = FakeRelease::new("1.1.0", &events);
++    release.download = Err(ReleaseFault::Signature);
++    let updater = configured_updater(&events, vec![Some(release)]);
++    let offer = block_on(updater.check()).unwrap().unwrap();
++
++    assert_eq!(
++        block_on(updater.install(&offer.update_id, sink(&events))),
++        Err(UpdateError::SignatureInvalid)
++    );
++    let logged = entries(&events);
++    assert!(logged.contains(&"download:1.1.0".to_owned()));
++    for forbidden in ["quiesce", "install:1.1.0", "restart"] {
++        assert!(
++            !logged.contains(&forbidden.to_owned()),
++            "{forbidden} ran after a failed verification: {logged:?}"
++        );
++    }
++    assert!(!logged.iter().any(|entry| entry.contains("Installing")));
++    // The failed release is gone; the user must check and review again.
++    assert_eq!(
++        block_on(updater.install(&offer.update_id, sink(&events))),
++        Err(UpdateError::Stale)
++    );
++
++    // The installer re-verifies: a rejection there is also a signature failure.
++    let events = Events::default();
++    let mut release = FakeRelease::new("1.1.0", &events);
++    release.install = Err(ReleaseFault::Signature);
++    let updater = configured_updater(&events, vec![Some(release)]);
++    let offer = block_on(updater.check()).unwrap().unwrap();
++    assert_eq!(
++        block_on(updater.install(&offer.update_id, sink(&events))),
++        Err(UpdateError::SignatureInvalid)
++    );
++    assert!(!entries(&events).contains(&"restart".to_owned()));
++}
++
++#[test]
++fn update_cleanup_precedes_windows_installer_exit() {
++    let events = Events::default();
++    let updater = configured_updater(&events, vec![Some(FakeRelease::new("1.1.0", &events))]);
++    let offer = block_on(updater.check()).unwrap().unwrap();
++
++    block_on(updater.install(&offer.update_id, sink(&events))).unwrap();
++
++    assert_eq!(
++        entries(&events),
++        [
++            "check",
++            "download:1.1.0",
++            "sink:Downloading { downloaded: 4, total: Some(4) }",
++            "quiesce",
++            "sink:Installing",
++            "install:1.1.0",
++            "sink:Restarting",
++            "restart",
++        ]
++    );
++    assert!(position(&events, "quiesce") < position(&events, "install:1.1.0"));
++
++    // A failing installer is reported as an install failure after cleanup, without a restart.
++    let events = Events::default();
++    let mut release = FakeRelease::new("1.1.0", &events);
++    release.install = Err(ReleaseFault::Other);
++    let updater = configured_updater(&events, vec![Some(release)]);
++    let offer = block_on(updater.check()).unwrap().unwrap();
++    assert_eq!(
++        block_on(updater.install(&offer.update_id, sink(&events))),
++        Err(UpdateError::InstallFailed)
++    );
++    assert!(position(&events, "quiesce") < position(&events, "install:1.1.0"));
++    assert!(!entries(&events).contains(&"restart".to_owned()));
++}
++
++#[test]
++fn download_progress_is_throttled_but_always_ends_with_the_total() {
++    let events = Events::default();
++    let mut release = FakeRelease::new("1.1.0", &events);
++    release.chunks = (0..50).map(|_| (2, Some(100))).collect();
++    let updater = configured_updater(&events, vec![Some(release)]);
++    let offer = block_on(updater.check()).unwrap().unwrap();
++    block_on(updater.install(&offer.update_id, sink(&events))).unwrap();
++
++    let progress: Vec<String> = entries(&events)
++        .into_iter()
++        .filter(|entry| entry.starts_with("sink:Downloading"))
++        .collect();
++    assert_eq!(
++        progress.first().map(String::as_str),
++        Some("sink:Downloading { downloaded: 2, total: Some(100) }")
++    );
++    assert_eq!(
++        progress.last().map(String::as_str),
++        Some("sink:Downloading { downloaded: 100, total: Some(100) }")
++    );
++    assert!(progress.len() < 50, "{}", progress.len());
++}
+diff --git a/crates/desktop/tests/acl.rs b/crates/desktop/tests/acl.rs
+index f034120..ee82199 100644
+--- a/crates/desktop/tests/acl.rs
++++ b/crates/desktop/tests/acl.rs
+@@ -380,6 +380,17 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
+             json!({ "subscriptionId": 4_000_000 }),
+             HandlerError,
+         ),
++        // The test app has no updater configuration: the handlers answer with
++        // `updater_not_configured` without any network access.
++        ("app_update_status", json!({}), HandlerError),
++        ("app_update_check", json!({}), HandlerError),
++        (
++            "app_update_install",
++            json!({ "updateId": "update-unknown", "onEvent": "__CHANNEL__:6" }),
++            HandlerError,
++        ),
++        ("app_diagnostics", json!({}), Success),
++        ("app_copy_diagnostics", json!({}), Success),
+         ("pick_folder", json!({ "title": null }), Success),
+         (
+             "pick_file",
+@@ -667,3 +678,58 @@ fn the_dialog_plugin_commands_are_not_granted_to_any_window() {
+     assert!(!capability.contains("dialog:"));
+     let _ = MANAGER_WINDOW;
+ }
++
++#[test]
++fn the_updater_and_clipboard_plugin_commands_are_not_granted_to_any_window() {
++    // Updates and the clipboard are used from Rust only, through the app's own commands.
++    let capability = std::fs::read_to_string(concat!(
++        env!("CARGO_MANIFEST_DIR"),
++        "/capabilities/manager.json"
++    ))
++    .unwrap();
++    assert!(!capability.contains("updater:"));
++    assert!(!capability.contains("clipboard-manager:"));
++}
++
++#[test]
++fn update_and_diagnostics_commands_answer_without_configuration() {
++    let app = build_app();
++    let window = manager_window(&app);
++    let call = |cmd: &str, body: Value| get_ipc_response(&window, request(cmd, local_url(), body));
++
++    let status = call("app_update_status", json!({})).unwrap();
++    let status = serde_json::from_slice::<Value>(&body_bytes(&status)).unwrap();
++    assert_eq!(status["configured"], false);
++    assert_eq!(status["currentVersion"], env!("CARGO_PKG_VERSION"));
++
++    for (cmd, body) in [
++        ("app_update_check", json!({})),
++        (
++            "app_update_install",
++            json!({ "updateId": "update-unknown", "onEvent": "__CHANNEL__:6" }),
++        ),
++    ] {
++        let error = call(cmd, body).unwrap_err();
++        assert_eq!(error["code"], "updater_not_configured", "{cmd}");
++    }
++
++    // The clipboard is not available in the test app: the redacted text comes back to select.
++    let copied = call("app_copy_diagnostics", json!({})).unwrap();
++    let copied = serde_json::from_slice::<Value>(&body_bytes(&copied)).unwrap();
++    assert_eq!(copied["copied"], false);
++    let text = copied["text"].as_str().unwrap();
++    assert!(text.contains("== Availability warnings =="));
++    assert!(!text.contains(&app.root.display().to_string()));
++    let report = call("app_diagnostics", json!({})).unwrap();
++    assert_eq!(
++        serde_json::from_slice::<Value>(&body_bytes(&report)).unwrap(),
++        copied["text"]
++    );
++}
++
++fn body_bytes(body: &tauri::ipc::InvokeResponseBody) -> Vec<u8> {
++    match body {
++        tauri::ipc::InvokeResponseBody::Json(text) => text.clone().into_bytes(),
++        tauri::ipc::InvokeResponseBody::Raw(bytes) => bytes.clone(),
++    }
++}
+diff --git a/crates/infrastructure/src/shared/log_tail.rs b/crates/infrastructure/src/shared/log_tail.rs
+new file mode 100644
+index 0000000..de3ca48
+--- /dev/null
++++ b/crates/infrastructure/src/shared/log_tail.rs
+@@ -0,0 +1,119 @@
++//! Bounded reads of the newest application log lines for diagnostics.
++//!
++//! The log rotates through `app.log`, `app.log.1` and so on (see `logging::init`). The tail is
++//! bounded by lines and by bytes, so a huge or pathological log can never be read whole, and it
++//! is read on a blocking thread so the async runtime and the UI stay responsive.
++
++use std::{
++    fs::File,
++    io::{Read, Seek, SeekFrom},
++    path::{Path, PathBuf},
++};
++
++use application::settings::diagnostics::{AppLogTail, DiagnosticsError};
++use async_trait::async_trait;
++
++/// The most bytes read from all log files together.
++const MAX_TAIL_BYTES: u64 = 512 * 1024;
++/// How many rotated files `logging::init` keeps.
++const ROTATED_FILES: u32 = 5;
++
++pub struct FileLogTail {
++    active: PathBuf,
++    max_bytes: u64,
++}
++
++impl FileLogTail {
++    pub fn new(logs_dir: &Path) -> Self {
++        Self::with_byte_budget(logs_dir, MAX_TAIL_BYTES)
++    }
++
++    pub fn with_byte_budget(logs_dir: &Path, max_bytes: u64) -> Self {
++        Self {
++            active: logs_dir.join("app.log"),
++            max_bytes,
++        }
++    }
++}
++
++#[async_trait]
++impl AppLogTail for FileLogTail {
++    async fn last_lines(&self, limit: usize) -> Result<Vec<String>, DiagnosticsError> {
++        let active = self.active.clone();
++        let budget = self.max_bytes;
++        tokio::task::spawn_blocking(move || read_tail(&active, limit, budget))
++            .await
++            .map_err(|_| DiagnosticsError::Unavailable)?
++    }
++}
++
++/// The newest `limit` lines over `app.log` and its rotations, reading at most `budget` bytes.
++/// An unreadable active file is an error; missing or unreadable rotations only shorten the tail.
++fn read_tail(active: &Path, limit: usize, budget: u64) -> Result<Vec<String>, DiagnosticsError> {
++    let mut remaining = budget;
++    let mut lines: Vec<String> = Vec::new();
++    for index in 0..=ROTATED_FILES {
++        let path = if index == 0 {
++            active.to_owned()
++        } else {
++            let mut name = active.as_os_str().to_owned();
++            name.push(format!(".{index}"));
++            PathBuf::from(name)
++        };
++        let window = match read_window(&path, remaining) {
++            Ok(window) => window,
++            Err(_) if index == 0 => return Err(DiagnosticsError::Unavailable),
++            Err(_) => break,
++        };
++        remaining -= window.bytes_read;
++        let mut older = window.lines;
++        older.append(&mut lines);
++        lines = older;
++        if lines.len() >= limit || remaining == 0 {
++            break;
++        }
++    }
++    let excess = lines.len().saturating_sub(limit);
++    lines.drain(..excess);
++    Ok(lines)
++}
++
++struct Window {
++    bytes_read: u64,
++    /// Whole lines only, oldest first.
++    lines: Vec<String>,
++}
++
++/// The last `max_bytes` of the file as whole lines: when the window starts inside a line, that
++/// partial line is dropped.
++fn read_window(path: &Path, max_bytes: u64) -> std::io::Result<Window> {
++    let mut file = File::open(path)?;
++    let length = file.metadata()?.len();
++    let take = length.min(max_bytes);
++    file.seek(SeekFrom::Start(length - take))?;
++    let mut bytes = Vec::with_capacity(usize::try_from(take).unwrap_or(0));
++    file.take(take).read_to_end(&mut bytes)?;
++    let mut text = &bytes[..];
++    if take < length {
++        match text.iter().position(|byte| *byte == b'\n') {
++            Some(newline) => text = &text[newline + 1..],
++            None => text = &[],
++        }
++    }
++    let text = String::from_utf8_lossy(text);
++    let mut lines: Vec<String> = text
++        .split('\n')
++        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
++        .collect();
++    // The text after the final newline is empty, not a line.
++    if lines.last().is_some_and(String::is_empty) {
++        lines.pop();
++    }
++    Ok(Window {
++        bytes_read: take,
++        lines,
++    })
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/infrastructure/src/shared/log_tail/tests.rs b/crates/infrastructure/src/shared/log_tail/tests.rs
+new file mode 100644
+index 0000000..27ac7c7
+--- /dev/null
++++ b/crates/infrastructure/src/shared/log_tail/tests.rs
+@@ -0,0 +1,88 @@
++use super::*;
++
++fn write(directory: &Path, name: &str, lines: impl IntoIterator<Item = String>) {
++    let mut text = String::new();
++    for line in lines {
++        text.push_str(&line);
++        text.push('\n');
++    }
++    std::fs::write(directory.join(name), text).unwrap();
++}
++
++fn numbered(range: std::ops::Range<usize>) -> impl Iterator<Item = String> {
++    range.map(|n| format!("line {n}"))
++}
++
++#[tokio::test]
++async fn diagnostics_caps_app_tail_by_lines_and_bytes() {
++    let directory = tempfile::tempdir().unwrap();
++
++    // By lines: only the newest 200 of 1000, in order.
++    write(directory.path(), "app.log", numbered(0..1000));
++    let lines = FileLogTail::new(directory.path())
++        .last_lines(200)
++        .await
++        .unwrap();
++    assert_eq!(lines.len(), 200);
++    assert_eq!(lines.first().unwrap(), "line 800");
++    assert_eq!(lines.last().unwrap(), "line 999");
++
++    // By bytes: 100 lines of 1 KiB against a 10 KiB budget yield the newest whole lines only.
++    let long = |n: usize| format!("{n:03}-{}", "x".repeat(1019));
++    write(directory.path(), "app.log", (0..100).map(long));
++    let lines = FileLogTail::with_byte_budget(directory.path(), 10 * 1024)
++        .last_lines(200)
++        .await
++        .unwrap();
++    assert!(!lines.is_empty() && lines.len() <= 10, "{}", lines.len());
++    assert!(lines.iter().map(|line| line.len() as u64 + 1).sum::<u64>() <= 10 * 1024);
++    assert!(lines.iter().all(|line| line.len() == 1023));
++    assert_eq!(lines.last().unwrap(), &long(99));
++
++    // A single line larger than the whole budget is never returned partially.
++    std::fs::write(directory.path().join("app.log"), "y".repeat(64 * 1024)).unwrap();
++    let lines = FileLogTail::with_byte_budget(directory.path(), 1024)
++        .last_lines(200)
++        .await
++        .unwrap();
++    assert!(lines.is_empty());
++}
++
++#[tokio::test]
++async fn rotated_files_fill_the_tail_in_chronological_order() {
++    let directory = tempfile::tempdir().unwrap();
++    write(directory.path(), "app.log.2", numbered(0..3));
++    write(directory.path(), "app.log.1", numbered(3..8));
++    write(directory.path(), "app.log", numbered(8..10));
++    let tail = FileLogTail::new(directory.path());
++
++    let lines = tail.last_lines(6).await.unwrap();
++    assert_eq!(
++        lines,
++        ["line 4", "line 5", "line 6", "line 7", "line 8", "line 9"]
++    );
++    let lines = tail.last_lines(200).await.unwrap();
++    assert_eq!(lines.len(), 10);
++    assert_eq!(lines.first().unwrap(), "line 0");
++}
++
++#[tokio::test]
++async fn unreadable_active_log_is_an_error_and_odd_bytes_are_tolerated() {
++    let directory = tempfile::tempdir().unwrap();
++    let tail = FileLogTail::new(directory.path());
++    assert_eq!(
++        tail.last_lines(10).await,
++        Err(DiagnosticsError::Unavailable)
++    );
++
++    std::fs::write(
++        directory.path().join("app.log"),
++        b"first\r\nbroken \xff\xfe bytes\r\nlast",
++    )
++    .unwrap();
++    let lines = tail.last_lines(10).await.unwrap();
++    assert_eq!(lines[0], "first");
++    assert!(lines[1].starts_with("broken ") && lines[1].ends_with(" bytes"));
++    assert_eq!(lines[2], "last");
++    assert!(tail.last_lines(0).await.unwrap().is_empty());
++}
+diff --git a/crates/infrastructure/src/shared/logging.rs b/crates/infrastructure/src/shared/logging.rs
+index de16e56..76ff935 100644
+--- a/crates/infrastructure/src/shared/logging.rs
++++ b/crates/infrastructure/src/shared/logging.rs
+@@ -76,9 +76,7 @@ impl Redactor {
+                 }
+                 if bytes.get(index) == Some(&b'=') {
+                     let key = &lower[start..index];
+-                    if matches!(key, "token" | "access_token" | "api_key")
+-                        || key.starts_with("x-amz-")
+-                    {
++                    if is_credential_key(key) {
+                         let value_start = index + 1;
+                         let end = value_end(bytes, value_start);
+                         if end > value_start {
+@@ -141,6 +139,26 @@ impl Redactor {
+     }
+ }
+ 
++/// Query parameters (lowercased) that carry a credential or the signature of a presigned URL:
++/// plain tokens, AWS (`x-amz-*`), Google (`x-goog-*`), Alibaba (`x-oss-*`), Azure SAS (`sig`),
++/// CloudFront (`signature`, `key-pair-id`, `policy`) and the legacy S3/GCS access-key forms.
++fn is_credential_key(key: &str) -> bool {
++    matches!(
++        key,
++        "token"
++            | "access_token"
++            | "api_key"
++            | "signature"
++            | "sig"
++            | "key-pair-id"
++            | "policy"
++            | "awsaccesskeyid"
++            | "googleaccessid"
++    ) || key.starts_with("x-amz-")
++        || key.starts_with("x-goog-")
++        || key.starts_with("x-oss-")
++}
++
+ fn is_key_byte(byte: u8) -> bool {
+     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+ }
+diff --git a/crates/infrastructure/src/shared/logging/tests.rs b/crates/infrastructure/src/shared/logging/tests.rs
+index 2f9be4b..6fdebc0 100644
+--- a/crates/infrastructure/src/shared/logging/tests.rs
++++ b/crates/infrastructure/src/shared/logging/tests.rs
+@@ -67,6 +67,48 @@ fn redacts_all_signed_query_parameters_without_removing_safe_parameters() {
+     }
+ }
+ 
++#[test]
++fn redacts_non_aws_signed_url_credentials() {
++    for (url, secrets, safe) in [
++        // Google Cloud Storage V4.
++        (
++            "https://storage.example.test/o?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=goog-credential&X-Goog-Date=20261017T000000Z&X-Goog-Expires=3600&X-Goog-Signature=goog-signature&download=1",
++            &["goog-credential", "goog-signature", "20261017T000000Z"][..],
++            "download=1",
++        ),
++        // Azure SAS.
++        (
++            "https://account.blob.example.test/c/b?sv=2024-01-01&sp=r&sig=azure-signature&se=2026-10-18&name=model",
++            &["azure-signature"][..],
++            "name=model",
++        ),
++        // CloudFront, as served by the Hugging Face CDN.
++        (
++            "https://cdn.example.test/repos/ab/cd/blob?response-content-disposition=attachment&Expires=1792000000&Signature=cloudfront-signature&Key-Pair-Id=KEYPAIRID123&Policy=cloudfront-policy",
++            &["cloudfront-signature", "KEYPAIRID123", "cloudfront-policy"][..],
++            "response-content-disposition=attachment",
++        ),
++        // Legacy signed URLs.
++        (
++            "https://bucket.example.test/o?AWSAccessKeyId=legacy-key&Signature=legacy-signature&GoogleAccessId=legacy-id&keep=me",
++            &["legacy-key", "legacy-signature", "legacy-id"][..],
++            "keep=me",
++        ),
++    ] {
++        let output = redact(url);
++        assert!(output.contains(safe), "{output}");
++        assert!(output.contains("[REDACTED]"), "{output}");
++        for secret in secrets {
++            assert!(!output.contains(secret), "{secret} leaked: {output}");
++        }
++    }
++    // A signed URL inside prose, with a trailing sentence, keeps its surroundings.
++    assert_eq!(
++        redact("fetching https://h.test/f?sig=abc123&x=1 (retry 2)"),
++        "fetching https://h.test/f?sig=[REDACTED]&x=1 (retry 2)"
++    );
++}
++
+ #[derive(Clone, Default)]
+ struct Capture(Arc<Mutex<Vec<u8>>>);
+ 
+diff --git a/crates/infrastructure/src/shared/mod.rs b/crates/infrastructure/src/shared/mod.rs
+index 48fea45..742e345 100644
+--- a/crates/infrastructure/src/shared/mod.rs
++++ b/crates/infrastructure/src/shared/mod.rs
+@@ -3,6 +3,7 @@ pub mod clock;
+ pub mod download;
+ pub mod fs;
+ pub mod gate;
++pub mod log_tail;
+ pub mod logging;
+ pub mod model_paths;
+ pub mod path_locks;
+diff --git a/ui/src/features/comfy-runtime/comfy-page.test.tsx b/ui/src/features/comfy-runtime/comfy-page.test.tsx
+index 0deb259..47329a4 100644
+--- a/ui/src/features/comfy-runtime/comfy-page.test.tsx
++++ b/ui/src/features/comfy-runtime/comfy-page.test.tsx
+@@ -39,7 +39,7 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
+     comfyReadExtraModelPaths: vi.fn(),
+     comfyOpenWindow: vi.fn(),
+     comfyOpenBrowser: vi.fn(),
+-    comfyDiagnostics: vi.fn(),
++    appCopyDiagnostics: vi.fn(),
+     appCloseDecide: vi.fn(),
+     envInfo: vi.fn(),
+   },
+@@ -184,6 +184,27 @@ it('shows the git status when an update is refused and nothing changed', async (
+   expect(screen.getByText('M main.py')).toBeTruthy()
+ })
+ 
++it('copies the redacted app report and falls back to selectable text', async () => {
++  vi.mocked(gateway.appCopyDiagnostics)
++    .mockResolvedValueOnce({ text: 'REPORT', copied: true })
++    .mockResolvedValueOnce({ text: 'REPORT', copied: false })
++  mount(<ComfyPage />)
++  await snapshot()
++  const copy = await screen.findByRole('button', { name: 'Copy diagnostics' })
++
++  fireEvent.click(copy)
++  await waitFor(() => expect(gateway.appCopyDiagnostics).toHaveBeenCalledTimes(1))
++  expect(screen.queryByLabelText('Diagnostics report')).toBeNull()
++
++  await waitFor(() => expect((copy as HTMLButtonElement).disabled).toBe(false))
++  fireEvent.click(copy)
++  const report = await screen.findByLabelText<HTMLTextAreaElement>(
++    'Diagnostics report',
++  )
++  expect(report.readOnly).toBe(true)
++  expect(report.value).toBe('REPORT')
++})
++
+ it('asks before closing and sends the chosen answer', async () => {
+   vi.mocked(gateway.appCloseDecide).mockResolvedValue(null)
+   mount(<CloseRequestDialog />)
+diff --git a/ui/src/features/comfy-runtime/comfy-page.tsx b/ui/src/features/comfy-runtime/comfy-page.tsx
+index 5439456..d9a078d 100644
+--- a/ui/src/features/comfy-runtime/comfy-page.tsx
++++ b/ui/src/features/comfy-runtime/comfy-page.tsx
+@@ -169,12 +169,21 @@ export function ComfyPage() {
+     queryKey: comfyKeys.extraPaths,
+     queryFn: () => gateway.comfyReadExtraModelPaths(),
+   })
++  // The report to select by hand when the clipboard could not be written.
++  const [diagnosticsFallback, setDiagnosticsFallback] = useState<string | null>(
++    null,
++  )
+   const copyDiagnostics = useMutation({
+-    mutationFn: async () => {
+-      const diagnostics = await gateway.comfyDiagnostics()
+-      await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2))
++    mutationFn: () => gateway.appCopyDiagnostics(),
++    onSuccess: (result) => {
++      if (result.copied) {
++        setDiagnosticsFallback(null)
++        toast.success('Diagnostics copied to the clipboard.')
++      } else {
++        setDiagnosticsFallback(result.text)
++        toast.error('The clipboard is unavailable. Select the report below.')
++      }
+     },
+-    onSuccess: () => toast.success('Diagnostics copied to the clipboard.'),
+     onError,
+   })
+ 
+@@ -293,6 +302,16 @@ export function ComfyPage() {
+               Copy diagnostics
+             </Button>
+           </div>
++          {diagnosticsFallback !== null && (
++            <textarea
++              readOnly
++              aria-label="Diagnostics report"
++              value={diagnosticsFallback}
++              rows={12}
++              onFocus={(event) => event.currentTarget.select()}
++              className="w-full rounded-md border bg-muted p-3 font-mono text-xs"
++            />
++          )}
+         </CardContent>
+       </Card>
+ 
+diff --git a/ui/src/features/settings/diagnostics-panel.test.tsx b/ui/src/features/settings/diagnostics-panel.test.tsx
+new file mode 100644
+index 0000000..d1a3895
+--- /dev/null
++++ b/ui/src/features/settings/diagnostics-panel.test.tsx
+@@ -0,0 +1,73 @@
++// @vitest-environment jsdom
++import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
++import {
++  cleanup,
++  fireEvent,
++  render,
++  screen,
++  waitFor,
++} from '@testing-library/react'
++import { afterEach, beforeEach, expect, it, vi } from 'vitest'
++
++import { gateway, IpcClientError } from '@/shared/ipc/gateway'
++
++import { DiagnosticsPanel } from './diagnostics-panel'
++
++vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
++  ...(await importOriginal<typeof import('@/shared/ipc/gateway')>()),
++  gateway: { appCopyDiagnostics: vi.fn() },
++}))
++
++beforeEach(() => vi.resetAllMocks())
++afterEach(cleanup)
++
++function copy() {
++  render(
++    <QueryClientProvider client={new QueryClient()}>
++      <DiagnosticsPanel />
++    </QueryClientProvider>,
++  )
++  fireEvent.click(screen.getByRole('button', { name: /copy diagnostics/i }))
++}
++
++it('diagnostics_copy_failure_exposes_read_only_fallback', async () => {
++  vi.mocked(gateway.appCopyDiagnostics).mockResolvedValue({
++    text: 'REDACTED REPORT',
++    copied: false,
++  })
++  copy()
++
++  const report = await screen.findByLabelText<HTMLTextAreaElement>(
++    'Diagnostics report',
++  )
++  expect(report.readOnly).toBe(true)
++  expect(report.value).toBe('REDACTED REPORT')
++  expect(gateway.appCopyDiagnostics).toHaveBeenCalledWith()
++})
++
++it('a_copied_report_shows_no_fallback', async () => {
++  vi.mocked(gateway.appCopyDiagnostics).mockResolvedValue({
++    text: 'REDACTED REPORT',
++    copied: true,
++  })
++  copy()
++
++  await waitFor(() => expect(gateway.appCopyDiagnostics).toHaveBeenCalled())
++  await waitFor(() =>
++    expect(
++      screen.getByRole<HTMLButtonElement>('button', { name: /copy diagnostics/i })
++        .disabled,
++    ).toBe(false),
++  )
++  expect(screen.queryByLabelText('Diagnostics report')).toBeNull()
++})
++
++it('a_failed_collection_shows_no_fallback', async () => {
++  vi.mocked(gateway.appCopyDiagnostics).mockRejectedValue(
++    new IpcClientError('transport', 'Could not reach the application backend.'),
++  )
++  copy()
++
++  await waitFor(() => expect(gateway.appCopyDiagnostics).toHaveBeenCalled())
++  expect(screen.queryByLabelText('Diagnostics report')).toBeNull()
++})
+diff --git a/ui/src/features/settings/diagnostics-panel.tsx b/ui/src/features/settings/diagnostics-panel.tsx
+new file mode 100644
+index 0000000..a3f820f
+--- /dev/null
++++ b/ui/src/features/settings/diagnostics-panel.tsx
+@@ -0,0 +1,69 @@
++import { useMutation } from '@tanstack/react-query'
++import { ClipboardCopy } from 'lucide-react'
++import { useState } from 'react'
++import { toast } from 'sonner'
++
++import { gateway } from '@/shared/ipc/gateway'
++import { Button } from '@/shared/ui/button'
++import {
++  Card,
++  CardContent,
++  CardDescription,
++  CardHeader,
++  CardTitle,
++} from '@/shared/ui/card'
++
++import { errorMessage } from './error-message'
++
++export function DiagnosticsPanel() {
++  // The report to select by hand when the clipboard could not be written.
++  const [fallback, setFallback] = useState<string | null>(null)
++  const copy = useMutation({
++    mutationFn: () => gateway.appCopyDiagnostics(),
++    onSuccess: (result) => {
++      if (result.copied) {
++        setFallback(null)
++        toast.success('Diagnostics copied to the clipboard.')
++      } else {
++        setFallback(result.text)
++        toast.error('The clipboard is unavailable. Select the report below.')
++      }
++    },
++    onError: (error) => toast.error(errorMessage(error)),
++  })
++
++  return (
++    <Card>
++      <CardHeader>
++        <CardTitle>Diagnostics</CardTitle>
++        <CardDescription>
++          Copy a report of this app, your hardware, the environment and recent
++          logs for support. Tokens, signed links and the install folder path
++          are removed.
++        </CardDescription>
++      </CardHeader>
++      <CardContent className="flex flex-col gap-3">
++        <div>
++          <Button
++            variant="outline"
++            disabled={copy.isPending}
++            onClick={() => copy.mutate()}
++          >
++            <ClipboardCopy aria-hidden="true" />
++            Copy diagnostics
++          </Button>
++        </div>
++        {fallback !== null && (
++          <textarea
++            readOnly
++            aria-label="Diagnostics report"
++            value={fallback}
++            rows={12}
++            onFocus={(event) => event.currentTarget.select()}
++            className="w-full rounded-md border bg-muted p-3 font-mono text-xs"
++          />
++        )}
++      </CardContent>
++    </Card>
++  )
++}
+diff --git a/ui/src/features/settings/settings-page.tsx b/ui/src/features/settings/settings-page.tsx
+index e776be7..4bd2f32 100644
+--- a/ui/src/features/settings/settings-page.tsx
++++ b/ui/src/features/settings/settings-page.tsx
+@@ -1,5 +1,7 @@
+ import { CredentialsPanel } from './credentials-panel'
++import { DiagnosticsPanel } from './diagnostics-panel'
+ import { SettingsForm } from './settings-form'
++import { UpdatesPanel } from './updates-panel'
+ import type { SetupModeDto } from '@/shared/ipc/gateway'
+ import { Button } from '@/shared/ui/button'
+ import {
+@@ -70,6 +72,8 @@ export function SettingsPage({
+           </div>
+         </CardContent>
+       </Card>
++      <UpdatesPanel maintenanceBusy={maintenanceBusy} />
++      <DiagnosticsPanel />
+     </div>
+   )
+ }
+diff --git a/ui/src/features/settings/updates-panel.test.tsx b/ui/src/features/settings/updates-panel.test.tsx
+new file mode 100644
+index 0000000..c52cd57
+--- /dev/null
++++ b/ui/src/features/settings/updates-panel.test.tsx
+@@ -0,0 +1,135 @@
++// @vitest-environment jsdom
++import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
++import {
++  cleanup,
++  fireEvent,
++  render,
++  screen,
++  waitFor,
++} from '@testing-library/react'
++import { afterEach, beforeEach, expect, it, vi } from 'vitest'
++
++import {
++  gateway,
++  IpcClientError,
++  type UpdateProgressDto,
++} from '@/shared/ipc/gateway'
++
++import { UpdatesPanel } from './updates-panel'
++
++vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
++  ...(await importOriginal<typeof import('@/shared/ipc/gateway')>()),
++  gateway: {
++    appUpdateStatus: vi.fn(),
++    appUpdateCheck: vi.fn(),
++    appUpdateInstall: vi.fn(),
++  },
++}))
++
++const offer = {
++  updateId: 'update-7',
++  version: '0.2.0',
++  date: '2026-10-17',
++  notes: '<b>Bold</b> notes',
++}
++
++beforeEach(() => {
++  vi.resetAllMocks()
++  vi.mocked(gateway.appUpdateStatus).mockResolvedValue({
++    configured: true,
++    currentVersion: '0.1.0',
++  })
++})
++afterEach(cleanup)
++
++function mount(maintenanceBusy = false) {
++  return render(
++    <QueryClientProvider client={new QueryClient()}>
++      <UpdatesPanel maintenanceBusy={maintenanceBusy} />
++    </QueryClientProvider>,
++  )
++}
++
++async function review(maintenanceBusy = false) {
++  const view = mount(maintenanceBusy)
++  fireEvent.click(await screen.findByRole('button', { name: /check for updates/i }))
++  await screen.findByText('Version 0.2.0 is available')
++  return view
++}
++
++it('update_install_echoes_reviewed_update_id', async () => {
++  vi.mocked(gateway.appUpdateCheck).mockResolvedValue(offer)
++  let report: (event: UpdateProgressDto) => void = () => undefined
++  vi.mocked(gateway.appUpdateInstall).mockImplementation((_id, onEvent) => {
++    report = onEvent
++    return new Promise(() => undefined)
++  })
++  const { container } = await review()
++
++  // Notes are plain text, never markup.
++  expect(screen.getByText('<b>Bold</b> notes')).toBeTruthy()
++  expect(container.querySelector('b')).toBeNull()
++
++  fireEvent.click(screen.getByRole('button', { name: /install and restart/i }))
++  await waitFor(() => expect(gateway.appUpdateInstall).toHaveBeenCalledTimes(1))
++  expect(gateway.appUpdateInstall).toHaveBeenCalledWith(
++    'update-7',
++    expect.any(Function),
++  )
++  expect(gateway.appUpdateCheck).toHaveBeenCalledTimes(1)
++
++  report({ kind: 'downloading', downloadedBytes: 5 * 1024 * 1024, totalBytes: 10 * 1024 * 1024 })
++  expect(await screen.findByText('Downloading 5.0 of 10.0 MiB')).toBeTruthy()
++  report({ kind: 'installing' })
++  expect(await screen.findByText('Installing the update')).toBeTruthy()
++})
++
++it('shows_no_updater_actions_when_the_build_is_not_configured', async () => {
++  vi.mocked(gateway.appUpdateStatus).mockResolvedValue({
++    configured: false,
++    currentVersion: '0.1.0',
++  })
++  mount()
++  expect(await screen.findByText(/cannot update itself/i)).toBeTruthy()
++  expect(screen.queryByRole('button', { name: /check for updates/i })).toBeNull()
++  expect(gateway.appUpdateCheck).not.toHaveBeenCalled()
++})
++
++it('reports_an_up_to_date_app', async () => {
++  vi.mocked(gateway.appUpdateCheck).mockResolvedValue(null)
++  mount()
++  fireEvent.click(await screen.findByRole('button', { name: /check for updates/i }))
++  expect(await screen.findByText('You are up to date.')).toBeTruthy()
++})
++
++it('a_failed_install_shows_its_message_and_requires_a_new_check', async () => {
++  vi.mocked(gateway.appUpdateCheck).mockResolvedValue(offer)
++  vi.mocked(gateway.appUpdateInstall).mockRejectedValue(
++    new IpcClientError(
++      'update_signature_invalid',
++      'The downloaded update failed signature verification and was not installed.',
++    ),
++  )
++  await review()
++  fireEvent.click(screen.getByRole('button', { name: /install and restart/i }))
++
++  expect(await screen.findByRole('alert')).toBeTruthy()
++  expect(
++    screen.getByText(/failed signature verification and was not installed/i),
++  ).toBeTruthy()
++  await waitFor(() =>
++    expect(screen.queryByRole('button', { name: /install and restart/i })).toBeNull(),
++  )
++  expect(screen.getByRole('button', { name: /check for updates/i })).toBeTruthy()
++})
++
++it('install_is_blocked_while_a_setup_run_is_in_progress', async () => {
++  vi.mocked(gateway.appUpdateCheck).mockResolvedValue(offer)
++  await review(true)
++  const install = screen.getByRole<HTMLButtonElement>('button', {
++    name: /install and restart/i,
++  })
++  expect(install.disabled).toBe(true)
++  fireEvent.click(install)
++  expect(gateway.appUpdateInstall).not.toHaveBeenCalled()
++})
+diff --git a/ui/src/features/settings/updates-panel.tsx b/ui/src/features/settings/updates-panel.tsx
+new file mode 100644
+index 0000000..4bfc7d6
+--- /dev/null
++++ b/ui/src/features/settings/updates-panel.tsx
+@@ -0,0 +1,179 @@
++import { useMutation, useQuery } from '@tanstack/react-query'
++import { Download, RefreshCw } from 'lucide-react'
++import { useState } from 'react'
++import { toast } from 'sonner'
++
++import {
++  gateway,
++  type UpdateOfferDto,
++  type UpdateProgressDto,
++} from '@/shared/ipc/gateway'
++import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
++import { Button } from '@/shared/ui/button'
++import {
++  Card,
++  CardContent,
++  CardDescription,
++  CardHeader,
++  CardTitle,
++} from '@/shared/ui/card'
++import { Progress } from '@/shared/ui/progress'
++
++import { errorMessage } from './error-message'
++
++const MIB = 1024 * 1024
++
++const mib = (bytes: number | null) => ((bytes ?? 0) / MIB).toFixed(1)
++
++function describeProgress(progress: UpdateProgressDto): string {
++  switch (progress.kind) {
++    case 'downloading':
++      return progress.totalBytes
++        ? `Downloading ${mib(progress.downloadedBytes)} of ${mib(progress.totalBytes)} MiB`
++        : `Downloading ${mib(progress.downloadedBytes)} MiB`
++    case 'installing':
++      return 'Installing the update'
++    case 'restarting':
++      return 'Restarting the app'
++    case 'failed':
++      return 'The update failed'
++  }
++}
++
++function percent(progress: UpdateProgressDto): number | null {
++  if (progress.kind !== 'downloading' || !progress.totalBytes) return null
++  return Math.min(100, ((progress.downloadedBytes ?? 0) / progress.totalBytes) * 100)
++}
++
++/** The reviewed release. Notes come from the update server and are shown as plain text. */
++function Offer({
++  offer,
++  progress,
++  installing,
++  blocked,
++  onInstall,
++}: {
++  offer: UpdateOfferDto
++  progress: UpdateProgressDto | null
++  installing: boolean
++  blocked: boolean
++  onInstall: () => void
++}) {
++  const value = progress ? percent(progress) : null
++  return (
++    <div className="flex flex-col gap-3">
++      <div className="flex flex-col gap-1">
++        <p className="text-sm font-semibold">Version {offer.version} is available</p>
++        {offer.date && (
++          <p className="text-xs text-muted-foreground">Released {offer.date}</p>
++        )}
++      </div>
++      {offer.notes && (
++        <pre className="max-h-60 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
++          {offer.notes}
++        </pre>
++      )}
++      <p className="text-xs text-muted-foreground">
++        ComfyUI and other maintenance work must be stopped. The app restarts
++        after the update is installed.
++      </p>
++      {progress && (
++        <div className="flex flex-col gap-2" aria-live="polite">
++          <p className="text-sm">{describeProgress(progress)}</p>
++          {value !== null && <Progress value={value} />}
++        </div>
++      )}
++      <div>
++        <Button disabled={installing || blocked} onClick={onInstall}>
++          <Download aria-hidden="true" />
++          Install and restart
++        </Button>
++      </div>
++    </div>
++  )
++}
++
++export function UpdatesPanel({
++  maintenanceBusy = false,
++}: {
++  /** A setup run is in progress; installing is refused until it ends. */
++  maintenanceBusy?: boolean
++}) {
++  const status = useQuery({
++    queryKey: ['app-update-status'],
++    queryFn: () => gateway.appUpdateStatus(),
++  })
++  const [progress, setProgress] = useState<UpdateProgressDto | null>(null)
++  const check = useMutation({
++    mutationFn: () => gateway.appUpdateCheck(),
++    onMutate: () => setProgress(null),
++    onError: (error) => toast.error(errorMessage(error)),
++  })
++  const install = useMutation({
++    // The id echoed back is the one of the offer the user reviewed.
++    mutationFn: (offer: UpdateOfferDto) =>
++      gateway.appUpdateInstall(offer.updateId, setProgress),
++    onError: () => {
++      setProgress(null)
++      // The installer consumed the reviewed offer; a new check starts a new review.
++      check.reset()
++    },
++  })
++  const configured = status.data?.configured ?? false
++  const offer = check.data ?? null
++
++  return (
++    <Card>
++      <CardHeader>
++        <CardTitle>App updates</CardTitle>
++        <CardDescription>
++          {status.data
++            ? `Installed version ${status.data.currentVersion}.`
++            : 'Signed updates for this app.'}
++        </CardDescription>
++      </CardHeader>
++      <CardContent className="flex flex-col gap-4">
++        {status.data && !configured && (
++          <p className="text-sm text-muted-foreground">
++            This build has no update source configured, so it cannot update
++            itself.
++          </p>
++        )}
++        {configured && (
++          <>
++            <div>
++              <Button
++                variant="outline"
++                disabled={check.isPending || install.isPending}
++                onClick={() => check.mutate()}
++              >
++                <RefreshCw aria-hidden="true" />
++                Check for updates
++              </Button>
++            </div>
++            {check.isSuccess && offer === null && (
++              <p className="text-sm text-muted-foreground">
++                You are up to date.
++              </p>
++            )}
++            {offer && (
++              <Offer
++                offer={offer}
++                progress={progress}
++                installing={install.isPending}
++                blocked={maintenanceBusy}
++                onInstall={() => install.mutate(offer)}
++              />
++            )}
++            {install.isError && (
++              <Alert variant="destructive">
++                <AlertTitle>The update was not installed</AlertTitle>
++                <AlertDescription>{errorMessage(install.error)}</AlertDescription>
++              </Alert>
++            )}
++          </>
++        )}
++      </CardContent>
++    </Card>
++  )
++}
+diff --git a/ui/src/shared/ipc/bindings.ts b/ui/src/shared/ipc/bindings.ts
+index 1dca90d..41ebe11 100644
+--- a/ui/src/shared/ipc/bindings.ts
++++ b/ui/src/shared/ipc/bindings.ts
+@@ -127,6 +127,26 @@ export const commands = {
+ 	 */
+ 	nodeSubscribe: (onEvent: Channel<NodeEventDto>) => typedError<number, IpcError>(__TAURI_INVOKE("node_subscribe", { onEvent })),
+ 	nodeUnsubscribe: (subscriptionId: number) => typedError<null, IpcError>(__TAURI_INVOKE("node_unsubscribe", { subscriptionId })),
++	appUpdateStatus: () => typedError<UpdateStatusDto, IpcError>(__TAURI_INVOKE("app_update_status")),
++	/**  Looks for a newer signed release. The offer it returns replaces every earlier one. */
++	appUpdateCheck: () => typedError<{
++	updateId: string,
++	version: string,
++	date: string | null,
++	/**  Plain text from the update server; never markup. */
++	notes: string | null,
++} | null, IpcError>(__TAURI_INVOKE("app_update_check")),
++	/**
++	 *  Installs the release the user reviewed, named by the `update_id` of its offer. Success means
++	 *  the application is restarting.
++	 */
++	appUpdateInstall: (updateId: string, onEvent: Channel<UpdateProgressDto>) => typedError<null, IpcError>(__TAURI_INVOKE("app_update_install", { updateId, onEvent })),
++	appDiagnostics: () => typedError<string, IpcError>(__TAURI_INVOKE("app_diagnostics")),
++	/**
++	 *  Collects the same redacted report, puts it on the clipboard and returns it, so the UI can
++	 *  offer it for manual selection when the clipboard is unavailable.
++	 */
++	appCopyDiagnostics: () => typedError<CopyDiagnosticsDto, IpcError>(__TAURI_INVOKE("app_copy_diagnostics")),
+ };
+ 
+ /* Types */
+@@ -211,6 +231,15 @@ export type ConsentDto = {
+ 	commit: string,
+ };
+ 
++/**
++ *  The redacted report and whether it reached the system clipboard. When `copied` is false the
++ *  UI shows `text` for manual selection.
++ */
++export type CopyDiagnosticsDto = {
++	text: string,
++	copied: boolean,
++};
++
+ export type CredentialBackendDto = "keyring" | "session_memory";
+ 
+ export type CredentialKindDto = "civitAi" | "huggingFace";
+@@ -1048,6 +1077,21 @@ export type UpdateInput = {
+ 	retry: string | null,
+ };
+ 
++/**
++ *  A newer release for the user to review. `update_id` must be echoed back to install exactly
++ *  this release.
++ */
++export type UpdateOfferDto = {
++	updateId: string,
++	version: string,
++	date: string | null,
++	/**  Plain text from the update server; never markup. */
++	notes: string | null,
++};
++
++/**  Installation progress. `failed` carries the stable error code of the failure. */
++export type UpdateProgressDto = { kind: "downloading"; downloadedBytes: number | null; totalBytes: number | null } | { kind: "installing" } | { kind: "restarting" } | { kind: "failed"; code: string };
++
+ export type UpdateResultDto = { kind: "updated"; run: UpdateRunDto } | 
+ /**  ComfyUI is running; resubmit with explicit authorization to stop it. */
+ { kind: "needs_stop" } | 
+@@ -1072,6 +1116,12 @@ export type UpdateSettingsDto = {
+ 	bandwidthCapKibS: number | null,
+ };
+ 
++export type UpdateStatusDto = {
++	/**  False when this build carries no complete signed-update configuration. */
++	configured: boolean,
++	currentVersion: string,
++};
++
+ export type UpdateTargetDto = { kind: "latest_release" } | { kind: "tag"; name: string } | { kind: "branch_ff_only" };
+ 
+ export type ValidationTargetDto = "empty_folder" | "existing_venv" | "interpreter" | "rejected";
+diff --git a/ui/src/shared/ipc/gateway.test.ts b/ui/src/shared/ipc/gateway.test.ts
+index c779f8f..c54d44a 100644
+--- a/ui/src/shared/ipc/gateway.test.ts
++++ b/ui/src/shared/ipc/gateway.test.ts
+@@ -11,6 +11,11 @@ const commands = vi.hoisted(() => ({
+   envPipApply: vi.fn(),
+   nodeOpenRepository: vi.fn(),
+   nodeGitStatus: vi.fn(),
++  appUpdateStatus: vi.fn(),
++  appUpdateCheck: vi.fn(),
++  appUpdateInstall: vi.fn(),
++  appDiagnostics: vi.fn(),
++  appCopyDiagnostics: vi.fn(),
+ }))
+ 
+ vi.mock('./bindings', () => ({ commands }))
+@@ -46,6 +51,71 @@ describe('gateway', () => {
+     expect(commands.nodeGitStatus).toHaveBeenCalledWith({ nodeId: 'node-1' })
+   })
+ 
++  it('app_update_commands_send_exact_payloads_and_keep_the_channel_inside', async () => {
++    commands.appUpdateStatus.mockResolvedValue({
++      status: 'ok',
++      data: { configured: true, currentVersion: '0.1.0' },
++    })
++    await expect(gateway.appUpdateStatus()).resolves.toEqual({
++      configured: true,
++      currentVersion: '0.1.0',
++    })
++    expect(commands.appUpdateStatus).toHaveBeenCalledWith()
++
++    const offer = {
++      updateId: 'update-1',
++      version: '0.2.0',
++      date: '2026-10-17',
++      notes: 'plain notes',
++    }
++    commands.appUpdateCheck.mockResolvedValue({ status: 'ok', data: offer })
++    await expect(gateway.appUpdateCheck()).resolves.toEqual(offer)
++    expect(commands.appUpdateCheck).toHaveBeenCalledWith()
++
++    commands.appUpdateInstall.mockResolvedValue({ status: 'ok', data: null })
++    const receive = vi.fn()
++    await expect(
++      gateway.appUpdateInstall('update-1', receive),
++    ).resolves.toBeNull()
++    expect(commands.appUpdateInstall).toHaveBeenCalledTimes(1)
++    const [updateId, channel] = commands.appUpdateInstall.mock.calls[0] as [
++      string,
++      { onmessage: (event: unknown) => void },
++    ]
++    expect(updateId).toBe('update-1')
++    const event = { kind: 'downloading', downloadedBytes: 5, totalBytes: 10 }
++    channel.onmessage(event)
++    expect(receive).toHaveBeenCalledWith(event)
++  })
++
++  it('app_update_errors_keep_their_stable_codes', async () => {
++    commands.appUpdateInstall.mockResolvedValue({
++      status: 'error',
++      error: { code: 'update_stale', message: 'Check again.' },
++    })
++    const failure = await gateway
++      .appUpdateInstall('update-1', vi.fn())
++      .catch((error: unknown) => error)
++    expect(failure).toBeInstanceOf(IpcClientError)
++    expect(failure).toMatchObject({ code: 'update_stale' })
++  })
++
++  it('app_diagnostics_commands_take_no_arguments', async () => {
++    commands.appDiagnostics.mockResolvedValue({ status: 'ok', data: 'report' })
++    await expect(gateway.appDiagnostics()).resolves.toBe('report')
++    expect(commands.appDiagnostics).toHaveBeenCalledWith()
++
++    commands.appCopyDiagnostics.mockResolvedValue({
++      status: 'ok',
++      data: { text: 'report', copied: false },
++    })
++    await expect(gateway.appCopyDiagnostics()).resolves.toEqual({
++      text: 'report',
++      copied: false,
++    })
++    expect(commands.appCopyDiagnostics).toHaveBeenCalledWith()
++  })
++
+   it('unwraps ok results', async () => {
+     commands.settingsGet.mockResolvedValue({
+       status: 'ok',
+diff --git a/ui/src/shared/ipc/gateway.ts b/ui/src/shared/ipc/gateway.ts
+index 3dd4fa9..9fdaa20 100644
+--- a/ui/src/shared/ipc/gateway.ts
++++ b/ui/src/shared/ipc/gateway.ts
+@@ -30,6 +30,7 @@ import type {
+   SetEnabledInput,
+   NodeEventDto,
+   NodeGitStatusDto,
++  UpdateProgressDto,
+ } from './bindings'
+ export type * from './bindings'
+ import type {
+@@ -247,6 +248,23 @@ export const gateway = {
+     }),
+   nodeUnsubscribe: (subscriptionId: number) =>
+     unwrap(() => commands.nodeUnsubscribe(subscriptionId)),
++  appUpdateStatus: () => unwrap(() => commands.appUpdateStatus()),
++  /** Resolves to the newer release for the user to review, or null. */
++  appUpdateCheck: () => unwrap(() => commands.appUpdateCheck()),
++  /** Installs exactly the reviewed release named by its `updateId`; the app then restarts. */
++  appUpdateInstall: (
++    updateId: string,
++    onEvent: (event: UpdateProgressDto) => void,
++  ) =>
++    unwrap(() => {
++      const channel = new Channel<UpdateProgressDto>()
++      channel.onmessage = onEvent
++      return commands.appUpdateInstall(updateId, channel)
++    }),
++  /** The redacted diagnostics report. */
++  appDiagnostics: () => unwrap(() => commands.appDiagnostics()),
++  /** Copies the redacted report; `copied` is false when the clipboard was unavailable. */
++  appCopyDiagnostics: () => unwrap(() => commands.appCopyDiagnostics()),
+   pickFolder: (title: string) => unwrap(() => commands.pickFolder(title)),
+   pickFile: (title: string, extensions: string[] = []) =>
+     unwrap(() => commands.pickFile(title, extensions)),
+diff --git a/crates/desktop/permissions/autogenerated/app_copy_diagnostics.toml b/crates/desktop/permissions/autogenerated/app_copy_diagnostics.toml
+new file mode 100644
+index 0000000..7fdb98f
+--- /dev/null
++++ b/crates/desktop/permissions/autogenerated/app_copy_diagnostics.toml
+@@ -0,0 +1,11 @@
++# Automatically generated - DO NOT EDIT!
++
++[[permission]]
++identifier = "allow-app-copy-diagnostics"
++description = "Enables the app_copy_diagnostics command without any pre-configured scope."
++commands.allow = ["app_copy_diagnostics"]
++
++[[permission]]
++identifier = "deny-app-copy-diagnostics"
++description = "Denies the app_copy_diagnostics command without any pre-configured scope."
++commands.deny = ["app_copy_diagnostics"]
+diff --git a/crates/desktop/permissions/autogenerated/app_diagnostics.toml b/crates/desktop/permissions/autogenerated/app_diagnostics.toml
+new file mode 100644
+index 0000000..d640a33
+--- /dev/null
++++ b/crates/desktop/permissions/autogenerated/app_diagnostics.toml
+@@ -0,0 +1,11 @@
++# Automatically generated - DO NOT EDIT!
++
++[[permission]]
++identifier = "allow-app-diagnostics"
++description = "Enables the app_diagnostics command without any pre-configured scope."
++commands.allow = ["app_diagnostics"]
++
++[[permission]]
++identifier = "deny-app-diagnostics"
++description = "Denies the app_diagnostics command without any pre-configured scope."
++commands.deny = ["app_diagnostics"]
+diff --git a/crates/desktop/permissions/autogenerated/app_update_check.toml b/crates/desktop/permissions/autogenerated/app_update_check.toml
+new file mode 100644
+index 0000000..74df58f
+--- /dev/null
++++ b/crates/desktop/permissions/autogenerated/app_update_check.toml
+@@ -0,0 +1,11 @@
++# Automatically generated - DO NOT EDIT!
++
++[[permission]]
++identifier = "allow-app-update-check"
++description = "Enables the app_update_check command without any pre-configured scope."
++commands.allow = ["app_update_check"]
++
++[[permission]]
++identifier = "deny-app-update-check"
++description = "Denies the app_update_check command without any pre-configured scope."
++commands.deny = ["app_update_check"]
+diff --git a/crates/desktop/permissions/autogenerated/app_update_install.toml b/crates/desktop/permissions/autogenerated/app_update_install.toml
+new file mode 100644
+index 0000000..e665ba0
+--- /dev/null
++++ b/crates/desktop/permissions/autogenerated/app_update_install.toml
+@@ -0,0 +1,11 @@
++# Automatically generated - DO NOT EDIT!
++
++[[permission]]
++identifier = "allow-app-update-install"
++description = "Enables the app_update_install command without any pre-configured scope."
++commands.allow = ["app_update_install"]
++
++[[permission]]
++identifier = "deny-app-update-install"
++description = "Denies the app_update_install command without any pre-configured scope."
++commands.deny = ["app_update_install"]
+diff --git a/crates/desktop/permissions/autogenerated/app_update_status.toml b/crates/desktop/permissions/autogenerated/app_update_status.toml
+new file mode 100644
+index 0000000..d10570e
+--- /dev/null
++++ b/crates/desktop/permissions/autogenerated/app_update_status.toml
+@@ -0,0 +1,11 @@
++# Automatically generated - DO NOT EDIT!
++
++[[permission]]
++identifier = "allow-app-update-status"
++description = "Enables the app_update_status command without any pre-configured scope."
++commands.allow = ["app_update_status"]
++
++[[permission]]
++identifier = "deny-app-update-status"
++description = "Denies the app_update_status command without any pre-configured scope."
++commands.deny = ["app_update_status"]

@@ -1,0 +1,21 @@
+ROLE: coder (write-capable). Mechanically implement/finish the approved plan below. Do not redesign, add abstractions, or expand scope.
+
+WORKING COPY: C:\Users\vjump\Documents\vjump-comfyui-portable-with-resource-manager (main repo, branch feat/m0-skeleton, HEAD 0ffa136). Edit only files inside it. Another coder works in a separate worktree (C:\Users\vjump\vjc-wt\bandwidth) - never touch it.
+
+CONTEXT: M5 backend package WP6 ("Hold launch/restart checks and required rescanning within orchestration") was implemented earlier in a separate worktree against an older base (8310f12) and has just been 3-way merged into this working copy (uncommitted). Merged files: crates/application/src/comfy_runtime/{model,ports,tests,update_workflow,use_cases}.rs, crates/application/src/custom_nodes/{mod,tests}.rs, new crates/application/src/custom_nodes/runtime.rs, crates/desktop/src/app_lifecycle.rs, crates/desktop/src/ipc/{comfy_commands,error}.rs, crates/desktop/src/state.rs. The worktree's domain/ and infrastructure/custom_nodes hunks were deliberately discarded because HEAD already contains the equivalent (C0) changes. state.rs had one import conflict resolved by keeping `NodeAppError` in the `custom_nodes::{...}` import - remove it if now unused. This merged code has NOT been compiled in this tree; the worktree reported only application tests passing.
+
+APPROVED SPEC (authoritative): docs/handoff/plans/m5-backend-approved-plan.md, section "WP6 - Hold launch/restart checks and required rescanning within orchestration". Also HANDOFF.md section 3.1 bullet "Launch lifecycle".
+
+TASKS:
+1. Make the workspace compile with the merged WP6 code; update every fake/constructor the compiler requires (application tests, crates/infrastructure tests incl. crates/infrastructure/tests/*.rs, crates/desktop/tests/support/mod.rs).
+2. Audit the merged code against every WP6 spec bullet and fix any gap: NodeLifecycle port + RuntimeDeps.nodes; NodeService impl in custom_nodes/runtime.rs (before_start = reconcile_held then ensure_reconciled; after_stop = awaited reconcile_held then scan_held; never acquires the gate); RuntimeError::NodeRecoveryRequired / NodeRescanFailed mapped to IPC codes `node_recovery_required` / `node_rescan_failed` with the fixed messages from the spec; running/unknown runtime during reconciliation maps to existing NeedsStop; Start = try-acquire, node guard, spawn, same lease transferred to the supervisor; Restart = one try-acquire, verified stop, after_stop, guarded start; Stop = ungated supervisor stop first, then WAITING acquire, verify stop again, await after_stop; update-with-stop calls after_stop under its held lease before source/package changes; app close keeps routing through StopComfy; StopComfy::new takes RuntimeDeps; desktop pre-lease ensure_startable() and best-effort after_stop calls removed; thin desktop NodeLifecycle wrapper delegating to the application impl and publishing NodeEvent::Changed after stop reconciliation, including on failure; startup reconciles AND scans nodes before normal services are exposed.
+3. Ensure these tests exist with exactly these names and pass: start_checks_node_recovery_under_the_maintenance_lease, a_journal_failure_created_before_lease_acquisition_blocks_start, restart_stops_rescans_and_starts_with_one_acquisition, stop_cancels_start_before_waiting_for_the_gate, stop_rechecks_termination_after_acquiring_the_gate, after_stop_failure_is_returned_and_prevents_restart, update_with_stop_rescans_under_its_existing_lease. Existing start gate-order and restart acquisition-count tests must keep passing.
+4. If any IPC DTO/command signature changed, regenerate bindings via the export test; otherwise the drift test must pass unchanged.
+
+SUCCESS CRITERIA (all must pass, run at the end in this order):
+- cargo fmt --all -- --check
+- cargo clippy --workspace --all-targets --locked -j 3 -- -D warnings
+- cargo test --workspace --locked -j 3 --no-fail-fast
+- node --test scripts/check-arch-deps.test.mjs && node scripts/check-arch-deps.mjs
+
+OUTPUT (final message): per-file summary with file:line refs; new/changed public signatures; error variants + IPC codes; the 7 test names with locations; any spec gap found and how you resolved it; exact command results (pass/fail counts per test binary).

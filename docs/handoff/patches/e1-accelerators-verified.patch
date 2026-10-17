@@ -1,0 +1,3346 @@
+diff --git a/crates/application/src/comfy_runtime/model.rs b/crates/application/src/comfy_runtime/model.rs
+index 4b28d85..69861a4 100644
+--- a/crates/application/src/comfy_runtime/model.rs
++++ b/crates/application/src/comfy_runtime/model.rs
+@@ -195,6 +195,9 @@ impl From<crate::environment::ProvisionError> for RuntimeError {
+         use crate::environment::ProvisionError;
+         match error {
+             ProvisionError::Cancelled => Self::Cancelled,
++            ProvisionError::PinDrift(_) => Self::RecoveryRequired(
++                "protected packages could not be restored or verified".into(),
++            ),
+             ProvisionError::Failed(s) | ProvisionError::Retryable(s) => Self::Failed(s),
+             ProvisionError::CommandFailed(_) => {
+                 Self::Failed("a runtime maintenance command failed; inspect diagnostics".into())
+diff --git a/crates/application/src/comfy_runtime/tests.rs b/crates/application/src/comfy_runtime/tests.rs
+index a5c7553..ce26e83 100644
+--- a/crates/application/src/comfy_runtime/tests.rs
++++ b/crates/application/src/comfy_runtime/tests.rs
+@@ -49,6 +49,7 @@ impl Machine {
+             comfyui_commit: Some("a".repeat(40)),
+             run_id: RunId::new("setup-1").unwrap(),
+             activated_at: "t".into(),
++            components: Default::default(),
+         });
+         Arc::new(Self {
+             env,
+diff --git a/crates/application/src/environment/activation.rs b/crates/application/src/environment/activation.rs
+index 79601f3..145f1af 100644
+--- a/crates/application/src/environment/activation.rs
++++ b/crates/application/src/environment/activation.rs
+@@ -45,6 +45,7 @@ pub(crate) async fn build_manifest(
+             .map(|resolved| resolved.commit.clone()),
+         run_id: run.id.clone(),
+         activated_at: deps.clock.now(),
++        components: run.components.clone(),
+     })
+ }
+ 
+diff --git a/crates/application/src/environment/deps.rs b/crates/application/src/environment/deps.rs
+index c39c6bf..ce1bfa7 100644
+--- a/crates/application/src/environment/deps.rs
++++ b/crates/application/src/environment/deps.rs
+@@ -10,7 +10,7 @@ use super::{
+     ports::{
+         ActivationStore, ComfySource, EnvVerifier, EnvironmentRepository, HardwareProbe,
+         InstallManifestStore, PackageInstaller, ProfileCatalog, ProvisioningRunRepository,
+-        PythonProvisioner, RootSwitcher, ToolProvisioner, WizardDraftStore,
++        PythonProvisioner, RootSwitcher, ToolProvisioner, WheelFetcher, WizardDraftStore,
+     },
+ };
+ use crate::{
+@@ -86,6 +86,7 @@ pub struct EnvironmentDeps {
+     pub tools: Arc<dyn ToolProvisioner>,
+     pub python: Arc<dyn PythonProvisioner>,
+     pub packages: Arc<dyn PackageInstaller>,
++    pub wheels: Arc<dyn WheelFetcher>,
+     pub verifier: Arc<dyn EnvVerifier>,
+     pub source: Arc<dyn ComfySource>,
+     pub envs: Arc<dyn EnvironmentRepository>,
+diff --git a/crates/application/src/environment/error.rs b/crates/application/src/environment/error.rs
+index 25e2a7b..b5c4f37 100644
+--- a/crates/application/src/environment/error.rs
++++ b/crates/application/src/environment/error.rs
+@@ -22,6 +22,10 @@ pub enum EnvironmentAppError {
+     RootSwitch(#[from] RootSwitchError),
+     #[error("unknown setup profile")]
+     ProfileNotFound,
++    #[error("accelerator ids must be unique and belong to the selected profile")]
++    AcceleratorSelectionInvalid,
++    #[error("the recorded setup profile revision is unavailable")]
++    ProfileRevisionUnavailable,
+     #[error("the selected profile is not available on this machine")]
+     ProfileDisabled(Vec<IneligibleReason>),
+     #[error("a setup run is already in progress")]
+diff --git a/crates/application/src/environment/execute.rs b/crates/application/src/environment/execute.rs
+index 5c6b55a..97c83b1 100644
+--- a/crates/application/src/environment/execute.rs
++++ b/crates/application/src/environment/execute.rs
+@@ -4,7 +4,8 @@ use std::{
+ };
+ 
+ use domain::environment::{
+-    DistName, Eligibility, EnvState, NewEnvironment, PinSet, PythonEnvironment, SetupMode, evaluate,
++    AcceleratorSource, DistName, Eligibility, EnvState, NewEnvironment, PinSet, PythonEnvironment,
++    SetupMode, evaluate,
+ };
+ 
+ use super::{
+@@ -12,8 +13,8 @@ use super::{
+     deps::EnvironmentDeps,
+     error::EnvironmentAppError,
+     model::{
+-        ComfyRef, FailureKind, ProvisioningRun, ResolvedGit, RunId, RunStatus, StepFailure, StepId,
+-        StepPolicy, StepStatus,
++        ComfyRef, ComponentStatus, FailureKind, ProvisioningRun, ResolvedGit, RunId, RunStatus,
++        StepFailure, StepId, StepPolicy, StepStatus,
+     },
+     ports::{
+         Checkout, EnvRepoError, InstallSpec, ProvisionError, SetupEvent, SetupProgressSink,
+@@ -213,7 +214,11 @@ impl Execution {
+                 }
+                 Ok(StepOutcome::NothingToRepair) => return self.finish_nothing_to_repair().await,
+                 Err(ProvisionError::Cancelled) => return self.finish_cancelled().await,
+-                Err(error) if step.policy() == StepPolicy::BestEffort => {
++                Err(error)
++                    if step.policy() == StepPolicy::BestEffort
++                        && step != StepId::Accelerators
++                        && !matches!(error, ProvisionError::PinDrift(_)) =>
++                {
+                     let message = describe(&error);
+                     self.set_step(step, StepStatus::Warning, Some(message));
+                 }
+@@ -230,10 +235,11 @@ impl Execution {
+         step: StepId,
+         error: ProvisionError,
+     ) -> Result<RunOutcome, EnvironmentAppError> {
++        let pin_drift = matches!(error, ProvisionError::PinDrift(_));
+         let failure = to_failure(step, error);
+         self.set_step(step, StepStatus::Failed, Some(failure.message.clone()));
+         self.run.failure = Some(failure.clone());
+-        if step.policy() == StepPolicy::Required {
++        if step.policy() == StepPolicy::Required || pin_drift {
+             self.fail_env().await;
+         }
+         self.emit(SetupEvent::Failure {
+@@ -290,7 +296,29 @@ impl Execution {
+             StepId::Triton => self.triton().await,
+             StepId::Accelerators => self.accelerators().await,
+             StepId::ComfyRequirements => self.comfy_requirements().await,
+-            StepId::Manager => self.manager().await,
++            StepId::Manager => {
++                let result = self.manager().await;
++                if let Some(manager) = &mut self.run.components.manager {
++                    manager.source_commit = self
++                        .run
++                        .resolved
++                        .manager
++                        .as_ref()
++                        .map(|git| git.commit.clone());
++                    manager.status = match &result {
++                        Ok(StepOutcome::Skipped(_)) => ComponentStatus::Skipped,
++                        Ok(_) => ComponentStatus::Installed,
++                        Err(_) => ComponentStatus::Failed,
++                    };
++                    manager.message = result.as_ref().err().map(describe);
++                }
++                let saved = self.save_components().await;
++                if matches!(result, Err(ProvisionError::PinDrift(_))) {
++                    return result;
++                }
++                saved?;
++                result
++            }
+             StepId::CuratedNodes => Ok(StepOutcome::Skipped(
+                 "Curated custom nodes arrive in a later milestone.".into(),
+             )),
+@@ -408,7 +436,20 @@ impl Execution {
+                 env
+             }
+         };
++        if !env.pins.is_empty() {
++            self.constraints = Some(
++                deps.packages
++                    .write_constraints(
++                        &self.root(),
++                        &env.id,
++                        &env.pins,
++                        &self.run.profile.constraints,
++                    )
++                    .await?,
++            );
++        }
+         self.env = Some(env);
++        self.save_components().await?;
+         Ok(())
+     }
+ 
+@@ -461,10 +502,13 @@ impl Execution {
+ 
+     async fn seed(&mut self) -> Result<StepOutcome, ProvisionError> {
+         let ctx = self.ctx(StepId::Seed);
+-        self.deps
++        let result = self
++            .deps
+             .python
+             .seed(&self.root(), &self.env_path(), self.run.profile.os, &ctx)
+-            .await?;
++            .await;
++        self.reassert_pins(&ctx).await?;
++        result?;
+         Ok(StepOutcome::Done)
+     }
+ 
+@@ -582,31 +626,88 @@ impl Execution {
+             .ok_or_else(|| failed("the constraints file was not prepared"))
+     }
+ 
+-    /// The pin guard: protected versions must be exactly what was recorded.
+-    async fn reassert_pins(&self) -> Result<(), ProvisionError> {
+-        let now = self.installed_pins().await?;
+-        let expected = self
++    async fn save_components(&mut self) -> Result<(), ProvisionError> {
++        self.save_run()
++            .await
++            .map_err(|_| failed("the component results could not be saved"))?;
++        self.deps
++            .envs
++            .save_components(&self.run.target_env, &self.run.components)
++            .await
++            .map_err(storage)
++    }
++
++    /// Cleanup retains the maintenance lease and uses a fresh cancellation token.
++    async fn reassert_pins(&self, ctx: &StepContext) -> Result<(), ProvisionError> {
++        let expected = &self
+             .env
+             .as_ref()
+-            .map(|env| env.pins.clone())
+-            .unwrap_or_default();
+-        let changes = expected.diff(&now);
++            .ok_or_else(|| failed("the target environment was not prepared"))?
++            .pins;
++        if expected.is_empty() {
++            return Ok(());
++        }
++        let drift = |error: ProvisionError| ProvisionError::PinDrift(describe(&error));
++        let installed = self.installed_pins().await.map_err(drift)?;
++        let changes: Vec<_> = expected
++            .iter()
++            .filter(|(name, version)| installed.get(name) != Some(*version))
++            .collect();
+         if changes.is_empty() {
+             return Ok(());
+         }
+-        let names: Vec<String> = changes
++        let mut cleanup = ctx.clone();
++        cleanup.cancel = CancelToken::new();
++        for (name, version) in changes {
++            cleanup.log(format!("Restoring protected package {name}=={version}."));
++            let spec = InstallSpec {
++                requirements: vec![format!("{name}=={version}")],
++                index_url: self
++                    .run
++                    .profile
++                    .torch
++                    .protected_distributions()
++                    .contains(name)
++                    .then(|| self.run.profile.torch.index_url.clone()),
++                constraint_file: Some(self.constraint_file().map_err(drift)?),
++                no_deps: true,
++                ..InstallSpec::default()
++            };
++            self.deps
++                .packages
++                .install(&self.root(), &self.env_path(), &spec, &cleanup)
++                .await
++                .map_err(|error| {
++                    ProvisionError::PinDrift(format!("{name}: {}", describe(&error)))
++                })?;
++        }
++        let restored = self.installed_pins().await.map_err(drift)?;
++        let remaining: Vec<_> = expected
+             .iter()
+-            .map(|change| change.name.to_string())
++            .filter(|(name, version)| restored.get(name) != Some(*version))
++            .map(|(name, _)| name.to_string())
+             .collect();
+-        Err(failed(format!(
+-            "Protected packages changed during an install: {}.",
+-            names.join(", ")
+-        )))
++        if !remaining.is_empty() {
++            return Err(ProvisionError::PinDrift(remaining.join(", ")));
++        }
++        Ok(())
++    }
++
++    async fn guarded_install(
++        &self,
++        spec: &InstallSpec,
++        ctx: &StepContext,
++    ) -> Result<(), ProvisionError> {
++        let result = self
++            .deps
++            .packages
++            .install(&self.root(), &self.env_path(), spec, ctx)
++            .await;
++        self.reassert_pins(ctx).await?;
++        result
+     }
+ 
+     async fn install_torch(&mut self) -> Result<StepOutcome, ProvisionError> {
+-        let deps = self.deps.clone();
+-        let root = self.root();
+         let ctx = self.ctx(StepId::InstallTorch);
+         let mut pins = self.installed_pins().await?;
+         if !self.torch_present(&pins) {
+@@ -617,9 +718,7 @@ impl Execution {
+                 allow_source_builds: false,
+                 ..InstallSpec::default()
+             };
+-            deps.packages
+-                .install(&root, &self.env_path(), &spec, &ctx)
+-                .await?;
++            self.guarded_install(&spec, &ctx).await?;
+             pins = self.installed_pins().await?;
+         }
+         if !self.torch_present(&pins) {
+@@ -671,9 +770,7 @@ impl Execution {
+             allow_source_builds: false,
+             ..InstallSpec::default()
+         };
+-        deps.packages
+-            .install(&root, &self.env_path(), &spec, &ctx)
+-            .await?;
++        self.guarded_install(&spec, &ctx).await?;
+         let pins = self.installed_pins().await?;
+         if !pins.contains(&self.run.profile.triton.distribution) {
+             return Err(failed("Triton was installed but could not be found."));
+@@ -689,30 +786,44 @@ impl Execution {
+ 
+     async fn accelerators(&mut self) -> Result<StepOutcome, ProvisionError> {
+         let accelerators = self.run.profile.accelerators.clone();
+-        if accelerators.is_empty() {
++        if self.run.request.accelerators.is_empty() {
+             return Ok(StepOutcome::Skipped(
+-                "This profile defines no accelerators yet.".into(),
++                "No accelerators were selected.".into(),
+             ));
+         }
+-        let deps = self.deps.clone();
+-        let root = self.root();
+         let ctx = self.ctx(StepId::Accelerators);
+         let mut warnings = Vec::new();
+         for accelerator in accelerators {
++            if !self.run.request.accelerators.contains(&accelerator.id) {
++                continue;
++            }
+             self.check_cancel()?;
+-            let spec = InstallSpec {
+-                requirements: vec![accelerator.requirement.clone()],
+-                constraint_file: Some(self.constraint_file()?),
+-                allow_source_builds: false,
+-                ..InstallSpec::default()
++            let result = self.install_accelerator(&accelerator, &ctx).await;
++            let outcome = self
++                .run
++                .components
++                .accelerators
++                .iter_mut()
++                .find(|r| r.id == accelerator.id)
++                .ok_or_else(|| failed("the component selection was not recorded"))?;
++            outcome.status = if result.is_ok() {
++                ComponentStatus::Installed
++            } else {
++                ComponentStatus::Failed
+             };
+-            match deps
+-                .packages
+-                .install(&root, &self.env_path(), &spec, &ctx)
+-                .await
+-            {
+-                Ok(()) => self.reassert_pins().await?,
+-                Err(ProvisionError::Cancelled) => return Err(ProvisionError::Cancelled),
++            outcome.importable = None;
++            outcome.message = result.as_ref().err().map(describe);
++            let saved = self.save_components().await;
++            if let Err(error @ ProvisionError::PinDrift(_)) = result {
++                return Err(error);
++            }
++            saved?;
++            match result {
++                Ok(()) => {}
++                Err(error @ (ProvisionError::Cancelled | ProvisionError::PinDrift(_))) => {
++                    return Err(error);
++                }
++                Err(error) if !accelerator.non_fatal => return Err(error),
+                 Err(error) => warnings.push(format!("{}: {}", accelerator.name, describe(&error))),
+             }
+         }
+@@ -723,6 +834,82 @@ impl Execution {
+         }
+     }
+ 
++    async fn install_accelerator(
++        &self,
++        accelerator: &domain::environment::AcceleratorSpec,
++        ctx: &StepContext,
++    ) -> Result<(), ProvisionError> {
++        let requirements = match &accelerator.source {
++            AcceleratorSource::Wheel { .. } => vec![
++                self.deps
++                    .wheels
++                    .fetch(&self.root(), accelerator, ctx)
++                    .await?
++                    .to_str()
++                    .ok_or_else(|| failed("the wheel path is not valid Unicode"))?
++                    .to_owned(),
++            ],
++            AcceleratorSource::Packages { requirements } => requirements.clone(),
++        };
++        self.guarded_install(
++            &InstallSpec {
++                requirements,
++                constraint_file: Some(self.constraint_file()?),
++                no_deps: accelerator.no_deps,
++                ..InstallSpec::default()
++            },
++            ctx,
++        )
++        .await
++    }
++
++    async fn accelerator_imports(
++        &mut self,
++        ctx: &StepContext,
++    ) -> Result<Vec<String>, ProvisionError> {
++        let mut warnings = Vec::new();
++        for spec in self.run.profile.accelerators.clone() {
++            let Some(index) = self.run.components.accelerators.iter().position(|r| {
++                r.id == spec.id && r.selected && r.status == ComponentStatus::Installed
++            }) else {
++                continue;
++            };
++            if spec.modules.is_empty() {
++                self.run.components.accelerators[index].message =
++                    Some(format!("Import untested: {}", spec.provenance));
++                self.save_components().await?;
++                continue;
++            }
++            let mut failures = Vec::new();
++            for module in spec.modules {
++                match self
++                    .deps
++                    .verifier
++                    .verify_accelerator(&self.root(), &self.env_path(), &module, ctx)
++                    .await
++                {
++                    Ok(()) => {}
++                    Err(ProvisionError::Cancelled) => return Err(ProvisionError::Cancelled),
++                    Err(error) => failures.push(format!("{module}: {}", describe(&error))),
++                }
++                // Imported third-party code also runs under the original pin guard.
++                self.reassert_pins(ctx).await?;
++            }
++            let result = &mut self.run.components.accelerators[index];
++            result.importable = Some(failures.is_empty());
++            result.message = if failures.is_empty() {
++                None
++            } else {
++                Some(failures.join("; "))
++            };
++            if let Some(message) = &result.message {
++                warnings.push(message.clone());
++            }
++            self.save_components().await?;
++        }
++        Ok(warnings)
++    }
++
+     async fn comfy_requirements(&mut self) -> Result<StepOutcome, ProvisionError> {
+         let deps = self.deps.clone();
+         let root = self.root();
+@@ -734,10 +921,7 @@ impl Execution {
+             allow_source_builds: ctx.allow_source_builds,
+             ..InstallSpec::default()
+         };
+-        deps.packages
+-            .install(&root, &self.env_path(), &spec, &ctx)
+-            .await?;
+-        self.reassert_pins().await?;
++        self.guarded_install(&spec, &ctx).await?;
+         // Existing custom nodes keep working in a replacement environment: their requirements are
+         // installed under the same pin guard. Failures are warnings for the affected node.
+         let mut warnings = Vec::new();
+@@ -749,13 +933,11 @@ impl Execution {
+                 allow_source_builds: ctx.allow_source_builds,
+                 ..InstallSpec::default()
+             };
+-            match deps
+-                .packages
+-                .install(&root, &self.env_path(), &spec, &ctx)
+-                .await
+-            {
+-                Ok(()) => self.reassert_pins().await?,
+-                Err(ProvisionError::Cancelled) => return Err(ProvisionError::Cancelled),
++            match self.guarded_install(&spec, &ctx).await {
++                Ok(()) => {}
++                Err(error @ (ProvisionError::Cancelled | ProvisionError::PinDrift(_))) => {
++                    return Err(error);
++                }
+                 Err(error) => warnings.push(format!("{}: {}", node_label(&file), describe(&error))),
+             }
+         }
+@@ -806,10 +988,7 @@ impl Execution {
+                 allow_source_builds: ctx.allow_source_builds,
+                 ..InstallSpec::default()
+             };
+-            deps.packages
+-                .install(&root, &self.env_path(), &spec, &ctx)
+-                .await?;
+-            self.reassert_pins().await?;
++            self.guarded_install(&spec, &ctx).await?;
+         }
+         Ok(StepOutcome::Done)
+     }
+@@ -818,16 +997,32 @@ impl Execution {
+         let deps = self.deps.clone();
+         let root = self.root();
+         let ctx = self.ctx(StepId::FinalVerify);
+-        let pins = self.installed_pins().await?;
+-        self.record_pins(pins.clone()).await?;
++        let pins = self
++            .installed_pins()
++            .await
++            .map_err(|error| ProvisionError::PinDrift(describe(&error)))?;
++        let expected = &self
++            .env
++            .as_ref()
++            .ok_or_else(|| failed("the target environment was not prepared"))?
++            .pins;
++        if expected.is_empty() || !expected.diff(&pins).is_empty() {
++            return Err(ProvisionError::PinDrift(
++                "final verification differs from the recorded protected pins".into(),
++            ));
++        }
++        let warnings = self.accelerator_imports(&ctx).await?;
+         let report = deps
+             .verifier
+             .verify_final(&root, &self.env_path(), &self.run.profile.verify, &ctx)
+             .await?;
+-        for (name, present) in &report.accelerators {
+-            ctx.log(format!(
+-                "{name}: {}",
+-                if *present { "present" } else { "not installed" }
++        let after = self
++            .installed_pins()
++            .await
++            .map_err(|error| ProvisionError::PinDrift(describe(&error)))?;
++        if !pins.diff(&after).is_empty() {
++            return Err(ProvisionError::PinDrift(
++                "protected versions changed during final verification".into(),
+             ));
+         }
+         let now = deps.clock.now();
+@@ -848,7 +1043,8 @@ impl Execution {
+             .clone()
+             .ok_or_else(|| failed("the target environment was not prepared"))?;
+         match activation::activate(&deps, &mut self.run, &candidate).await {
+-            Ok(()) => Ok(StepOutcome::Done),
++            Ok(()) if warnings.is_empty() => Ok(StepOutcome::Done),
++            Ok(()) => Ok(StepOutcome::Warning(warnings.join("; "))),
+             Err(EnvironmentAppError::RecoveryRequired) => Err(failed(
+                 "install.json is unreadable or newer than this app; setup did not replace it.",
+             )),
+@@ -903,6 +1099,7 @@ pub(crate) fn describe(error: &ProvisionError) -> String {
+             Some(code) => format!("A command failed with exit code {code}."),
+             None => "A command failed.".into(),
+         },
++        ProvisionError::PinDrift(message) => format!("Protected package pin drift: {message}"),
+         ProvisionError::Retryable(message) | ProvisionError::Failed(message) => message.clone(),
+         ProvisionError::ConsentRequired(_) => "Explicit consent is required.".into(),
+     }
+@@ -937,7 +1134,7 @@ fn to_failure(step: StepId, error: ProvisionError) -> StepFailure {
+             );
+             failure.consent = Some(consent);
+         }
+-        ProvisionError::Failed(_) | ProvisionError::Cancelled => {}
++        ProvisionError::Failed(_) | ProvisionError::Cancelled | ProvisionError::PinDrift(_) => {}
+     }
+     failure
+ }
+diff --git a/crates/application/src/environment/model.rs b/crates/application/src/environment/model.rs
+index 19fb9d0..e814b6c 100644
+--- a/crates/application/src/environment/model.rs
++++ b/crates/application/src/environment/model.rs
+@@ -322,6 +322,8 @@ pub struct SetupRequest {
+     pub profile_id: String,
+     pub comfyui_ref: ComfyRef,
+     pub install_manager: bool,
++    /// Explicit profile component ids. An empty list selects no accelerators.
++    pub accelerators: Vec<String>,
+     pub clean_cache: bool,
+     /// Explicit confirmation that setup may install packages into an existing (adopted) venv.
+     pub confirm_adopted_changes: bool,
+@@ -424,6 +426,7 @@ pub struct ProvisioningRun {
+     pub previous_env: Option<EnvId>,
+     pub python_target: PythonTarget,
+     pub resolved: ResolvedSources,
++    pub components: InstalledComponents,
+     pub steps: Vec<StepRecord>,
+     pub status: RunStatus,
+     pub cancel_requested: bool,
+@@ -474,9 +477,66 @@ pub struct InstallManifest {
+     pub comfyui_commit: Option<String>,
+     pub run_id: RunId,
+     pub activated_at: String,
++    pub components: InstalledComponents,
+ }
+ 
+-pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
++pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ComponentStatus {
++    Installed,
++    Failed,
++    Skipped,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct AcceleratorResult {
++    pub id: String,
++    pub selected: bool,
++    pub status: ComponentStatus,
++    /// None means no import test ran.
++    pub importable: Option<bool>,
++    pub message: Option<String>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ManagerResult {
++    pub selected: bool,
++    pub status: ComponentStatus,
++    pub source_commit: Option<String>,
++    pub message: Option<String>,
++}
++
++/// None for Manager and an empty accelerator list represent unknown legacy metadata.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub struct InstalledComponents {
++    pub manager: Option<ManagerResult>,
++    pub accelerators: Vec<AcceleratorResult>,
++}
++
++impl InstalledComponents {
++    pub fn selected(request: &SetupRequest, profile: &domain::environment::SetupProfile) -> Self {
++        Self {
++            manager: Some(ManagerResult {
++                selected: request.install_manager,
++                status: ComponentStatus::Skipped,
++                source_commit: None,
++                message: None,
++            }),
++            accelerators: profile
++                .accelerators
++                .iter()
++                .map(|spec| AcceleratorResult {
++                    id: spec.id.clone(),
++                    selected: request.accelerators.contains(&spec.id),
++                    status: ComponentStatus::Skipped,
++                    importable: None,
++                    message: None,
++                })
++                .collect(),
++        }
++    }
++}
+ 
+ /// What reading `install.json` found. A short-lived value, so the size difference between
+ /// the variants does not matter.
+diff --git a/crates/application/src/environment/ports.rs b/crates/application/src/environment/ports.rs
+index 5dfaf2a..70c04ca 100644
+--- a/crates/application/src/environment/ports.rs
++++ b/crates/application/src/environment/ports.rs
+@@ -109,6 +109,8 @@ pub enum ProvisionError {
+     /// Cancellation was honoured and the whole process tree is gone.
+     #[error("the operation was cancelled")]
+     Cancelled,
++    #[error("protected packages could not be restored or verified: {0}")]
++    PinDrift(String),
+     #[error("a command failed")]
+     CommandFailed(CommandFailure),
+     /// A transient condition such as rate limiting or a dropped connection.
+@@ -162,6 +164,9 @@ pub trait HardwareProbe: Send + Sync {
+ pub trait ProfileCatalog: Send + Sync {
+     fn list(&self) -> Vec<SetupProfile>;
+     fn get(&self, id: &str) -> Option<SetupProfile>;
++    fn get_revision(&self, id: &str, revision: u32) -> Option<SetupProfile> {
++        self.get(id).filter(|profile| profile.revision == revision)
++    }
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -320,6 +325,17 @@ pub struct InstallSpec {
+     pub constraint_file: Option<PathBuf>,
+     pub upgrade: bool,
+     pub allow_source_builds: bool,
++    pub no_deps: bool,
++}
++
++#[async_trait]
++pub trait WheelFetcher: Send + Sync {
++    async fn fetch(
++        &self,
++        root: &Path,
++        spec: &domain::environment::AcceleratorSpec,
++        ctx: &StepContext,
++    ) -> Result<PathBuf, ProvisionError>;
+ }
+ 
+ #[derive(Debug, Clone, Default, PartialEq, Eq)]
+@@ -404,6 +420,14 @@ impl VerificationReport {
+ 
+ #[async_trait]
+ pub trait EnvVerifier: Send + Sync {
++    /// Imports one optional module in a separate bounded subprocess.
++    async fn verify_accelerator(
++        &self,
++        root: &Path,
++        env_path: &Path,
++        module: &str,
++        ctx: &StepContext,
++    ) -> Result<(), ProvisionError>;
+     async fn verify_torch(
+         &self,
+         root: &Path,
+@@ -485,6 +509,15 @@ pub trait EnvironmentRepository: Send + Sync {
+     async fn active(&self) -> Result<Option<PythonEnvironment>, EnvRepoError>;
+     /// Inserts or updates the environment record. It never changes the active selection.
+     async fn save(&self, env: &PythonEnvironment) -> Result<(), EnvRepoError>;
++    async fn load_components(
++        &self,
++        id: &EnvId,
++    ) -> Result<super::model::InstalledComponents, EnvRepoError>;
++    async fn save_components(
++        &self,
++        id: &EnvId,
++        components: &super::model::InstalledComponents,
++    ) -> Result<(), EnvRepoError>;
+     async fn delete(&self, id: &EnvId) -> Result<(), EnvRepoError>;
+ }
+ 
+diff --git a/crates/application/src/environment/queries.rs b/crates/application/src/environment/queries.rs
+index b773ad5..b668e32 100644
+--- a/crates/application/src/environment/queries.rs
++++ b/crates/application/src/environment/queries.rs
+@@ -198,6 +198,7 @@ pub struct EnvironmentInfo {
+     /// The commit currently checked out, when it can be read.
+     pub comfyui_commit: Option<String>,
+     pub accelerators: Vec<String>,
++    pub components: super::model::InstalledComponents,
+ }
+ 
+ /// FR-ENV-1: the selected environment.
+@@ -219,8 +220,29 @@ impl GetEnvironmentInfo {
+             .ok_or(EnvironmentAppError::NoActiveEnvironment)?;
+         let root = deps.root.current().root;
+         let profile = deps.catalog.get(&env.profile_id);
+-        let manifest_reference = match deps.manifests.read(&root).await? {
+-            ManifestState::Valid(manifest) => manifest.comfyui_reference,
++        let manifest = deps.manifests.read(&root).await?;
++        let mut components = deps.envs.load_components(&env.id).await?;
++        let manifest_reference = match manifest {
++            ManifestState::Valid(manifest) if manifest.env_id == env.id => {
++                if components == super::model::InstalledComponents::default() {
++                    components = manifest.components;
++                    if components == super::model::InstalledComponents::default()
++                        && let Some(run) = deps.runs.get(&manifest.run_id).await?
++                        && run.target_env == env.id
++                        && run.profile.id == env.profile_id
++                        && run.profile.revision == env.profile_revision
++                    {
++                        components = run.components;
++                        if components == super::model::InstalledComponents::default() {
++                            components = super::model::InstalledComponents::selected(
++                                &run.request,
++                                &run.profile,
++                            );
++                        }
++                    }
++                }
++                manifest.comfyui_reference
++            }
+             _ => None,
+         };
+         let comfyui_commit = match deps.source.inspect_checkout(&root).await {
+@@ -242,7 +264,13 @@ impl GetEnvironmentInfo {
+             triton_version,
+             comfyui_reference: manifest_reference,
+             comfyui_commit,
+-            accelerators: Vec::new(),
++            accelerators: components
++                .accelerators
++                .iter()
++                .filter(|r| r.status == super::model::ComponentStatus::Installed)
++                .map(|r| r.id.clone())
++                .collect(),
++            components,
+             env: summarize(&env),
+         })
+     }
+diff --git a/crates/application/src/environment/setup.rs b/crates/application/src/environment/setup.rs
+index a543047..7ece1fa 100644
+--- a/crates/application/src/environment/setup.rs
++++ b/crates/application/src/environment/setup.rs
+@@ -65,19 +65,59 @@ impl StartSetup {
+         }
+     }
+ 
+-    async fn register(&self, request: SetupRequest) -> Result<RunId, EnvironmentAppError> {
++    async fn register(&self, mut request: SetupRequest) -> Result<RunId, EnvironmentAppError> {
+         let deps = &self.deps;
+-        let profile = deps
+-            .catalog
+-            .get(&request.profile_id)
+-            .ok_or(EnvironmentAppError::ProfileNotFound)?;
+-        match deps.manifests.read(&request.install_root).await? {
+-            ManifestState::Corrupt | ManifestState::Newer => {
+-                return Err(EnvironmentAppError::RecoveryRequired);
+-            }
+-            ManifestState::Absent | ManifestState::Valid(_) => {}
++        let manifest = deps.manifests.read(&request.install_root).await?;
++        if matches!(manifest, ManifestState::Corrupt | ManifestState::Newer) {
++            return Err(EnvironmentAppError::RecoveryRequired);
+         }
+         let active = deps.envs.active().await?;
++        let profile = if request.mode == SetupMode::Repair {
++            let env = active
++                .as_ref()
++                .ok_or(EnvironmentAppError::NoActiveEnvironment)?;
++            let recorded = match &manifest {
++                ManifestState::Valid(manifest) if manifest.env_id == env.id => {
++                    deps.runs.get(&manifest.run_id).await?
++                }
++                _ => None,
++            };
++            if let Some(run) = recorded.filter(|run| {
++                run.target_env == env.id
++                    && run.profile.id == env.profile_id
++                    && run.profile.revision == env.profile_revision
++            }) {
++                request.profile_id = run.profile.id.clone();
++                request.accelerators = run.request.accelerators;
++                request.install_manager = run.request.install_manager;
++                run.profile
++            } else {
++                let profile = deps
++                    .catalog
++                    .get_revision(&env.profile_id, env.profile_revision)
++                    .ok_or(EnvironmentAppError::ProfileRevisionUnavailable)?;
++                let components = deps.envs.load_components(&env.id).await?;
++                request.profile_id = profile.id.clone();
++                request.accelerators = components
++                    .accelerators
++                    .iter()
++                    .filter(|r| r.selected)
++                    .map(|r| r.id.clone())
++                    .collect();
++                request.install_manager = components.manager.is_some_and(|r| r.selected);
++                profile
++            }
++        } else {
++            deps.catalog
++                .get(&request.profile_id)
++                .ok_or(EnvironmentAppError::ProfileNotFound)?
++        };
++        let mut selected = std::collections::HashSet::new();
++        if request.accelerators.iter().any(|id| {
++            !selected.insert(id) || !profile.accelerators.iter().any(|spec| &spec.id == id)
++        }) {
++            return Err(EnvironmentAppError::AcceleratorSelectionInvalid);
++        }
+         request.mode.check(active.as_ref(), &profile)?;
+         if request.mode != SetupMode::FirstRun
+             && !matches!(request.comfyui_ref, ComfyRef::KeepCurrent)
+@@ -120,8 +160,10 @@ impl StartSetup {
+         }
+ 
+         let now = deps.clock.now();
++        let components = super::model::InstalledComponents::selected(&request, &profile);
+         let run = ProvisioningRun {
+             id: run_id.clone(),
++            components,
+             request,
+             profile,
+             target_env: env_id,
+@@ -211,13 +253,25 @@ impl StartSetup {
+                 .failure
+                 .as_ref()
+                 .is_some_and(|failure| failure.step == step);
+-        if !skippable {
++        let damaged = self
++            .deps
++            .envs
++            .get(&run.target_env)
++            .await?
++            .is_some_and(|env| env.state() == domain::environment::EnvState::Failed);
++        if !skippable || damaged {
+             return Err(EnvironmentAppError::StepNotSkippable);
+         }
+         self.ensure_idle().await?;
+         let record = run.step_mut(step);
+         record.status = StepStatus::Skipped;
+         record.message = Some("Skipped by the user.".into());
++        if step == StepId::Manager
++            && let Some(manager) = &mut run.components.manager
++        {
++            manager.status = super::model::ComponentStatus::Skipped;
++            manager.message = Some("Skipped by the user.".into());
++        }
+         self.requeue(run, Some(step)).await
+     }
+ 
+diff --git a/crates/application/src/environment/tests/fakes.rs b/crates/application/src/environment/tests/fakes.rs
+index 3b4b75d..0e18e39 100644
+--- a/crates/application/src/environment/tests/fakes.rs
++++ b/crates/application/src/environment/tests/fakes.rs
+@@ -12,9 +12,9 @@ use std::{
+ 
+ use async_trait::async_trait;
+ use domain::environment::{
+-    AcceleratorSpec, ComputeCapability, CudaVariant, CudaVersion, DiskBudget, DistName, EnvId,
+-    GpuObservation, GpuProbe, HardwareObservation, OsKind, PROFILE_SCHEMA_VERSION, PinSet,
+-    ProfileStatus, PythonEnvironment, PythonVersion, SetupProfile, TorchBuild, TritonSpec,
++    AcceleratorSource, AcceleratorSpec, ComputeCapability, CudaVariant, CudaVersion, DiskBudget,
++    DistName, EnvId, GpuObservation, GpuProbe, HardwareObservation, OsKind, PROFILE_SCHEMA_VERSION,
++    PinSet, ProfileStatus, PythonEnvironment, PythonVersion, SetupProfile, TorchBuild, TritonSpec,
+     VerifyExpectations,
+ };
+ 
+@@ -154,6 +154,12 @@ pub struct World {
+     skips: Mutex<HashMap<String, usize>>,
+     pub installed: Mutex<Vec<InstalledPackage>>,
+     pub envs: Mutex<BTreeMap<String, PythonEnvironment>>,
++    pub components: Mutex<BTreeMap<String, InstalledComponents>>,
++    pub drift_on_accelerator: AtomicBool,
++    pub drift_on_node: AtomicBool,
++    pub drift_on_final_verify: AtomicBool,
++    pub drift_before_final_verify: AtomicBool,
++    pub refuse_pin_restore: AtomicBool,
+     pub active: Mutex<Option<EnvId>>,
+     pub runs: Mutex<BTreeMap<String, ProvisioningRun>>,
+     pub manifest: Mutex<ManifestState>,
+@@ -187,6 +193,12 @@ impl World {
+             skips: Mutex::default(),
+             installed: Mutex::default(),
+             envs: Mutex::default(),
++            components: Mutex::default(),
++            drift_on_accelerator: AtomicBool::new(false),
++            drift_on_node: AtomicBool::new(false),
++            drift_on_final_verify: AtomicBool::new(false),
++            drift_before_final_verify: AtomicBool::new(false),
++            refuse_pin_restore: AtomicBool::new(false),
+             active: Mutex::default(),
+             runs: Mutex::default(),
+             manifest: Mutex::new(ManifestState::Absent),
+@@ -218,6 +230,7 @@ impl World {
+             tools: self.clone(),
+             python: self.clone(),
+             packages: self.clone(),
++            wheels: self.clone(),
+             verifier: self.clone(),
+             source: self.clone(),
+             envs: self.clone(),
+@@ -614,6 +627,28 @@ impl PackageInstaller for World {
+         let key = Self::install_key(spec);
+         self.call(key);
+         self.installs.lock().unwrap().push(spec.clone());
++        if spec.no_deps && spec.requirements.iter().any(|r| r.contains("==")) {
++            self.call("restore_pins");
++            assert!(!ctx.cancel.is_cancelled(), "cleanup uses a fresh token");
++            assert!(
++                self.gate.busy.load(Ordering::SeqCst),
++                "cleanup retains the lease"
++            );
++            if self.refuse_pin_restore.load(Ordering::SeqCst) {
++                return Err(ProvisionError::Failed("restore refused".into()));
++            }
++            for requirement in &spec.requirements {
++                if let Some((name, version)) = requirement.split_once("==") {
++                    self.put_installed(name, version);
++                }
++            }
++            return Ok(());
++        }
++        if (key == "install:other" && self.drift_on_accelerator.load(Ordering::SeqCst))
++            || (key == "install:node" && self.drift_on_node.load(Ordering::SeqCst))
++        {
++            self.put_installed("torch", "99.0.0");
++        }
+         if let Err(error) = self.injected(key) {
+             if error == ProvisionError::Cancelled {
+                 ctx.cancel.cancel();
+@@ -693,6 +728,17 @@ impl PackageInstaller for World {
+ 
+ #[async_trait]
+ impl EnvVerifier for World {
++    async fn verify_accelerator(
++        &self,
++        _root: &Path,
++        _env_path: &Path,
++        module: &str,
++        _ctx: &StepContext,
++    ) -> Result<(), ProvisionError> {
++        self.call(&format!("import:{module}"));
++        self.injected("verify_accelerator")
++    }
++
+     async fn verify_torch(
+         &self,
+         _root: &Path,
+@@ -727,6 +773,9 @@ impl EnvVerifier for World {
+         _ctx: &StepContext,
+     ) -> Result<VerificationReport, ProvisionError> {
+         self.call("verify_final");
++        if self.drift_on_final_verify.load(Ordering::SeqCst) {
++            self.put_installed("torch", "99.0.0");
++        }
+         self.injected("verify_final")?;
+         if self.verify_final_fails.load(Ordering::SeqCst) {
+             return Err(ProvisionError::Failed("verification failed".into()));
+@@ -845,6 +894,26 @@ impl EnvironmentRepository for World {
+         Ok(())
+     }
+ 
++    async fn load_components(&self, id: &EnvId) -> Result<InstalledComponents, EnvRepoError> {
++        Ok(self
++            .components
++            .lock()
++            .unwrap()
++            .get(id.as_str())
++            .cloned()
++            .unwrap_or_default())
++    }
++    async fn save_components(
++        &self,
++        id: &EnvId,
++        components: &InstalledComponents,
++    ) -> Result<(), EnvRepoError> {
++        self.components
++            .lock()
++            .unwrap()
++            .insert(id.to_string(), components.clone());
++        Ok(())
++    }
+     async fn delete(&self, id: &EnvId) -> Result<(), EnvRepoError> {
+         self.call(&format!("delete_env:{id}"));
+         self.envs.lock().unwrap().remove(id.as_str());
+@@ -863,6 +932,11 @@ impl ProvisioningRunRepository for World {
+     }
+ 
+     async fn save(&self, run: &ProvisioningRun) -> Result<(), EnvRepoError> {
++        if run.step(StepId::FinalVerify).status == StepStatus::Running
++            && self.drift_before_final_verify.swap(false, Ordering::SeqCst)
++        {
++            self.put_installed("torch", "99.0.0");
++        }
+         let operation = format!("run_save:{}", run.activation.as_str());
+         self.repo_injected(&operation)?;
+         self.runs
+@@ -977,11 +1051,34 @@ impl SetupProgressSink for RecordingSink {
+     }
+ }
+ 
++#[async_trait]
++impl WheelFetcher for World {
++    async fn fetch(
++        &self,
++        _root: &Path,
++        spec: &AcceleratorSpec,
++        _ctx: &StepContext,
++    ) -> Result<PathBuf, ProvisionError> {
++        self.call("fetch_wheel");
++        self.injected("fetch_wheel")?;
++        let AcceleratorSource::Wheel { filename, .. } = &spec.source else {
++            panic!("expected wheel")
++        };
++        Ok(PathBuf::from("/install/data/cache/wheels").join(filename.as_str()))
++    }
++}
++
+ pub fn accelerator(name: &str) -> AcceleratorSpec {
+     AcceleratorSpec {
++        id: name.into(),
+         name: name.into(),
+-        requirement: format!("{name}==1.0"),
+-        sha256: Some("0".repeat(64)),
++        modules: vec![name.replace('-', "_")],
++        source: AcceleratorSource::Packages {
++            requirements: vec![format!("{name}==1.0")],
++        },
++        no_deps: false,
++        default_selected: false,
+         non_fatal: true,
++        provenance: "fixture; import unvalidated".into(),
+     }
+ }
+diff --git a/crates/application/src/environment/tests/queries.rs b/crates/application/src/environment/tests/queries.rs
+index f25d73e..ee87c2d 100644
+--- a/crates/application/src/environment/tests/queries.rs
++++ b/crates/application/src/environment/tests/queries.rs
+@@ -30,6 +30,7 @@ fn manifest_for(world: &std::sync::Arc<World>, env_id: &str) -> InstallManifest
+         comfyui_commit: Some("abc".into()),
+         run_id: RunId::new("run-1").unwrap(),
+         activated_at: world.deps().clock.now(),
++        components: Default::default(),
+     }
+ }
+ 
+@@ -270,3 +271,27 @@ fn environment_info_and_packages_describe_the_selected_environment() {
+         Err(EnvironmentAppError::NoActiveEnvironment)
+     ));
+ }
++
++#[test]
++fn environment_info_reports_recorded_components_and_recovers_legacy_selections() {
++    let world = World::new();
++    world.profiles.lock().unwrap()[0].accelerators = vec![accelerator("sageattention")];
++    let mut req = request();
++    req.accelerators = vec!["sageattention".into()];
++    let id = register(&world, req).unwrap();
++    execute(&world, &id);
++    let recorded = world.run(&id).components;
++    world.profiles.lock().unwrap()[0].accelerators.clear();
++    let info = block_on(GetEnvironmentInfo::new(world.deps()).execute()).unwrap();
++    assert_eq!(info.components, recorded);
++    world.components.lock().unwrap().clear();
++    if let ManifestState::Valid(manifest) = &mut *world.manifest.lock().unwrap() {
++        manifest.schema_version = 1;
++        manifest.components = Default::default();
++    }
++    let info = block_on(GetEnvironmentInfo::new(world.deps()).execute()).unwrap();
++    assert_eq!(
++        info.components, recorded,
++        "legacy manifest recovers only its associated run"
++    );
++}
+diff --git a/crates/application/src/environment/tests/setup.rs b/crates/application/src/environment/tests/setup.rs
+index 549ff44..dc9bd29 100644
+--- a/crates/application/src/environment/tests/setup.rs
++++ b/crates/application/src/environment/tests/setup.rs
+@@ -16,6 +16,7 @@ pub fn request() -> SetupRequest {
+         profile_id: "win-py313-torch2141-cu130".into(),
+         comfyui_ref: ComfyRef::Latest,
+         install_manager: false,
++        accelerators: Vec::new(),
+         clean_cache: false,
+         confirm_adopted_changes: false,
+         allow_source_builds: false,
+@@ -385,6 +386,7 @@ fn optional_manager_step_needs_consent_for_the_resolved_commit() {
+         &world,
+         SetupRequest {
+             install_manager: true,
++            accelerators: Vec::new(),
+             ..request()
+         },
+     )
+@@ -423,6 +425,7 @@ fn a_failed_optional_step_can_be_skipped_and_required_ones_cannot() {
+         &world,
+         SetupRequest {
+             install_manager: true,
++            accelerators: Vec::new(),
+             ..request()
+         },
+     )
+@@ -487,7 +490,9 @@ fn best_effort_failures_are_warnings() {
+ fn accelerators_are_best_effort_when_a_profile_defines_them() {
+     let world = World::new();
+     world.profiles.lock().unwrap()[0].accelerators = vec![accelerator("sageattention")];
+-    let run_id = register(&world, request()).unwrap();
++    let mut selected = request();
++    selected.accelerators = vec!["sageattention".into()];
++    let run_id = register(&world, selected).unwrap();
+     let (outcome, _) = execute(&world, &run_id);
+     assert_eq!(outcome, RunOutcome::Succeeded);
+     assert_eq!(
+@@ -502,6 +507,9 @@ fn a_pin_change_during_requirements_fails_the_step_and_the_new_environment() {
+     world
+         .drift_on_requirements
+         .store(true, std::sync::atomic::Ordering::SeqCst);
++    world
++        .refuse_pin_restore
++        .store(true, std::sync::atomic::Ordering::SeqCst);
+     let run_id = register(&world, request()).unwrap();
+     let (outcome, _) = execute(&world, &run_id);
+     let RunOutcome::Failed(failure) = outcome else {
+@@ -903,3 +911,300 @@ fn repair_builds_a_replacement_when_verification_fails() {
+         "the old env is kept"
+     );
+ }
++
++#[test]
++fn accelerator_selection_is_explicit_and_profile_bound() {
++    let world = World::new();
++    let mut a = accelerator("sageattention");
++    a.default_selected = true;
++    world.profiles.lock().unwrap()[0].accelerators = vec![a];
++    for selection in [
++        vec!["unknown".into()],
++        vec!["sageattention".into(), "sageattention".into()],
++    ] {
++        let mut req = request();
++        req.accelerators = selection;
++        assert!(matches!(
++            register(&world, req),
++            Err(EnvironmentAppError::AcceleratorSelectionInvalid)
++        ));
++    }
++    let mut other = request();
++    other.profile_id = "win-py312-torch2100-cu130".into();
++    other.accelerators = vec!["sageattention".into()];
++    assert!(matches!(
++        register(&world, other),
++        Err(EnvironmentAppError::AcceleratorSelectionInvalid)
++    ));
++    let id = register(&world, request()).unwrap();
++    assert_eq!(execute(&world, &id).0, RunOutcome::Succeeded);
++    assert_eq!(world.count("install:other"), 0);
++    assert_eq!(world.count("fetch_wheel"), 0);
++    let result = &world.run(&id).components.accelerators[0];
++    assert!(!result.selected);
++    assert_eq!(result.status, ComponentStatus::Skipped);
++    assert_eq!(result.importable, None);
++}
++
++#[test]
++fn wheel_hash_failure_never_runs_uv() {
++    use domain::{
++        environment::AcceleratorSource,
++        shared::model_values::{SafeFileName, Sha256},
++    };
++    let world = World::new();
++    let mut spec = accelerator("sageattention");
++    spec.source = AcceleratorSource::Wheel {
++        url: "https://example.test/sage.whl".into(),
++        filename: SafeFileName::new("sage-1-py3-none-any.whl").unwrap(),
++        sha256: Sha256::new(&"0".repeat(64)).unwrap(),
++        size: None,
++    };
++    world.profiles.lock().unwrap()[0].accelerators = vec![spec];
++    world.fail(
++        "fetch_wheel",
++        ProvisionError::Failed("pinned SHA-256 mismatch".into()),
++    );
++    let mut req = request();
++    req.accelerators = vec!["sageattention".into()];
++    let id = register(&world, req).unwrap();
++    assert_eq!(execute(&world, &id).0, RunOutcome::Succeeded);
++    assert_eq!(world.count("install:other"), 0);
++    let result = &world.run(&id).components.accelerators[0];
++    assert_eq!(result.status, ComponentStatus::Failed);
++    assert_eq!(result.importable, None);
++    assert!(result.message.as_ref().unwrap().contains("SHA-256"));
++}
++
++#[test]
++fn accelerator_failure_reasserts_original_pins() {
++    for error in [
++        ProvisionError::Failed("original wheel install failure".into()),
++        ProvisionError::Cancelled,
++    ] {
++        let world = World::new();
++        world.profiles.lock().unwrap()[0].accelerators = vec![accelerator("sageattention")];
++        world
++            .drift_on_accelerator
++            .store(true, std::sync::atomic::Ordering::SeqCst);
++        world.fail("install:other", error.clone());
++        let mut req = request();
++        req.accelerators = vec!["sageattention".into()];
++        let id = register(&world, req).unwrap();
++        let outcome = execute(&world, &id).0;
++        assert_eq!(world.count("restore_pins"), 1);
++        assert!(world.position("install:other") < world.position("restore_pins"));
++        assert!(
++            world
++                .installed
++                .lock()
++                .unwrap()
++                .iter()
++                .any(|p| p.name == "torch" && p.version == "2.14.1+cu130")
++        );
++        let result = &world.run(&id).components.accelerators[0];
++        assert_eq!(result.status, ComponentStatus::Failed);
++        if error == ProvisionError::Cancelled {
++            assert_eq!(outcome, RunOutcome::Cancelled);
++        } else {
++            assert_eq!(outcome, RunOutcome::Succeeded);
++            assert_eq!(
++                result.message.as_deref(),
++                Some("original wheel install failure")
++            );
++        }
++    }
++}
++
++#[test]
++fn optional_pin_drift_prevents_activation() {
++    let world = World::new();
++    world.seed_active_env("env-old", PythonVersion::new(3, 13, 16));
++    *world.checkout.lock().unwrap() = Checkout::Repo {
++        commit: "abc1230000000000000000000000000000000000".into(),
++    };
++    let mut req = resetup_request(SetupMode::ChangeTorch);
++    req.install_manager = true;
++    let id = register(&world, req).unwrap();
++    // First pause requests exact Manager consent, then an optional dependency attempt cannot prove its pins.
++    assert!(matches!(execute(&world, &id).0, RunOutcome::Failed(_)));
++    let commit = world.run(&id).resolved.manager.unwrap().commit;
++    block_on(StartSetup::new(world.deps()).execute(SetupAction::Retry {
++        run_id: id.clone(),
++        manager_consent: Some(commit),
++    }))
++    .unwrap();
++    world
++        .drift_on_node
++        .store(true, std::sync::atomic::Ordering::SeqCst);
++    world
++        .refuse_pin_restore
++        .store(true, std::sync::atomic::Ordering::SeqCst);
++    world.fail(
++        "install:node",
++        ProvisionError::Failed("dependency attempt failed".into()),
++    );
++    let RunOutcome::Failed(failure) = execute(&world, &id).0 else {
++        panic!("pin drift must be fatal")
++    };
++    assert_eq!(failure.step, StepId::Manager);
++    assert_eq!(
++        world.env(world.run(&id).target_env.as_str()).state(),
++        EnvState::Failed
++    );
++    assert_eq!(world.active_id().as_deref(), Some("env-old"));
++    assert!(matches!(
++        block_on(
++            StartSetup::new(world.deps()).execute(SetupAction::SkipStep {
++                run_id: id,
++                step: StepId::Manager
++            })
++        ),
++        Err(EnvironmentAppError::StepNotSkippable)
++    ));
++    let world = World::new();
++    world.profiles.lock().unwrap()[0].accelerators = vec![accelerator("sageattention")];
++    world
++        .drift_on_accelerator
++        .store(true, std::sync::atomic::Ordering::SeqCst);
++    world
++        .refuse_pin_restore
++        .store(true, std::sync::atomic::Ordering::SeqCst);
++    let mut req = request();
++    req.accelerators = vec!["sageattention".into()];
++    let id = register(&world, req).unwrap();
++    assert!(
++        matches!(execute(&world, &id).0, RunOutcome::Failed(_)),
++        "BestEffort also cannot hide drift"
++    );
++    assert!(world.active_id().is_none());
++}
++
++#[test]
++fn final_verification_cannot_rebaseline_drift() {
++    for before in [true, false] {
++        let world = World::new();
++        if before {
++            world
++                .drift_before_final_verify
++                .store(true, std::sync::atomic::Ordering::SeqCst);
++        } else {
++            world
++                .drift_on_final_verify
++                .store(true, std::sync::atomic::Ordering::SeqCst);
++        }
++        let id = register(&world, request()).unwrap();
++        let RunOutcome::Failed(failure) = execute(&world, &id).0 else {
++            panic!("drift must fail")
++        };
++        assert_eq!(failure.step, StepId::FinalVerify);
++        let env = world.env(world.run(&id).target_env.as_str());
++        assert_eq!(env.pins.get(&name("torch")), Some("2.14.1+cu130"));
++        assert_eq!(env.verification, None);
++        assert!(world.active_id().is_none());
++        assert_eq!(world.count("publish_manifest"), 0);
++        if before {
++            assert_eq!(world.count("verify_final"), 0);
++        }
++    }
++}
++
++#[test]
++fn accelerator_import_failure_is_reported_separately() {
++    let world = World::new();
++    let mut fa3 = accelerator("flashattention-3");
++    fa3.modules.clear();
++    fa3.provenance = "Module unverified; candidate flash_attn_interface".into();
++    world.profiles.lock().unwrap()[0].accelerators = vec![accelerator("sageattention"), fa3];
++    world.fail(
++        "verify_accelerator",
++        ProvisionError::Failed("DLL import failed".into()),
++    );
++    let mut req = request();
++    req.accelerators = vec!["sageattention".into(), "flashattention-3".into()];
++    let id = register(&world, req).unwrap();
++    assert_eq!(execute(&world, &id).0, RunOutcome::Succeeded);
++    let run = world.run(&id);
++    assert_eq!(
++        run.components.accelerators[0].status,
++        ComponentStatus::Installed
++    );
++    assert_eq!(run.components.accelerators[0].importable, Some(false));
++    assert!(
++        run.components.accelerators[0]
++            .message
++            .as_ref()
++            .unwrap()
++            .contains("DLL import failed")
++    );
++    assert_eq!(run.components.accelerators[1].importable, None);
++    assert!(
++        run.components.accelerators[1]
++            .message
++            .as_ref()
++            .unwrap()
++            .contains("unverified")
++    );
++    assert_eq!(world.count("import:flash_attn_interface"), 0);
++    assert_eq!(run.step(StepId::FinalVerify).status, StepStatus::Warning);
++}
++
++#[test]
++fn repair_uses_the_recorded_profile_snapshot_and_component_selections() {
++    let world = World::new();
++    world.profiles.lock().unwrap()[0].accelerators = vec![accelerator("sageattention")];
++    let mut req = request();
++    req.accelerators = vec!["sageattention".into()];
++    let id = register(&world, req).unwrap();
++    execute(&world, &id);
++    let original = world.run(&id);
++    world.profiles.lock().unwrap()[0].revision = 2;
++    world.profiles.lock().unwrap()[0].accelerators.clear();
++    let repair = register(&world, resetup_request(SetupMode::Repair)).unwrap();
++    let run = world.run(&repair);
++    assert_eq!(run.profile, original.profile);
++    assert_eq!(run.request.accelerators, original.request.accelerators);
++    assert_eq!(
++        run.request.install_manager,
++        original.request.install_manager
++    );
++    let world = World::new();
++    world.seed_active_env("env-old", PythonVersion::new(3, 13, 16));
++    world.profiles.lock().unwrap()[0].revision = 2;
++    assert!(matches!(
++        register(&world, resetup_request(SetupMode::Repair)),
++        Err(EnvironmentAppError::ProfileRevisionUnavailable)
++    ));
++}
++
++#[test]
++fn wheel_components_install_verified_local_paths_with_constraints_and_no_deps() {
++    use domain::{
++        environment::AcceleratorSource,
++        shared::model_values::{SafeFileName, Sha256},
++    };
++    let world = World::new();
++    let mut spec = accelerator("onnxruntime-gpu");
++    spec.no_deps = true;
++    spec.source = AcceleratorSource::Wheel {
++        url: "https://example.test/ort.whl".into(),
++        filename: SafeFileName::new("ort-1-py3-none-any.whl").unwrap(),
++        sha256: Sha256::new(&"0".repeat(64)).unwrap(),
++        size: None,
++    };
++    world.profiles.lock().unwrap()[0].accelerators = vec![spec];
++    let mut req = request();
++    req.accelerators = vec!["onnxruntime-gpu".into()];
++    let id = register(&world, req).unwrap();
++    assert_eq!(execute(&world, &id).0, RunOutcome::Succeeded);
++    let installs = world.installs.lock().unwrap();
++    let wheel = installs
++        .iter()
++        .find(|s| s.requirements.iter().any(|r| r.ends_with(".whl")))
++        .unwrap();
++    assert!(wheel.no_deps);
++    assert!(!wheel.allow_source_builds);
++    assert!(wheel.constraint_file.is_some());
++    assert!(PathBuf::from(&wheel.requirements[0]).starts_with("/install/data/cache/wheels"));
++    assert_eq!(world.count("fetch_wheel"), 1);
++}
+diff --git a/crates/desktop/src/ipc/env_dto.rs b/crates/desktop/src/ipc/env_dto.rs
+index a105003..b1b63a6 100644
+--- a/crates/desktop/src/ipc/env_dto.rs
++++ b/crates/desktop/src/ipc/env_dto.rs
+@@ -799,6 +799,7 @@ impl SetupActionDto {
+                 profile_id: request.profile_id,
+                 comfyui_ref: request.comfyui_ref.into(),
+                 install_manager: request.install_manager,
++                accelerators: Vec::new(),
+                 clean_cache: request.clean_cache,
+                 confirm_adopted_changes: request.confirm_adopted_changes,
+                 allow_source_builds: request.allow_source_builds,
+diff --git a/crates/desktop/src/ipc/error.rs b/crates/desktop/src/ipc/error.rs
+index 9f67b31..6b83335 100644
+--- a/crates/desktop/src/ipc/error.rs
++++ b/crates/desktop/src/ipc/error.rs
+@@ -101,6 +101,13 @@ impl From<EnvironmentAppError> for IpcError {
+                 "comfyui_state_unknown",
+                 "The state of ComfyUI could not be determined, so nothing was changed.",
+             ),
++            E::Provision(ProvisionError::Cancelled) => {
++                Self::new("cancelled", "The operation was cancelled.")
++            }
++            E::Provision(ProvisionError::PinDrift(_)) => Self::new(
++                "pin_drift",
++                "Protected packages could not be restored or verified.",
++            ),
+             E::Provision(error) => Self::new("operation_failed", &describe(&error)),
+             E::Manifest(_) => Self::new(
+                 "manifest_unavailable",
+@@ -118,6 +125,14 @@ impl From<EnvironmentAppError> for IpcError {
+                 "root_switch_failed",
+                 "The install root could not be switched.",
+             ),
++            E::AcceleratorSelectionInvalid => Self::new(
++                "accelerator_selection_invalid",
++                "Accelerator ids must be unique and belong to the selected profile.",
++            ),
++            E::ProfileRevisionUnavailable => Self::new(
++                "profile_revision_unavailable",
++                "The recorded setup profile revision is unavailable.",
++            ),
+             E::ProfileNotFound => Self::new("profile_not_found", "Unknown setup profile."),
+             E::ProfileDisabled(reasons) => {
+                 let text: Vec<String> = reasons.iter().map(ToString::to_string).collect();
+@@ -208,6 +223,9 @@ impl From<EnvironmentAppError> for IpcError {
+ fn describe(error: &ProvisionError) -> String {
+     match error {
+         ProvisionError::Cancelled => "The operation was cancelled.".into(),
++        ProvisionError::PinDrift(_) => {
++            "Protected packages could not be restored or verified.".into()
++        }
+         ProvisionError::CommandFailed(failure) => match failure.exit_code {
+             Some(code) => format!("A command failed with exit code {code}."),
+             None => "A command failed.".into(),
+diff --git a/crates/desktop/src/state.rs b/crates/desktop/src/state.rs
+index 1d26f85..f34f135 100644
+--- a/crates/desktop/src/state.rs
++++ b/crates/desktop/src/state.rs
+@@ -675,6 +675,7 @@ impl AppState {
+             tools: Arc::new(Tools::new()),
+             python: Arc::new(PythonAdapter::new()),
+             packages: Arc::new(UvPackages::new()),
++            wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
+             verifier: verifier.clone(),
+             source: source.clone(),
+             envs: store.clone(),
+diff --git a/crates/desktop/tests/support/mod.rs b/crates/desktop/tests/support/mod.rs
+index d1f1f24..119d6a5 100644
+--- a/crates/desktop/tests/support/mod.rs
++++ b/crates/desktop/tests/support/mod.rs
+@@ -213,6 +213,18 @@ impl EnvironmentRepository for Counted {
+         EnvironmentRepository::save(&*self.inner, env).await
+     }
+ 
++    async fn load_components(&self, id: &EnvId) -> Result<InstalledComponents, EnvRepoError> {
++        self.calls.hit();
++        self.inner.load_components(id).await
++    }
++    async fn save_components(
++        &self,
++        id: &EnvId,
++        components: &InstalledComponents,
++    ) -> Result<(), EnvRepoError> {
++        self.calls.hit();
++        self.inner.save_components(id, components).await
++    }
+     async fn delete(&self, id: &EnvId) -> Result<(), EnvRepoError> {
+         self.calls.hit();
+         EnvironmentRepository::delete(&*self.inner, id).await
+@@ -440,6 +452,16 @@ impl PackageInstaller for Stubs {
+ 
+ #[async_trait]
+ impl EnvVerifier for Stubs {
++    async fn verify_accelerator(
++        &self,
++        _root: &Path,
++        _env_path: &Path,
++        _module: &str,
++        _ctx: &StepContext,
++    ) -> Result<(), ProvisionError> {
++        Ok(())
++    }
++
+     async fn verify_torch(
+         &self,
+         _: &Path,
+@@ -637,6 +659,7 @@ pub fn build_app_with(options: Options) -> TestApp {
+                 tools: stubs.clone(),
+                 python: stubs.clone(),
+                 packages: stubs.clone(),
++                wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
+                 verifier: stubs.clone(),
+                 source: stubs.clone(),
+                 envs: Arc::new(store.clone()),
+diff --git a/crates/domain/src/environment/mod.rs b/crates/domain/src/environment/mod.rs
+index 6fd7113..fb8cb43 100644
+--- a/crates/domain/src/environment/mod.rs
++++ b/crates/domain/src/environment/mod.rs
+@@ -18,7 +18,7 @@ pub use error::EnvironmentError;
+ pub use hardware::{GpuObservation, GpuProbe, HardwareObservation};
+ pub use pins::{DistName, PinChange, PinSet};
+ pub use profile::{
+-    AcceleratorSpec, DiskBudget, PROFILE_SCHEMA_VERSION, ProfileStatus, SetupProfile, TorchBuild,
+-    TritonSpec, VerifyExpectations,
++    AcceleratorSource, AcceleratorSpec, DiskBudget, PROFILE_SCHEMA_VERSION, ProfileStatus,
++    SetupProfile, TorchBuild, TritonSpec, VerifyExpectations,
+ };
+ pub use version::{ComputeCapability, CudaVariant, CudaVersion, OsKind, PythonVersion};
+diff --git a/crates/domain/src/environment/profile.rs b/crates/domain/src/environment/profile.rs
+index f83a282..8315193 100644
+--- a/crates/domain/src/environment/profile.rs
++++ b/crates/domain/src/environment/profile.rs
+@@ -1,11 +1,13 @@
++use crate::shared::model_values::{SafeFileName, Sha256};
++
+ use super::{
+     error::EnvironmentError,
+     pins::DistName,
+     version::{ComputeCapability, CudaVariant, CudaVersion, OsKind, PythonVersion},
+ };
+ 
+-/// The only profile schema this build understands.
+-pub const PROFILE_SCHEMA_VERSION: u32 = 1;
++/// The current profile schema; schema 1 remains readable with an empty accelerator list.
++pub const PROFILE_SCHEMA_VERSION: u32 = 2;
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum ProfileStatus {
+@@ -71,12 +73,83 @@ impl TritonSpec {
+     }
+ }
+ 
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum AcceleratorSource {
++    Wheel {
++        url: String,
++        filename: SafeFileName,
++        sha256: Sha256,
++        size: Option<u64>,
++    },
++    Packages {
++        requirements: Vec<String>,
++    },
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct AcceleratorSpec {
++    pub id: String,
+     pub name: String,
+-    pub requirement: String,
+-    pub sha256: Option<String>,
++    pub modules: Vec<String>,
++    pub source: AcceleratorSource,
++    pub no_deps: bool,
++    pub default_selected: bool,
+     pub non_fatal: bool,
++    pub provenance: String,
++}
++
++impl AcceleratorSpec {
++    pub fn validate(&self) -> Result<(), EnvironmentError> {
++        let invalid = EnvironmentError::InvalidProfile;
++        if self.id.is_empty()
++            || self.id.len() > 64
++            || !self
++                .id
++                .bytes()
++                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
++            || self.id.starts_with('-')
++            || self.id.ends_with('-')
++        {
++            return Err(invalid("accelerator id"));
++        }
++        if self.name.trim().is_empty() || self.provenance.trim().is_empty() {
++            return Err(invalid("accelerator name or provenance"));
++        }
++        for module in &self.modules {
++            if module.is_empty()
++                || !module.split('.').all(|part| {
++                    let mut bytes = part.bytes();
++                    bytes
++                        .next()
++                        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
++                        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
++                })
++            {
++                return Err(invalid("accelerator module"));
++            }
++        }
++        match &self.source {
++            AcceleratorSource::Wheel {
++                url,
++                filename,
++                size,
++                ..
++            } => {
++                if !url.starts_with("https://")
++                    || !filename.as_str().ends_with(".whl")
++                    || *size == Some(0)
++                {
++                    return Err(invalid("accelerator wheel"));
++                }
++            }
++            AcceleratorSource::Packages { requirements } => {
++                if requirements.is_empty() || requirements.iter().any(|r| r.trim().is_empty()) {
++                    return Err(invalid("accelerator requirements"));
++                }
++            }
++        }
++        Ok(())
++    }
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -157,9 +230,12 @@ impl SetupProfile {
+         if !simple_id {
+             return Err(invalid("id"));
+         }
+-        if self.schema_version != PROFILE_SCHEMA_VERSION {
++        if self.schema_version != PROFILE_SCHEMA_VERSION && self.schema_version != 1 {
+             return Err(invalid("schema version"));
+         }
++        if self.schema_version == 1 && !self.accelerators.is_empty() {
++            return Err(invalid("legacy accelerators are unsupported"));
++        }
+         if self.label.trim().is_empty() {
+             return Err(invalid("label"));
+         }
+@@ -211,14 +287,12 @@ impl SetupProfile {
+         if self.provenance.is_empty() {
+             return Err(invalid("provenance"));
+         }
+-        if self.accelerators.iter().any(|accelerator| {
+-            accelerator.name.is_empty()
+-                || accelerator
+-                    .sha256
+-                    .as_deref()
+-                    .is_none_or(|hash| hash.len() != 64)
+-        }) {
+-            return Err(invalid("accelerators need a pinned SHA-256"));
++        let mut ids = std::collections::HashSet::new();
++        for accelerator in &self.accelerators {
++            accelerator.validate()?;
++            if !ids.insert(&accelerator.id) {
++                return Err(invalid("duplicate accelerator id"));
++            }
+         }
+         Ok(())
+     }
+@@ -299,7 +373,7 @@ mod tests {
+         type Mutation = fn(&mut SetupProfile);
+         let mutations: Vec<(&str, Mutation)> = vec![
+             ("id", |p| p.id = "Bad Id".into()),
+-            ("schema", |p| p.schema_version = 2),
++            ("schema", |p| p.schema_version = 3),
+             ("python", |p| p.python = PythonVersion::new(3, 11, 9)),
+             ("index", |p| {
+                 p.torch.index_url = "http://example.com/cu130".into()
+@@ -316,12 +390,18 @@ mod tests {
+             }),
+             ("disk", |p| p.disk.margin_bytes = 0),
+             ("provenance", |p| p.provenance.clear()),
+-            ("accelerator hash", |p| {
++            ("accelerator provenance", |p| {
+                 p.accelerators.push(AcceleratorSpec {
++                    id: "x".into(),
+                     name: "x".into(),
+-                    requirement: "x".into(),
+-                    sha256: None,
++                    modules: vec![],
++                    source: AcceleratorSource::Packages {
++                        requirements: vec!["x".into()],
++                    },
++                    no_deps: false,
++                    default_selected: false,
+                     non_fatal: true,
++                    provenance: String::new(),
+                 })
+             }),
+         ];
+diff --git a/crates/infrastructure/migrations/007_environment_components.sql b/crates/infrastructure/migrations/007_environment_components.sql
+new file mode 100644
+index 0000000..a7330c6
+--- /dev/null
++++ b/crates/infrastructure/migrations/007_environment_components.sql
+@@ -0,0 +1 @@
++ALTER TABLE envs ADD COLUMN components_json TEXT;
+diff --git a/crates/infrastructure/src/environment/data/profiles/archive/win-py312-torch2100-cu130-r1.json b/crates/infrastructure/src/environment/data/profiles/archive/win-py312-torch2100-cu130-r1.json
+new file mode 100644
+index 0000000..0aeb655
+--- /dev/null
++++ b/crates/infrastructure/src/environment/data/profiles/archive/win-py312-torch2100-cu130-r1.json
+@@ -0,0 +1,53 @@
++{
++  "schema_version": 1,
++  "id": "win-py312-torch2100-cu130",
++  "revision": 1,
++  "label": "Python 3.12, PyTorch 2.10.0, CUDA 13.0 (compatibility)",
++  "status": "stable",
++  "recommended": false,
++  "os": "windows",
++  "python": "3.12.15",
++  "torch": {
++    "torch": "2.10.0",
++    "torchvision": "0.25.0",
++    "torchaudio": "2.10.0",
++    "cuda": "cu130",
++    "index_url": "https://download.pytorch.org/whl/cu130"
++  },
++  "min_driver_cuda": "13.0",
++  "min_cc": "8.0",
++  "torch_archs": [
++    "7.5",
++    "8.0",
++    "8.6",
++    "9.0",
++    "10.0",
++    "12.0"
++  ],
++  "triton": {
++    "package": "triton-windows",
++    "specifier": ">=3.6,<3.7"
++  },
++  "accelerators": [],
++  "constraints": [],
++  "verify": {
++    "torch_version_prefix": "2.10.0+cu130",
++    "require_cuda": true,
++    "require_triton": true
++  },
++  "disk": {
++    "env_bytes": 6442450944,
++    "other_bytes": 7516192768,
++    "margin_bytes": 4294967296,
++    "calibrated": false
++  },
++  "provenance": [
++    "download.pytorch.org/whl/cu130: torch 2.10.0, torchvision 0.25.0, torchaudio 2.10.0 cp312 wheels for win_amd64 and manylinux_2_28_x86_64 exist, and a uv pip compile of the pinned set resolved from that index alone with --only-binary (observed 2026-10-16)",
++    "PyTorch v2.10.0 .ci/pytorch/windows/cuda130.bat TORCH_CUDA_ARCH_LIST (observed 2026-10-16)",
++    "Triton 3.6 and 3.8 README: NVIDIA GPUs with compute capability 8.0 or newer; triton-windows dropped Turing after Triton 3.2 (woct0rdho/triton-windows README, section GPU)",
++    "triton-windows 3.6.0.post26 cp312 win_amd64 (PyPI, observed 2026-10-16) matches PyTorch 2.10.0 .ci/docker/triton_version.txt 3.6.0 and the reference installer range >=3.6,<3.7",
++    "ComfyUI v0.40.0 requirements.txt resolves with --only-binary on Python 3.12 for this platform with torch pinned (uv pip compile, observed 2026-10-16)",
++    "Python 3.12.15: uv 0.13.1 embedded python-build-standalone 20261013 metadata (SHA-256 pinned in python-downloads.json); the reference installer's 3.12.7 embeddable build is not offered by uv",
++    "Reference stack: install_comfyui_3_12_uv_nvidia_torch_2100_portable.bat pins torch 2.10.0, torchvision 0.25.0, torchaudio 2.10.0 and triton-windows >=3.6,<3.7"
++  ]
++}
+diff --git a/crates/infrastructure/src/environment/data/profiles/win-py312-torch2100-cu130.json b/crates/infrastructure/src/environment/data/profiles/win-py312-torch2100-cu130.json
+index 0aeb655..5fe86d8 100644
+--- a/crates/infrastructure/src/environment/data/profiles/win-py312-torch2100-cu130.json
++++ b/crates/infrastructure/src/environment/data/profiles/win-py312-torch2100-cu130.json
+@@ -1,7 +1,7 @@
+ {
+-  "schema_version": 1,
++  "schema_version": 2,
+   "id": "win-py312-torch2100-cu130",
+-  "revision": 1,
++  "revision": 2,
+   "label": "Python 3.12, PyTorch 2.10.0, CUDA 13.0 (compatibility)",
+   "status": "stable",
+   "recommended": false,
+@@ -28,8 +28,124 @@
+     "package": "triton-windows",
+     "specifier": ">=3.6,<3.7"
+   },
+-  "accelerators": [],
+-  "constraints": [],
++  "accelerators": [
++    {
++      "id": "sageattention",
++      "name": "SageAttention 2.2.0 post4 (experimental)",
++      "modules": [
++        "sageattention"
++      ],
++      "source": {
++        "kind": "wheel",
++        "url": "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0%2Bcu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl",
++        "filename": "sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl",
++        "sha256": "f7261c53a1d46202059daff6b8feac5ee806274d47e3e7fb7abf8c5f6d410c92",
++        "size": 12321863
++      },
++      "no_deps": false,
++      "default_selected": false,
++      "non_fatal": true,
++      "provenance": "Experimental; publisher SHA-256 from GitHub release asset digest; observed 2026-10-16. No app import validation performed."
++    },
++    {
++      "id": "llama-cpp-python",
++      "name": "llama-cpp-python 0.3.34 cu130 (experimental)",
++      "modules": [
++        "llama_cpp"
++      ],
++      "source": {
++        "kind": "wheel",
++        "url": "https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.34-cu130-Basic-win-20260331/llama_cpp_python-0.3.34%2Bcu130.basic-cp312-cp312-win_amd64.whl",
++        "filename": "llama_cpp_python-0.3.34+cu130.basic-cp312-cp312-win_amd64.whl",
++        "sha256": "f418f3fe281c1d6c9e8d996e730e955a7d8b7ad447e7d09a6a1c383e64684f40",
++        "size": 311186533
++      },
++      "no_deps": false,
++      "default_selected": false,
++      "non_fatal": true,
++      "provenance": "Experimental; publisher SHA-256 from GitHub release asset digest; observed 2026-10-16. No app import validation performed."
++    },
++    {
++      "id": "flashattention-2",
++      "name": "FlashAttention 2.8.3 (experimental)",
++      "modules": [
++        "flash_attn"
++      ],
++      "source": {
++        "kind": "wheel",
++        "url": "https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.8.3%2Bcu130torch2.10.0cxx11abiTRUE-cp312-cp312-win_amd64.whl",
++        "filename": "flash_attn-2.8.3+cu130torch2.10.0cxx11abiTRUE-cp312-cp312-win_amd64.whl",
++        "sha256": "d1e76adda81f57d9a300b9e8d71b9c467e07923e0d8e5baa5d90e2007815ec93",
++        "size": 367193483
++      },
++      "no_deps": false,
++      "default_selected": false,
++      "non_fatal": true,
++      "provenance": "Experimental; publisher SHA-256 from HF X-Linked-ETag (LFS sha256); observed 2026-10-16. No app import validation performed."
++    },
++    {
++      "id": "flashattention-3",
++      "name": "FlashAttention 3 (20260318) (experimental)",
++      "modules": [],
++      "source": {
++        "kind": "wheel",
++        "url": "https://github.com/windreamer/flash-attention3-wheels/releases/download/2026.03.19-850211f/flash_attn_3-3.0.0%2B20260318.cu130torch2100cxx11abitrue.8afc61-cp39-abi3-win_amd64.whl",
++        "filename": "flash_attn_3-3.0.0+20260318.cu130torch2100cxx11abitrue.8afc61-cp39-abi3-win_amd64.whl",
++        "sha256": "36642bbbaea59e035b3c57b3fa1dded0e40598949321917cc218c71bd79b184b",
++        "size": 384220928
++      },
++      "no_deps": false,
++      "default_selected": false,
++      "non_fatal": true,
++      "provenance": "Experimental; publisher SHA-256 from GitHub release asset digest (reference used --find-links https://windreamer.github.io/flash-attention3-wheels/cu130_torch2100); observed 2026-10-16. No app import validation performed. Installed module unverified; candidate flash_attn_interface; import test not configured."
++    },
++    {
++      "id": "onnxruntime-gpu",
++      "name": "onnxruntime-gpu 1.26.0 (CUDA 13 feed) (experimental)",
++      "modules": [
++        "onnxruntime"
++      ],
++      "source": {
++        "kind": "wheel",
++        "url": "https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/22685817-9e91-4967-bafe-94c9843c26a9/pypi/download/onnxruntime-gpu/1.26/onnxruntime_gpu-1.26.0-cp312-cp312-win_amd64.whl",
++        "filename": "onnxruntime_gpu-1.26.0-cp312-cp312-win_amd64.whl",
++        "sha256": "7388afa11b005eea389e06d60c4a290494a4dd71e507a24ea21890dd9c39b547",
++        "size": null
++      },
++      "no_deps": true,
++      "default_selected": false,
++      "non_fatal": true,
++      "provenance": "Experimental; publisher SHA-256 from index #sha256 fragment; reference installed with --no-deps from the ort-cuda-13-nightly feed; observed 2026-10-16. No app import validation performed."
++    },
++    {
++      "id": "compatibility-packages",
++      "name": "Compatibility packages (experimental)",
++      "modules": [
++        "transformers",
++        "onnx",
++        "numpy",
++        "PIL"
++      ],
++      "source": {
++        "kind": "packages",
++        "requirements": [
++          "transformers==5.5.0",
++          "onnx",
++          "numpy<2.3",
++          "pillow<12"
++        ]
++      },
++      "no_deps": false,
++      "default_selected": false,
++      "non_fatal": true,
++      "provenance": "Experimental; reference installer extra packages. No app import validation performed."
++    }
++  ],
++  "constraints": [
++    "numpy<2.3",
++    "pillow<12",
++    "transformers==5.5.0"
++  ],
+   "verify": {
+     "torch_version_prefix": "2.10.0+cu130",
+     "require_cuda": true,
+diff --git a/crates/infrastructure/src/environment/manifest.rs b/crates/infrastructure/src/environment/manifest.rs
+index f6b176e..264cc4d 100644
+--- a/crates/infrastructure/src/environment/manifest.rs
++++ b/crates/infrastructure/src/environment/manifest.rs
+@@ -14,7 +14,7 @@ use async_trait::async_trait;
+ use domain::environment::{EnvId, Ownership, PythonVersion};
+ use serde::{Deserialize, Serialize};
+ 
+-use super::layout::Layout;
++use super::{layout::Layout, sqlite::ComponentsDoc};
+ use crate::shared::fs::atomic_write;
+ 
+ #[derive(Serialize, Deserialize)]
+@@ -33,6 +33,8 @@ struct ManifestDoc {
+     comfyui_commit: Option<String>,
+     run_id: String,
+     activated_at: String,
++    #[serde(default)]
++    components: Option<ComponentsDoc>,
+ }
+ 
+ impl From<&InstallManifest> for ManifestDoc {
+@@ -51,12 +53,16 @@ impl From<&InstallManifest> for ManifestDoc {
+             comfyui_commit: manifest.comfyui_commit.clone(),
+             run_id: manifest.run_id.to_string(),
+             activated_at: manifest.activated_at.clone(),
++            components: Some(ComponentsDoc::from(&manifest.components)),
+         }
+     }
+ }
+ 
+ impl ManifestDoc {
+     fn into_manifest(self) -> Option<InstallManifest> {
++        if self.schema_version == 2 && self.components.is_none() {
++            return None;
++        }
+         Some(InstallManifest {
+             schema_version: self.schema_version,
+             install_root: self.install_root,
+@@ -71,6 +77,11 @@ impl ManifestDoc {
+             comfyui_commit: self.comfyui_commit,
+             run_id: RunId::new(self.run_id).ok()?,
+             activated_at: self.activated_at,
++            components: if self.schema_version == 1 {
++                Default::default()
++            } else {
++                self.components.map(Into::into).unwrap_or_default()
++            },
+         })
+     }
+ }
+@@ -85,7 +96,7 @@ pub fn parse_manifest(text: &str) -> ManifestState {
+         .and_then(|version| version.as_u64())
+     {
+         Some(version) if version > u64::from(MANIFEST_SCHEMA_VERSION) => ManifestState::Newer,
+-        Some(version) if version == u64::from(MANIFEST_SCHEMA_VERSION) => {
++        Some(1 | 2) => {
+             match serde_json::from_value::<ManifestDoc>(value)
+                 .ok()
+                 .and_then(ManifestDoc::into_manifest)
+diff --git a/crates/infrastructure/src/environment/manifest/tests.rs b/crates/infrastructure/src/environment/manifest/tests.rs
+index 2611542..7c7e716 100644
+--- a/crates/infrastructure/src/environment/manifest/tests.rs
++++ b/crates/infrastructure/src/environment/manifest/tests.rs
+@@ -15,6 +15,7 @@ fn manifest(root: &Path, generation: u64) -> InstallManifest {
+         comfyui_commit: Some("a".repeat(40)),
+         run_id: RunId::new("run-1").unwrap(),
+         activated_at: "2026-10-16T00:00:00Z".into(),
++        components: Default::default(),
+     }
+ }
+ 
+@@ -100,7 +101,7 @@ async fn unreadable_invalid_and_newer_manifests_are_reported_not_replaced() {
+             ManifestState::Corrupt,
+         ),
+         (
+-            with(&|v| v["schema_version"] = 2.into()),
++            with(&|v| v["schema_version"] = 3.into()),
+             ManifestState::Newer,
+         ),
+         (
+@@ -124,3 +125,17 @@ async fn unreadable_invalid_and_newer_manifests_are_reported_not_replaced() {
+     fs::write(root.join("install.json"), [0xff, 0xfe, 0x00]).unwrap();
+     assert_eq!(store.read(&root).await.unwrap(), ManifestState::Corrupt);
+ }
++
++#[test]
++fn schema_one_manifests_have_unknown_components() {
++    let mut value =
++        serde_json::to_value(ManifestDoc::from(&manifest(Path::new("/install"), 1))).unwrap();
++    value["schema_version"] = 1.into();
++    value.as_object_mut().unwrap().remove("components");
++    let ManifestState::Valid(parsed) = parse_manifest(&value.to_string()) else {
++        panic!("legacy manifest must remain readable")
++    };
++    assert_eq!(parsed.components, Default::default());
++    value["schema_version"] = 2.into();
++    assert_eq!(parse_manifest(&value.to_string()), ManifestState::Corrupt);
++}
+diff --git a/crates/infrastructure/src/environment/mod.rs b/crates/infrastructure/src/environment/mod.rs
+index aeacdaf..da382e8 100644
+--- a/crates/infrastructure/src/environment/mod.rs
++++ b/crates/infrastructure/src/environment/mod.rs
+@@ -16,3 +16,4 @@ pub mod sqlite;
+ pub mod switcher;
+ pub mod tools;
+ pub mod verify;
++pub mod wheels;
+diff --git a/crates/infrastructure/src/environment/packages.rs b/crates/infrastructure/src/environment/packages.rs
+index 6ec5385..fe9f635 100644
+--- a/crates/infrastructure/src/environment/packages.rs
++++ b/crates/infrastructure/src/environment/packages.rs
+@@ -57,6 +57,9 @@ pub fn install_args(python: &Path, spec: &InstallSpec, dry_run: bool) -> Vec<OsS
+     if let Some(constraints) = &spec.constraint_file {
+         args.extend(["-c".into(), constraints.as_os_str().to_owned()]);
+     }
++    if spec.no_deps {
++        args.push("--no-deps".into());
++    }
+     if spec.upgrade {
+         args.push("--upgrade".into());
+     }
+diff --git a/crates/infrastructure/src/environment/packages/tests.rs b/crates/infrastructure/src/environment/packages/tests.rs
+index 594d5c5..5f637ff 100644
+--- a/crates/infrastructure/src/environment/packages/tests.rs
++++ b/crates/infrastructure/src/environment/packages/tests.rs
+@@ -161,3 +161,26 @@ async fn constraints_are_written_atomically_under_the_cache() {
+         1
+     );
+ }
++
++#[test]
++fn no_deps_is_explicit_and_keeps_binary_only_constraints() {
++    let spec = InstallSpec {
++        requirements: vec!["/cache/verified.whl".into()],
++        constraint_file: Some("/cache/pins.txt".into()),
++        no_deps: true,
++        ..InstallSpec::default()
++    };
++    let args = strings(install_args(Path::new("/env/python"), &spec, false));
++    assert!(args.windows(2).any(|p| p == ["--only-binary", ":all:"]));
++    assert!(args.windows(2).any(|p| p == ["-c", "/cache/pins.txt"]));
++    assert!(args.iter().any(|arg| arg == "--no-deps"));
++    assert!(
++        !strings(install_args(
++            Path::new("/env/python"),
++            &InstallSpec::default(),
++            false
++        ))
++        .iter()
++        .any(|arg| arg == "--no-deps")
++    );
++}
+diff --git a/crates/infrastructure/src/environment/profiles.rs b/crates/infrastructure/src/environment/profiles.rs
+index 24e9385..2e2c22f 100644
+--- a/crates/infrastructure/src/environment/profiles.rs
++++ b/crates/infrastructure/src/environment/profiles.rs
+@@ -3,10 +3,11 @@
+ 
+ use application::environment::ProfileCatalog;
+ use domain::environment::{
+-    AcceleratorSpec, ComputeCapability, CudaVariant, CudaVersion, DiskBudget, DistName,
+-    EnvironmentError, OsKind, ProfileStatus, PythonVersion, SetupProfile, TorchBuild, TritonSpec,
+-    VerifyExpectations,
++    AcceleratorSource, AcceleratorSpec, ComputeCapability, CudaVariant, CudaVersion, DiskBudget,
++    DistName, EnvironmentError, OsKind, ProfileStatus, PythonVersion, SetupProfile, TorchBuild,
++    TritonSpec, VerifyExpectations,
+ };
++use domain::shared::model_values::{SafeFileName, Sha256};
+ use serde::{Deserialize, Serialize};
+ use thiserror::Error;
+ 
+@@ -27,13 +28,141 @@ pub struct TritonDoc {
+     pub specifier: String,
+ }
+ 
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
++pub enum AcceleratorSourceDoc {
++    Wheel {
++        url: String,
++        filename: String,
++        sha256: String,
++        size: Option<u64>,
++    },
++    Packages {
++        requirements: Vec<String>,
++    },
++}
++
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct AcceleratorDoc {
++    pub id: String,
+     pub name: String,
+-    pub requirement: String,
+-    pub sha256: Option<String>,
++    pub modules: Vec<String>,
++    pub source: AcceleratorSourceDoc,
++    pub no_deps: bool,
++    pub default_selected: bool,
+     pub non_fatal: bool,
++    pub provenance: String,
++}
++
++pub(crate) fn validate_wheel_url(value: &str) -> Result<(), ProfileError> {
++    let invalid = || ProfileError::Invalid(EnvironmentError::InvalidProfile("accelerator URL"));
++    let url = reqwest::Url::parse(value).map_err(|_| invalid())?;
++    if url.scheme() != "https"
++        || url.host_str().is_none_or(str::is_empty)
++        || value.split_once("://").is_some_and(|(_, rest)| {
++            rest.split(['/', '?', '#'])
++                .next()
++                .is_some_and(|authority| authority.contains('@'))
++        })
++        || !url.username().is_empty()
++        || url.password().is_some()
++        || url.query_pairs().any(|(key, _)| {
++            let key = key.to_ascii_lowercase();
++            key.contains("token")
++                || key.contains("secret")
++                || key.contains("password")
++                || key.contains("signature")
++                || key.contains("credential")
++                || key.starts_with("x-amz-")
++                || key.starts_with("x-goog-")
++                || matches!(
++                    key.as_str(),
++                    "sig"
++                        | "key"
++                        | "api_key"
++                        | "api-key"
++                        | "apikey"
++                        | "access_key"
++                        | "auth"
++                        | "authorization"
++                        | "code"
++                )
++        })
++    {
++        return Err(invalid());
++    }
++    Ok(())
++}
++
++impl TryFrom<AcceleratorDoc> for AcceleratorSpec {
++    type Error = ProfileError;
++
++    fn try_from(doc: AcceleratorDoc) -> Result<Self, Self::Error> {
++        let source = match doc.source {
++            AcceleratorSourceDoc::Wheel {
++                url,
++                filename,
++                sha256,
++                size,
++            } => {
++                validate_wheel_url(&url)?;
++                AcceleratorSource::Wheel {
++                    url,
++                    filename: SafeFileName::new(filename)
++                        .map_err(|_| EnvironmentError::InvalidProfile("wheel filename"))?,
++                    sha256: Sha256::new(&sha256)
++                        .map_err(|_| EnvironmentError::InvalidProfile("wheel hash"))?,
++                    size,
++                }
++            }
++            AcceleratorSourceDoc::Packages { requirements } => {
++                AcceleratorSource::Packages { requirements }
++            }
++        };
++        let spec = Self {
++            id: doc.id,
++            name: doc.name,
++            modules: doc.modules,
++            source,
++            no_deps: doc.no_deps,
++            default_selected: doc.default_selected,
++            non_fatal: doc.non_fatal,
++            provenance: doc.provenance,
++        };
++        spec.validate()?;
++        Ok(spec)
++    }
++}
++
++impl From<&AcceleratorSpec> for AcceleratorDoc {
++    fn from(spec: &AcceleratorSpec) -> Self {
++        Self {
++            id: spec.id.clone(),
++            name: spec.name.clone(),
++            modules: spec.modules.clone(),
++            source: match &spec.source {
++                AcceleratorSource::Wheel {
++                    url,
++                    filename,
++                    sha256,
++                    size,
++                } => AcceleratorSourceDoc::Wheel {
++                    url: url.clone(),
++                    filename: filename.as_str().to_owned(),
++                    sha256: sha256.as_str().to_owned(),
++                    size: *size,
++                },
++                AcceleratorSource::Packages { requirements } => AcceleratorSourceDoc::Packages {
++                    requirements: requirements.clone(),
++                },
++            },
++            no_deps: spec.no_deps,
++            default_selected: spec.default_selected,
++            non_fatal: spec.non_fatal,
++            provenance: spec.provenance.clone(),
++        }
++    }
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+@@ -125,13 +254,8 @@ impl TryFrom<ProfileDoc> for SetupProfile {
+             accelerators: doc
+                 .accelerators
+                 .into_iter()
+-                .map(|accelerator| AcceleratorSpec {
+-                    name: accelerator.name,
+-                    requirement: accelerator.requirement,
+-                    sha256: accelerator.sha256,
+-                    non_fatal: accelerator.non_fatal,
+-                })
+-                .collect(),
++                .map(AcceleratorSpec::try_from)
++                .collect::<Result<_, _>>()?,
+             constraints: doc.constraints,
+             verify: VerifyExpectations {
+                 torch_version_prefix: doc.verify.torch_version_prefix,
+@@ -183,12 +307,7 @@ impl From<&SetupProfile> for ProfileDoc {
+             accelerators: profile
+                 .accelerators
+                 .iter()
+-                .map(|accelerator| AcceleratorDoc {
+-                    name: accelerator.name.clone(),
+-                    requirement: accelerator.requirement.clone(),
+-                    sha256: accelerator.sha256.clone(),
+-                    non_fatal: accelerator.non_fatal,
+-                })
++                .map(AcceleratorDoc::from)
+                 .collect(),
+             constraints: profile.constraints.clone(),
+             verify: VerifyDoc {
+@@ -252,6 +371,15 @@ impl ProfileCatalog for BundledProfiles {
+             .find(|profile| profile.id == id)
+             .cloned()
+     }
++    fn get_revision(&self, id: &str, revision: u32) -> Option<SetupProfile> {
++        self.get(id).filter(|p| p.revision == revision).or_else(|| {
++            let archived = parse_profile(include_str!(
++                "data/profiles/archive/win-py312-torch2100-cu130-r1.json"
++            ))
++            .ok()?;
++            (archived.id == id && archived.revision == revision).then_some(archived)
++        })
++    }
+ }
+ 
+ /// The host OS this build runs on.
+diff --git a/crates/infrastructure/src/environment/profiles/tests.rs b/crates/infrastructure/src/environment/profiles/tests.rs
+index 845bc37..ea64b09 100644
+--- a/crates/infrastructure/src/environment/profiles/tests.rs
++++ b/crates/infrastructure/src/environment/profiles/tests.rs
+@@ -28,8 +28,25 @@ fn every_bundled_profile_parses_validates_and_has_a_unique_id() {
+             "{}",
+             profile.id
+         );
+-        assert!(profile.accelerators.is_empty(), "accelerators are M6");
+-        assert_eq!(profile.revision, 1);
++        if profile.id == "win-py312-torch2100-cu130" {
++            assert_eq!(profile.revision, 2);
++            assert_eq!(profile.accelerators.len(), 6);
++            assert!(
++                profile
++                    .accelerators
++                    .iter()
++                    .all(|a| !a.default_selected && a.non_fatal)
++            );
++            assert!(
++                profile
++                    .accelerators
++                    .iter()
++                    .all(|a| a.no_deps == (a.id == "onnxruntime-gpu"))
++            );
++        } else {
++            assert!(profile.accelerators.is_empty());
++            assert_eq!(profile.revision, 1);
++        }
+         // The id encodes OS, Python, torch and CUDA.
+         let os = match profile.os {
+             domain::environment::OsKind::Windows => "win",
+@@ -246,7 +263,7 @@ fn documents_round_trip_and_reject_unknown_or_unsupported_content() {
+         parse_profile(&value.to_string())
+     };
+     assert!(mutate(&|v| v["unexpected"] = true.into()).is_err());
+-    assert!(mutate(&|v| v["schema_version"] = 2.into()).is_err());
++    assert!(mutate(&|v| v["schema_version"] = 3.into()).is_err());
+     assert!(mutate(&|v| v["python"] = "3.13.x".into()).is_err());
+     assert!(mutate(&|v| v["python"] = "3.13".into()).is_err());
+     assert!(mutate(&|v| v["status"] = "beta".into()).is_err());
+@@ -293,3 +310,78 @@ fn tool_pins_are_well_formed() {
+         );
+     }
+ }
++
++#[test]
++fn accelerator_specs_reject_invalid_artifacts() {
++    let profile = catalog().get("win-py312-torch2100-cu130").unwrap();
++    let base = serde_json::to_value(ProfileDoc::from(&profile)).unwrap();
++    let mutations: Vec<(&str, serde_json::Value)> = vec![
++        ("hash", serde_json::json!("g".repeat(64))),
++        ("filename", serde_json::json!("../escape.whl")),
++        ("extension", serde_json::json!("source.tar.gz")),
++        ("module", serde_json::json!(["invalid-module"])),
++        ("id", serde_json::json!("Upper ID")),
++        ("provenance", serde_json::json!(" ")),
++    ];
++    for (case, value) in mutations {
++        let mut doc = base.clone();
++        match case {
++            "hash" => doc["accelerators"][0]["source"]["sha256"] = value,
++            "filename" | "extension" => doc["accelerators"][0]["source"]["filename"] = value,
++            "module" => doc["accelerators"][0]["modules"] = value,
++            "id" => doc["accelerators"][0]["id"] = value,
++            "provenance" => doc["accelerators"][0]["provenance"] = value,
++            _ => unreachable!(),
++        }
++        assert!(parse_profile(&doc.to_string()).is_err(), "{case}");
++    }
++    for url in [
++        "http://example.test/a.whl",
++        "https://",
++        "https://user:secret@example.test/a.whl",
++        "https://@example.test/a.whl",
++        "https://example.test/a.whl?token=secret",
++        "https://example.test/a.whl?X-Amz-Signature=secret",
++        "https://example.test/a.whl?sig=secret",
++        "https://example.test/a.whl?api_key=secret",
++    ] {
++        let mut doc = base.clone();
++        doc["accelerators"][0]["source"]["url"] = url.into();
++        assert!(parse_profile(&doc.to_string()).is_err(), "{url}");
++    }
++    let mut doc = base;
++    doc["accelerators"][1]["id"] = doc["accelerators"][0]["id"].clone();
++    assert!(parse_profile(&doc.to_string()).is_err());
++    assert!(
++        profile
++            .accelerators
++            .iter()
++            .find(|a| a.id == "flashattention-3")
++            .unwrap()
++            .modules
++            .is_empty()
++    );
++}
++
++#[test]
++fn profile_v1_empty_and_v2_components_round_trip() {
++    let old = include_str!("../data/profiles/archive/win-py312-torch2100-cu130-r1.json");
++    let legacy = parse_profile(old).unwrap();
++    assert_eq!(legacy.schema_version, 1);
++    assert!(legacy.accelerators.is_empty());
++    let current = catalog().get("win-py312-torch2100-cu130").unwrap();
++    for profile in [legacy, current] {
++        let doc = serde_json::to_string(&ProfileDoc::from(&profile)).unwrap();
++        assert_eq!(parse_profile(&doc).unwrap(), profile);
++    }
++    let mut value: serde_json::Value = serde_json::from_str(old).unwrap();
++    value["accelerators"] = serde_json::json!([{"name":"legacy", "requirement":"x", "sha256":"0".repeat(64), "non_fatal":true}]);
++    assert!(parse_profile(&value.to_string()).is_err());
++    assert_eq!(
++        catalog()
++            .get_revision("win-py312-torch2100-cu130", 1)
++            .unwrap()
++            .revision,
++        1
++    );
++}
+diff --git a/crates/infrastructure/src/environment/sqlite.rs b/crates/infrastructure/src/environment/sqlite.rs
+index c4b103f..c2fb234 100644
+--- a/crates/infrastructure/src/environment/sqlite.rs
++++ b/crates/infrastructure/src/environment/sqlite.rs
+@@ -5,10 +5,11 @@
+ use std::path::{Path, PathBuf};
+ 
+ use application::environment::{
+-    ActivationPhase, ActivationStore, ComfyRef, ConsentRequest, EnvRepoError,
+-    EnvironmentRepository, FailureKind, ProvisioningRun, ProvisioningRunRepository,
+-    PythonSourceInput, PythonTarget, ResolvedGit, ResolvedSources, RunId, RunStatus, SetupRequest,
+-    StepFailure, StepId, StepRecord, StepStatus, WizardDraftStore,
++    AcceleratorResult, ActivationPhase, ActivationStore, ComfyRef, ComponentStatus, ConsentRequest,
++    EnvRepoError, EnvironmentRepository, FailureKind, InstalledComponents, ManagerResult,
++    ProvisioningRun, ProvisioningRunRepository, PythonSourceInput, PythonTarget, ResolvedGit,
++    ResolvedSources, RunId, RunStatus, SetupRequest, StepFailure, StepId, StepRecord, StepStatus,
++    WizardDraftStore,
+ };
+ use async_trait::async_trait;
+ use domain::environment::{
+@@ -46,6 +47,108 @@ fn text(path: &Path) -> Result<String, EnvRepoError> {
+         .ok_or(EnvRepoError::Corrupt)
+ }
+ 
++#[derive(Clone, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++enum StatusDoc {
++    Installed,
++    Failed,
++    Skipped,
++}
++
++impl From<ComponentStatus> for StatusDoc {
++    fn from(status: ComponentStatus) -> Self {
++        match status {
++            ComponentStatus::Installed => Self::Installed,
++            ComponentStatus::Failed => Self::Failed,
++            ComponentStatus::Skipped => Self::Skipped,
++        }
++    }
++}
++
++impl From<StatusDoc> for ComponentStatus {
++    fn from(status: StatusDoc) -> Self {
++        match status {
++            StatusDoc::Installed => Self::Installed,
++            StatusDoc::Failed => Self::Failed,
++            StatusDoc::Skipped => Self::Skipped,
++        }
++    }
++}
++
++#[derive(Clone, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct AcceleratorResultDoc {
++    id: String,
++    selected: bool,
++    status: StatusDoc,
++    importable: Option<bool>,
++    message: Option<String>,
++}
++
++#[derive(Clone, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct ManagerResultDoc {
++    selected: bool,
++    status: StatusDoc,
++    source_commit: Option<String>,
++    message: Option<String>,
++}
++
++#[derive(Clone, Default, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub(super) struct ComponentsDoc {
++    manager: Option<ManagerResultDoc>,
++    accelerators: Vec<AcceleratorResultDoc>,
++}
++
++impl From<&InstalledComponents> for ComponentsDoc {
++    fn from(components: &InstalledComponents) -> Self {
++        Self {
++            manager: components.manager.as_ref().map(|r| ManagerResultDoc {
++                selected: r.selected,
++                status: r.status.into(),
++                source_commit: r.source_commit.clone(),
++                message: r.message.clone(),
++            }),
++            accelerators: components
++                .accelerators
++                .iter()
++                .map(|r| AcceleratorResultDoc {
++                    id: r.id.clone(),
++                    selected: r.selected,
++                    status: r.status.into(),
++                    importable: r.importable,
++                    message: r.message.clone(),
++                })
++                .collect(),
++        }
++    }
++}
++
++impl From<ComponentsDoc> for InstalledComponents {
++    fn from(doc: ComponentsDoc) -> Self {
++        Self {
++            manager: doc.manager.map(|r| ManagerResult {
++                selected: r.selected,
++                status: r.status.into(),
++                source_commit: r.source_commit,
++                message: r.message,
++            }),
++            accelerators: doc
++                .accelerators
++                .into_iter()
++                .map(|r| AcceleratorResult {
++                    id: r.id,
++                    selected: r.selected,
++                    status: r.status.into(),
++                    importable: r.importable,
++                    message: r.message,
++                })
++                .collect(),
++        }
++    }
++}
++
+ // ------------------------------------------------------------------------ environments
+ 
+ struct EnvRow {
+@@ -267,6 +370,59 @@ impl EnvironmentRepository for SqliteEnvironmentStore {
+             .map_err(unavailable)
+     }
+ 
++    async fn load_components(&self, id: &EnvId) -> Result<InstalledComponents, EnvRepoError> {
++        let id = id.to_string();
++        let json: Option<String> = self
++            .db
++            .run(move |connection| {
++                connection
++                    .query_row(
++                        "SELECT components_json FROM envs WHERE id = ?1",
++                        [id],
++                        |row| row.get(0),
++                    )
++                    .optional()
++                    .map(|row: Option<Option<String>>| row.flatten())
++                    .map_err(sql)
++            })
++            .await
++            .map_err(unavailable)?;
++        json.map(|json| {
++            serde_json::from_str::<ComponentsDoc>(&json)
++                .map(InstalledComponents::from)
++                .map_err(|_| EnvRepoError::Corrupt)
++        })
++        .transpose()
++        .map(Option::unwrap_or_default)
++    }
++
++    async fn save_components(
++        &self,
++        id: &EnvId,
++        components: &InstalledComponents,
++    ) -> Result<(), EnvRepoError> {
++        let id = id.to_string();
++        let json = serde_json::to_string(&ComponentsDoc::from(components))
++            .map_err(|_| EnvRepoError::Corrupt)?;
++        let updated = self
++            .db
++            .run(move |connection| {
++                connection
++                    .execute(
++                        "UPDATE envs SET components_json = ?2 WHERE id = ?1",
++                        params![id, json],
++                    )
++                    .map_err(sql)
++            })
++            .await
++            .map_err(unavailable)?;
++        if updated == 1 {
++            Ok(())
++        } else {
++            Err(EnvRepoError::Conflict)
++        }
++    }
++
+     async fn delete(&self, id: &EnvId) -> Result<(), EnvRepoError> {
+         let id = id.to_string();
+         self.db
+@@ -319,6 +475,8 @@ struct RequestDoc {
+     profile_id: String,
+     comfyui_ref: RefDoc,
+     install_manager: bool,
++    #[serde(default)]
++    accelerators: Vec<String>,
+     clean_cache: bool,
+     confirm_adopted_changes: bool,
+     allow_source_builds: bool,
+@@ -382,6 +540,8 @@ struct RunDoc {
+     steps: Vec<StepDoc>,
+     failure: Option<FailureDoc>,
+     manager_consent: Option<String>,
++    #[serde(default)]
++    components: Option<ComponentsDoc>,
+ }
+ 
+ fn git_doc(git: &ResolvedGit) -> GitDoc {
+@@ -428,6 +588,7 @@ fn encode_run(run: &ProvisioningRun) -> Result<String, EnvRepoError> {
+                 value: ref_value,
+             },
+             install_manager: run.request.install_manager,
++            accelerators: run.request.accelerators.clone(),
+             clean_cache: run.request.clean_cache,
+             confirm_adopted_changes: run.request.confirm_adopted_changes,
+             allow_source_builds: run.request.allow_source_builds,
+@@ -473,6 +634,7 @@ fn encode_run(run: &ProvisioningRun) -> Result<String, EnvRepoError> {
+             }),
+         }),
+         manager_consent: run.manager_consent.clone(),
++        components: Some(ComponentsDoc::from(&run.components)),
+     };
+     serde_json::to_string(&doc).map_err(|_| EnvRepoError::Corrupt)
+ }
+@@ -575,7 +737,8 @@ fn run_from_row(row: RunRow) -> Result<ProvisioningRun, EnvRepoError> {
+         })
+         .transpose()?;
+     let profile = SetupProfile::try_from(doc.profile).map_err(|_| EnvRepoError::Corrupt)?;
+-    Ok(ProvisioningRun {
++    let legacy_components = doc.components.is_none();
++    let mut run = ProvisioningRun {
+         id: RunId::new(row.id).map_err(|_| EnvRepoError::Corrupt)?,
+         request: SetupRequest {
+             mode: doc.request.mode.parse::<SetupMode>().map_err(corrupt)?,
+@@ -584,6 +747,7 @@ fn run_from_row(row: RunRow) -> Result<ProvisioningRun, EnvRepoError> {
+             profile_id: doc.request.profile_id,
+             comfyui_ref,
+             install_manager: doc.request.install_manager,
++            accelerators: doc.request.accelerators,
+             clean_cache: doc.request.clean_cache,
+             confirm_adopted_changes: doc.request.confirm_adopted_changes,
+             allow_source_builds: doc.request.allow_source_builds,
+@@ -626,9 +790,28 @@ fn run_from_row(row: RunRow) -> Result<ProvisioningRun, EnvRepoError> {
+             .parse::<ActivationPhase>()
+             .map_err(|_| EnvRepoError::Corrupt)?,
+         manager_consent: doc.manager_consent,
++        components: doc
++            .components
++            .map(InstalledComponents::from)
++            .unwrap_or_default(),
+         created_at: row.created_at,
+         updated_at: row.updated_at,
+-    })
++    };
++    if legacy_components {
++        run.components = InstalledComponents::selected(&run.request, &run.profile);
++        let manager_status = run.step(StepId::Manager).status;
++        if let Some(manager) = &mut run.components.manager {
++            manager.source_commit = run.resolved.manager.as_ref().map(|git| git.commit.clone());
++            manager.status = match manager_status {
++                StepStatus::Succeeded => ComponentStatus::Installed,
++                StepStatus::Failed | StepStatus::Warning | StepStatus::Interrupted => {
++                    ComponentStatus::Failed
++                }
++                _ => ComponentStatus::Skipped,
++            };
++        }
++    }
++    Ok(run)
+ }
+ 
+ struct RunValues {
+diff --git a/crates/infrastructure/src/environment/sqlite/tests.rs b/crates/infrastructure/src/environment/sqlite/tests.rs
+index 415b71a..a5a532e 100644
+--- a/crates/infrastructure/src/environment/sqlite/tests.rs
++++ b/crates/infrastructure/src/environment/sqlite/tests.rs
+@@ -55,6 +55,7 @@ fn run(id: &str, target: &str, created: &str) -> ProvisioningRun {
+             profile_id: profile.id.clone(),
+             comfyui_ref: ComfyRef::Tag("v0.40.0".into()),
+             install_manager: true,
++            accelerators: Vec::new(),
+             clean_cache: true,
+             confirm_adopted_changes: true,
+             allow_source_builds: false,
+@@ -70,6 +71,7 @@ fn run(id: &str, target: &str, created: &str) -> ProvisioningRun {
+             create_venv: false,
+             development_files_ok: Some(false),
+         },
++        components: Default::default(),
+         resolved: ResolvedSources {
+             comfyui: Some(ResolvedGit {
+                 url: "https://github.com/Comfy-Org/ComfyUI.git".into(),
+@@ -511,3 +513,143 @@ async fn the_wizard_draft_is_a_single_overwritten_row() {
+         "ไทย".repeat(10_000)
+     );
+ }
++
++#[tokio::test]
++async fn components_survive_manifest_and_database_round_trip() {
++    use crate::environment::manifest::FsManifestStore;
++    use application::environment::{
++        InstallManifest, InstallManifestStore, MANIFEST_SCHEMA_VERSION, ManifestState,
++    };
++    let (store, directory) = store().await;
++    let first = environment("env-first", Ownership::AppOwned);
++    let second = environment("env-second", Ownership::AppOwned);
++    EnvironmentRepository::save(&store, &first).await.unwrap();
++    EnvironmentRepository::save(&store, &second).await.unwrap();
++    assert_eq!(
++        store.load_components(&first.id).await.unwrap(),
++        InstalledComponents::default()
++    );
++    let components = InstalledComponents {
++        manager: Some(ManagerResult {
++            selected: true,
++            status: ComponentStatus::Installed,
++            source_commit: Some("a".repeat(40)),
++            message: None,
++        }),
++        accelerators: vec![
++            AcceleratorResult {
++                id: "sageattention".into(),
++                selected: true,
++                status: ComponentStatus::Installed,
++                importable: Some(false),
++                message: Some("DLL import failed".into()),
++            },
++            AcceleratorResult {
++                id: "flashattention-3".into(),
++                selected: true,
++                status: ComponentStatus::Installed,
++                importable: None,
++                message: Some("Module unverified".into()),
++            },
++            AcceleratorResult {
++                id: "onnxruntime-gpu".into(),
++                selected: false,
++                status: ComponentStatus::Skipped,
++                importable: None,
++                message: None,
++            },
++        ],
++    };
++    store.save_components(&first.id, &components).await.unwrap();
++    EnvironmentRepository::save(&store, &first).await.unwrap();
++    assert_eq!(store.load_components(&first.id).await.unwrap(), components);
++    assert_eq!(
++        store.load_components(&second.id).await.unwrap(),
++        InstalledComponents::default()
++    );
++    let mut recorded = run("component-run", first.id.as_str(), "now");
++    recorded.components = components.clone();
++    ProvisioningRunRepository::insert(&store, &recorded)
++        .await
++        .unwrap();
++    assert_eq!(
++        ProvisioningRunRepository::get(&store, &recorded.id)
++            .await
++            .unwrap(),
++        Some(recorded.clone())
++    );
++    let manifest = InstallManifest {
++        schema_version: MANIFEST_SCHEMA_VERSION,
++        install_root: directory.path().to_owned(),
++        generation: 1,
++        env_id: first.id.clone(),
++        env_path: first.path.clone(),
++        ownership: first.ownership,
++        python_version: first.python_version,
++        profile_id: first.profile_id.clone(),
++        profile_revision: first.profile_revision,
++        comfyui_reference: None,
++        comfyui_commit: None,
++        run_id: recorded.id.clone(),
++        activated_at: "now".into(),
++        components: components.clone(),
++    };
++    FsManifestStore::new().publish(&manifest).await.unwrap();
++    assert_eq!(
++        FsManifestStore::new().read(directory.path()).await.unwrap(),
++        ManifestState::Valid(manifest)
++    );
++    drop(store);
++    let reopened =
++        SqliteEnvironmentStore::new(Db::open(directory.path().join("app.db")).await.unwrap());
++    assert_eq!(
++        reopened.load_components(&first.id).await.unwrap(),
++        components
++    );
++    assert_eq!(
++        reopened.load_components(&second.id).await.unwrap(),
++        InstalledComponents::default()
++    );
++}
++
++#[tokio::test]
++async fn legacy_runs_recover_known_manager_selection_and_commit() {
++    let (store, _directory) = store().await;
++    let mut legacy = run("legacy-run", "env-a", "now");
++    legacy.step_mut(StepId::Manager).status = StepStatus::Succeeded;
++    let mut doc: serde_json::Value = serde_json::from_str(&encode_run(&legacy).unwrap()).unwrap();
++    doc.as_object_mut().unwrap().remove("components");
++    doc["request"]
++        .as_object_mut()
++        .unwrap()
++        .remove("accelerators");
++    let json = doc.to_string();
++    ProvisioningRunRepository::insert(&store, &legacy)
++        .await
++        .unwrap();
++    store
++        .db
++        .run(move |connection| {
++            connection
++                .execute(
++                    "UPDATE provisioning_runs SET doc_json = ?1 WHERE id = 'legacy-run'",
++                    [json],
++                )
++                .map_err(sql)?;
++            Ok(())
++        })
++        .await
++        .unwrap();
++    let restored = ProvisioningRunRepository::get(&store, &legacy.id)
++        .await
++        .unwrap()
++        .unwrap();
++    assert!(restored.request.accelerators.is_empty());
++    let manager = restored.components.manager.unwrap();
++    assert!(manager.selected);
++    assert_eq!(manager.status, ComponentStatus::Installed);
++    assert_eq!(
++        manager.source_commit,
++        legacy.resolved.manager.map(|git| git.commit)
++    );
++}
+diff --git a/crates/infrastructure/src/environment/verify.rs b/crates/infrastructure/src/environment/verify.rs
+index 7785e7a..c04a709 100644
+--- a/crates/infrastructure/src/environment/verify.rs
++++ b/crates/infrastructure/src/environment/verify.rs
+@@ -28,9 +28,9 @@ print("VJ-VERIFY:" + json.dumps({"version": triton.__version__}))
+ "#;
+ 
+ /// The reference verification (`import sys, torch, triton, comfy`), plus a real CUDA tensor
+-/// operation when CUDA is available, and the presence of the optional accelerator modules.
++/// operation when CUDA is available. Optional imports run in their own subprocesses.
+ const FINAL_SCRIPT: &str = r#"
+-import importlib.util, json, sys
++import json, sys
+ import torch, triton, comfy
+ info = {
+     "python": sys.version.split()[0],
+@@ -46,10 +46,6 @@ if info["cuda"]:
+     torch.cuda.synchronize()
+     info["cuda_ok"] = value == 16.0
+     info["device"] = torch.cuda.get_device_name(0)
+-info["accelerators"] = {
+-    name: importlib.util.find_spec(name) is not None
+-    for name in ("sageattention", "flash_attn", "llama_cpp")
+-}
+ print("VJ-VERIFY:" + json.dumps(info))
+ "#;
+ 
+@@ -73,7 +69,6 @@ struct FinalInfo {
+     comfy: String,
+     device: Option<String>,
+     cuda_ok: Option<bool>,
+-    accelerators: std::collections::BTreeMap<String, bool>,
+ }
+ 
+ fn marker_json(stdout: &str) -> Option<&str> {
+@@ -150,6 +145,27 @@ impl Default for PythonVerifier {
+ 
+ #[async_trait]
+ impl EnvVerifier for PythonVerifier {
++    async fn verify_accelerator(
++        &self,
++        root: &Path,
++        env_path: &Path,
++        module: &str,
++        ctx: &StepContext,
++    ) -> Result<(), ProvisionError> {
++        let layout = Layout::new(root);
++        let spec = command(&layout, Tool::Python, venv_python(env_path)).args([
++            "-s",
++            "-c",
++            "import importlib, sys; importlib.import_module(sys.argv[1])",
++            module,
++        ]);
++        let limits = RunLimits {
++            timeout: Some(Duration::from_secs(60)),
++            ..RunLimits::default()
++        };
++        run_step(&spec, ctx, &limits).await.map(|_| ())
++    }
++
+     async fn verify_torch(
+         &self,
+         root: &Path,
+@@ -209,7 +225,7 @@ impl EnvVerifier for PythonVerifier {
+             cuda_device: info.device,
+             triton_version: Some(info.triton),
+             comfy_path: Some(info.comfy),
+-            accelerators: info.accelerators.into_iter().collect(),
++            accelerators: Vec::new(),
+         })
+     }
+ }
+diff --git a/crates/infrastructure/src/environment/verify/tests.rs b/crates/infrastructure/src/environment/verify/tests.rs
+index 2502d99..920f296 100644
+--- a/crates/infrastructure/src/environment/verify/tests.rs
++++ b/crates/infrastructure/src/environment/verify/tests.rs
+@@ -46,6 +46,6 @@ fn results_are_parsed_from_the_marker_line_amid_noise() {
+     assert!(parse::<TorchInfo>("VJ-VERIFY:{\"version\":1}").is_err());
+     let final_line = "VJ-VERIFY:{\"python\":\"3.13.16\",\"torch\":\"2.14.1+cu130\",\"cuda\":true,\"triton\":\"3.8.0\",\"comfy\":\"C:/ComfyUI/comfy\",\"device\":\"RTX 3060\",\"cuda_ok\":true,\"accelerators\":{\"sageattention\":false,\"flash_attn\":false,\"llama_cpp\":true}}";
+     let info: FinalInfo = parse(final_line).unwrap();
+-    assert_eq!(info.accelerators.len(), 3);
++    assert!(!FINAL_SCRIPT.contains("find_spec"));
+     assert_eq!(info.cuda_ok, Some(true));
+ }
+diff --git a/crates/infrastructure/src/environment/wheels.rs b/crates/infrastructure/src/environment/wheels.rs
+new file mode 100644
+index 0000000..c6c9ee3
+--- /dev/null
++++ b/crates/infrastructure/src/environment/wheels.rs
+@@ -0,0 +1,129 @@
++//! Hash-verified accelerator artifacts, cached by digest and safe wheel filename.
++
++use std::{
++    fs,
++    path::{Path, PathBuf},
++};
++
++use application::environment::{ProvisionError, StepContext, WheelFetcher};
++use async_trait::async_trait;
++use domain::{
++    environment::{AcceleratorSource, AcceleratorSpec},
++    shared::model_values::SafeFileName,
++};
++
++use super::profiles::validate_wheel_url;
++use crate::shared::{
++    download::{DownloadError, Downloader, sha256_file},
++    model_paths::pin_absolute,
++};
++
++const UNKNOWN_WHEEL_LIMIT: u64 = 2 << 30;
++
++#[derive(Default)]
++pub struct Wheels {
++    downloader: Downloader,
++}
++
++fn cache_error(_: impl std::fmt::Display) -> ProvisionError {
++    failed("the wheel cache could not be accessed safely")
++}
++
++fn failed(message: &str) -> ProvisionError {
++    ProvisionError::Failed(message.to_owned())
++}
++
++impl Wheels {
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    async fn fetch_artifact(
++        &self,
++        root: &Path,
++        spec: &AcceleratorSpec,
++        ctx: &StepContext,
++    ) -> Result<PathBuf, ProvisionError> {
++        let AcceleratorSource::Wheel {
++            url,
++            filename,
++            sha256,
++            size,
++        } = &spec.source
++        else {
++            return Err(failed("the component is not a wheel artifact"));
++        };
++        if ctx.cancel.is_cancelled() {
++            return Err(ProvisionError::Cancelled);
++        }
++        let canonical = fs::canonicalize(root).map_err(cache_error)?;
++        let mut directory = pin_absolute(&canonical).map_err(cache_error)?;
++        for part in ["data", "cache", "wheels", sha256.as_str()] {
++            directory = directory
++                .child(&SafeFileName::new(part).map_err(cache_error)?, true)
++                .map_err(cache_error)?;
++        }
++        let destination = directory.path.join(filename.as_str());
++        let part_name =
++            SafeFileName::new(format!("{}.part", filename.as_str())).map_err(cache_error)?;
++        // Refuse nonregular files/reparse points before the shared downloader opens its part.
++        for name in [filename, &part_name] {
++            if fs::symlink_metadata(directory.path.join(name.as_str())).is_ok() {
++                let file = directory.open(name, false, false).map_err(cache_error)?;
++                if !file.metadata().map_err(cache_error)?.is_file() {
++                    return Err(failed("the wheel cache contains a nonregular file"));
++                }
++            }
++        }
++        let limit = size.unwrap_or(UNKNOWN_WHEEL_LIMIT);
++        let reusable = destination.is_file()
++            && fs::metadata(&destination).is_ok_and(|m| m.len() <= limit)
++            && sha256_file(&destination).is_ok_and(|digest| digest == sha256.as_str());
++        if !reusable {
++            if destination.exists() {
++                directory.remove_owned_file(filename).map_err(cache_error)?;
++            }
++            ctx.log(format!("Downloading {}", spec.name));
++            self.downloader
++                .fetch(
++                    url,
++                    &destination,
++                    sha256.as_str(),
++                    limit,
++                    &ctx.cancel,
++                    &|done, total| ctx.progress(done, total),
++                )
++                .await
++                .map_err(|error| match error {
++                    DownloadError::Cancelled => ProvisionError::Cancelled,
++                    error if error.is_retryable() => ProvisionError::Retryable(error.to_string()),
++                    error => ProvisionError::Failed(error.to_string()),
++                })?;
++        }
++        if ctx.cancel.is_cancelled() {
++            return Err(ProvisionError::Cancelled);
++        }
++        Ok(destination)
++    }
++}
++
++#[async_trait]
++impl WheelFetcher for Wheels {
++    async fn fetch(
++        &self,
++        root: &Path,
++        spec: &AcceleratorSpec,
++        ctx: &StepContext,
++    ) -> Result<PathBuf, ProvisionError> {
++        spec.validate()
++            .map_err(|_| failed("invalid accelerator artifact"))?;
++        let AcceleratorSource::Wheel { url, .. } = &spec.source else {
++            return Err(failed("the component is not a wheel artifact"));
++        };
++        validate_wheel_url(url).map_err(|_| failed("invalid accelerator URL"))?;
++        self.fetch_artifact(root, spec, ctx).await
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/infrastructure/src/environment/wheels/tests.rs b/crates/infrastructure/src/environment/wheels/tests.rs
+new file mode 100644
+index 0000000..891622f
+--- /dev/null
++++ b/crates/infrastructure/src/environment/wheels/tests.rs
+@@ -0,0 +1,130 @@
++use std::sync::Arc;
++
++use application::{
++    environment::{NullSink, RunId, StepId},
++    shared::CancelToken,
++};
++use domain::shared::model_values::Sha256;
++
++use super::*;
++use crate::shared::{
++    download::sha256_hex,
++    test_http::{Route, TestServer},
++};
++
++fn context() -> StepContext {
++    StepContext {
++        run_id: RunId::new("wheel-test").unwrap(),
++        step: StepId::Accelerators,
++        sink: Arc::new(NullSink),
++        cancel: CancelToken::new(),
++        allow_source_builds: false,
++    }
++}
++
++fn artifact(url: String, bytes: &[u8]) -> AcceleratorSpec {
++    AcceleratorSpec {
++        id: "fixture".into(),
++        name: "Fixture wheel".into(),
++        modules: vec![],
++        source: AcceleratorSource::Wheel {
++            url,
++            filename: SafeFileName::new("fixture-1-py3-none-any.whl").unwrap(),
++            sha256: Sha256::new(&sha256_hex(bytes)).unwrap(),
++            size: Some(bytes.len() as u64),
++        },
++        no_deps: false,
++        default_selected: false,
++        non_fatal: true,
++        provenance: "fixture".into(),
++    }
++}
++
++#[tokio::test]
++async fn wheel_cache_is_rehashed_before_reuse() {
++    let server = TestServer::start().await;
++    let bytes = b"verified wheel bytes";
++    server.route("/wheel", Route::ok(bytes));
++    let root = tempfile::tempdir().unwrap();
++    let wheels = Wheels {
++        downloader: Downloader::with_loopback_http(),
++    };
++    let spec = artifact(server.url("/wheel"), bytes);
++    let path = wheels
++        .fetch_artifact(root.path(), &spec, &context())
++        .await
++        .unwrap();
++    assert!(path.ends_with(format!("{}/fixture-1-py3-none-any.whl", sha256_hex(bytes))));
++    wheels
++        .fetch_artifact(root.path(), &spec, &context())
++        .await
++        .unwrap();
++    assert_eq!(
++        server.requests.lock().unwrap().len(),
++        1,
++        "valid cache is reused"
++    );
++    fs::write(&path, b"tampered wheel bytes").unwrap();
++    server.route("/wheel", Route::ok(b"incorrect download"));
++    assert!(
++        wheels
++            .fetch_artifact(root.path(), &spec, &context())
++            .await
++            .is_err()
++    );
++    assert!(
++        !path.exists(),
++        "modified cache cannot be handed to the installer"
++    );
++    server.route("/wheel", Route::ok(bytes));
++    assert_eq!(
++        fs::read(
++            wheels
++                .fetch_artifact(root.path(), &spec, &context())
++                .await
++                .unwrap()
++        )
++        .unwrap(),
++        bytes
++    );
++}
++
++#[tokio::test]
++async fn wheel_fetch_enforces_size_cancellation_and_https() {
++    let server = TestServer::start().await;
++    server.route("/large", Route::ok(b"too large"));
++    let root = tempfile::tempdir().unwrap();
++    let wheels = Wheels {
++        downloader: Downloader::with_loopback_http(),
++    };
++    let spec = artifact(server.url("/large"), b"tiny");
++    assert!(
++        matches!(wheels.fetch_artifact(root.path(), &spec, &context()).await, Err(ProvisionError::Failed(message)) if message.contains("larger"))
++    );
++    assert!(
++        wheels.fetch(root.path(), &spec, &context()).await.is_err(),
++        "public port still refuses HTTP"
++    );
++    let ctx = context();
++    ctx.cancel.cancel();
++    assert_eq!(
++        wheels.fetch_artifact(root.path(), &spec, &ctx).await,
++        Err(ProvisionError::Cancelled)
++    );
++    let mut unknown_size = spec;
++    if let AcceleratorSource::Wheel { size, .. } = &mut unknown_size.source {
++        *size = None;
++    }
++    server.route(
++        "/large",
++        Route::Truncated {
++            body: Vec::new(),
++            declared: (2usize << 30) + 1,
++        },
++    );
++    assert!(
++        matches!(wheels.fetch_artifact(root.path(), &unknown_size, &context()).await,
++        Err(ProvisionError::Failed(message)) if message.contains("larger")),
++        "unknown-size wheels have a 2 GiB cap"
++    );
++}
+diff --git a/crates/infrastructure/src/shared/sqlite.rs b/crates/infrastructure/src/shared/sqlite.rs
+index 2e5a03b..7eb3d6d 100644
+--- a/crates/infrastructure/src/shared/sqlite.rs
++++ b/crates/infrastructure/src/shared/sqlite.rs
+@@ -24,6 +24,9 @@ pub fn migrations() -> Migrations<'static> {
+         M::up(include_str!("../../migrations/004_downloads.sql")),
+         M::up(include_str!("../../migrations/005_library.sql")),
+         M::up(include_str!("../../migrations/006_custom_nodes.sql")),
++        M::up(include_str!(
++            "../../migrations/007_environment_components.sql"
++        )),
+     ])
+ }
+ 
+@@ -102,7 +105,7 @@ mod tests {
+             let version: u32 = connection
+                 .pragma_query_value(None, "user_version", |row| row.get(0))
+                 .unwrap();
+-            assert_eq!(version, 6);
++            assert_eq!(version, 7);
+             let theme: String = connection
+                 .query_row(
+                     "SELECT value FROM settings WHERE key = 'theme'",
+diff --git a/crates/infrastructure/tests/real_setup.rs b/crates/infrastructure/tests/real_setup.rs
+index a059559..066064b 100644
+--- a/crates/infrastructure/tests/real_setup.rs
++++ b/crates/infrastructure/tests/real_setup.rs
+@@ -78,6 +78,7 @@ async fn compose(root: &std::path::Path) -> EnvironmentDeps {
+         tools: Arc::new(Tools::new()),
+         python: Arc::new(PythonAdapter::new()),
+         packages: Arc::new(UvPackages::new()),
++        wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
+         verifier: Arc::new(PythonVerifier::new()),
+         source: Arc::new(GitSource::new()),
+         envs: store.clone(),
+@@ -123,6 +124,7 @@ async fn real_first_run_setup() {
+             profile_id: profile,
+             comfyui_ref: ComfyRef::Latest,
+             install_manager: false,
++            accelerators: Vec::new(),
+             clean_cache: false,
+             confirm_adopted_changes: false,
+             allow_source_builds: false,
+@@ -175,6 +177,7 @@ async fn real_first_run_setup() {
+             profile_id: status.active_env.unwrap().profile_id,
+             comfyui_ref: ComfyRef::KeepCurrent,
+             install_manager: false,
++            accelerators: Vec::new(),
+             clean_cache: false,
+             confirm_adopted_changes: false,
+             allow_source_builds: false,
+diff --git a/crates/infrastructure/tests/workflow.rs b/crates/infrastructure/tests/workflow.rs
+index 31cd3e3..d5d3584 100644
+--- a/crates/infrastructure/tests/workflow.rs
++++ b/crates/infrastructure/tests/workflow.rs
+@@ -281,6 +281,16 @@ impl PackageInstaller for Sim {
+ 
+ #[async_trait]
+ impl EnvVerifier for Sim {
++    async fn verify_accelerator(
++        &self,
++        _root: &Path,
++        _env_path: &Path,
++        _module: &str,
++        _ctx: &StepContext,
++    ) -> Result<(), ProvisionError> {
++        self.step("verify_accelerator")
++    }
++
+     async fn verify_torch(
+         &self,
+         _: &Path,
+@@ -465,6 +475,7 @@ async fn start(root: &Path, sim: Arc<Sim>, faults: Faults) -> Machine {
+         tools: sim.clone(),
+         python: sim.clone(),
+         packages: sim.clone(),
++        wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
+         verifier: sim.clone(),
+         source: sim.clone(),
+         envs: store.clone(),
+@@ -510,6 +521,7 @@ impl Machine {
+             },
+             comfyui_ref: ComfyRef::Latest,
+             install_manager: false,
++            accelerators: Vec::new(),
+             clean_cache: false,
+             confirm_adopted_changes: false,
+             allow_source_builds: false,
