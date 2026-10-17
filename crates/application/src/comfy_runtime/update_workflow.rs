@@ -30,7 +30,7 @@ impl UpdateComfy {
         cancel: CancelToken,
     ) -> Result<UpdateRun, RuntimeError> {
         let deps = &self.deps;
-        let _lease = deps
+        let mut lease = deps
             .environment
             .gate
             .try_acquire()
@@ -41,6 +41,7 @@ impl UpdateComfy {
             InventoryState::Stopped => {}
             InventoryState::OwnedRunning if input.stop_running => {
                 deps.supervisor.stop().await?;
+                deps.nodes.after_stop(&mut *lease).await?;
             }
             InventoryState::OwnedRunning => return Err(RuntimeError::NeedsStop),
             _ => {

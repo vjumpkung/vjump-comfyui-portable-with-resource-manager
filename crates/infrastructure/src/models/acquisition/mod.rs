@@ -1,3 +1,4 @@
+pub mod bandwidth;
 pub mod civitai;
 pub mod codec;
 pub mod credentials;
@@ -5,6 +6,7 @@ pub mod direct;
 pub mod finalize;
 pub mod gdrive;
 pub mod hf_engine;
+pub mod hf_proxy;
 pub mod http;
 pub mod huggingface;
 pub mod native_engine;

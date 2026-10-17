@@ -61,10 +61,34 @@ pub fn install_args(python: &Path, spec: &InstallSpec, dry_run: bool) -> Vec<OsS
         args.push("--upgrade".into());
     }
     for file in &spec.requirement_files {
-        args.extend(["-r".into(), file.as_os_str().to_owned()]);
+        if spec
+            .guarded
+            .as_ref()
+            .is_some_and(|guarded| guarded.path == *file)
+        {
+            // The protected snapshot arrives on standard input (see `with_guarded`).
+            args.extend(["-r".into(), "-".into()]);
+        } else {
+            args.extend(["-r".into(), file.as_os_str().to_owned()]);
+        }
     }
     args.extend(spec.requirements.iter().map(OsString::from));
     args
+}
+
+/// Attaches the guarded requirements snapshot of `spec` to a command built from `install_args`.
+/// uv reads the reviewed bytes from standard input instead of reopening the file by name, with
+/// the guarded directory as its working directory. That resolves relative `-r`/`-c` includes
+/// and local paths exactly as `-r <directory>/requirements.txt` would, and the command keeps
+/// the node location protected until the command and any survivor of its cleanup have ended.
+pub fn with_guarded(command: CommandSpec, spec: &InstallSpec) -> CommandSpec {
+    match &spec.guarded {
+        Some(guarded) if spec.requirement_files.contains(&guarded.path) => command
+            .cwd(&guarded.directory)
+            .stdin(guarded.text.clone())
+            .retain(guarded.retained.clone()),
+        _ => command,
+    }
 }
 
 #[derive(Deserialize)]
@@ -140,7 +164,10 @@ impl PackageInstaller for UvPackages {
         let layout = Layout::new(root);
         ensure_cache_dirs(&layout)
             .map_err(|_| ProvisionError::Failed("the cache folders could not be created".into()))?;
-        let command = uv(&layout).args(install_args(&venv_python(env_path), spec, false));
+        let command = with_guarded(
+            uv(&layout).args(install_args(&venv_python(env_path), spec, false)),
+            spec,
+        );
         let limits = RunLimits {
             timeout: Some(Duration::from_secs(3 * 3600)),
             ..RunLimits::default()
@@ -175,7 +202,10 @@ impl PackageInstaller for UvPackages {
         ctx: &StepContext,
     ) -> Result<ResolutionPreview, ProvisionError> {
         let layout = Layout::new(root);
-        let command = uv(&layout).args(install_args(&venv_python(env_path), spec, true));
+        let command = with_guarded(
+            uv(&layout).args(install_args(&venv_python(env_path), spec, true)),
+            spec,
+        );
         let limits = RunLimits {
             max_tail_lines: 4000,
             timeout: Some(Duration::from_secs(900)),

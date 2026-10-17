@@ -55,6 +55,12 @@ pub async fn settings_set(
         .stack
         .supervisor
         .set_concurrency(settings.download_concurrency.get() as usize);
+    state
+        .services()?
+        .downloads
+        .stack
+        .bandwidth
+        .set_limit(settings.bandwidth_cap_kib_s);
     Ok(SettingsDto::from(&settings))
 }
 

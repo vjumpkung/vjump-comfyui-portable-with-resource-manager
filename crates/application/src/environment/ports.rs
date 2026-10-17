@@ -312,6 +312,56 @@ pub trait PythonProvisioner: Send + Sync {
     async fn remove_environment(&self, env: &PythonEnvironment) -> Result<(), ProvisionError>;
 }
 
+/// Opaque protection (pinned directories, open files) that the adapter running a command must
+/// keep alive until the command and every process it left behind have exited, even when the
+/// caller drops its own guard because the command failed.
+#[derive(Clone, Default)]
+pub struct Retained(Option<Arc<dyn Send + Sync>>);
+
+impl Retained {
+    pub fn new(resources: Arc<dyn Send + Sync>) -> Self {
+        Self(Some(resources))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
+impl std::fmt::Debug for Retained {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Retained(..)"
+        } else {
+            "Retained(none)"
+        })
+    }
+}
+
+impl PartialEq for Retained {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Retained {}
+
+/// A requirements file read once through a guarded node location. Adapters must take the
+/// requirements from `text` rather than reopening `path`, and resolve relative `-r`/`-c` includes
+/// and local paths against `directory`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardedRequirements {
+    /// The logical file, one of `InstallSpec::requirement_files`, that `text` stands for.
+    pub path: PathBuf,
+    pub directory: PathBuf,
+    pub text: Arc<[u8]>,
+    pub retained: Retained,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InstallSpec {
     pub requirements: Vec<String>,
@@ -320,6 +370,8 @@ pub struct InstallSpec {
     pub constraint_file: Option<PathBuf>,
     pub upgrade: bool,
     pub allow_source_builds: bool,
+    /// Replaces the on-disk content of one requirement file with a protected snapshot.
+    pub guarded: Option<GuardedRequirements>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

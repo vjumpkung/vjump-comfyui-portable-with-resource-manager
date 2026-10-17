@@ -28,7 +28,7 @@ string_enum!(
 );
 string_enum!(phase, FinalizePhase, [Verified, Published, Cataloged]);
 string_enum!(
-    error,
+    legacy_error,
     DownloadErrorCode,
     [
         InvalidSource,
@@ -71,6 +71,21 @@ string_enum!(
         SubscriptionGap
     ]
 );
+fn error(value: &str) -> Result<DownloadErrorCode> {
+    if value == "bandwidth_proxy_unavailable" {
+        Ok(DownloadErrorCode::BandwidthProxyUnavailable)
+    } else {
+        legacy_error(value)
+    }
+}
+
+fn error_value(code: DownloadErrorCode) -> String {
+    if code == DownloadErrorCode::BandwidthProxyUnavailable {
+        "bandwidth_proxy_unavailable".to_owned()
+    } else {
+        format!("{code:?}")
+    }
+}
 fn bad() -> DownloadError {
     DownloadErrorCode::Storage.into()
 }
@@ -212,7 +227,7 @@ pub fn encode(j: &DownloadJob) -> Result<String> {
         }
     };
     let publication=j.publication.as_ref().map(|p|json!({"phase":format!("{:?}",p.phase),"staged_key":p.staged_key,"staged_identity":identity_value(&p.staged_identity),"digest":p.digest.as_str(),"external_verified":p.external_verified,"backup_name":p.backup_name.as_str(),"published_identity":p.published_identity.as_ref().map(identity_value)}));
-    serde_json::to_string(&json!({"id":j.id.as_str(),"source":source_value(&j.source),"identity":j.identity.0,"destination":destination_value(&j.destination),"state":format!("{:?}",j.state),"requested_engine":format!("{:?}",j.requested_engine),"effective_engine":format!("{:?}",j.effective_engine),"generation":j.generation,"size":size_value(j.size),"expected_sha256":j.expected_sha256.as_ref().map(Sha256::as_str),"bytes_done":j.bytes_done,"validator":j.validator.as_ref().map(|ResumeValidator::StrongEtag(s)|s),"retry_count":j.retry_count,"retry_at":j.retry_at,"stop_intent":j.stop_intent.map(|s|format!("{s:?}")),"error":j.error.map(|e|format!("{e:?}")),"conflict":conflict,"decision_id":j.decision_id,"observed":j.observed.as_ref().map(identity_value),"publication":publication,"created_at":j.created_at,"updated_at":j.updated_at})).map_err(|_|bad())
+    serde_json::to_string(&json!({"id":j.id.as_str(),"source":source_value(&j.source),"identity":j.identity.0,"destination":destination_value(&j.destination),"state":format!("{:?}",j.state),"requested_engine":format!("{:?}",j.requested_engine),"effective_engine":format!("{:?}",j.effective_engine),"generation":j.generation,"size":size_value(j.size),"expected_sha256":j.expected_sha256.as_ref().map(Sha256::as_str),"bytes_done":j.bytes_done,"validator":j.validator.as_ref().map(|ResumeValidator::StrongEtag(s)|s),"retry_count":j.retry_count,"retry_at":j.retry_at,"stop_intent":j.stop_intent.map(|s|format!("{s:?}")),"error":j.error.map(error_value),"conflict":conflict,"decision_id":j.decision_id,"observed":j.observed.as_ref().map(identity_value),"publication":publication,"created_at":j.created_at,"updated_at":j.updated_at})).map_err(|_|bad())
 }
 pub fn decode(raw: &str) -> Result<DownloadJob> {
     let v: Value = serde_json::from_str(raw).map_err(|_| bad())?;

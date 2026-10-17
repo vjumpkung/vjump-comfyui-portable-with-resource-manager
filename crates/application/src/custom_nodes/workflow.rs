@@ -11,6 +11,24 @@ use domain::{
     shared::model_values::SafeFileName,
 };
 
+/// The requirement file of a guarded location, read from its protected snapshot.
+fn guarded_files(guard: Option<&dyn NodeLocationGuard>) -> InstallSpec {
+    let Some((guard, text)) = guard.and_then(|guard| Some((guard, guard.requirements()?))) else {
+        return InstallSpec::default();
+    };
+    let path = guard.directory().join("requirements.txt");
+    InstallSpec {
+        requirement_files: vec![path.clone()],
+        guarded: Some(GuardedRequirements {
+            path,
+            directory: guard.directory().to_path_buf(),
+            text,
+            retained: guard.retained(),
+        }),
+        ..Default::default()
+    }
+}
+
 impl NodeService {
     fn step(&self, id: &NodeId, ctx: &NodeContext) -> StepContext {
         StepContext {
@@ -160,7 +178,7 @@ impl NodeService {
             {
                 Ok(value) => value,
                 Err(error) => {
-                    self.deps.files.discard_staging(&root, &id).await?;
+                    // The adapter cleans only entries acquired by its failed prepare attempt.
                     op.phase = OperationPhase::Failed;
                     op.failure = Some(error.to_string());
                     self.deps.store.save_operation(&op).await?;
@@ -275,6 +293,24 @@ impl NodeService {
         );
         Ok(review)
     }
+    /// Guards the node location and refuses it unless its tree and inputs are the reviewed ones.
+    async fn pin(
+        &self,
+        root: &std::path::Path,
+        op: &NodeOperation,
+        staged: Option<&NodeId>,
+        hook: bool,
+    ) -> Result<Box<dyn NodeLocationGuard>, NodeAppError> {
+        let guard = self.deps.files.pin_location(root, &op.node, staged).await?;
+        let snapshot = guard.snapshot();
+        if snapshot.digest != op.node.tree_digest
+            || snapshot.requirements_digest != op.requirements_digest
+            || (hook && snapshot.hook_digest != op.hook_digest)
+        {
+            return Err(NodeAppError::StalePlan);
+        }
+        Ok(guard)
+    }
     /// Removes owned staging of a plan that could not be completed and records the failure.
     async fn abandon(&self, root: &std::path::Path, op: &mut NodeOperation, error: &NodeAppError) {
         let _ = self.deps.files.discard_staging(root, &op.id).await;
@@ -304,42 +340,25 @@ impl NodeService {
             .write_constraints(root, &env.id, &env.pins, &extra)
             .await
             .map_err(|_| NodeAppError::ResolutionFailed)?;
+        // The guard spans both previews and ends when this function returns.
+        let guard = if op.requirements_digest.is_some() {
+            Some(self.pin(root, op, staged.then_some(&op.id), false).await?)
+        } else {
+            None
+        };
         let base = InstallSpec {
             requirements: op.dependency_requirements.clone(),
-            requirement_files: if op.requirements_digest.is_some() {
-                vec![
-                    self.deps
-                        .files
-                        .path(root, &op.node, staged.then_some(&op.id))
-                        .join("requirements.txt"),
-                ]
-            } else {
-                vec![]
-            },
             constraint_file: Some(constraint),
-            ..Default::default()
+            ..guarded_files(guard.as_deref())
         };
         let step = self.step(&op.id, ctx);
-        let (preview, resolution) = match d
+        // Node dependencies resolve under the protected-package constraints or not at all: there
+        // is no unconstrained retry, because a node operation must never move a protected package.
+        let preview = d
             .packages
             .preview_install(root, &env.path, &base, &step)
             .await
-        {
-            Ok(value) => (value, PlanResolution::Constrained),
-            Err(_) => {
-                let unconstrained = InstallSpec {
-                    constraint_file: None,
-                    ..base
-                };
-                (
-                    d.packages
-                        .preview_install(root, &env.path, &unconstrained, &step)
-                        .await
-                        .map_err(|_| NodeAppError::ResolutionFailed)?,
-                    PlanResolution::Unconstrained,
-                )
-            }
-        };
+            .map_err(|_| NodeAppError::ResolutionFailed)?;
         let mut after = env.pins.clone();
         for p in &preview.removals {
             let name = DistName::new(&p.name).map_err(|_| NodeAppError::ResolutionFailed)?;
@@ -351,8 +370,9 @@ impl NodeService {
                 after.insert(name, p.version.clone());
             }
         }
-        let changes = env.pins.diff(&after);
-        if resolution == PlanResolution::Unconstrained && changes.is_empty() {
+        // A preview that would change any protected package is not offered as a node plan; the
+        // separate package-management workflow owns explicit protected-package confirmation.
+        if !env.pins.diff(&after).is_empty() {
             return Err(NodeAppError::ResolutionFailed);
         }
         Ok(Some(PackagePlan {
@@ -360,10 +380,10 @@ impl NodeService {
             env_id: env.id.clone(),
             operation: PackageOperation::Install(op.dependency_requirements.clone()),
             current_pins: env.pins.clone(),
-            resolution,
+            resolution: PlanResolution::Constrained,
             installs: preview.installs,
             removals: preview.removals,
-            protected_changes: changes,
+            protected_changes: Vec::new(),
         }))
     }
     pub async fn commit_held(
@@ -416,11 +436,11 @@ impl NodeService {
         if decision.consent.allow_source_builds {
             return Err(NodeAppError::ConsentRequired);
         } // Wheel-only resolver previews must never authorize a later build.
-        let mut confirmed = decision.protected_changes.clone();
-        confirmed.sort();
-        let mut required = plan.review.protected_changes.clone();
-        required.sort();
-        if confirmed != required {
+        // Node operations never authorize protected-package changes.
+        if !plan.review.protected_changes.is_empty() {
+            return Err(NodeAppError::ResolutionFailed);
+        }
+        if !decision.protected_changes.is_empty() {
             return Err(NodeAppError::ConsentRequired);
         }
         self.assert_pins(&root, &env, &env.pins).await?;
@@ -466,7 +486,7 @@ impl NodeService {
             decision.consent.binding,
             decision.consent.run_install_py,
             decision.consent.acknowledge_warnings,
-            confirmed.len()
+            decision.protected_changes.len()
         ));
         self.phase(&mut plan.operation, OperationPhase::PublishIntent)
             .await?;
@@ -643,14 +663,19 @@ impl NodeService {
         ctx: &NodeContext,
     ) -> Result<(), NodeAppError> {
         let d = &self.deps.environment;
+        // Acquired after publication and held through the awaited cleanup below, so a refused
+        // or substituted location fails before the environment is marked for repair.
+        let guard = if op.requirements_digest.is_some() || decision.consent.run_install_py {
+            Some(
+                self.pin(root, op, None, decision.consent.run_install_py)
+                    .await?,
+            )
+        } else {
+            None
+        };
         let was_verified = env.state() == EnvState::Verified;
-        let mut run_pins = env.pins.clone();
-        for change in &decision.protected_changes {
-            run_pins = run_pins.without(std::slice::from_ref(&change.name));
-            if let Some(version) = &change.to {
-                run_pins.insert(change.name.clone(), version.clone());
-            }
-        }
+        // Node operations keep the protected pins exactly as recorded.
+        let run_pins = env.pins.clone();
         let step = self.step(&op.id, ctx);
         // Persist both intent records before spawning the first package/hook mutation.
         self.phase(op, OperationPhase::DependenciesInProgress)
@@ -686,18 +711,8 @@ impl NodeService {
             }
             let spec = InstallSpec {
                 requirements,
-                requirement_files: if op.requirements_digest.is_some() {
-                    vec![
-                        self.deps
-                            .files
-                            .path(root, &op.node, None)
-                            .join("requirements.txt"),
-                    ]
-                } else {
-                    vec![]
-                },
                 constraint_file: Some(constraint),
-                ..Default::default()
+                ..guarded_files(guard.as_deref())
             };
             let result = d.packages.install(root, &env.path, &spec, &step).await;
             let guard = self.reassert(root, &env, &run_pins, &step).await;
@@ -707,16 +722,8 @@ impl NodeService {
             guard?;
         }
         if decision.consent.run_install_py {
-            let result = self
-                .deps
-                .hook
-                .run(
-                    root,
-                    &env,
-                    &self.deps.files.path(root, &op.node, None),
-                    &step,
-                )
-                .await;
+            let location = guard.as_deref().ok_or(NodeAppError::UnsafeSource)?;
+            let result = self.deps.hook.run(root, &env, location, &step).await;
             let guard = self.reassert(root, &env, &run_pins, &step).await;
             if result.is_err() {
                 return Err(NodeAppError::DependenciesFailed);

@@ -2187,6 +2187,7 @@ version = "0.1.0"
 dependencies = [
  "application",
  "async-trait",
+ "base64 0.22.1",
  "dirs",
  "domain",
  "file-rotate",
@@ -2200,6 +2201,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "rusqlite_migration",
+ "rustls-native-certs",
  "scraper",
  "semver",
  "serde",
@@ -2212,6 +2214,7 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "tokio",
+ "tokio-rustls",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "tracing-appender",

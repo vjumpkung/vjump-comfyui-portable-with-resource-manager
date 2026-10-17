@@ -554,3 +554,62 @@ async fn rapid_progress_updates_are_throttled_and_do_not_flood_the_tail() {
         "the tail keeps one progress update and the final line, not hundreds of updates"
     );
 }
+
+/// Reports its own destruction.
+struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn cleanup_failure_retains_execution_resources_until_children_exit() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let released = Arc::new(AtomicBool::new(false));
+    let survivors = Arc::new(AtomicBool::new(true));
+    let retained = Retained::new(Arc::new(DropFlag(released.clone())));
+    let alive = survivors.clone();
+    retain_until_empty(retained.clone(), move || {
+        let alive = alive.clone();
+        async move { !alive.load(Ordering::SeqCst) }
+    });
+    // The caller drops its own copy, as it does when the failed command returns.
+    drop(retained);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(
+        !released.load(Ordering::SeqCst),
+        "protection ended while descendants were still running"
+    );
+    survivors.store(false, Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !released.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "protection was never released");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn stdin_bytes_reach_the_child_and_a_retained_copy_is_not_needed_afterwards() {
+    let script = if cfg!(windows) { "more" } else { "cat" };
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let retained = Retained::new(Arc::new(DropFlag(released.clone())));
+    let spec = shell(script)
+        .stdin(Arc::from(
+            &b"alpha
+beta
+"[..],
+        ))
+        .retain(retained.clone());
+    let (result, lines) = run_default(&spec).await;
+    assert_eq!(result.unwrap().exit_code, 0);
+    assert!(
+        lines.iter().any(|line| line.contains("alpha"))
+            && lines.iter().any(|line| line.contains("beta")),
+        "{lines:?}"
+    );
+    // A command which ended cleanly keeps no protection of its own.
+    drop((spec, retained));
+    assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+}

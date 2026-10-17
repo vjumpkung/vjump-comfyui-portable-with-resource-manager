@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     environment::{InstallManifest, ManifestState, RunId, StepContext},
-    shared::{CancelToken, MaintenanceLease},
+    shared::{CancelToken, GateError, MaintenanceGate, MaintenanceLease},
     test_support::block_on,
 };
 use async_trait::async_trait;
@@ -30,6 +30,12 @@ struct Machine {
     repo: Mutex<RepoState>,
     inventory_checked: AtomicBool,
     mutation_saw_repair: AtomicBool,
+    node_journal_failure: AtomicBool,
+    node_rescan_failure: AtomicBool,
+    stop_held: Mutex<Vec<bool>>,
+    hold_start: AtomicBool,
+    start_lease: Mutex<Option<Box<dyn MaintenanceLease>>>,
+    start_waker: Mutex<Option<std::task::Waker>>,
 }
 impl Machine {
     fn new() -> Arc<Self> {
@@ -63,11 +69,18 @@ impl Machine {
             repo: Mutex::default(),
             inventory_checked: AtomicBool::new(false),
             mutation_saw_repair: AtomicBool::new(false),
+            node_journal_failure: AtomicBool::new(false),
+            node_rescan_failure: AtomicBool::new(false),
+            stop_held: Mutex::default(),
+            hold_start: AtomicBool::new(false),
+            start_lease: Mutex::default(),
+            start_waker: Mutex::default(),
         })
     }
     fn deps(self: &Arc<Self>) -> RuntimeDeps {
         RuntimeDeps {
             environment: self.env.deps(),
+            nodes: self.clone(),
             supervisor: self.clone(),
             store: self.clone(),
             repository: self.clone(),
@@ -81,6 +94,28 @@ impl Machine {
             target: UpdateTarget::Tag(Tag::new("v2").unwrap()),
             stop_running: false,
             retry: None,
+        }
+    }
+}
+#[async_trait]
+impl NodeLifecycle for Machine {
+    async fn before_start(&self, _: &mut dyn MaintenanceLease) -> Result<(), RuntimeError> {
+        assert!(self.env.gate.busy.load(Ordering::SeqCst));
+        self.env.call("nodes_before_start");
+        if self.node_journal_failure.load(Ordering::SeqCst) {
+            Err(RuntimeError::NodeRecoveryRequired)
+        } else {
+            Ok(())
+        }
+    }
+    async fn after_stop(&self, _: &mut dyn MaintenanceLease) -> Result<(), RuntimeError> {
+        assert!(self.env.gate.busy.load(Ordering::SeqCst));
+        assert_eq!(self.status.lock().unwrap().lifecycle, Lifecycle::Stopped);
+        self.env.call("nodes_after_stop");
+        if self.node_rescan_failure.load(Ordering::SeqCst) {
+            Err(RuntimeError::NodeRescanFailed)
+        } else {
+            Ok(())
         }
     }
 }
@@ -140,6 +175,7 @@ impl RuntimeSupervisor for Machine {
             "gate must precede process inspection"
         );
         self.inventory_checked.store(true, Ordering::SeqCst);
+        self.env.call("runtime_inventory");
         Ok(
             if self.status.lock().unwrap().lifecycle == Lifecycle::Running {
                 InventoryState::OwnedRunning
@@ -152,8 +188,23 @@ impl RuntimeSupervisor for Machine {
         &self,
         s: RuntimeSession,
         _: Vec<String>,
-        _lease: Box<dyn MaintenanceLease>,
+        lease: Box<dyn MaintenanceLease>,
     ) -> Result<RuntimeStatus, RuntimeError> {
+        assert!(self.env.gate.busy.load(Ordering::SeqCst));
+        self.env.call("runtime_start");
+        if self.hold_start.load(Ordering::SeqCst) {
+            self.status.lock().unwrap().lifecycle = Lifecycle::Starting;
+            *self.start_lease.lock().unwrap() = Some(lease);
+            return std::future::poll_fn(|cx| {
+                if self.start_lease.lock().unwrap().is_none() {
+                    std::task::Poll::Ready(Err(RuntimeError::Cancelled))
+                } else {
+                    *self.start_waker.lock().unwrap() = Some(cx.waker().clone());
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
+        }
         let status = RuntimeStatus {
             lifecycle: Lifecycle::Running,
             session: Some(s),
@@ -163,10 +214,202 @@ impl RuntimeSupervisor for Machine {
         Ok(status)
     }
     async fn stop(&self) -> Result<RuntimeStatus, RuntimeError> {
+        self.env.call("runtime_stop");
+        self.stop_held
+            .lock()
+            .unwrap()
+            .push(self.env.gate.busy.load(Ordering::SeqCst));
+        self.start_lease.lock().unwrap().take();
+        if let Some(waker) = self.start_waker.lock().unwrap().take() {
+            waker.wake();
+        }
         let mut status = self.status.lock().unwrap();
         status.lifecycle = Lifecycle::Stopped;
         Ok(status.clone())
     }
+}
+
+struct AcquisitionHookGate {
+    inner: Arc<env_fakes::FakeGate>,
+    before_acquire: Option<Box<dyn Fn() + Send + Sync>>,
+    before_try_acquire: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+#[async_trait]
+impl MaintenanceGate for AcquisitionHookGate {
+    async fn acquire(&self) -> Result<Box<dyn MaintenanceLease>, GateError> {
+        if let Some(hook) = &self.before_acquire {
+            hook();
+        }
+        self.inner.acquire().await
+    }
+
+    async fn try_acquire(&self) -> Result<Box<dyn MaintenanceLease>, GateError> {
+        if let Some(hook) = &self.before_try_acquire {
+            hook();
+        }
+        self.inner.try_acquire().await
+    }
+}
+
+#[test]
+fn start_checks_node_recovery_under_the_maintenance_lease() {
+    let m = Machine::new();
+    m.node_journal_failure.store(true, Ordering::SeqCst);
+    assert_eq!(
+        block_on(StartComfy::new(m.deps()).execute()),
+        Err(RuntimeError::NodeRecoveryRequired)
+    );
+    assert_eq!(m.env.count("nodes_before_start"), 1);
+    assert!(!m.inventory_checked.load(Ordering::SeqCst));
+    assert_eq!(m.env.count("runtime_start"), 0);
+    assert!(!m.env.gate.busy.load(Ordering::SeqCst));
+
+    m.node_journal_failure.store(false, Ordering::SeqCst);
+    block_on(StartComfy::new(m.deps()).execute()).unwrap();
+    assert!(m.env.position("nodes_before_start") < m.env.position("runtime_inventory"));
+    assert!(m.env.position("runtime_inventory") < m.env.position("runtime_start"));
+}
+
+#[test]
+fn a_journal_failure_created_before_lease_acquisition_blocks_start() {
+    let m = Machine::new();
+    let mut deps = m.deps();
+    let journal = m.clone();
+    deps.environment.gate = Arc::new(AcquisitionHookGate {
+        inner: m.env.gate.clone(),
+        before_acquire: None,
+        before_try_acquire: Some(Box::new(move || {
+            assert!(!journal.env.gate.busy.load(Ordering::SeqCst));
+            journal.node_journal_failure.store(true, Ordering::SeqCst);
+        })),
+    });
+    assert_eq!(
+        block_on(StartComfy::new(deps).execute()),
+        Err(RuntimeError::NodeRecoveryRequired)
+    );
+    assert_eq!(m.env.count("nodes_before_start"), 1);
+    assert_eq!(m.env.count("runtime_inventory"), 0);
+    assert_eq!(m.env.count("runtime_start"), 0);
+}
+
+#[test]
+fn restart_stops_rescans_and_starts_with_one_acquisition() {
+    let m = Machine::new();
+    m.status.lock().unwrap().lifecycle = Lifecycle::Running;
+    let status = block_on(RestartComfy::new(m.deps()).execute()).unwrap();
+    assert_eq!(status.lifecycle, Lifecycle::Running);
+    assert_eq!(m.env.gate.try_acquires.load(Ordering::SeqCst), 1);
+    assert_eq!(m.env.gate.acquires.load(Ordering::SeqCst), 0);
+    assert_eq!(*m.stop_held.lock().unwrap(), [true]);
+    let calls: Vec<_> = m
+        .env
+        .calls()
+        .into_iter()
+        .filter(|c| c.starts_with("runtime_") || c.starts_with("nodes_"))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            "runtime_stop",
+            "nodes_after_stop",
+            "nodes_before_start",
+            "runtime_inventory",
+            "runtime_start",
+        ]
+    );
+}
+
+#[test]
+fn stop_cancels_start_before_waiting_for_the_gate() {
+    use std::{future::Future, pin::pin, task::Context};
+
+    let m = Machine::new();
+    m.hold_start.store(true, Ordering::SeqCst);
+    let start = StartComfy::new(m.deps());
+    let mut starting = pin!(start.execute());
+    assert!(
+        starting
+            .as_mut()
+            .poll(&mut Context::from_waker(std::task::Waker::noop()))
+            .is_pending()
+    );
+    assert!(m.env.gate.busy.load(Ordering::SeqCst));
+    assert_eq!(m.status.lock().unwrap().lifecycle, Lifecycle::Starting);
+    let stopped = block_on(StopComfy::new(m.deps()).execute()).unwrap();
+    assert_eq!(stopped.lifecycle, Lifecycle::Stopped);
+    assert_eq!(block_on(starting), Err(RuntimeError::Cancelled));
+    assert_eq!(m.env.gate.acquires.load(Ordering::SeqCst), 1);
+    assert_eq!(*m.stop_held.lock().unwrap(), [true, true]);
+    assert_eq!(m.env.count("nodes_after_stop"), 1);
+    assert!(!m.env.gate.busy.load(Ordering::SeqCst));
+}
+
+#[test]
+fn stop_rechecks_termination_after_acquiring_the_gate() {
+    let m = Machine::new();
+    let mut deps = m.deps();
+    let competing_start = m.clone();
+    deps.environment.gate = Arc::new(AcquisitionHookGate {
+        inner: m.env.gate.clone(),
+        before_acquire: Some(Box::new(move || {
+            assert_eq!(competing_start.env.count("runtime_stop"), 1);
+            competing_start.status.lock().unwrap().lifecycle = Lifecycle::Running;
+        })),
+        before_try_acquire: None,
+    });
+    let status = block_on(StopComfy::new(deps).execute()).unwrap();
+    assert_eq!(status.lifecycle, Lifecycle::Stopped);
+    assert_eq!(*m.stop_held.lock().unwrap(), [false, true]);
+    assert_eq!(m.env.count("runtime_stop"), 2);
+    assert_eq!(m.env.count("nodes_after_stop"), 1);
+    assert_eq!(m.env.gate.acquires.load(Ordering::SeqCst), 1);
+    assert_eq!(m.env.gate.try_acquires.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn after_stop_failure_is_returned_and_prevents_restart() {
+    for operation in ["stop", "restart", "update"] {
+        let m = Machine::new();
+        m.status.lock().unwrap().lifecycle = Lifecycle::Running;
+        m.node_rescan_failure.store(true, Ordering::SeqCst);
+        let error = match operation {
+            "stop" => block_on(StopComfy::new(m.deps()).execute()).unwrap_err(),
+            "restart" => block_on(RestartComfy::new(m.deps()).execute()).unwrap_err(),
+            _ => {
+                let mut request = Machine::request();
+                request.stop_running = true;
+                block_on(UpdateComfy::new(m.deps()).execute(request, CancelToken::new()))
+                    .unwrap_err()
+            }
+        };
+        assert_eq!(error, RuntimeError::NodeRescanFailed);
+        assert_eq!(m.status.lock().unwrap().lifecycle, Lifecycle::Stopped);
+        assert_eq!(m.env.count("nodes_after_stop"), 1);
+        assert_eq!(m.env.count("nodes_before_start"), 0);
+        assert_eq!(m.env.count("runtime_start"), 0);
+        assert_eq!(m.env.count("runtime_fetch"), 0);
+        assert_eq!(m.env.count("runtime_apply"), 0);
+        assert!(m.env.installs.lock().unwrap().is_empty());
+        assert!(!m.env.gate.busy.load(Ordering::SeqCst));
+    }
+}
+
+#[test]
+fn update_with_stop_rescans_under_its_existing_lease() {
+    let m = Machine::new();
+    m.status.lock().unwrap().lifecycle = Lifecycle::Running;
+    let mut request = Machine::request();
+    request.stop_running = true;
+    let run = block_on(UpdateComfy::new(m.deps()).execute(request, CancelToken::new())).unwrap();
+    assert_eq!(run.phase, UpdatePhase::Complete);
+    assert_eq!(*m.stop_held.lock().unwrap(), [true]);
+    assert_eq!(m.env.gate.try_acquires.load(Ordering::SeqCst), 1);
+    assert_eq!(m.env.gate.acquires.load(Ordering::SeqCst), 0);
+    assert_eq!(m.env.count("nodes_after_stop"), 1);
+    assert!(m.env.position("runtime_stop") < m.env.position("nodes_after_stop"));
+    assert!(m.env.position("nodes_after_stop") < m.env.position("runtime_fetch"));
+    assert!(m.env.position("nodes_after_stop") < m.env.position("runtime_apply"));
 }
 #[async_trait]
 impl ComfyRepository for Machine {

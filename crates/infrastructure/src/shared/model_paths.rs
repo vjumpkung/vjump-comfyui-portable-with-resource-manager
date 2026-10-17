@@ -78,11 +78,44 @@ pub fn pin_absolute(path: &Path) -> io::Result<Arc<PinnedDirectory>> {
     }
     #[cfg(unix)]
     {
-        Ok(Arc::new(PinnedDirectory {
-            path: path.to_owned(),
-            file: open_directory(path)?,
+        use std::{
+            os::fd::{AsRawFd, FromRawFd},
+            path::Component,
+        };
+        if !path.is_absolute() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let mut pin = Arc::new(PinnedDirectory {
+            path: PathBuf::from("/"),
+            file: open_directory(Path::new("/"))?,
             _parents: Vec::new(),
-        }))
+        });
+        for component in path.components() {
+            match component {
+                Component::RootDir => continue,
+                Component::Normal(name) => {
+                    use std::os::unix::ffi::OsStrExt;
+                    let text = std::ffi::CString::new(name.as_bytes())?;
+                    let fd = unsafe {
+                        libc::openat(
+                            pin.file.as_raw_fd(),
+                            text.as_ptr(),
+                            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                        )
+                    };
+                    if fd < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    pin = Arc::new(PinnedDirectory {
+                        path: pin.path.join(name),
+                        file: unsafe { File::from_raw_fd(fd) },
+                        _parents: vec![pin],
+                    });
+                }
+                _ => return Err(io::ErrorKind::InvalidInput.into()),
+            }
+        }
+        Ok(pin)
     }
 }
 fn open_directory(path: &Path) -> io::Result<File> {
@@ -109,6 +142,24 @@ fn open_directory(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 impl PinnedDirectory {
+    /// A path anchored to this handle for consumers which require a path. Retain the pin
+    /// until those consumers (including subprocesses) have finished.
+    pub(crate) fn anchored_path(&self) -> PathBuf {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            PathBuf::from(format!(
+                "/proc/{}/fd/{}/.",
+                std::process::id(),
+                self.file.as_raw_fd()
+            ))
+        }
+        #[cfg(windows)]
+        {
+            self.path.clone()
+        }
+    }
+
     pub fn child(self: &Arc<Self>, name: &SafeFileName, create: bool) -> io::Result<Arc<Self>> {
         let path = self.path.join(name.as_str());
         #[cfg(windows)]
@@ -195,6 +246,169 @@ impl PinnedDirectory {
             }
             Ok(file)
         }
+    }
+    /// Opens a regular file for reading without following links and keeps it from being
+    /// replaced while the handle lives. On Windows the handle denies write and delete sharing,
+    /// so the file cannot be modified, renamed or deleted, while other readers (uv, Python)
+    /// can still open it. On Unix the handle fixes the inode only: contents can still change.
+    pub fn open_read_pin(&self, name: &SafeFileName) -> io::Result<File> {
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::*;
+            OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                // Backup semantics let a directory or junction open so it is refused by kind.
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(self.path.join(name.as_str()))?
+        };
+        #[cfg(unix)]
+        let file = {
+            use std::os::fd::{AsRawFd, FromRawFd};
+            let text = std::ffi::CString::new(name.as_str())?;
+            let fd = unsafe {
+                libc::openat(
+                    self.file.as_raw_fd(),
+                    text.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+                )
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            unsafe { File::from_raw_fd(fd) }
+        };
+        reject_reparse(&file)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        Ok(file)
+    }
+
+    /// Opens a regular file or directory without following links. The Windows handle
+    /// includes DELETE access for handle-based renaming.
+    pub fn open_entry(&self, name: &SafeFileName) -> io::Result<File> {
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::*;
+            OpenOptions::new()
+                .read(true)
+                .access_mode(0x80000000 | 0x00010000)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(self.path.join(name.as_str()))?
+        };
+        #[cfg(unix)]
+        let file = {
+            use std::os::fd::{AsRawFd, FromRawFd};
+            let text = std::ffi::CString::new(name.as_str())?;
+            let fd = unsafe {
+                libc::openat(
+                    self.file.as_raw_fd(),
+                    text.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+                )
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            unsafe { File::from_raw_fd(fd) }
+        };
+        reject_reparse(&file)?;
+        let meta = file.metadata()?;
+        if !(meta.is_file() || meta.is_dir()) {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        Ok(file)
+    }
+
+    /// Removes an operation-owned tree using non-following, pinned parents. A link or
+    /// unrepresentable entry causes refusal; it is never traversed.
+    pub fn remove_owned_tree(&self, name: &SafeFileName) -> io::Result<()> {
+        let entry = self.open_entry(name)?;
+        let expected = identity(&entry)?.platform_id;
+        let is_dir = entry.metadata()?.is_dir();
+        drop(entry);
+        if is_dir {
+            let directory = Arc::new(Self {
+                path: self.path.clone(),
+                file: self.file.try_clone()?,
+                _parents: Vec::new(),
+            })
+            .child(name, false)?;
+            if expected != identity(&directory.file)?.platform_id {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            for child in fs::read_dir(directory.anchored_path())? {
+                let child = child?;
+                let name = child
+                    .file_name()
+                    .into_string()
+                    .ok()
+                    .and_then(|n| SafeFileName::new(n).ok())
+                    .ok_or(io::ErrorKind::PermissionDenied)?;
+                directory.remove_owned_tree(&name)?;
+            }
+        }
+        let entry = self.open_entry(name)?;
+        if expected != identity(&entry)?.platform_id {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+            use windows_sys::Win32::Storage::FileSystem::*;
+            // Git object files are read-only. Clear that attribute through a separately
+            // validated handle; a path-based chmod would reintroduce the substitution race.
+            if entry.metadata()?.permissions().readonly() {
+                let writable = OpenOptions::new()
+                    .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+                    .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                    .open(self.path.join(name.as_str()))?;
+                reject_reparse(&writable)?;
+                if identity(&writable)?.platform_id != expected {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                let mut permissions = writable.metadata()?.permissions();
+                // Windows-only attribute; no Unix mode bits.
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                writable.set_permissions(permissions)?;
+            }
+            let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+            if unsafe {
+                SetFileInformationByHandle(
+                    entry.as_raw_handle(),
+                    FileDispositionInfo,
+                    (&info as *const FILE_DISPOSITION_INFO).cast(),
+                    std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            if identity(&entry)?.platform_id != identity(&self.open_entry(name)?)?.platform_id {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            let text = std::ffi::CString::new(name.as_str())?;
+            let flags = if entry.metadata()?.is_dir() {
+                libc::AT_REMOVEDIR
+            } else {
+                0
+            };
+            if unsafe { libc::unlinkat(self.file.as_raw_fd(), text.as_ptr(), flags) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            self.file.sync_all()?;
+        }
+        Ok(())
     }
     pub fn remove_owned_file(&self, name: &SafeFileName) -> io::Result<()> {
         #[cfg(windows)]
@@ -284,6 +498,9 @@ pub fn rename_no_replace(
     target: &PinnedDirectory,
     new_name: &SafeFileName,
 ) -> io::Result<()> {
+    if identity(file)? != identity(&source.open_entry(name)?)? {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
     #[cfg(windows)]
     {
         use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
@@ -323,9 +540,6 @@ pub fn rename_no_replace(
         let a = std::ffi::CString::new(name.as_str())?;
         let b = std::ffi::CString::new(new_name.as_str())?;
         // Identity is checked against the open handle immediately before the dirfd operation.
-        if identity(file)? != identity(&source.open(name, false, false)?)? {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
         if unsafe {
             libc::renameat2(
                 source.file.as_raw_fd(),

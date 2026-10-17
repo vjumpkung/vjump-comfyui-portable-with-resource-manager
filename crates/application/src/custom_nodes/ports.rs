@@ -1,8 +1,11 @@
 use super::*;
-use crate::environment::StepContext;
+use crate::environment::{Retained, StepContext};
 use async_trait::async_trait;
 use domain::{custom_nodes::*, environment::PythonEnvironment};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[async_trait]
 pub trait RegistryClient: Send + Sync {
@@ -29,7 +32,23 @@ pub trait NodeRepository: Send + Sync {
     async fn save_trust(&self, trust: &Trust) -> Result<(), NodeAppError>;
 }
 /// Filesystem and Git adapter. Every path is derived from the configured root and validated node IDs.
-/// Mutations use shared pinned parents/no-replace primitives, never unchecked rename paths.
+/// Adapter-owned mutations traverse parents without following links/reparse points and retain
+/// protection through filesystem work, its subprocess completion and cleanup, including parent
+/// substitution between checking and use. Publication and moves never replace a destination.
+/// Recycling validates the pinned entry identity and never falls back to permanent deletion.
+/// Containment refusal is UnsafeSource; ordinary I/O failure is Filesystem. Recovery preserves
+/// uncertain copies and leaves their operation unresolved.
+///
+/// `path()` returns an informational location and grants no filesystem authority. Execution
+/// consumers must obtain a `NodeLocationGuard` from `pin_location` and retain it through
+/// subprocess teardown and cleanup. Windows directory pins prevent rename or replacement of the
+/// node directory and its parents through delete-sharing restrictions. Linux pins retain
+/// directory identity and the guard's directory is descriptor-anchored; neither platform freezes
+/// pathnames or contents inside the node. The guarded requirements and install script are
+/// therefore snapshots read once through non-following handles and bound to the reviewed
+/// digests, and consumers must use those snapshots without reopening the original paths. These
+/// guarantees cover adapter-selected locations and inputs, not arbitrary filesystem access by
+/// third-party code. Unsafe or uncertain locations are refused and recovery copies are preserved.
 #[async_trait]
 pub trait NodeFiles: Send + Sync {
     async fn git_status(
@@ -37,6 +56,8 @@ pub trait NodeFiles: Send + Sync {
         root: &Path,
         node: &InstalledNode,
     ) -> Result<NodeGitStatus, NodeAppError>;
+    /// On failure, clean only entries acquired by this attempt. Callers must not discard
+    /// staging blindly: a refused create-new may have encountered a foreign entry.
     async fn prepare(
         &self,
         root: &Path,
@@ -51,7 +72,17 @@ pub trait NodeFiles: Send + Sync {
         node: &InstalledNode,
         staged: Option<&NodeId>,
     ) -> Result<TreeSnapshot, NodeAppError>;
+    /// Returns a derived, informational path only. It is never authority for execution.
     fn path(&self, root: &Path, node: &InstalledNode, staged: Option<&NodeId>) -> PathBuf;
+    /// Pins the node directory (live, or staged for `staged`) with its full parent chain and
+    /// reads its root requirements and install script through non-following handles. Acquire a
+    /// live guard after publication, because Windows pins obstruct renaming the directory.
+    async fn pin_location(
+        &self,
+        root: &Path,
+        node: &InstalledNode,
+        staged: Option<&NodeId>,
+    ) -> Result<Box<dyn NodeLocationGuard>, NodeAppError>;
     async fn publish(&self, root: &Path, operation: &NodeOperation) -> Result<(), NodeAppError>;
     async fn backup(&self, root: &Path, operation: &NodeOperation) -> Result<(), NodeAppError>;
     async fn move_enabled(
@@ -70,14 +101,31 @@ pub trait NodeFiles: Send + Sync {
     ) -> Result<RecoveryAction, NodeAppError>;
     async fn scan(&self, root: &Path) -> Result<Vec<InstalledNode>, NodeAppError>;
 }
+/// A node location whose containment protection lives exactly as long as this value. Hold it
+/// across every use of the paths and snapshots it hands out: previews, installation, the hook and
+/// their awaited cleanup.
+pub trait NodeLocationGuard: Send + Sync {
+    /// The working directory for execution, anchored to the pinned directory.
+    fn directory(&self) -> &Path;
+    /// Root `requirements.txt` as read once from the guarded handle, when it is valid text.
+    fn requirements(&self) -> Option<Arc<[u8]>>;
+    /// Root `install.py` as read once from the guarded handle.
+    fn install_script(&self) -> Option<Arc<[u8]>>;
+    /// Digests of the guarded tree and inputs, comparable to the reviewed plan.
+    fn snapshot(&self) -> &TreeSnapshot;
+    /// Handle that keeps the protection alive for processes which outlive a failed cleanup.
+    fn retained(&self) -> Retained;
+}
+
 #[async_trait]
 pub trait NodeHook: Send + Sync {
-    /// The interpreter is the active absolute interpreter; only root install.py may run.
+    /// The interpreter is the active absolute interpreter; only the guarded root install.py may
+    /// run, with the guarded directory as its working directory.
     async fn run(
         &self,
         root: &Path,
         env: &PythonEnvironment,
-        node_directory: &Path,
+        location: &dyn NodeLocationGuard,
         ctx: &StepContext,
     ) -> Result<(), NodeAppError>;
 }

@@ -228,6 +228,14 @@ impl From<RuntimeError> for IpcError {
                 "comfyui_running",
                 "ComfyUI from this installation is running. Stop it first.",
             ),
+            RuntimeError::NodeRecoveryRequired => Self::new(
+                "node_recovery_required",
+                "interrupted custom-node work must be resolved before launch.",
+            ),
+            RuntimeError::NodeRescanFailed => Self::new(
+                "node_rescan_failed",
+                "ComfyUI stopped, but custom nodes could not be rescanned; retry Rescan.",
+            ),
             RuntimeError::EnvironmentNotUsable => Self::new(
                 "environment_not_usable",
                 "A verified active environment is required. Repair the selected environment first.",
@@ -267,5 +275,28 @@ impl From<LibraryError> for IpcError {
     fn from(error: LibraryError) -> Self {
         let (code, message) = super::library_dto::describe(error.0);
         Self::new(code, message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_node_failures_have_fixed_ipc_codes_and_messages() {
+        assert_eq!(
+            IpcError::from(RuntimeError::NodeRecoveryRequired),
+            IpcError::new(
+                "node_recovery_required",
+                "interrupted custom-node work must be resolved before launch."
+            )
+        );
+        assert_eq!(
+            IpcError::from(RuntimeError::NodeRescanFailed),
+            IpcError::new(
+                "node_rescan_failed",
+                "ComfyUI stopped, but custom nodes could not be rescanned; retry Rescan."
+            )
+        );
     }
 }

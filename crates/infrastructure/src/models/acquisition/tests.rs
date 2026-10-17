@@ -33,6 +33,113 @@ use std::{
 };
 
 struct NoCredentials;
+
+#[tokio::test]
+async fn shared_bucket_bounds_combined_native_and_relay_bytes() {
+    use std::{
+        num::NonZeroU32,
+        time::{Duration, Instant},
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let server = TestServer::start().await;
+    server.route("/limited", Route::ok(vec![7; 2048]));
+    let f = Fixture::new();
+    let job = f.insert(f.job("limited", &server.url("/limited"))).await;
+    let started = Instant::now();
+    let limiter = Arc::new(super::bandwidth::BandwidthLimiter::new(NonZeroU32::new(4)));
+    let mut native = f.native();
+    native.bandwidth = limiter.clone();
+    let (relay, mut source, mut child) = super::hf_proxy::tests::mock_tunnel(limiter.clone()).await;
+    source.write_all(&[9; 2048]).await.unwrap();
+    source.shutdown().await.unwrap();
+    let cancel = CancelToken::new();
+    let (native_result, bytes) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            native.transfer(&job, f.hub.clone(), cancel.clone()),
+            async {
+                let mut bytes = Vec::new();
+                child.read_to_end(&mut bytes).await.unwrap();
+                bytes
+            },
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(native_result.unwrap().size, 2048);
+    assert_eq!(bytes, vec![9; 2048]);
+    // 4 KiB/s, one shared burst of floor(rate/10) = 409 bytes.
+    assert!(4096.0 <= 4096.0 * started.elapsed().as_secs_f64() + 409.0);
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn live_cap_changes_affect_already_running_hf_and_native_jobs() {
+    use std::{num::NonZeroU32, time::Duration};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // Hold the native response body until after the uncapped transfer started.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (native_ready, native_wait) = tokio::sync::oneshot::channel();
+    let (release_native, released) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(stream.read_u8().await.unwrap());
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8192\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        native_ready.send(()).unwrap();
+        released.await.unwrap();
+        stream.write_all(&[1; 8192]).await.unwrap();
+    });
+    let f = Fixture::new();
+    let job = f
+        .insert(f.job("live", &format!("http://{address}/file")))
+        .await;
+    let limiter = Arc::new(super::bandwidth::BandwidthLimiter::new(None));
+    let mut native = f.native();
+    native.bandwidth = limiter.clone();
+    let native_hub = f.hub.clone();
+    let native_task =
+        tokio::spawn(async move { native.transfer(&job, native_hub, CancelToken::new()).await });
+    let (relay, mut source, mut child) = super::hf_proxy::tests::mock_tunnel(limiter.clone()).await;
+    let hf_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        child.read_to_end(&mut bytes).await.unwrap();
+        bytes
+    });
+    native_wait.await.unwrap();
+    tokio::task::yield_now().await;
+    limiter.set_limit(NonZeroU32::new(1));
+    release_native.send(()).unwrap();
+    source.write_all(&[2; 8192]).await.unwrap();
+    source.shutdown().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!native_task.is_finished());
+    assert!(!hf_task.is_finished());
+    let written = fs::metadata(f.staging.root.path.join("live.part"))
+        .unwrap()
+        .len();
+    assert!(written < 8192);
+    // Raising the cap affects the existing attempts, then unlimited wakes them.
+    limiter.set_limit(NonZeroU32::new(2));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!native_task.is_finished());
+    assert!(!hf_task.is_finished());
+    limiter.set_limit(None);
+    let (native_result, bytes) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(native_task, hf_task)
+    })
+    .await
+    .unwrap();
+    assert_eq!(native_result.unwrap().unwrap().size, 8192);
+    assert_eq!(bytes.unwrap(), vec![2; 8192]);
+    server.await.unwrap();
+    relay.shutdown().await;
+}
 #[test]
 fn platform_no_replace_rename_uses_pinned_parent() {
     let directory = tempfile::tempdir().unwrap();
@@ -150,6 +257,7 @@ impl Fixture {
     fn native(&self) -> NativeDownloader {
         let http = ArtifactHttp::new(Arc::new(NoCredentials)).unwrap();
         NativeDownloader {
+            bandwidth: Arc::new(super::bandwidth::BandwidthLimiter::new(None)),
             resolver: Arc::new(ProviderResolver::new(
                 http,
                 Arc::new(SourceIngress::default()),
@@ -444,6 +552,7 @@ fn persistence_never_contains_direct_signature_and_can_reuse_live_ingress() {
     let f = Fixture::new();
     let ingress = SourceIngress::default();
     let mut job = f.job("secret", "https://x/model.bin");
+    job.error = Some(DownloadErrorCode::BandwidthProxyUnavailable);
     job.source = ingress
         .stage(
             "https://x/model.bin?X-Amz-Signature=super-secret-signature",
@@ -451,9 +560,11 @@ fn persistence_never_contains_direct_signature_and_can_reuse_live_ingress() {
         )
         .unwrap();
     let raw = codec::encode(&job).unwrap();
+    assert!(raw.contains("\"error\":\"bandwidth_proxy_unavailable\""));
     assert!(!raw.contains("super-secret-signature"));
     assert!(!raw.contains("X-Amz"));
     let read = codec::decode(&raw).unwrap();
+    assert_eq!(read.error, job.error);
     assert!(ingress.executable(&read.source).is_ok());
     assert!(SourceIngress::default().executable(&read.source).is_err());
 }
@@ -569,6 +680,11 @@ async fn supervisor_limits_admissions_and_only_falls_back_on_spawn_failure() {
     for (error, expected_native, expected_state) in [
         (DownloadErrorCode::ToolLaunch, 1, DownloadState::Completed),
         (DownloadErrorCode::ToolRuntime, 0, DownloadState::Failed),
+        (
+            DownloadErrorCode::BandwidthProxyUnavailable,
+            0,
+            DownloadState::Failed,
+        ),
     ] {
         let f = Fixture::new();
         let mut job = f.job("hf", "https://x/a.bin");

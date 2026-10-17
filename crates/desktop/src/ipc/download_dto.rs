@@ -302,6 +302,10 @@ pub fn describe(code: DownloadErrorCode) -> (&'static str, &'static str) {
             "The server answered a resume request incorrectly.",
         ),
         E::ToolLaunch => ("tool_launch", "The Hugging Face tool could not be started."),
+        E::BandwidthProxyUnavailable => (
+            "bandwidth_proxy_unavailable",
+            "The Hugging Face bandwidth relay is unavailable. Check proxy settings and retry.",
+        ),
         E::ToolRuntime => ("tool_runtime", "The Hugging Face tool reported an error."),
         E::ProcessCleanupFailed => (
             "process_cleanup_failed",

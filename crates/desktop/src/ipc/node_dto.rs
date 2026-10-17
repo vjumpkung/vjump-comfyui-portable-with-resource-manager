@@ -488,6 +488,24 @@ pub fn request_key(text: &str) -> Result<String, IpcError> {
     }
 }
 
+/// The fixed refusal text followed by the bounded status the adapter retained. The adapter already
+/// redacted it and keeps it node-relative; control characters are dropped here as a last guard.
+fn git_refusal_message(status: &str) -> String {
+    const REFUSAL: &str = "The repository has local changes, an unfinished operation, a diverged branch or no selected upstream, so it was not changed.";
+    let status: String = status
+        .chars()
+        .filter(|c| *c == '\n' || !c.is_control())
+        .take(2000)
+        .collect();
+    // The leading column of a short status line is significant, so only the end is trimmed.
+    let status = status.trim_end();
+    if status.trim().is_empty() {
+        REFUSAL.to_owned()
+    } else {
+        format!("{REFUSAL}\n\nDetails:\n{}", status.trim_start_matches('\n'))
+    }
+}
+
 pub fn describe(error: NodeAppError) -> (&'static str, String) {
     use NodeAppError as E;
     let fixed = |code: &'static str, message: &str| (code, message.to_owned());
@@ -534,10 +552,7 @@ pub fn describe(error: NodeAppError) -> (&'static str, String) {
             "node_unsafe_source",
             "The source, archive or folder was rejected by the safety checks.",
         ),
-        E::GitRefused => fixed(
-            "node_git_refused",
-            "The repository has local changes, an unfinished operation, a diverged branch or no selected upstream, so it was not changed.",
-        ),
+        E::GitRefused { status } => ("node_git_refused", git_refusal_message(&status)),
         E::GitUnavailable => fixed(
             "node_git_unavailable",
             "Git is unavailable. Complete tool setup on Windows or install Git on Linux.",
@@ -564,7 +579,7 @@ pub fn describe(error: NodeAppError) -> (&'static str, String) {
         ),
         E::ResolutionFailed => fixed(
             "node_resolution_failed",
-            "The dependencies could not be resolved. No package was changed.",
+            "The dependencies could not be resolved under the protected-package constraints. No package was changed.",
         ),
         E::UpToDate => fixed("node_up_to_date", "The node is already up to date."),
         E::InvalidRequest => fixed("validation", "The request is not valid."),
@@ -685,6 +700,44 @@ mod tests {
             IpcError::new(
                 "node_git_unavailable",
                 "Git is unavailable. Complete tool setup on Windows or install Git on Linux.",
+            )
+        );
+    }
+
+    #[test]
+    fn git_refusals_keep_their_code_and_carry_only_the_bounded_status() {
+        let refused = IpcError::from(NodeAppError::GitRefused {
+            status: " M requirements.txt\n?? notes.txt\n".into(),
+        });
+        assert_eq!(refused.code, "node_git_refused");
+        assert!(
+            refused
+                .message
+                .starts_with("The repository has local changes, an unfinished operation,")
+        );
+        assert!(
+            refused
+                .message
+                .ends_with("Details:\n M requirements.txt\n?? notes.txt")
+        );
+        let noisy = IpcError::from(NodeAppError::GitRefused {
+            status: format!("a\u{1b}[31mb\n{}", "x".repeat(5000)),
+        });
+        assert!(!noisy.message.contains('\u{1b}'));
+        assert!(noisy.message.chars().count() < 2300);
+        let empty = IpcError::from(NodeAppError::GitRefused {
+            status: "  \n".into(),
+        });
+        assert!(empty.message.ends_with("so it was not changed."));
+    }
+
+    #[test]
+    fn resolution_failures_name_the_protected_package_constraints() {
+        assert_eq!(
+            IpcError::from(NodeAppError::ResolutionFailed),
+            IpcError::new(
+                "node_resolution_failed",
+                "The dependencies could not be resolved under the protected-package constraints. No package was changed.",
             )
         );
     }

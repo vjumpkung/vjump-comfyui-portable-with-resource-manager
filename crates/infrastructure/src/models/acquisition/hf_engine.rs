@@ -1,5 +1,9 @@
 //! The only adapter allowed to construct an HF child containing HF_TOKEN.
-use super::finalize::StagingArea;
+use super::{
+    bandwidth::BandwidthLimiter,
+    finalize::StagingArea,
+    hf_proxy::{HfProxyConfig, HfRelay, ProxyUnavailable},
+};
 use crate::{
     settings::secrets::CredentialVault,
     shared::process::{self, CommandSpec, DiscardSink, RunError, RunLimits},
@@ -86,6 +90,8 @@ impl HfDownloadCommand {
     }
 }
 pub struct HfDownloader {
+    pub bandwidth: Arc<BandwidthLimiter>,
+    pub proxy: std::result::Result<HfProxyConfig, ProxyUnavailable>,
     pub root: PathBuf,
     pub staging: Arc<StagingArea>,
     pub vault: Arc<dyn CredentialVault>,
@@ -108,35 +114,92 @@ impl Downloader for HfDownloader {
         else {
             return Err(DownloadErrorCode::InvalidSource.into());
         };
-        let command = HfDownloadCommand::for_job(
-            &self.root,
-            job,
-            directory.path.clone(),
-            self.vault.as_ref(),
+        let relay = HfRelay::start(
+            self.bandwidth.clone(),
+            self.proxy
+                .clone()
+                .map_err(|_| DownloadErrorCode::BandwidthProxyUnavailable)?,
         )
-        .await?;
-        let limits = RunLimits::default();
-        let line_sink = DiscardSink;
-        let future = process::run(&command.spec, &line_sink, &cancel, &limits);
-        tokio::pin!(future);
-        let mut interval = tokio::time::interval(PROGRESS_INTERVAL);
-        let mut last = 0;
-        let mut last_at = Instant::now();
-        let mut speed = 0.0;
-        loop {
-            tokio::select! {
-                result=&mut future=>{
-                    match result {Ok(_)=>{},Err(RunError::Spawn(_))=>return Err(DownloadErrorCode::ToolLaunch.into()),Err(RunError::Cancelled{..})=>return Err(DownloadErrorCode::Cancelled.into()),Err(RunError::TimedOut{..})=>return Err(DownloadErrorCode::Network.into()),Err(RunError::CleanupFailed{..})=>return Err(DownloadErrorCode::ProcessCleanupFailed.into()),Err(RunError::Failed{tail,..})=>return Err(classify_stderr(&tail.join("\n")).into())}
-                    break;
-                },
-                _=interval.tick()=>{
-                    let dir=directory.path.clone();let relative=path.as_string();
-                    let bytes=tokio::task::spawn_blocking(move||poll_bytes(&dir,&relative)).await.map_err(|_|DownloadErrorCode::Disk)??;
-                    let now=Instant::now();let elapsed=now.duration_since(last_at).as_secs_f64();let sample=bytes.saturating_sub(last)as f64/elapsed.max(0.001);speed=if speed==0.0{sample}else{speed*0.7+sample*0.3};last=bytes;last_at=now;
-                    sink.sample(&job.id,job.generation,TransferProgress {bytes,total:job.size,bytes_per_second:speed,eta_seconds:job.size.bytes().filter(|n|*n>=bytes).and_then(|n|(speed>0.0).then_some(((n-bytes)as f64/speed)as u64)),estimated:true});
+        .await
+        .map_err(|_| DownloadErrorCode::BandwidthProxyUnavailable)?;
+        let result: Result<()> = async {
+            let mut command = HfDownloadCommand::for_job(
+                &self.root,
+                job,
+                directory.path.clone(),
+                self.vault.as_ref(),
+            )
+            .await?;
+            relay.configure_child(&mut command.spec.env);
+            let limits = RunLimits::default();
+            let line_sink = DiscardSink;
+            let future = process::run(&command.spec, &line_sink, &cancel, &limits);
+            tokio::pin!(future);
+            let mut interval = tokio::time::interval(PROGRESS_INTERVAL);
+            let mut last = 0;
+            let mut last_at = Instant::now();
+            let mut speed = 0.0;
+            loop {
+                tokio::select! {
+                    result = &mut future => return match result {
+                        Ok(_) => Ok(()),
+                        Err(RunError::Spawn(_)) => Err(DownloadErrorCode::ToolLaunch.into()),
+                        Err(RunError::Cancelled { .. }) => Err(DownloadErrorCode::Cancelled.into()),
+                        Err(RunError::TimedOut { .. }) => Err(DownloadErrorCode::Network.into()),
+                        Err(RunError::CleanupFailed { .. }) => Err(DownloadErrorCode::ProcessCleanupFailed.into()),
+                        Err(RunError::Failed { tail, .. }) => Err(classify_stderr(&tail.join("\n")).into()),
+                    },
+                    _ = interval.tick() => {
+                        let dir = directory.path.clone();
+                        let relative = path.as_string();
+                        let polled = tokio::task::spawn_blocking(move || poll_bytes(&dir, &relative))
+                            .await
+                            .map_err(|_| DownloadError::from(DownloadErrorCode::Disk))
+                            .and_then(|result| result);
+                        let bytes = match polled {
+                            Ok(bytes) => bytes,
+                            Err(error) => {
+                                // A polling failure still owns a live child. Reap it before
+                                // closing and joining the attempt's relay connections.
+                                cancel.cancel();
+                                if matches!(future.await, Err(RunError::CleanupFailed { .. })) {
+                                    return Err(DownloadErrorCode::ProcessCleanupFailed.into());
+                                }
+                                return Err(error);
+                            }
+                        };
+                        let now = Instant::now();
+                        let elapsed = now.duration_since(last_at).as_secs_f64();
+                        let sample = bytes.saturating_sub(last) as f64 / elapsed.max(0.001);
+                        speed = if speed == 0.0 { sample } else { speed * 0.7 + sample * 0.3 };
+                        last = bytes;
+                        last_at = now;
+                        sink.sample(&job.id, job.generation, TransferProgress {
+                            bytes,
+                            total: job.size,
+                            bytes_per_second: speed,
+                            eta_seconds: job.size.bytes().filter(|n| *n >= bytes).and_then(|n| {
+                                (speed > 0.0).then_some(((n - bytes) as f64 / speed) as u64)
+                            }),
+                            estimated: true,
+                        });
+                    }
                 }
             }
         }
+        .await;
+        let proxy_failed = relay.shutdown().await;
+        if proxy_failed
+            && result.as_ref().is_err_and(|error: &DownloadError| {
+                !matches!(
+                    error.0,
+                    DownloadErrorCode::Cancelled | DownloadErrorCode::ProcessCleanupFailed
+                )
+            })
+        {
+            return Err(DownloadErrorCode::BandwidthProxyUnavailable.into());
+        }
+        result?;
         let key = format!("hf/{}/{}", job.id.as_str(), path.as_string());
         let (_, _, file) = self
             .staging

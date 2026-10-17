@@ -1,5 +1,5 @@
 //! Offline tests: a loopback registry, zip fixtures and local Git repositories created with the
-//! `git` binary (skipped with a message when it is missing). No Python is ever executed.
+//! `git` binary (skipped with a message when it is missing).
 use super::{
     files::{LocalNodeFiles, Recycler, node_limits},
     git::GitNodes,
@@ -75,6 +75,142 @@ fn node_id(text: &str) -> NodeId {
     NodeId::new(text).unwrap()
 }
 
+#[tokio::test]
+async fn registry_download_writes_the_opened_staging_file() {
+    let fixture = Fixture::new().await;
+    let paths = super::paths::NodePaths::open(&fixture.root, true).unwrap();
+    let entry = paths.staging_zip(&node_id("opened-download"));
+    let path = super::paths::entry_path(&entry);
+    let moved = fixture._directory.path().join("opened.zip");
+    let mut opened = entry.0.open(&entry.1, true, true).unwrap();
+    fs::rename(&path, &moved).unwrap();
+    fs::write(&path, b"external sentinel").unwrap();
+    fixture
+        .server
+        .route("/opened.zip", Route::ok(b"archive bytes"));
+    let artifact = fixture
+        .files
+        .registry
+        .download(
+            &fixture.server.url("/opened.zip"),
+            &mut opened,
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(artifact.bytes, 13);
+    assert_eq!(fs::read(moved).unwrap(), b"archive bytes");
+    assert_eq!(fs::read(path).unwrap(), b"external sentinel");
+}
+
+#[tokio::test]
+async fn registry_archive_replacement_is_not_extracted() {
+    let fixture = Fixture::new().await;
+    let operation = node_id("archive-substitution");
+    let paths = super::paths::NodePaths::open(&fixture.root, true).unwrap();
+    let entry = paths.staging_zip(&operation);
+    let archive = super::paths::entry_path(&entry);
+    let moved = fixture._directory.path().join("retained.zip");
+    let replacement = zip_bytes(&[("__init__.py", b"foreign"), ("foreign.txt", b"sentinel")]);
+    let expected = replacement.clone();
+    fixture.registry_node(
+        "original",
+        "1.0.0",
+        zip_bytes(&[("__init__.py", b"original")]),
+    );
+    let changed = archive.clone();
+    super::files::after_archive_open(move || {
+        fs::rename(&changed, moved).unwrap();
+        fs::write(&changed, replacement).unwrap();
+    });
+    assert!(matches!(
+        fixture
+            .files
+            .prepare(
+                &fixture.root,
+                &operation,
+                &PrepareRequest::Registry {
+                    id: "original".into(),
+                    version: Some("1.0.0".into()),
+                },
+                None,
+                &ctx()
+            )
+            .await,
+        Err(NodeAppError::UnsafeSource)
+    ));
+    let staging = super::paths::entry_path(&paths.staging(&operation));
+    assert_eq!(fs::read(staging.join("__init__.py")).unwrap(), b"original");
+    assert!(!staging.join("foreign.txt").exists());
+    assert_eq!(fs::read(archive).unwrap(), expected);
+}
+
+#[tokio::test]
+async fn registry_create_new_refusal_preserves_existing_entries() {
+    for occupied in 0..3 {
+        let fixture = Fixture::new().await;
+        let operation = node_id("occupied-download");
+        let paths = super::paths::NodePaths::open(&fixture.root, true).unwrap();
+        let entries = [
+            paths.staging_zip(&operation),
+            paths.staging(&operation),
+            paths.staging_hoist(&operation),
+        ];
+        let path = super::paths::entry_path(&entries[occupied]);
+        fs::write(&path, b"external sentinel").unwrap();
+        fixture.registry_node("occupied", "1.0.0", Fixture::good_zip());
+        assert!(matches!(
+            fixture
+                .files
+                .prepare(
+                    &fixture.root,
+                    &operation,
+                    &PrepareRequest::Registry {
+                        id: "occupied".into(),
+                        version: Some("1.0.0".into()),
+                    },
+                    None,
+                    &ctx()
+                )
+                .await,
+            Err(NodeAppError::UnsafeSource)
+        ));
+        assert_eq!(fs::read(path).unwrap(), b"external sentinel");
+        assert_eq!(fixture.owned().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn registry_download_cancellation_cleans_only_owned_entries() {
+    let fixture = Fixture::new().await;
+    let operation = node_id("cancel-download");
+    let paths = super::paths::NodePaths::open(&fixture.root, true).unwrap();
+    let foreign = super::paths::entry_path(&paths.staging_zip(&node_id("foreign")));
+    fs::write(&foreign, b"external sentinel").unwrap();
+    fixture.registry_node("cancelled", "1.0.0", Fixture::good_zip());
+    let step = ctx();
+    let cancel = step.cancel.clone();
+    super::files::after_archive_open(move || cancel.cancel());
+    assert!(matches!(
+        fixture
+            .files
+            .prepare(
+                &fixture.root,
+                &operation,
+                &PrepareRequest::Registry {
+                    id: "cancelled".into(),
+                    version: Some("1.0.0".into()),
+                },
+                None,
+                &step
+            )
+            .await,
+        Err(NodeAppError::Cancelled)
+    ));
+    assert_eq!(fs::read(foreign).unwrap(), b"external sentinel");
+    assert_eq!(fixture.owned().len(), 1);
+}
+
 fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -123,9 +259,14 @@ impl Fixture {
         ));
         let recycled: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
         let log = recycled.clone();
-        let recycler: Recycler = Arc::new(move |path| {
-            log.lock().unwrap().push(path.to_owned());
-            fs::remove_dir_all(path).or_else(|_| fs::remove_file(path))
+        let recycler: Recycler = Arc::new(move |parent, name, expected| {
+            let file = parent.open_entry(name)?;
+            if crate::shared::model_paths::identity(&file)? != *expected {
+                return Err(std::io::ErrorKind::PermissionDenied.into());
+            }
+            drop(file);
+            log.lock().unwrap().push(parent.path.join(name.as_str()));
+            parent.remove_owned_tree(name)
         });
         let git = Arc::new(match git {
             Some(program) => GitNodes::with_program(program, true),
@@ -570,6 +711,10 @@ async fn incompatible_registry_metadata_becomes_review_warnings() {
     fixture
         .server
         .route("/dl/picky.zip", Route::ok(Fixture::good_zip()));
+    fixture.server.route(
+        "/nodes/picky",
+        Route::ok(serde_json::json!({"id": "picky", "name": "picky"}).to_string()),
+    );
     let request = PrepareRequest::Registry {
         id: "picky".into(),
         version: None,
@@ -722,6 +867,10 @@ async fn oversize_downloads_and_insecure_transfer_urls_are_refused() {
         id: "n".into(),
         version: None,
     };
+    fixture.server.route(
+        "/nodes/n",
+        Route::ok(serde_json::json!({"id": "n", "name": "n"}).to_string()),
+    );
     // A transfer URL that is not HTTPS (or loopback in tests) is not fetched at all.
     fixture.server.route(
         "/nodes/n/install",
@@ -1227,7 +1376,7 @@ async fn uninstall_and_toggle_recovery() {
     // A failing recycler keeps the backup and reports pending cleanup.
     dirs(&fixture, &[".disabled/.vjump-backup-node-x3"]);
     op.id = node_id("node-x3");
-    let failing: Recycler = Arc::new(|_| Err(std::io::Error::other("no trash")));
+    let failing: Recycler = Arc::new(|_, _, _| Err(std::io::Error::other("no trash")));
     let stuck = LocalNodeFiles {
         registry: fixture.files.registry.clone(),
         git: fixture.files.git.clone(),
@@ -1413,6 +1562,14 @@ async fn nodes_operations_dependencies_and_trust_round_trip() {
 // ---------------------------------------------------------------------------------------
 // Git
 // ---------------------------------------------------------------------------------------
+
+/// The status text of a Git refusal; any other error fails the test.
+fn refused_status(error: NodeAppError) -> String {
+    match error {
+        NodeAppError::GitRefused { status } => status,
+        other => panic!("expected a Git refusal, got {other:?}"),
+    }
+}
 
 struct Repo {
     dir: PathBuf,
@@ -1977,19 +2134,29 @@ async fn git_update_fast_forwards_in_place_and_never_discards_edits() {
         Some(new_head.as_str())
     );
     assert!(live.join("extra.py").is_file() && !live.join("later.py").exists());
+    assert_eq!(
+        tree::tree_digest(&live).unwrap(),
+        operation.node.tree_digest,
+        "the live result is exactly the reviewed content"
+    );
+    g.fixture
+        .files
+        .discard_staging(&g.fixture.root, &node_id("node-f3"))
+        .await
+        .unwrap();
+    assert!(g.fixture.owned().is_empty());
     // Dirty and untracked trees are refused and keep their edits.
     g.repo.commit("more.py", "m", "five");
     fs::write(live.join("__init__.py"), "my local edit").unwrap();
     let mut current = installed.clone();
     current.source = operation.node.source.clone();
-    assert_eq!(
-        g.update("node-f4", &current, None).await.unwrap_err(),
-        NodeAppError::GitRefused
-    );
+    let status = refused_status(g.update("node-f4", &current, None).await.unwrap_err());
+    assert!(status.contains("M __init__.py"), "{status}");
     assert_eq!(
         fs::read_to_string(live.join("__init__.py")).unwrap(),
         "my local edit"
     );
+    assert!(g.fixture.owned().is_empty(), "a refusal stages nothing");
     g.repo.run(&["status", "--short"]);
     let hooks = g.fixture.disabled().join(".vjump-no-hooks");
     assert_eq!(
@@ -2002,29 +2169,56 @@ async fn git_update_fast_forwards_in_place_and_never_discards_edits() {
     );
     fs::write(live.join("__init__.py"), "NODE_CLASS_MAPPINGS = {}").unwrap();
     fs::write(live.join("untracked.txt"), "keep me").unwrap();
-    assert_eq!(
-        g.update("node-f5", &current, None).await.unwrap_err(),
-        NodeAppError::GitRefused
+    let status = refused_status(g.update("node-f5", &current, None).await.unwrap_err());
+    assert!(status.contains("?? untracked.txt"), "{status}");
+    assert!(
+        !status.contains(g.fixture.root.to_string_lossy().as_ref()),
+        "the status is repository relative"
     );
     assert_eq!(
         fs::read_to_string(live.join("untracked.txt")).unwrap(),
         "keep me"
     );
+    // The retained status is redacted and bounded.
+    let secret = "node-git-refusal-secret-5521";
+    crate::shared::logging::register_secret(secret);
+    fs::write(live.join(format!("{secret}.txt")), "secret filename").unwrap();
+    for index in 0..150 {
+        fs::write(
+            live.join(format!("refusal-file-{index:03}-long-relative-name.txt")),
+            "x",
+        )
+        .unwrap();
+    }
+    let status = refused_status(g.update("node-f5b", &current, None).await.unwrap_err());
+    assert!(status.chars().count() <= 2000);
+    assert!(!status.contains(secret) && status.contains("[REDACTED]"));
+    for entry in fs::read_dir(&live).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.contains(secret) || name.starts_with("refusal-file-") {
+            fs::remove_file(entry.path()).unwrap();
+        }
+    }
     // The publish step also re-checks the tree after review (edits made after the plan).
     fs::remove_file(live.join("untracked.txt")).unwrap();
     let planned = g.update("node-f6", &current, None).await.unwrap();
     fs::write(live.join("late-edit.txt"), "late").unwrap();
-    assert_eq!(
+    let status = refused_status(
         g.fixture
             .files
             .publish(&g.fixture.root, &planned)
             .await
             .unwrap_err(),
-        NodeAppError::GitRefused
     );
+    assert!(status.contains("?? late-edit.txt"), "{status}");
     assert_eq!(
         fs::read_to_string(live.join("late-edit.txt")).unwrap(),
         "late"
+    );
+    assert_eq!(
+        scan::read_git(&live).unwrap().commit.as_deref(),
+        Some(new_head.as_str()),
+        "a refused publish moves nothing"
     );
     fs::remove_file(live.join("late-edit.txt")).unwrap();
     // A head that moved after the plan makes the plan stale.
@@ -2049,6 +2243,11 @@ async fn git_update_fast_forwards_in_place_and_never_discards_edits() {
         .publish(&g.fixture.root, &planned)
         .await
         .unwrap();
+    // The live result is exactly the reviewed content.
+    assert_eq!(
+        tree::tree_digest(&live).unwrap(),
+        planned.node.tree_digest
+    );
 }
 
 #[tokio::test]
@@ -2064,10 +2263,8 @@ async fn git_diverged_and_detached_nodes_need_an_explicit_target() {
     };
     local.commit("local.py", "l", "local work");
     g.repo.commit("remote.py", "r", "remote work");
-    assert_eq!(
-        g.update("node-d2", &installed, None).await.unwrap_err(),
-        NodeAppError::GitRefused
-    );
+    let status = refused_status(g.update("node-d2", &installed, None).await.unwrap_err());
+    assert!(status.contains("diverged"), "{status}");
     assert!(live.join("local.py").is_file());
     // A detached node (installed at a tag) has no upstream: an update needs a selected target.
     let first = g.repo.run(&["rev-list", "--max-parents=0", "HEAD"]);
@@ -2081,10 +2278,8 @@ async fn git_diverged_and_detached_nodes_need_an_explicit_target() {
         .unwrap();
     fs::remove_dir_all(&live).unwrap();
     let detached = g.install("node-d3", Some("v1")).await;
-    assert_eq!(
-        g.update("node-d4", &detached, None).await.unwrap_err(),
-        NodeAppError::GitRefused
-    );
+    let status = refused_status(g.update("node-d4", &detached, None).await.unwrap_err());
+    assert!(status.contains("detached"), "{status}");
     let operation = g.update("node-d5", &detached, Some("v2")).await.unwrap();
     assert_eq!(
         operation.node.source,
@@ -2194,4 +2389,783 @@ fn git_commands_disable_hooks_and_every_protocol_but_https() {
             .iter()
             .any(|(k, v)| k == "GIT_TERMINAL_PROMPT" && v == "0")
     );
+}
+
+// Operation-time containment. Windows uses junctions, which do not require symlink privilege.
+#[cfg(windows)]
+fn directory_link(target: &Path, link: &Path) -> bool {
+    let output = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("cmd must be available on Windows");
+    if output.status.success() {
+        return true;
+    }
+    let message = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    assert!(
+        message.contains("denied") || message.contains("privilege"),
+        "junction creation failed unexpectedly: {message}"
+    );
+    eprintln!("skipped: directory junction creation is not permitted: {message}");
+    false
+}
+
+#[cfg(unix)]
+fn directory_link(target: &Path, link: &Path) -> bool {
+    std::os::unix::fs::symlink(target, link).expect("temporary directory must permit symlinks");
+    true
+}
+
+#[cfg(windows)]
+fn remove_directory_link(link: &Path) {
+    fs::remove_dir(link).unwrap();
+}
+#[cfg(unix)]
+fn remove_directory_link(link: &Path) {
+    fs::remove_file(link).unwrap();
+}
+
+#[cfg(any(windows, unix))]
+#[tokio::test]
+async fn linked_comfyui_and_disabled_parents_are_refused() {
+    for parent in ["ComfyUI", "ComfyUI/custom_nodes/.disabled"] {
+        let fixture = Fixture::new().await;
+        drop(super::paths::NodePaths::open(&fixture.root, true).unwrap());
+        let outside = fixture.root.join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("sentinel.txt"), "external contents").unwrap();
+        let original = fixture.root.join(parent);
+        let saved = fixture.root.join("saved-parent");
+        fs::rename(&original, &saved).unwrap();
+        if !directory_link(&outside, &original) {
+            return;
+        }
+        let prior = node("pack", NodeSource::Manual, true);
+        let op = operation(
+            OperationKind::Uninstall,
+            "node-linked-parent",
+            prior.clone(),
+            Some(prior.clone()),
+            OperationPhase::OldBackedUp,
+        );
+        let request = PrepareRequest::Registry {
+            id: "pack".into(),
+            version: None,
+        };
+        assert_eq!(
+            fixture
+                .files
+                .prepare(&fixture.root, &op.id, &request, None, &ctx())
+                .await
+                .unwrap_err(),
+            NodeAppError::UnsafeSource
+        );
+        assert_eq!(
+            fixture.files.publish(&fixture.root, &op).await.unwrap_err(),
+            NodeAppError::UnsafeSource
+        );
+        assert_eq!(
+            fixture.files.backup(&fixture.root, &op).await.unwrap_err(),
+            NodeAppError::UnsafeSource
+        );
+        assert_eq!(
+            fixture
+                .files
+                .move_enabled(&fixture.root, &prior, false)
+                .await
+                .unwrap_err(),
+            NodeAppError::UnsafeSource
+        );
+        assert_eq!(
+            fixture
+                .files
+                .discard_staging(&fixture.root, &op.id)
+                .await
+                .unwrap_err(),
+            NodeAppError::UnsafeSource
+        );
+        assert_eq!(
+            fixture.files.recycle(&fixture.root, &op).await.unwrap_err(),
+            NodeAppError::UnsafeSource
+        );
+        assert_eq!(
+            fixture.files.recover(&fixture.root, &op).await.unwrap_err(),
+            NodeAppError::UnsafeSource
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("sentinel.txt")).unwrap(),
+            "external contents"
+        );
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+        remove_directory_link(&original);
+        fs::rename(&saved, &original).unwrap();
+    }
+}
+
+#[cfg(any(windows, unix))]
+#[tokio::test]
+async fn node_mutations_resist_parent_substitution() {
+    for action in ["publication", "restore", "cleanup", "recycling"] {
+        let fixture = Fixture::new().await;
+        drop(super::paths::NodePaths::open(&fixture.root, true).unwrap());
+        let id = "node-substitution";
+        dirs(
+            &fixture,
+            &[
+                ".disabled/.vjump-staging-node-substitution",
+                ".disabled/.vjump-backup-node-substitution",
+            ],
+        );
+        let outside = fixture.root.join("outside");
+        fs::create_dir_all(outside.join(".disabled/.vjump-staging-node-substitution")).unwrap();
+        fs::create_dir_all(outside.join(".disabled/.vjump-backup-node-substitution")).unwrap();
+        fs::write(outside.join("sentinel.txt"), "outside").unwrap();
+        for entry in [
+            ".vjump-staging-node-substitution",
+            ".vjump-backup-node-substitution",
+        ] {
+            fs::write(
+                outside.join(".disabled").join(entry).join("keep.txt"),
+                "external copy",
+            )
+            .unwrap();
+        }
+        let before = tree::tree_digest(&outside).unwrap();
+        // Establish junction availability separately: a sharing refusal below must be evidence
+        // that a retained pin stopped substitution, never a silent privilege-related skip.
+        let probe = fixture.root.join("junction-probe");
+        if !directory_link(&outside, &probe) {
+            return;
+        }
+        remove_directory_link(&probe);
+        let cn = fixture.cn();
+        let saved = fixture.root.join("saved-custom-nodes");
+        let substituted = Arc::new(Mutex::new(false));
+        let changed = substituted.clone();
+        let (boundary_cn, boundary_saved, boundary_outside) =
+            (cn.clone(), saved.clone(), outside.clone());
+        super::paths::after_open(move || match fs::rename(&boundary_cn, &boundary_saved) {
+            Ok(()) => {
+                assert!(directory_link(&boundary_outside, &boundary_cn));
+                *changed.lock().unwrap() = true;
+            }
+            Err(error) => {
+                #[cfg(windows)]
+                assert!(
+                    matches!(error.raw_os_error(), Some(5 | 32)),
+                    "unexpected parent rename error: {error}"
+                );
+                #[cfg(unix)]
+                panic!("Unix substitution must execute: {error}");
+            }
+        });
+        let prior = node("pack", NodeSource::Manual, true);
+        let mut op = operation(
+            OperationKind::Install,
+            id,
+            prior.clone(),
+            None,
+            OperationPhase::PublishIntent,
+        );
+        match action {
+            "publication" => fixture.files.publish(&fixture.root, &op).await.unwrap(),
+            "restore" => {
+                op.kind = OperationKind::Uninstall;
+                op.prior = Some(prior.clone());
+                op.phase = OperationPhase::OldBackedUp;
+                assert_eq!(
+                    fixture.files.recover(&fixture.root, &op).await.unwrap(),
+                    RecoveryAction::RolledBack
+                );
+            }
+            "cleanup" => fixture
+                .files
+                .discard_staging(&fixture.root, &op.id)
+                .await
+                .unwrap(),
+            "recycling" => fixture.files.recycle(&fixture.root, &op).await.unwrap(),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            tree::tree_digest(&outside).unwrap(),
+            before,
+            "{action} changed the substituted tree"
+        );
+        let moved = *substituted.lock().unwrap();
+        #[cfg(windows)]
+        assert!(
+            !moved,
+            "Windows directory pins must deny parent substitution"
+        );
+        #[cfg(unix)]
+        assert!(moved, "Unix substitution must actually execute");
+        let protected = if moved { &saved } else { &cn };
+        match action {
+            "publication" | "restore" => assert!(protected.join("pack/__init__.py").is_file()),
+            "cleanup" => assert!(
+                !protected
+                    .join(".disabled/.vjump-staging-node-substitution")
+                    .exists()
+            ),
+            "recycling" => assert!(
+                !protected
+                    .join(".disabled/.vjump-backup-node-substitution")
+                    .exists()
+            ),
+            _ => unreachable!(),
+        }
+        if moved {
+            remove_directory_link(&cn);
+            fs::rename(&saved, &cn).unwrap();
+        }
+        eprintln!(
+            "{action}: parent substitution {}",
+            if moved {
+                "executed against retained pins"
+            } else {
+                "refused by retained Windows pins"
+            }
+        );
+    }
+}
+
+#[test]
+fn pinned_directory_renames_never_replace_a_destination() {
+    use crate::shared::model_paths::{pin_absolute, rename_no_replace};
+    let temp = tempfile::tempdir().unwrap();
+    let parent = pin_absolute(temp.path()).unwrap();
+    for directory in [true, false] {
+        let prefix = if directory { "directory" } else { "file" };
+        let source = SafeFileName::new(format!("{prefix}-source")).unwrap();
+        let destination = SafeFileName::new(format!("{prefix}-destination")).unwrap();
+        let published = SafeFileName::new(format!("{prefix}-published")).unwrap();
+        if directory {
+            fs::create_dir(temp.path().join(source.as_str())).unwrap();
+            fs::create_dir(temp.path().join(destination.as_str())).unwrap();
+            fs::write(
+                temp.path().join(destination.as_str()).join("keep"),
+                "destination",
+            )
+            .unwrap();
+        } else {
+            fs::write(temp.path().join(source.as_str()), "source").unwrap();
+            fs::write(temp.path().join(destination.as_str()), "destination").unwrap();
+        }
+        let file = parent.open_entry(&source).unwrap();
+        assert_eq!(
+            rename_no_replace(&parent, &source, &file, &parent, &destination)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        let sentinel = if directory {
+            temp.path().join(destination.as_str()).join("keep")
+        } else {
+            temp.path().join(destination.as_str())
+        };
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "destination");
+        rename_no_replace(&parent, &source, &file, &parent, &published).unwrap();
+        assert!(!temp.path().join(source.as_str()).exists());
+        assert!(temp.path().join(published.as_str()).exists());
+        if directory {
+            assert!(parent.open(&published, false, false).is_err());
+        }
+    }
+}
+
+#[tokio::test]
+async fn failed_safe_recycling_retains_the_backup() {
+    let mut fixture = Fixture::new().await;
+    drop(super::paths::NodePaths::open(&fixture.root, true).unwrap());
+    dirs(&fixture, &[".disabled/.vjump-backup-node-retain"]);
+    let backup = fixture.disabled().join(".vjump-backup-node-retain");
+    let contents = fs::read(backup.join("__init__.py")).unwrap();
+    fixture.files.recycler = Arc::new(|parent, name, expected| {
+        assert_eq!(
+            crate::shared::model_paths::identity(&parent.open_entry(name)?)?,
+            *expected
+        );
+        Err(std::io::ErrorKind::Unsupported.into())
+    });
+    let prior = node("pack", NodeSource::Manual, true);
+    let op = operation(
+        OperationKind::Uninstall,
+        "node-retain",
+        prior.clone(),
+        Some(prior),
+        OperationPhase::CleanupPending,
+    );
+    assert_eq!(
+        fixture.files.recycle(&fixture.root, &op).await.unwrap_err(),
+        NodeAppError::Filesystem
+    );
+    assert_eq!(
+        fixture.files.recover(&fixture.root, &op).await.unwrap(),
+        RecoveryAction::CleanupPending
+    );
+    assert_eq!(fs::read(backup.join("__init__.py")).unwrap(), contents);
+    // The real recycler also rejects a mismatched identity before invoking any OS trash API.
+    let paths = super::paths::NodePaths::open(&fixture.root, false).unwrap();
+    let (parent, name) = paths.backup(&op.id);
+    let mut wrong =
+        crate::shared::model_paths::identity(&parent.open_entry(&name).unwrap()).unwrap();
+    wrong.platform_id.push_str("-changed");
+    assert!(crate::shared::trash::recycle_entry(&parent, &name, &wrong).is_err());
+    assert_eq!(fs::read(backup.join("__init__.py")).unwrap(), contents);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn node_root_traversal_never_follows_an_intermediate_symlink() {
+    let fixture = Fixture::new().await;
+    let alias = fixture._directory.path().join("alias");
+    std::os::unix::fs::symlink(&fixture.root, &alias).unwrap();
+    assert!(matches!(
+        super::paths::NodePaths::open(&alias, true),
+        Err(NodeAppError::UnsafeSource)
+    ));
+    let nested = alias.join("ComfyUI/custom_nodes");
+    assert!(crate::shared::model_paths::pin_absolute(&nested).is_err());
+}
+
+// ---------------------------------------------------------------------------------------
+// Execution guards: pinned locations whose requirements and script are read once
+// ---------------------------------------------------------------------------------------
+
+fn write_node(fixture: &Fixture, name: &str, files: &[(&str, &[u8])]) -> InstalledNode {
+    let directory = fixture.cn().join(name);
+    fs::create_dir_all(&directory).unwrap();
+    for (file, body) in files {
+        fs::write(directory.join(file), body).unwrap();
+    }
+    node(name, NodeSource::Manual, true)
+}
+
+fn locate_tool(name: &str) -> Option<PathBuf> {
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(&file))
+        .find(|candidate| candidate.is_file())
+}
+
+/// A pip-less virtual environment of the machine's Python; it needs no network.
+fn make_venv(python: &Path, venv: &Path) {
+    let status = Command::new(python)
+        .args(["-m", "venv", "--without-pip"])
+        .arg(venv)
+        .status()
+        .expect("python starts");
+    assert!(status.success(), "the virtual environment was not created");
+}
+
+fn wheel_bytes(name: &str, version: &str) -> Vec<u8> {
+    let (module, metadata, wheel, record) = (
+        format!("{name}.py"),
+        format!("{name}-{version}.dist-info/METADATA"),
+        format!("{name}-{version}.dist-info/WHEEL"),
+        format!("{name}-{version}.dist-info/RECORD"),
+    );
+    let text = format!("Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n");
+    zip_bytes(&[
+        (&module, b"VALUE = 1\n"),
+        (&metadata, text.as_bytes()),
+        (
+            &wheel,
+            b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        ),
+        (&record, b""),
+    ])
+}
+
+#[cfg(windows)]
+fn assert_sharing_refusal(error: &std::io::Error) {
+    // ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION: the pin, not a missing privilege.
+    assert!(
+        matches!(error.raw_os_error(), Some(5 | 32)),
+        "unexpected substitution error: {error}"
+    );
+}
+
+#[cfg(any(windows, unix))]
+#[tokio::test]
+async fn node_subprocess_inputs_resist_parent_and_leaf_substitution() {
+    for phase in ["acquisition", "execution"] {
+        let fixture = Fixture::new().await;
+        let node = write_node(
+            &fixture,
+            "pack",
+            &[
+                ("__init__.py", b""),
+                ("origin.txt", b"reviewed"),
+                ("requirements.txt", b"numpy\n"),
+                ("install.py", b"print('reviewed')\n"),
+            ],
+        );
+        let outside = fixture.root.join("outside");
+        fs::create_dir_all(outside.join("pack")).unwrap();
+        for (file, body) in [
+            ("origin.txt", "decoy"),
+            ("requirements.txt", "decoy-package\n"),
+            ("install.py", "print('decoy')\n"),
+        ] {
+            fs::write(outside.join("pack").join(file), body).unwrap();
+        }
+        fs::write(outside.join("sentinel.txt"), "external contents").unwrap();
+        let before = tree::tree_digest(&outside).unwrap();
+        // Establish link availability separately: a sharing refusal below must be evidence of a
+        // retained pin, never a silent privilege-related skip.
+        let probe = fixture.root.join("junction-probe");
+        if !directory_link(&outside, &probe) {
+            return;
+        }
+        remove_directory_link(&probe);
+        let (cn, saved) = (fixture.cn(), fixture.root.join("saved-custom-nodes"));
+        let swapped = Arc::new(Mutex::new(false));
+        let swap = {
+            let (cn, saved, outside, swapped) =
+                (cn.clone(), saved.clone(), outside.clone(), swapped.clone());
+            move || match fs::rename(&cn, &saved) {
+                Ok(()) => {
+                    assert!(directory_link(&outside, &cn));
+                    *swapped.lock().unwrap() = true;
+                }
+                Err(error) => {
+                    #[cfg(windows)]
+                    assert_sharing_refusal(&error);
+                    #[cfg(unix)]
+                    panic!("Unix substitution must execute: {error}");
+                }
+            }
+        };
+        if phase == "acquisition" {
+            // Between pinning the parents and opening the node directory.
+            super::paths::after_open(swap.clone());
+        }
+        let guard = fixture
+            .files
+            .pin_location(&fixture.root, &node, None)
+            .await
+            .expect("the node location is pinned");
+        if phase == "execution" {
+            swap();
+        }
+        let moved = *swapped.lock().unwrap();
+        #[cfg(windows)]
+        assert!(!moved, "Windows pins must deny parent substitution");
+        #[cfg(unix)]
+        assert!(moved, "Unix substitution must actually execute");
+        // Leaf substitution of the selected inputs.
+        let leaf = |name: &str| guard.directory().join(name);
+        #[cfg(windows)]
+        {
+            for name in ["requirements.txt", "install.py"] {
+                assert_sharing_refusal(&fs::write(leaf(name), "decoy").unwrap_err());
+                assert_sharing_refusal(&fs::remove_file(leaf(name)).unwrap_err());
+                assert_sharing_refusal(&fs::rename(leaf(name), leaf("moved.txt")).unwrap_err());
+            }
+            assert_sharing_refusal(
+                &fs::rename(fixture.cn().join("pack"), fixture.root.join("moved-pack"))
+                    .unwrap_err(),
+            );
+            // Readers such as uv and Python are still admitted.
+            assert_eq!(fs::read(leaf("requirements.txt")).unwrap(), b"numpy\n");
+        }
+        #[cfg(unix)]
+        for (name, decoy) in [
+            ("requirements.txt", "decoy-package\n"),
+            ("install.py", "print('decoy')\n"),
+        ] {
+            fs::remove_file(leaf(name)).unwrap();
+            fs::write(leaf(name), decoy).unwrap();
+            assert_eq!(fs::read_to_string(leaf(name)).unwrap(), decoy);
+        }
+        // Whatever happened to the names, the guard still serves the reviewed location and bytes.
+        assert_eq!(fs::read(leaf("origin.txt")).unwrap(), b"reviewed");
+        assert_eq!(guard.requirements().as_deref(), Some(&b"numpy\n"[..]));
+        assert_eq!(
+            guard.install_script().as_deref(),
+            Some(&b"print('reviewed')\n"[..])
+        );
+        assert_eq!(
+            guard.snapshot().requirements_digest.as_deref(),
+            Some(crate::shared::download::sha256_hex(b"numpy\n").as_str())
+        );
+        assert_eq!(tree::tree_digest(&outside).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(outside.join("sentinel.txt")).unwrap(),
+            "external contents"
+        );
+        drop(guard);
+        if moved {
+            remove_directory_link(&cn);
+            fs::rename(&saved, &cn).unwrap();
+        }
+        eprintln!(
+            "{phase}: parent substitution {}",
+            if moved {
+                "executed against retained pins"
+            } else {
+                "refused by retained Windows pins"
+            }
+        );
+    }
+}
+
+fn file_link(target: &Path, link: &Path) -> bool {
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, link);
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    match made {
+        Ok(()) => true,
+        // ERROR_PRIVILEGE_NOT_HELD: file symlinks need Developer Mode or elevation on Windows.
+        Err(error) if error.raw_os_error() == Some(1314) => {
+            eprintln!("skipped: file symlink creation is not permitted: {error}");
+            false
+        }
+        Err(error) => panic!("link creation failed unexpectedly: {error}"),
+    }
+}
+
+#[cfg(any(windows, unix))]
+#[tokio::test]
+async fn node_execution_refuses_linked_requirements_and_hooks() {
+    let fixture = Fixture::new().await;
+    let outside = fixture.root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("sentinel.txt"), "external contents").unwrap();
+    let refused = |result: Result<Box<dyn NodeLocationGuard>, NodeAppError>| {
+        assert_eq!(result.err(), Some(NodeAppError::UnsafeSource));
+    };
+    for (name, node_name) in [
+        ("requirements.txt", "linked-requirements"),
+        ("install.py", "linked-hook"),
+    ] {
+        let linked = write_node(&fixture, node_name, &[("__init__.py", b"")]);
+        let link = fixture.cn().join(node_name).join(name);
+        if file_link(&outside.join("sentinel.txt"), &link) {
+            refused(
+                fixture
+                    .files
+                    .pin_location(&fixture.root, &linked, None)
+                    .await,
+            );
+        }
+        // A directory link (a junction on Windows, which needs no privilege) in place of the
+        // input is a reparse point or symlink too.
+        let node_name = format!("{node_name}-directory-link");
+        let linked = write_node(&fixture, &node_name, &[("__init__.py", b"")]);
+        let link = fixture.cn().join(&node_name).join(name);
+        if directory_link(&outside, &link) {
+            refused(
+                fixture
+                    .files
+                    .pin_location(&fixture.root, &linked, None)
+                    .await,
+            );
+            remove_directory_link(&link);
+        }
+    }
+    // A linked node directory is refused whether or not file links are permitted.
+    let linked_dir = node("linked-dir", NodeSource::Manual, true);
+    let link = fixture.cn().join("linked-dir");
+    if directory_link(&outside, &link) {
+        refused(
+            fixture
+                .files
+                .pin_location(&fixture.root, &linked_dir, None)
+                .await,
+        );
+        remove_directory_link(&link);
+    }
+    // A directory in place of an input is not a regular file either.
+    let special = write_node(&fixture, "special", &[("__init__.py", b"")]);
+    fs::create_dir(fixture.cn().join("special").join("requirements.txt")).unwrap();
+    refused(
+        fixture
+            .files
+            .pin_location(&fixture.root, &special, None)
+            .await,
+    );
+    assert_eq!(
+        fs::read_to_string(outside.join("sentinel.txt")).unwrap(),
+        "external contents"
+    );
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn guarded_requirements_preserve_relative_includes_and_local_paths() {
+    use crate::{
+        environment::{
+            layout::{Layout, Tool, command, ensure_cache_dirs, venv_python},
+            packages::{install_args, with_guarded},
+        },
+        shared::process::{DiscardSink, RunLimits, run},
+    };
+    use application::environment::{GuardedRequirements, InstallSpec};
+    let (Some(uv), Some(python)) = (locate_tool("uv"), locate_tool("python")) else {
+        eprintln!("skipped: uv and python are required");
+        return;
+    };
+    let fixture = Fixture::new().await;
+    let layout = Layout::new(&fixture.root);
+    ensure_cache_dirs(&layout).unwrap();
+    let venv = fixture.root.join("envs/e1");
+    make_venv(&python, &venv);
+    let (local, included, constrained) = (
+        wheel_bytes("localpkg", "1.0"),
+        wheel_bytes("incl_pkg", "1.0"),
+        wheel_bytes("cons_pkg", "1.0"),
+    );
+    let node = write_node(
+        &fixture,
+        "pack",
+        &[
+            (
+                "requirements.txt",
+                b"-r more.txt\n-c cons.txt\n./localpkg-1.0-py3-none-any.whl\ncons_pkg\n",
+            ),
+            ("more.txt", b"./incl_pkg-1.0-py3-none-any.whl\n"),
+            ("cons.txt", b"cons_pkg @ ./cons_pkg-1.0-py3-none-any.whl\n"),
+            ("localpkg-1.0-py3-none-any.whl", &local),
+            ("incl_pkg-1.0-py3-none-any.whl", &included),
+            ("cons_pkg-1.0-py3-none-any.whl", &constrained),
+        ],
+    );
+    let guard = fixture
+        .files
+        .pin_location(&fixture.root, &node, None)
+        .await
+        .expect("the node location is pinned");
+    let path = guard.directory().join("requirements.txt");
+    let spec = InstallSpec {
+        requirement_files: vec![path.clone()],
+        guarded: Some(GuardedRequirements {
+            path: path.clone(),
+            directory: guard.directory().to_path_buf(),
+            text: guard.requirements().unwrap(),
+            retained: guard.retained(),
+        }),
+        ..InstallSpec::default()
+    };
+    let args = install_args(&venv_python(&venv), &spec, true);
+    assert!(
+        args.windows(2)
+            .any(|pair| pair[0] == "-r" && pair[1] == "-")
+    );
+    assert!(!args.iter().any(|arg| arg.as_os_str() == path.as_os_str()));
+    let command = with_guarded(
+        command(&layout, Tool::Uv, &uv)
+            .arg("--no-config")
+            .args(args)
+            .arg("--no-index"),
+        &spec,
+    );
+    assert_eq!(command.cwd.as_deref(), Some(guard.directory()));
+    let limits = RunLimits {
+        max_tail_lines: 200,
+        timeout: Some(std::time::Duration::from_secs(120)),
+        ..RunLimits::default()
+    };
+    let output = run(&command, &DiscardSink, &CancelToken::new(), &limits)
+        .await
+        .unwrap_or_else(|error| panic!("uv failed: {error:?}"));
+    // The included file, the constraint and the local path all resolved inside the node.
+    let text = output.tail.join("\n").replace('\\', "/");
+    for wheel in ["localpkg", "incl_pkg", "cons_pkg"] {
+        assert!(
+            text.contains(&format!("/pack/{wheel}-1.0-py3-none-any.whl")),
+            "{wheel} did not resolve in the node directory: {text}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn guarded_hook_preserves_cwd_imports_and_script_filename() {
+    use crate::environment::layout::{Layout, Tool, tool_environment, venv_python};
+    use domain::environment::{
+        NewEnvironment, Ownership, PythonEnvironment, PythonSourceKind, PythonVersion,
+    };
+    let Some(python) = locate_tool("python") else {
+        eprintln!("skipped: python is required");
+        return;
+    };
+    let fixture = Fixture::new().await;
+    let venv = fixture.root.join("envs/e1");
+    make_venv(&python, &venv);
+    let script = b"import json, os, sys
+import helper
+observed = {
+    'cwd': os.getcwd(),
+    'file': __file__,
+    'main_file': sys.modules['__main__'].__file__,
+    'name': __name__,
+    'argv': sys.argv,
+    'path0': sys.path[0],
+    'helper': helper.VALUE,
+    'helper_file': helper.__file__,
+    'stdin': sys.stdin.read(),
+    'no_user_site': sys.flags.no_user_site,
+}
+with open('observed.json', 'w') as out:
+    json.dump(observed, out, sort_keys=True)
+";
+    let node = write_node(
+        &fixture,
+        "pack",
+        &[
+            ("helper.py", b"VALUE = 'sibling import'\n"),
+            ("install.py", script),
+        ],
+    );
+    let directory = fixture.cn().join("pack");
+    let observed = directory.join("observed.json");
+    // The reference: the script run by name, exactly as before the guard existed.
+    let layout = Layout::new(&fixture.root);
+    let status = Command::new(venv_python(&venv))
+        .args(["-s", "install.py"])
+        .current_dir(&directory)
+        .env_clear()
+        .envs(tool_environment(&layout, Tool::Python))
+        .stdin(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let reference: serde_json::Value =
+        serde_json::from_slice(&fs::read(&observed).unwrap()).unwrap();
+    fs::remove_file(&observed).unwrap();
+    let env = PythonEnvironment::provisioning(NewEnvironment {
+        id: EnvId::new("env-1").unwrap(),
+        path: venv.clone(),
+        ownership: Ownership::AppOwned,
+        source: PythonSourceKind::Managed,
+        base_interpreter: None,
+        python_version: PythonVersion::new(3, 12, 15),
+        profile_id: "test".into(),
+        profile_revision: 1,
+        authorized_location: venv,
+        now: "2026-10-17T00:00:00Z".into(),
+    });
+    let guard = fixture
+        .files
+        .pin_location(&fixture.root, &node, None)
+        .await
+        .expect("the node location is pinned");
+    super::hook::PythonHook
+        .run(&fixture.root, &env, &*guard, &ctx())
+        .await
+        .unwrap();
+    let guarded: serde_json::Value = serde_json::from_slice(&fs::read(&observed).unwrap()).unwrap();
+    assert_eq!(guarded, reference);
+    assert!(guarded["file"].as_str().unwrap().ends_with("install.py"));
+    assert_eq!(guarded["name"], "__main__");
+    assert_eq!(guarded["helper"], "sibling import");
+    assert_eq!(guarded["stdin"], "");
 }

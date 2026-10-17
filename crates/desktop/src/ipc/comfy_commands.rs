@@ -50,8 +50,6 @@ pub async fn comfy_status(state: State<'_, AppState>) -> Result<ComfyStatusDto, 
 #[specta::specta]
 pub async fn comfy_start(state: State<'_, AppState>) -> Result<StartResultDto, IpcError> {
     let services = state.services()?;
-    // Interrupted custom node installs must be reconciled before ComfyUI may import them.
-    services.nodes.ensure_startable().await?;
     let result = services.comfy.start.execute().await;
     start_result(result, state.close.pending())
 }
@@ -61,9 +59,6 @@ pub async fn comfy_start(state: State<'_, AppState>) -> Result<StartResultDto, I
 pub async fn comfy_stop(state: State<'_, AppState>) -> Result<ComfyStatusDto, IpcError> {
     let services = state.services()?;
     let status = services.comfy.stop.execute().await?;
-    // Manager or the user may have changed the node folders: reconcile and rescan after the
-    // stop is verified, and only then expose the refreshed state.
-    services.nodes.after_stop().await;
     Ok(ComfyStatusDto::new(&status, state.close.pending()))
 }
 
@@ -71,7 +66,6 @@ pub async fn comfy_stop(state: State<'_, AppState>) -> Result<ComfyStatusDto, Ip
 #[specta::specta]
 pub async fn comfy_restart(state: State<'_, AppState>) -> Result<StartResultDto, IpcError> {
     let services = state.services()?;
-    services.nodes.ensure_startable().await?;
     let result = services.comfy.restart.execute().await;
     start_result(result, state.close.pending())
 }

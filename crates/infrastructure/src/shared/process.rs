@@ -10,6 +10,7 @@
 use std::{
     collections::VecDeque,
     ffi::OsString,
+    future::Future,
     io,
     path::{Path, PathBuf},
     process::Stdio,
@@ -17,9 +18,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use application::shared::CancelToken;
+use application::{environment::Retained, shared::CancelToken};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
 };
 
@@ -80,6 +81,11 @@ pub struct CommandSpec {
     pub cwd: Option<PathBuf>,
     /// The complete environment of the child. Nothing is inherited.
     pub env: Vec<(OsString, OsString)>,
+    /// Bytes written to the child's standard input (which is otherwise empty).
+    pub stdin: Option<Arc<[u8]>>,
+    /// Protection the command's inputs depend on. It stays alive until no process of the command
+    /// is left, even when the caller drops its own copy after a failed cleanup.
+    pub retained: Retained,
 }
 
 impl CommandSpec {
@@ -111,6 +117,16 @@ impl CommandSpec {
 
     pub fn env_vars(mut self, env: Vec<(OsString, OsString)>) -> Self {
         self.env = env;
+        self
+    }
+
+    pub fn stdin(mut self, bytes: Arc<[u8]>) -> Self {
+        self.stdin = Some(bytes);
+        self
+    }
+
+    pub fn retain(mut self, retained: Retained) -> Self {
+        self.retained = retained;
         self
     }
 
@@ -378,6 +394,23 @@ async fn read_stream<R: AsyncRead + Unpin>(
     assembler.finish(|line, progress| collector.push(stream, line, progress));
 }
 
+/// Keeps `retained` alive until `empty` reports that no process of the command is left.
+fn retain_until_empty<F, Fut>(retained: Retained, mut empty: F)
+where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: Future<Output = bool> + Send + 'static,
+{
+    if retained.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        while !empty().await {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        drop(retained);
+    });
+}
+
 enum Ended {
     Exited(io::Result<std::process::ExitStatus>),
     Cancelled,
@@ -416,7 +449,11 @@ async fn run_inner(
         .args(&spec.args)
         .env_clear()
         .envs(spec.env.iter().map(|(key, value)| (key, value)))
-        .stdin(Stdio::null())
+        .stdin(if spec.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // A supplementary safeguard only: the tree guard below does the real cleanup.
@@ -439,6 +476,12 @@ async fn run_inner(
     }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    if let (Some(mut stdin), Some(bytes)) = (child.stdin.take(), spec.stdin.clone()) {
+        // Closing the pipe signals the end of input. A child that stops reading is not an error.
+        tokio::spawn(async move {
+            let _ = stdin.write_all(&bytes).await;
+        });
+    }
 
     let collector = Collector {
         sink,
@@ -514,6 +557,13 @@ async fn run_inner(
 
     let tail = collector.tail();
     if !cleanup_verified {
+        // Survivors may still use the command's inputs: hand the protection to a task that
+        // releases it only once the tree is empty.
+        let (survivors, grace) = (tree.clone(), limits.kill_grace);
+        retain_until_empty(spec.retained.clone(), move || {
+            let tree = survivors.clone();
+            async move { tree.wait_empty(grace).await }
+        });
         return Err(RunError::CleanupFailed { tail });
     }
     cleanup.armed = false;

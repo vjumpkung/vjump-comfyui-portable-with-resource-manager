@@ -130,7 +130,7 @@ impl Default for NodeOptions {
             downloader: Downloader::new(),
             registry_base: REGISTRY_BASE.to_owned(),
             git: Arc::new(GitNodes::new()),
-            recycler: Arc::new(crate::shared::trash::recycle),
+            recycler: Arc::new(crate::shared::trash::recycle_entry),
         }
     }
 }

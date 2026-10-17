@@ -1,6 +1,7 @@
 //! Core facade. Call held-lease methods when composing workflows; never acquire recursively.
 mod model;
 mod ports;
+mod runtime;
 mod use_cases;
 mod workflow;
 pub use model::*;

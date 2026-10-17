@@ -231,6 +231,7 @@ pub enum DownloadErrorCode {
     LengthMismatch,
     InvalidRange,
     ToolLaunch,
+    BandwidthProxyUnavailable,
     ToolRuntime,
     ProcessCleanupFailed,
     NativeUnsupportedUseHf,

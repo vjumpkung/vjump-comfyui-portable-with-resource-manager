@@ -17,7 +17,6 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     io::Write,
-    path::Path,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -165,7 +164,7 @@ impl RegistryHttp {
     pub async fn download(
         &self,
         url: &str,
-        destination: &Path,
+        destination: &mut std::fs::File,
         cancel: &CancelToken,
     ) -> Result<Artifact, NodeAppError> {
         if !self.downloader.url_allowed(url) {
@@ -185,7 +184,6 @@ impl RegistryHttp {
         if announced.is_some_and(|length| length > MAX_ARTIFACT_BYTES) {
             return Err(NodeAppError::UnsafeSource);
         }
-        let mut file = std::fs::File::create(destination).map_err(|_| NodeAppError::Filesystem)?;
         let mut hasher = Sha256::new();
         let mut received = 0u64;
         loop {
@@ -202,10 +200,13 @@ impl RegistryHttp {
                 return Err(NodeAppError::UnsafeSource);
             }
             hasher.update(&chunk);
-            file.write_all(&chunk)
+            destination
+                .write_all(&chunk)
                 .map_err(|_| NodeAppError::Filesystem)?;
         }
-        file.sync_all().map_err(|_| NodeAppError::Filesystem)?;
+        destination
+            .sync_all()
+            .map_err(|_| NodeAppError::Filesystem)?;
         if announced.is_some_and(|length| length != received) {
             return Err(NodeAppError::Offline);
         }

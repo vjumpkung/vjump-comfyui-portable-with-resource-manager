@@ -12,11 +12,11 @@ use std::{
 use application::{
     comfy_runtime::{
         ComfyRepository, ExtraModelPaths, GetComfyDiagnostics, GetComfyStatus, GetLaunchOptions,
-        LaunchPreflight, ListComfyVersions, PortProbe, ReadExtraModelPaths, RestartComfy,
-        RuntimeDeps, RuntimeEvents, RuntimeStore, RuntimeSupervisor, SetLaunchOptions, StartComfy,
-        StopComfy, UpdateComfy,
+        LaunchPreflight, ListComfyVersions, NodeLifecycle, PortProbe, ReadExtraModelPaths,
+        RestartComfy, RuntimeDeps, RuntimeError, RuntimeEvents, RuntimeStore, RuntimeSupervisor,
+        SetLaunchOptions, StartComfy, StopComfy, UpdateComfy,
     },
-    custom_nodes::{NodeAppError, NodeContext, NodeService, PrepareRequest},
+    custom_nodes::{NodeContext, NodeService, PrepareRequest},
     environment::{
         ActiveRuns, ApplyPackageChange, CancelSetup, DeleteEnvironment, DetectHardware,
         EnvironmentDeps, ExecuteSetup, GetEnvironmentInfo, GetSetupStatus, ListPackages,
@@ -40,7 +40,7 @@ use application::{
         SettingsRepository, UpdateSettings,
         credential_tester::{CredentialTester, TestCredential},
     },
-    shared::{CancelToken, IdGenerator},
+    shared::{CancelToken, IdGenerator, MaintenanceLease},
 };
 use domain::settings::Settings;
 use infrastructure::{
@@ -52,7 +52,7 @@ use infrastructure::{
         process::{ComfyRuntimeSupervisor, PythonLaunchPreflight, SharedRuntimeRunner},
         sqlite::SqliteRuntimeStore,
     },
-    custom_nodes::stack::{HubSink, NodeEvent, NodeStack},
+    custom_nodes::stack::{HubSink, NodeEvent, NodeHub, NodeStack},
     environment::{
         hardware::SystemHardware, manifest::FsManifestStore, packages::UvPackages,
         profiles::BundledProfiles, python::PythonAdapter, source::GitSource,
@@ -156,10 +156,15 @@ pub struct ComfyServices {
 }
 
 impl ComfyServices {
-    fn new(environment: EnvironmentDeps, adapters: RuntimeAdapters) -> Self {
+    fn new(
+        environment: EnvironmentDeps,
+        adapters: RuntimeAdapters,
+        nodes: Arc<dyn NodeLifecycle>,
+    ) -> Self {
         let hub = adapters.hub;
         let deps = RuntimeDeps {
             environment,
+            nodes,
             supervisor: adapters.supervisor.clone(),
             store: adapters.store.clone(),
             repository: adapters.repository,
@@ -172,7 +177,7 @@ impl ComfyServices {
             store: adapters.store.clone(),
             status: GetComfyStatus::new(deps.clone()),
             start: StartComfy::new(deps.clone()),
-            stop: StopComfy::new(adapters.supervisor),
+            stop: StopComfy::new(deps.clone()),
             restart: RestartComfy::new(deps.clone()),
             get_options: GetLaunchOptions::new(adapters.store.clone()),
             set_options: SetLaunchOptions::new(adapters.store),
@@ -387,6 +392,24 @@ pub struct NodeServices {
     next_subscription: AtomicU32,
 }
 
+struct NotifyingNodeLifecycle {
+    service: Arc<dyn NodeLifecycle>,
+    hub: Arc<NodeHub>,
+}
+
+#[async_trait::async_trait]
+impl NodeLifecycle for NotifyingNodeLifecycle {
+    async fn before_start(&self, lease: &mut dyn MaintenanceLease) -> Result<(), RuntimeError> {
+        self.service.before_start(lease).await
+    }
+
+    async fn after_stop(&self, lease: &mut dyn MaintenanceLease) -> Result<(), RuntimeError> {
+        let result = self.service.after_stop(lease).await;
+        self.hub.publish(NodeEvent::Changed);
+        result
+    }
+}
+
 impl NodeServices {
     pub fn new(stack: NodeStack) -> Self {
         Self {
@@ -474,36 +497,15 @@ impl NodeServices {
         Ok(NodeOutcomeDto::from(&result?))
     }
 
-    /// Interrupted node operations are finished before ComfyUI may start or nodes may change.
+    /// Reconcile and scan before normal services are exposed at startup. A failure is logged
+    /// and never blocks the app: a launch still re-checks the journal under its own lease.
     pub async fn reconcile(&self) {
-        match self.service.reconcile().await {
-            Ok(()) => tracing::info!("custom node recovery finished"),
-            Err(error) => tracing::error!(%error, "custom node recovery needs attention"),
-        }
-    }
-
-    /// A verified stop: reconcile and rescan the node folders, best effort. A busy gate or an
-    /// unresolved recovery is reported by the next explicit node command.
-    pub async fn after_stop(&self) {
         let result = self.service.rescan().await;
         self.changed();
-        if let Err(error) = result {
-            tracing::warn!(%error, "custom nodes were not rescanned after the stop");
+        match result {
+            Ok(_) => tracing::info!("custom node recovery and scan finished"),
+            Err(error) => tracing::error!(%error, "custom node recovery or scan needs attention"),
         }
-    }
-
-    /// Wired into the runtime start path: unresolved node recovery blocks a launch.
-    pub async fn ensure_startable(&self) -> Result<(), IpcError> {
-        self.service
-            .ensure_reconciled()
-            .await
-            .map_err(|error| match error {
-                NodeAppError::RecoveryRequired => IpcError::new(
-                    "node_recovery_required",
-                    "An interrupted custom node operation must be resolved before ComfyUI can start. Open Custom Nodes and rescan.",
-                ),
-                other => other.into(),
-            })
     }
 }
 
@@ -549,11 +551,16 @@ impl Services {
         library: LibraryStack,
         nodes: NodeStack,
     ) -> Self {
+        let nodes = NodeServices::new(nodes);
+        let node_lifecycle = Arc::new(NotifyingNodeLifecycle {
+            service: Arc::new(nodes.service.clone()),
+            hub: nodes.stack.hub.clone(),
+        });
         Self {
-            comfy: ComfyServices::new(deps.clone(), runtime),
+            comfy: ComfyServices::new(deps.clone(), runtime, node_lifecycle),
             downloads: DownloadServices::new(downloads),
             library: LibraryServices::new(library),
-            nodes: NodeServices::new(nodes),
+            nodes,
             get_settings: GetSettings::new(settings.clone()),
             update_settings: UpdateSettings::new(settings),
             setup_status: GetSetupStatus::new(deps.clone()),
@@ -709,17 +716,18 @@ impl AppState {
             extra_paths: Arc::new(YamlExtraModelPaths),
             hub,
         };
-        let concurrency = match settings.load().await {
-            Ok(saved) => saved.unwrap_or_default().download_concurrency.get() as usize,
-            Err(_) => Settings::default().download_concurrency.get() as usize,
+        let saved = match settings.load().await {
+            Ok(saved) => saved.unwrap_or_default(),
+            Err(_) => Settings::default(),
         };
         let locks = path_locks();
-        let downloads = DownloadStack::open(
+        let downloads = DownloadStack::open_with_bandwidth(
             &resolved.root,
             download_db.clone(),
             credentials.clone(),
-            concurrency,
+            saved.download_concurrency.get() as usize,
             locks.clone(),
+            saved.bandwidth_cap_kib_s,
         )
         .map_err(|error| format!("downloads could not be opened: {error}"))?;
         let library = LibraryStack::open(
@@ -749,7 +757,7 @@ impl AppState {
         );
         // Interrupted renames and moves are finished before any download may publish.
         services.library.reconcile().await;
-        // Interrupted node installs and updates are reconciled before ComfyUI may start.
+        // Reconcile interrupted node work and observe Manager/manual changes before commands.
         services.nodes.reconcile().await;
         services.library.start();
         services.downloads.start();
@@ -777,5 +785,42 @@ impl AppState {
             picker,
             PathBuf::new(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Lease;
+    impl MaintenanceLease for Lease {}
+
+    struct LifecycleResult(Result<(), RuntimeError>);
+
+    #[async_trait::async_trait]
+    impl NodeLifecycle for LifecycleResult {
+        async fn before_start(&self, _: &mut dyn MaintenanceLease) -> Result<(), RuntimeError> {
+            self.0.clone()
+        }
+
+        async fn after_stop(&self, _: &mut dyn MaintenanceLease) -> Result<(), RuntimeError> {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn node_lifecycle_publishes_changed_after_stop_even_on_failure() {
+        for result in [Ok(()), Err(RuntimeError::NodeRescanFailed)] {
+            let hub = NodeHub::new("test".into());
+            let mut receiver = hub.subscribe();
+            let lifecycle = NotifyingNodeLifecycle {
+                service: Arc::new(LifecycleResult(result.clone())),
+                hub,
+            };
+            assert_eq!(lifecycle.before_start(&mut Lease).await, result);
+            assert!(receiver.try_recv().is_err());
+            assert_eq!(lifecycle.after_stop(&mut Lease).await, result);
+            assert_eq!(receiver.try_recv().unwrap().1, NodeEvent::Changed);
+        }
     }
 }

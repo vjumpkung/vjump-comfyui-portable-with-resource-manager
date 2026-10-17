@@ -188,12 +188,12 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
             inputMode="numeric"
             placeholder="Unlimited"
             value={draft.bandwidthCap}
-            disabled
+            onChange={(event) => patch('bandwidthCap', event.target.value)}
+            aria-invalid={errors.bandwidthCap ? true : undefined}
             aria-describedby="bandwidth-cap-note"
           />
           <p id="bandwidth-cap-note" className="text-xs text-muted-foreground">
-            A global cap needs to cover every download engine, including the hf CLI. It is not
-            available yet and downloads run unthrottled.
+            Shared by all downloads. Leave empty for unlimited speed.
           </p>
         </Field>
       </div>

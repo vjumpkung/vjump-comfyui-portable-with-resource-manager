@@ -4,6 +4,7 @@ pub mod compat;
 pub mod files;
 pub mod git;
 pub mod hook;
+mod paths;
 pub mod provenance;
 pub mod registry;
 pub mod scan;

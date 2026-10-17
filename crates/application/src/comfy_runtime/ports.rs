@@ -58,6 +58,13 @@ pub trait ExtraModelPaths: Send + Sync {
     async fn read(&self, root: &Path) -> Result<Vec<ModelRoot>, RuntimeError>;
 }
 
+/// Called under the runtime workflow's held lease; implementations must not acquire the gate.
+#[async_trait]
+pub trait NodeLifecycle: Send + Sync {
+    async fn before_start(&self, lease: &mut dyn MaintenanceLease) -> Result<(), RuntimeError>;
+    async fn after_stop(&self, lease: &mut dyn MaintenanceLease) -> Result<(), RuntimeError>;
+}
+
 /// One installation-scoped supervisor, also used by M1 RuntimeMaintenance.
 #[async_trait]
 pub trait RuntimeSupervisor: super::RuntimeMaintenance {
@@ -110,6 +117,7 @@ pub trait RuntimeLogReader: Send + Sync {
 #[derive(Clone)]
 pub struct RuntimeDeps {
     pub environment: crate::environment::EnvironmentDeps,
+    pub nodes: Arc<dyn NodeLifecycle>,
     pub supervisor: Arc<dyn RuntimeSupervisor>,
     pub store: Arc<dyn RuntimeStore>,
     pub repository: Arc<dyn ComfyRepository>,

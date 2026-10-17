@@ -170,7 +170,7 @@ pub async fn perform<R: Runtime>(app: AppHandle<R>, action: CloseAction) {
                 app.exit(0);
                 return;
             };
-            // Exit only after termination, output draining and log flushing have completed.
+            // Exit only after termination, output draining, log flushing and node rescan.
             match services.comfy.stop.execute().await {
                 Ok(_) => app.exit(0),
                 Err(error) => tracing::error!(%error, "ComfyUI could not be stopped; staying open"),

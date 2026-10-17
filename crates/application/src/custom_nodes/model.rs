@@ -41,8 +41,10 @@ pub enum NodeAppError {
     TargetExists,
     #[error("unsafe node path, archive or source")]
     UnsafeSource,
+    /// `status` is the bounded, redacted, node-relative `git status` text, or a fixed explanation
+    /// when Git reported none. It never carries absolute paths or raw subprocess output.
     #[error("node repository has local changes, conflicts, divergence or no selected upstream")]
-    GitRefused,
+    GitRefused { status: String },
     #[error("Git is unavailable")]
     GitUnavailable,
     #[error("registry request failed with HTTP {0}")]

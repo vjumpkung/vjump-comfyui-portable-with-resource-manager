@@ -1,4 +1,4 @@
-use super::{finalize::StagingArea, http, resolver::ProviderResolver};
+use super::{bandwidth::BandwidthLimiter, finalize::StagingArea, http, resolver::ProviderResolver};
 use application::{models::acquisition::*, shared::CancelToken};
 use async_trait::async_trait;
 use domain::models::acquisition::*;
@@ -11,6 +11,7 @@ use std::{sync::Arc, time::Instant};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 pub struct NativeDownloader {
+    pub bandwidth: Arc<BandwidthLimiter>,
     pub resolver: Arc<ProviderResolver>,
     pub staging: Arc<StagingArea>,
     pub repository: Arc<dyn JobRepository>,
@@ -216,9 +217,24 @@ impl Downloader for NativeDownloader {
             if expected_body.is_some_and(|n| body_bytes > n) {
                 return Err(DownloadErrorCode::LengthMismatch.into());
             }
-            file.write_all(&chunk)
-                .await
-                .map_err(|_| DownloadErrorCode::Disk)?;
+            let mut consumed = 0;
+            while consumed < chunk.len() {
+                let grant = match self
+                    .bandwidth
+                    .acquire(chunk.len() - consumed, &cancel)
+                    .await
+                {
+                    Ok(grant) => grant,
+                    Err(_) => {
+                        file.sync_all().await.map_err(|_| DownloadErrorCode::Disk)?;
+                        return Err(DownloadErrorCode::Cancelled.into());
+                    }
+                };
+                file.write_all(&chunk[consumed..consumed + grant])
+                    .await
+                    .map_err(|_| DownloadErrorCode::Disk)?;
+                consumed += grant;
+            }
             hash.update(&chunk);
             let now = Instant::now();
             if now.duration_since(sampled) >= PROGRESS_INTERVAL {

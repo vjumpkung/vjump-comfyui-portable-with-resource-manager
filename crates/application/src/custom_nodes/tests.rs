@@ -2,6 +2,7 @@
 //! so protected-package behavior is exercised against the same pin guard M1 tests use.
 use super::*;
 use crate::{
+    comfy_runtime::{NodeLifecycle, RuntimeBlock, RuntimeError},
     environment::{
         EnvironmentRepository, ProvisionError, ResolutionPreview,
         tests::fakes::{ROOT, World},
@@ -30,12 +31,58 @@ struct FilesState {
     recover: Option<RecoveryAction>,
     recycle_fails: bool,
     scan: Vec<InstalledNode>,
+    scan_error: Option<NodeAppError>,
     snapshots: std::collections::HashMap<String, String>,
+    /// Overrides the tree digest a guarded location reports (simulated drift).
+    pin_digest: Option<String>,
+    pin_error: Option<NodeAppError>,
 }
 
 struct FakeFiles {
     world: Arc<World>,
     state: Mutex<FilesState>,
+}
+
+/// Records when the workflow releases a guarded location.
+struct FakeGuard {
+    world: Arc<World>,
+    directory: PathBuf,
+    snapshot: TreeSnapshot,
+    resources: Arc<()>,
+}
+
+impl NodeLocationGuard for FakeGuard {
+    fn directory(&self) -> &Path {
+        &self.directory
+    }
+    fn requirements(&self) -> Option<Arc<[u8]>> {
+        self.snapshot.requirements_digest.as_ref().map(|_| {
+            Arc::from(
+                &b"numpy
+"[..],
+            )
+        })
+    }
+    fn install_script(&self) -> Option<Arc<[u8]>> {
+        self.snapshot.hook_digest.as_ref().map(|_| {
+            Arc::from(
+                &b"print('hook')
+"[..],
+            )
+        })
+    }
+    fn snapshot(&self) -> &TreeSnapshot {
+        &self.snapshot
+    }
+    fn retained(&self) -> crate::environment::Retained {
+        crate::environment::Retained::new(self.resources.clone())
+    }
+}
+
+impl Drop for FakeGuard {
+    fn drop(&mut self) {
+        self.world.call("guard:drop");
+    }
 }
 
 #[async_trait]
@@ -113,6 +160,36 @@ impl NodeFiles for FakeFiles {
             None => base.join(node.name.as_str()),
         }
     }
+    async fn pin_location(
+        &self,
+        _root: &Path,
+        node: &InstalledNode,
+        staged: Option<&NodeId>,
+    ) -> Result<Box<dyn NodeLocationGuard>, NodeAppError> {
+        let state = self.state.lock().unwrap();
+        if let Some(error) = &state.pin_error {
+            return Err(error.clone());
+        }
+        self.world.call(if staged.is_some() {
+            "guard:pin:staged"
+        } else {
+            "guard:pin:live"
+        });
+        Ok(Box::new(FakeGuard {
+            world: self.world.clone(),
+            directory: self.path(Path::new(ROOT), node, staged),
+            snapshot: TreeSnapshot {
+                digest: state
+                    .pin_digest
+                    .clone()
+                    .unwrap_or_else(|| node.tree_digest.clone()),
+                requirements_digest: state.requirements_digest.clone(),
+                hook_digest: state.hook_digest.clone(),
+                requirement_lines: vec!["numpy".into()],
+            },
+            resources: Arc::new(()),
+        }))
+    }
     async fn publish(&self, _root: &Path, _op: &NodeOperation) -> Result<(), NodeAppError> {
         self.world.call("files:publish");
         match self.state.lock().unwrap().publish_error.take() {
@@ -159,7 +236,12 @@ impl NodeFiles for FakeFiles {
             .unwrap_or(RecoveryAction::Blocked))
     }
     async fn scan(&self, _root: &Path) -> Result<Vec<InstalledNode>, NodeAppError> {
-        Ok(self.state.lock().unwrap().scan.clone())
+        self.world.call("files:scan");
+        let state = self.state.lock().unwrap();
+        match &state.scan_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(state.scan.clone()),
+        }
     }
 }
 
@@ -311,6 +393,7 @@ struct StoreState {
     operations: Vec<NodeOperation>,
     trusts: Vec<Trust>,
     dependencies: Vec<DependencyOutcome>,
+    journal_error: Option<NodeAppError>,
 }
 
 struct FakeStore {
@@ -341,7 +424,11 @@ impl NodeRepository for FakeStore {
         Ok(())
     }
     async fn operations(&self) -> Result<Vec<NodeOperation>, NodeAppError> {
-        Ok(self.state.lock().unwrap().operations.clone())
+        let state = self.state.lock().unwrap();
+        match &state.journal_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(state.operations.clone()),
+        }
     }
     async fn save_dependency(&self, outcome: &DependencyOutcome) -> Result<(), NodeAppError> {
         self.state
@@ -380,11 +467,14 @@ impl NodeHook for FakeHook {
         &self,
         _root: &Path,
         _env: &PythonEnvironment,
-        _dir: &Path,
+        location: &dyn NodeLocationGuard,
         _ctx: &crate::environment::StepContext,
     ) -> Result<(), NodeAppError> {
+        assert!(location.install_script().is_some());
         self.world.call("hook:run");
         if *self.fails.lock().unwrap() {
+            // A failing script may leave a protected package changed.
+            self.world.put_installed("torch", "2.15.0");
             Err(NodeAppError::DependenciesFailed)
         } else {
             Ok(())
@@ -950,27 +1040,99 @@ fn install_py_runs_only_with_consent_after_requirements_and_trust_is_namespaced(
     assert_eq!(result.unwrap_err(), NodeAppError::ConsentRequired);
 }
 
+fn torch_preview(version: &str) -> ResolutionPreview {
+    ResolutionPreview {
+        installs: vec![crate::environment::InstalledPackage {
+            name: "torch".into(),
+            version: version.into(),
+        }],
+        removals: Vec::new(),
+    }
+}
+
 #[test]
-fn reviewed_protected_package_changes_must_be_confirmed_exactly() {
+fn node_previews_refuse_protected_package_changes() {
+    // A preview that would move a protected package is never offered as a node plan.
+    let h = Harness::new();
+    h.world
+        .previews
+        .lock()
+        .unwrap()
+        .push_back(Ok(torch_preview("2.15.0")));
+    let result = block_on(h.service.prepare(Harness::registry_request(), &h.ctx()));
+    assert_eq!(result.unwrap_err(), NodeAppError::ResolutionFailed);
+    assert!(h.service.pending_reviews().unwrap().is_empty());
+    assert_eq!(h.world.count("install:node"), 0);
+    assert_eq!(h.world.count("files:publish"), 0);
+    assert_eq!(
+        h.world.count("files:discard"),
+        1,
+        "the abandoned plan removes its owned staging"
+    );
+    // Removing a protected package is refused the same way.
     let h = Harness::new();
     h.world
         .previews
         .lock()
         .unwrap()
         .push_back(Ok(ResolutionPreview {
-            installs: vec![crate::environment::InstalledPackage {
+            installs: Vec::new(),
+            removals: vec![crate::environment::InstalledPackage {
                 name: "torch".into(),
-                version: "2.15.0".into(),
+                version: "2.14.1+cu130".into(),
             }],
-            removals: Vec::new(),
         }));
+    let result = block_on(h.service.prepare(Harness::registry_request(), &h.ctx()));
+    assert_eq!(result.unwrap_err(), NodeAppError::ResolutionFailed);
+    // A preview that keeps every protected package as recorded is a normal plan, and the commit
+    // refuses a confirmation that claims a protected-package change.
+    let h = Harness::new();
     let review = h.prepare();
-    assert_eq!(review.protected_changes.len(), 1);
-    assert_eq!(review.protected_changes[0].to.as_deref(), Some("2.15.0"));
-    let mut unconfirmed = Harness::decision(&review);
-    unconfirmed.protected_changes.clear();
-    let result = block_on(h.service.commit(&review.id, unconfirmed, &h.ctx()));
+    assert!(review.protected_changes.is_empty());
+    let mut claimed = Harness::decision(&review);
+    claimed.protected_changes = vec![domain::environment::PinChange {
+        name: DistName::new("torch").unwrap(),
+        from: Some("2.14.1+cu130".into()),
+        to: Some("2.15.0".into()),
+    }];
+    let result = block_on(h.service.commit(&review.id, claimed, &h.ctx()));
     assert_eq!(result.unwrap_err(), NodeAppError::ConsentRequired);
+    assert_eq!(h.world.count("files:publish"), 0);
+    block_on(
+        h.service
+            .commit(&review.id, Harness::decision(&review), &h.ctx()),
+    )
+    .unwrap();
+    assert_eq!(
+        h.env().pins.get(&DistName::new("torch").unwrap()),
+        Some("2.14.1+cu130")
+    );
+}
+
+#[test]
+fn node_preview_never_retries_without_constraints() {
+    let h = Harness::new();
+    {
+        let mut previews = h.world.previews.lock().unwrap();
+        previews.push_back(Err(ProvisionError::Failed("conflicting torch".into())));
+        // An unconstrained retry would consume this and authorize a torch change.
+        previews.push_back(Ok(torch_preview("2.15.0")));
+    }
+    let result = block_on(h.service.prepare(Harness::registry_request(), &h.ctx()));
+    assert_eq!(result.unwrap_err(), NodeAppError::ResolutionFailed);
+    assert_eq!(h.world.count("preview:constrained"), 1);
+    assert_eq!(h.world.count("preview:unconstrained"), 0);
+    assert_eq!(h.world.previews.lock().unwrap().len(), 1);
+    assert_eq!(h.world.count("install:node"), 0);
+    assert_eq!(h.world.count("files:publish"), 0);
+    assert!(h.service.pending_reviews().unwrap().is_empty());
+    let installed = h.world.installed.lock().unwrap().clone();
+    assert!(
+        installed
+            .iter()
+            .any(|p| p.name == "torch" && p.version == "2.14.1+cu130"),
+        "{installed:?}"
+    );
 }
 
 #[test]
@@ -1428,4 +1590,198 @@ fn cached_pages_and_versions_pass_through_the_registry_port() {
         NodeAppError::Offline
     );
     assert!(block_on(h.service.versions("pack")).unwrap().is_empty());
+}
+
+#[test]
+fn runtime_node_checks_reconcile_and_scan_without_acquiring_again() {
+    let h = Harness::new();
+    let review = h.prepare();
+    h.service.deps.plans.0.lock().unwrap().clear();
+    h.files.state.lock().unwrap().recover = Some(RecoveryAction::Discarded);
+    let mut lease = block_on(h.world.deps().gate.try_acquire()).unwrap();
+    let before = h
+        .world
+        .gate
+        .try_acquires
+        .load(std::sync::atomic::Ordering::SeqCst);
+    block_on(h.service.before_start(&mut *lease)).unwrap();
+    assert_eq!(h.world.count("files:recover"), 1);
+    assert_eq!(h.world.count("files:scan"), 0);
+    assert_eq!(
+        block_on(h.service.operation_status(&review.id))
+            .unwrap()
+            .phase,
+        OperationPhase::Failed
+    );
+    block_on(h.service.after_stop(&mut *lease)).unwrap();
+    assert_eq!(h.world.count("files:scan"), 1);
+    assert_eq!(
+        h.world
+            .gate
+            .try_acquires
+            .load(std::sync::atomic::Ordering::SeqCst),
+        before
+    );
+    assert_eq!(
+        h.world
+            .gate
+            .acquires
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
+#[test]
+fn runtime_node_checks_map_recovery_scan_and_running_failures() {
+    let h = Harness::new();
+    let review = h.prepare();
+    h.service.deps.plans.0.lock().unwrap().clear();
+    h.store.state.lock().unwrap().operations[0].phase = OperationPhase::PublishIntent;
+    let mut lease = block_on(h.world.deps().gate.try_acquire()).unwrap();
+    assert_eq!(
+        block_on(h.service.before_start(&mut *lease)),
+        Err(RuntimeError::NodeRecoveryRequired)
+    );
+    assert_eq!(h.world.count("files:recover"), 1);
+    assert_eq!(
+        block_on(h.service.operation_status(&review.id))
+            .unwrap()
+            .phase,
+        OperationPhase::PublishIntent
+    );
+
+    h.store.state.lock().unwrap().journal_error = Some(NodeAppError::Storage);
+    assert_eq!(
+        block_on(h.service.before_start(&mut *lease)),
+        Err(RuntimeError::NodeRecoveryRequired)
+    );
+    assert_eq!(
+        block_on(h.service.after_stop(&mut *lease)),
+        Err(RuntimeError::NodeRescanFailed)
+    );
+    assert_eq!(h.world.count("files:scan"), 0);
+
+    h.store.state.lock().unwrap().journal_error = None;
+    h.store.state.lock().unwrap().operations.clear();
+    h.files.state.lock().unwrap().scan_error = Some(NodeAppError::Filesystem);
+    assert_eq!(
+        block_on(h.service.after_stop(&mut *lease)),
+        Err(RuntimeError::NodeRescanFailed)
+    );
+    assert_eq!(h.world.count("files:scan"), 1);
+
+    for block in [RuntimeBlock::Running, RuntimeBlock::CannotAssess] {
+        *h.world.runtime_block.lock().unwrap() = Some(block);
+        assert_eq!(
+            block_on(h.service.before_start(&mut *lease)),
+            Err(RuntimeError::NeedsStop)
+        );
+        assert_eq!(
+            block_on(h.service.after_stop(&mut *lease)),
+            Err(RuntimeError::NeedsStop)
+        );
+    }
+    assert_eq!(h.world.count("files:scan"), 1);
+}
+
+fn hook_plan(h: &Harness) -> PlanReview {
+    h.files
+        .state
+        .lock()
+        .unwrap()
+        .staged
+        .as_mut()
+        .unwrap()
+        .hook_digest = Some("hook".into());
+    h.files.state.lock().unwrap().hook_digest = Some("hook".into());
+    h.prepare()
+}
+
+fn hook_decision(review: &PlanReview) -> CommitDecision {
+    let mut decision = Harness::decision(review);
+    decision.consent.acknowledge_warnings = true;
+    decision.consent.run_install_py = true;
+    decision
+}
+
+#[test]
+fn node_execution_guard_spans_preview_install_hook_and_cleanup() {
+    let h = Harness::new();
+    let review = hook_plan(&h);
+    // A drifting requirements install and a failing script force the cleanup reassertion.
+    h.world
+        .drift_on_requirements
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    *h.hook.fails.lock().unwrap() = true;
+    let result = block_on(
+        h.service
+            .commit(&review.id, hook_decision(&review), &h.ctx()),
+    );
+    assert_eq!(result.unwrap_err(), NodeAppError::DependenciesFailed);
+    let calls = h.world.calls();
+    let at = |name: &str, nth: usize| {
+        calls
+            .iter()
+            .enumerate()
+            .filter(|(_, call)| *call == name)
+            .nth(nth)
+            .map(|(index, _)| index)
+            .unwrap_or_else(|| panic!("`{name}` #{nth} missing: {calls:?}"))
+    };
+    // The preview guard covers the awaited previews and is released before publication.
+    assert!(at("guard:pin:staged", 0) < at("preview:constrained", 0));
+    assert!(at("preview:constrained", 0) < at("guard:drop", 0));
+    assert!(at("guard:drop", 0) < at("files:publish", 0));
+    // The live guard is acquired after publication and outlives installation, the script and the
+    // pin reassertion that follows it.
+    let live = at("guard:pin:live", 0);
+    assert!(at("files:publish", 0) < live);
+    assert!(live < at("install:node", 0));
+    assert!(at("install:node", 0) < at("hook:run", 0));
+    let hook = at("hook:run", 0);
+    let cleanup = calls[hook..]
+        .iter()
+        .position(|call| call == "install:torch")
+        .map(|offset| hook + offset)
+        .expect("pins are reinstalled after the script");
+    assert!(cleanup < at("guard:drop", 1));
+    assert_eq!(h.world.count("guard:pin:staged"), 1);
+    assert_eq!(h.world.count("guard:pin:live"), 1);
+    assert_eq!(h.world.count("guard:drop"), 2);
+    // Installation consumed the protected snapshot, not a path to reopen.
+    let installs = h.world.installs.lock().unwrap().clone();
+    let node_install = installs
+        .iter()
+        .find(|spec| spec.guarded.is_some())
+        .expect("the node install uses the guarded snapshot");
+    let guarded = node_install.guarded.as_ref().unwrap();
+    assert_eq!(&*guarded.text, b"numpy\n");
+    assert_eq!(
+        node_install.requirement_files,
+        std::slice::from_ref(&guarded.path)
+    );
+    assert!(!guarded.retained.is_empty());
+}
+
+#[test]
+fn a_drifted_guarded_location_is_refused_before_anything_runs() {
+    let h = Harness::new();
+    let review = hook_plan(&h);
+    h.files.state.lock().unwrap().pin_digest = Some("tree:changed".into());
+    assert_eq!(
+        block_on(
+            h.service
+                .commit(&review.id, hook_decision(&review), &h.ctx())
+        )
+        .unwrap_err(),
+        NodeAppError::StalePlan
+    );
+    assert_eq!(h.world.count("install:node"), 0);
+    assert_eq!(h.world.count("hook:run"), 0);
+    // The refusal happens before the environment is marked for repair.
+    assert_eq!(h.env().state(), EnvState::Verified);
+    assert_eq!(
+        h.world.count("guard:pin:live"),
+        h.world.count("guard:drop") - 1
+    );
 }

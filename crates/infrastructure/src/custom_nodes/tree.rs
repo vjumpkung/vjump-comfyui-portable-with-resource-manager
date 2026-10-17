@@ -1,7 +1,14 @@
-//! Tree helpers: link-free validation, deterministic digests and no-replace directory renames.
+//! Tree helpers: link-free validation, deterministic digests and pinned archive extraction.
 //! Nothing here follows links or executes node code.
+use super::paths::filesystem;
+use crate::shared::{
+    archive::{ExtractLimits, validate_entry_name},
+    model_paths::PinnedDirectory,
+};
 use application::custom_nodes::NodeAppError;
+use domain::shared::model_values::SafeFileName;
 use sha2::{Digest, Sha256};
+use std::{collections::HashMap, io::Write, sync::Arc};
 use std::{
     fs::{self, File},
     io::{self, Read},
@@ -138,46 +145,130 @@ pub fn read_text(path: &Path, limit: u64) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-/// Renames a directory or file without replacing an existing destination.
-pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
-    #[cfg(windows)]
+/// Node ZIP extraction keeps each output parent pinned through creation and writing.
+/// Validate the complete archive before creating any entries, as the shared extractor does.
+pub(crate) fn extract_zip(
+    archive: File,
+    staging: &Arc<PinnedDirectory>,
+    limits: ExtractLimits,
+) -> Result<(), NodeAppError> {
+    let unsafe_source = || NodeAppError::UnsafeSource;
+    if fs::read_dir(staging.anchored_path())
+        .map_err(filesystem)?
+        .next()
+        .is_some()
     {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-        let wide =
-            |path: &Path| -> Vec<u16> { path.as_os_str().encode_wide().chain(Some(0)).collect() };
-        // Without MOVEFILE_REPLACE_EXISTING the call fails when the destination exists.
-        if unsafe { MoveFileExW(wide(from).as_ptr(), wide(to).as_ptr(), 0) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        return Err(NodeAppError::Filesystem);
     }
-    #[cfg(target_os = "linux")]
+    let archive_bytes = archive.metadata().map_err(filesystem)?.len().max(1);
+    let mut zip = zip::ZipArchive::new(archive).map_err(|_| unsafe_source())?;
+    if zip.len() > limits.max_entries {
+        return Err(unsafe_source());
+    }
+    let mut seen = HashMap::new();
+    let mut planned = Vec::new();
+    let mut total = 0u64;
+    let mut compressed = 0u64;
+    for index in 0..zip.len() {
+        let entry = zip.by_index_raw(index).map_err(|_| unsafe_source())?;
+        if entry.encrypted()
+            || entry.is_symlink()
+            || entry.external_attributes() & 0x400 != 0
+            || entry.name_raw().contains(&0)
+            || entry.size() > entry.compressed_size().saturating_mul(limits.max_ratio)
+            || entry
+                .unix_mode()
+                .is_some_and(|mode| !matches!(mode & 0o170_000, 0 | 0o100_000 | 0o040_000))
+        {
+            return Err(unsafe_source());
+        }
+        let components = validate_entry_name(&entry.name().map_err(|_| unsafe_source())?)
+            .map_err(|_| unsafe_source())?;
+        let mut relative = String::new();
+        let mut names = Vec::new();
+        for (position, name) in components.iter().enumerate() {
+            if !relative.is_empty() {
+                relative.push('/');
+            }
+            relative.push_str(&name.to_lowercase());
+            let is_dir = position + 1 < components.len() || entry.is_dir();
+            if let Some(previous) = seen.insert(relative.clone(), is_dir)
+                && !(previous && is_dir)
+            {
+                return Err(unsafe_source());
+            }
+            names.push(SafeFileName::new(name).map_err(|_| unsafe_source())?);
+        }
+        total = total.saturating_add(entry.size());
+        compressed = compressed.saturating_add(entry.compressed_size());
+        planned.push((
+            index,
+            names,
+            entry.is_dir(),
+            entry.size(),
+            entry.unix_mode(),
+        ));
+    }
+    if total > limits.max_total_bytes
+        || total > compressed.saturating_mul(limits.max_ratio)
+        || total > archive_bytes.saturating_mul(limits.max_ratio)
     {
-        use std::os::unix::ffi::OsStrExt;
-        let a = std::ffi::CString::new(from.as_os_str().as_bytes())?;
-        let b = std::ffi::CString::new(to.as_os_str().as_bytes())?;
-        let result = unsafe {
-            libc::renameat2(
-                libc::AT_FDCWD,
-                a.as_ptr(),
-                libc::AT_FDCWD,
-                b.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        };
-        if result < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        return Err(unsafe_source());
     }
-    #[cfg(all(unix, not(target_os = "linux")))]
-    {
-        if to.symlink_metadata().is_ok() {
-            return Err(io::ErrorKind::AlreadyExists.into());
-        }
-        fs::rename(from, to)
+    for (index, ..) in &planned {
+        zip.by_index(*index).map_err(|_| unsafe_source())?;
     }
+    let mut written_total = 0u64;
+    for (index, names, is_dir, declared, mode) in planned {
+        let (name, parents) = names.split_last().ok_or_else(unsafe_source)?;
+        let mut parent = staging.clone();
+        for component in parents {
+            parent = parent.child(component, true).map_err(filesystem)?;
+        }
+        if is_dir {
+            parent.child(name, true).map_err(filesystem)?;
+            continue;
+        }
+        let mut output = parent.open(name, true, true).map_err(filesystem)?;
+        let mut input = zip
+            .by_index(index)
+            .map_err(|_| unsafe_source())?
+            .take(declared.saturating_add(1));
+        let mut count = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let n = input.read(&mut buffer).map_err(|_| unsafe_source())?;
+            if n == 0 {
+                break;
+            }
+            count += n as u64;
+            written_total = written_total.saturating_add(n as u64);
+            if count > declared
+                || written_total > limits.max_total_bytes
+                || written_total > archive_bytes.saturating_mul(limits.max_ratio)
+            {
+                return Err(unsafe_source());
+            }
+            output.write_all(&buffer[..n]).map_err(filesystem)?;
+        }
+        output.sync_all().map_err(filesystem)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            output
+                .set_permissions(fs::Permissions::from_mode(
+                    if mode.is_some_and(|m| m & 0o111 != 0) {
+                        0o755
+                    } else {
+                        0o644
+                    },
+                ))
+                .map_err(filesystem)?;
+        }
+        #[cfg(windows)]
+        let _ = mode;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -201,22 +292,7 @@ mod tests {
         assert_ne!(first, tree_digest(&node).unwrap());
     }
 
-    #[test]
-    fn rename_never_replaces_an_existing_destination() {
-        let directory = tempfile::tempdir().unwrap();
-        let (a, b, c) = (
-            directory.path().join("a"),
-            directory.path().join("b"),
-            directory.path().join("c"),
-        );
-        fs::create_dir(&a).unwrap();
-        fs::create_dir(&b).unwrap();
-        assert!(rename_no_replace(&a, &b).is_err());
-        assert!(a.exists() && b.exists());
-        rename_no_replace(&a, &c).unwrap();
-        assert!(!a.exists() && c.exists());
-    }
-
+    #[cfg(unix)]
     #[test]
     fn unix_symlinks_are_rejected() {
         #[cfg(unix)]

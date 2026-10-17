@@ -75,9 +75,10 @@ impl StartComfy {
     }
     pub(crate) async fn start_under_lease(
         &self,
-        lease: Box<dyn MaintenanceLease>,
+        mut lease: Box<dyn MaintenanceLease>,
     ) -> Result<RuntimeStatus, RuntimeError> {
         let deps = &self.deps;
+        deps.nodes.before_start(&mut *lease).await?;
         let root = deps.environment.root.current().root;
         match deps.supervisor.inventory(&root).await? {
             InventoryState::Stopped => {}
@@ -131,14 +132,26 @@ impl StartComfy {
     }
 }
 pub struct StopComfy {
-    supervisor: std::sync::Arc<dyn RuntimeSupervisor>,
+    deps: RuntimeDeps,
 }
 impl StopComfy {
-    pub fn new(supervisor: std::sync::Arc<dyn RuntimeSupervisor>) -> Self {
-        Self { supervisor }
+    pub fn new(deps: RuntimeDeps) -> Self {
+        Self { deps }
     }
     pub async fn execute(&self) -> Result<RuntimeStatus, RuntimeError> {
-        self.supervisor.stop().await
+        // Stop must be able to cancel a Start which already holds the gate.
+        self.deps.supervisor.stop().await?;
+        let mut lease = self
+            .deps
+            .environment
+            .gate
+            .acquire()
+            .await
+            .map_err(|_| RuntimeError::Busy)?;
+        // Another Start may have won the interval before we acquired the gate.
+        let status = self.deps.supervisor.stop().await?;
+        self.deps.nodes.after_stop(&mut *lease).await?;
+        Ok(status)
     }
 }
 pub struct RestartComfy {
@@ -149,7 +162,7 @@ impl RestartComfy {
         Self { deps }
     }
     pub async fn execute(&self) -> Result<RuntimeStatus, RuntimeError> {
-        let lease = self
+        let mut lease = self
             .deps
             .environment
             .gate
@@ -157,6 +170,7 @@ impl RestartComfy {
             .await
             .map_err(|_| RuntimeError::Busy)?;
         self.deps.supervisor.stop().await?;
+        self.deps.nodes.after_stop(&mut *lease).await?;
         StartComfy::new(self.deps.clone())
             .start_under_lease(lease)
             .await

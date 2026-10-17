@@ -165,6 +165,10 @@ pub enum RuntimeError {
     Busy,
     #[error("ComfyUI must be stopped before continuing")]
     NeedsStop,
+    #[error("interrupted custom-node work must be resolved before launch")]
+    NodeRecoveryRequired,
+    #[error("ComfyUI stopped, but custom nodes could not be rescanned; retry Rescan")]
+    NodeRescanFailed,
     #[error("a verified active environment is required; repair the selected environment first")]
     EnvironmentNotUsable,
     #[error("installation recovery is required: {0}")]

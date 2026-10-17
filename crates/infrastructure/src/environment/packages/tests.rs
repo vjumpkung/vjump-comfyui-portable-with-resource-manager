@@ -60,6 +60,65 @@ fn install_arguments_enforce_wheels_the_index_and_the_constraints() {
 }
 
 #[test]
+fn a_guarded_requirement_file_is_fed_on_stdin_from_the_guarded_directory() {
+    use application::environment::{GuardedRequirements, Retained};
+    use std::sync::Arc;
+    let python = Path::new("/envs/e/bin/python");
+    let file = PathBuf::from("/c/custom_nodes/pack/requirements.txt");
+    let retained = Retained::new(Arc::new(()));
+    let spec = InstallSpec {
+        requirement_files: vec!["/c/ComfyUI/requirements.txt".into(), file.clone()],
+        guarded: Some(GuardedRequirements {
+            path: file,
+            directory: "/c/custom_nodes/pack".into(),
+            text: Arc::from(
+                &b"numpy
+"[..],
+            ),
+            retained: retained.clone(),
+        }),
+        ..InstallSpec::default()
+    };
+    assert_eq!(
+        strings(install_args(python, &spec, false)),
+        [
+            "pip",
+            "install",
+            "--python",
+            "/envs/e/bin/python",
+            "--only-binary",
+            ":all:",
+            "-r",
+            "/c/ComfyUI/requirements.txt",
+            "-r",
+            "-"
+        ],
+        "only the guarded file is replaced by standard input"
+    );
+    let command = with_guarded(CommandSpec::new("uv"), &spec);
+    assert_eq!(
+        command.cwd.as_deref(),
+        Some(Path::new("/c/custom_nodes/pack"))
+    );
+    assert_eq!(
+        command.stdin.as_deref(),
+        Some(
+            &b"numpy
+"[..]
+        )
+    );
+    assert_eq!(command.retained, retained);
+    // A spec which does not list the guarded file leaves the command and its arguments alone.
+    let unlisted = InstallSpec {
+        requirement_files: vec![],
+        ..spec
+    };
+    assert!(!strings(install_args(python, &unlisted, false)).contains(&"-".to_owned()));
+    let command = with_guarded(CommandSpec::new("uv"), &unlisted);
+    assert!(command.cwd.is_none() && command.stdin.is_none() && command.retained.is_empty());
+}
+
+#[test]
 fn a_dry_run_lists_installs_and_removals() {
     let lines: Vec<String> = [
         "Using Python 3.13.16 environment at: venv1",

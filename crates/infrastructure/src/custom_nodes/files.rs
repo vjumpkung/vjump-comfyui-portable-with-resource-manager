@@ -2,29 +2,42 @@
 //! names and operation IDs; staging and backups live under `custom_nodes/.disabled/`, which ComfyUI
 //! never loads. Mutations are no-replace renames inside that tree, never unchecked deletes.
 use super::{
-    git::{GitNodes, RefKind, Resolved},
-    provenance::{self, MARKER, TRACKING, repository_folder, safe_folder},
+    git::{GitNodes, RefKind, Resolved, refused},
+    paths::{
+        Entry, NodePaths, PinnedLocation, entry_path, exists as entry_exists, filesystem,
+        read_input, remove, rename, safe_name,
+    },
+    provenance::{MARKER, TRACKING, repository_folder, safe_folder},
     registry::RegistryHttp,
     scan,
-    tree::{self, is_link, read_text, rename_no_replace, sha256_file, validate_tree},
+    tree::{self, is_link, read_text, sha256_file, validate_tree},
 };
 use crate::{
     custom_nodes::compat::evaluate,
     shared::{
-        archive::{ArchiveError, ArchiveKind, ExtractLimits, extract},
+        archive::ExtractLimits,
         download::sha256_hex,
+        model_paths::{PinnedDirectory, identity},
     },
 };
 use application::{custom_nodes::*, environment::StepContext};
 use async_trait::async_trait;
-use domain::{custom_nodes::*, shared::model_values::SafeFileName};
+use domain::{
+    custom_nodes::*, models::acquisition::FileIdentity, shared::model_values::SafeFileName,
+};
 use std::{
-    fs, io,
+    fs,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-pub type Recycler = Arc<dyn Fn(&Path) -> io::Result<()> + Send + Sync>;
+/// Upper bounds for the root inputs a guarded location snapshots.
+const REQUIREMENTS_LIMIT: u64 = 256 * 1024;
+const SCRIPT_LIMIT: u64 = 16 << 20;
+
+pub type Recycler =
+    Arc<dyn Fn(&PinnedDirectory, &SafeFileName, &FileIdentity) -> io::Result<()> + Send + Sync>;
 
 pub struct LocalNodeFiles {
     pub registry: Arc<RegistryHttp>,
@@ -40,73 +53,6 @@ pub fn node_limits() -> ExtractLimits {
         max_total_bytes: 2 << 30,
         max_ratio: 100,
     }
-}
-
-struct Paths {
-    root: PathBuf,
-    cn: PathBuf,
-    disabled: PathBuf,
-}
-
-impl Paths {
-    fn new(root: &Path) -> Self {
-        let cn = root.join("ComfyUI").join("custom_nodes");
-        Self {
-            root: root.to_owned(),
-            disabled: cn.join(".disabled"),
-            cn,
-        }
-    }
-    fn staging(&self, op: &NodeId) -> PathBuf {
-        self.disabled
-            .join(format!(".vjump-staging-{}", op.as_str()))
-    }
-    fn staging_zip(&self, op: &NodeId) -> PathBuf {
-        self.disabled
-            .join(format!(".vjump-staging-{}.zip", op.as_str()))
-    }
-    fn staging_hoist(&self, op: &NodeId) -> PathBuf {
-        self.disabled
-            .join(format!(".vjump-staging-{}-hoist", op.as_str()))
-    }
-    fn backup(&self, op: &NodeId) -> PathBuf {
-        self.disabled.join(format!(".vjump-backup-{}", op.as_str()))
-    }
-    fn hooks(&self) -> PathBuf {
-        self.disabled.join(".vjump-no-hooks")
-    }
-    fn location(&self, name: &SafeFileName, enabled: bool) -> PathBuf {
-        if enabled {
-            self.cn.join(name.as_str())
-        } else {
-            self.disabled.join(name.as_str())
-        }
-    }
-    fn live(&self, node: &InstalledNode) -> PathBuf {
-        self.location(&node.name, node.enabled)
-    }
-    /// The folder, validated: real directories only, never a link.
-    fn ensure_layout(&self) -> Result<(), NodeAppError> {
-        let comfy = self.root.join("ComfyUI");
-        if !comfy.is_dir() {
-            return Err(NodeAppError::Filesystem);
-        }
-        for directory in [&self.cn, &self.disabled] {
-            match directory.symlink_metadata() {
-                Ok(meta) if is_link(&meta) || !meta.is_dir() => {
-                    return Err(NodeAppError::UnsafeSource);
-                }
-                Ok(_) => {}
-                Err(_) => fs::create_dir(directory).map_err(|_| NodeAppError::Filesystem)?,
-            }
-        }
-        fs::create_dir_all(self.hooks()).map_err(|_| NodeAppError::Filesystem)?;
-        Ok(())
-    }
-}
-
-fn exists(path: &Path) -> bool {
-    path.symlink_metadata().is_ok()
 }
 
 fn not_link(path: &Path) -> Result<(), NodeAppError> {
@@ -125,25 +71,6 @@ async fn blocking<T: Send + 'static>(
         .map_err(|_| NodeAppError::Filesystem)?
 }
 
-fn archive_error(error: ArchiveError) -> NodeAppError {
-    match error {
-        ArchiveError::Io(_) | ArchiveError::StagingNotFresh => NodeAppError::Filesystem,
-        _ => NodeAppError::UnsafeSource,
-    }
-}
-
-fn remove_owned(path: &Path) {
-    match path.symlink_metadata() {
-        Ok(meta) if is_link(&meta) || meta.is_file() => {
-            let _ = fs::remove_file(path).or_else(|_| fs::remove_dir(path));
-        }
-        Ok(_) => {
-            let _ = fs::remove_dir_all(path);
-        }
-        Err(_) => {}
-    }
-}
-
 fn parse_requirement_lines(text: &str) -> Vec<String> {
     text.lines()
         .map(str::trim)
@@ -153,14 +80,76 @@ fn parse_requirement_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Digests of a node directory: its tree, root requirements and root install hook.
+fn remove_owned(entry: &Entry, expected: &FileIdentity) -> Result<(), NodeAppError> {
+    let current = entry.0.open_entry(&entry.1).map_err(filesystem)?;
+    if identity(&current).map_err(filesystem)?.platform_id != expected.platform_id {
+        return Err(NodeAppError::UnsafeSource);
+    }
+    drop(current);
+    remove(entry)
+}
+
+#[cfg(test)]
+thread_local! {
+    static REGISTRY_BOUNDARY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn after_archive_open(boundary: impl FnOnce() + 'static) {
+    REGISTRY_BOUNDARY.with(|slot| {
+        assert!(slot.borrow().is_none());
+        *slot.borrow_mut() = Some(Box::new(boundary));
+    });
+}
+
+#[cfg(test)]
+fn registry_boundary() {
+    REGISTRY_BOUNDARY.with(|slot| {
+        if let Some(boundary) = slot.borrow_mut().take() {
+            boundary();
+        }
+    });
+}
+
+/// A Git node's `.git` must be a real directory. The tree walk leaves it to Git, so a link or
+/// special entry there would otherwise go unchecked. A missing one is not refused: the node can
+/// still be inspected, disabled and removed.
+fn validate_git_dir(dir: &Path) -> Result<(), NodeAppError> {
+    match dir.join(".git").symlink_metadata() {
+        Ok(meta) if meta.is_dir() && !is_link(&meta) => Ok(()),
+        Ok(_) => Err(NodeAppError::UnsafeSource),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(filesystem(error)),
+    }
+}
+
+/// Review warnings of an exact release, completed by the node's own metadata. A dimension the
+/// release leaves unknown falls back to the node's, and a flag or deprecation on either applies.
+/// The warnings come from one merged evaluation, so none repeats and the order is fixed.
+fn review_warnings(release: Compatibility, node: &Compatibility) -> Vec<String> {
+    let known = |own: Support, other: Support| {
+        if own == Support::Unknown { other } else { own }
+    };
+    Compatibility {
+        os: known(release.os, node.os),
+        accelerator: known(release.accelerator, node.accelerator),
+        comfyui: known(release.comfyui, node.comfyui),
+        flagged: release.flagged || node.flagged,
+        deprecated: release.deprecated || node.deprecated,
+    }
+    .warnings()
+}
+
+/// A Git node's `.git` must be a real directory. The tree walk leaves it to Git, so a link or
+/// tree digest covers every file, tracked or not, except the app's own files, the top-level
+/// `.git` and `__pycache__`; a Git node's exact commit is carried by its source instead.
 fn read_tree(dir: &Path, git_node: bool) -> Result<TreeSnapshot, NodeAppError> {
     not_link(dir)?;
-    let digest = if git_node && let Some(commit) = scan::read_git(dir).and_then(|m| m.commit) {
-        format!("git:{commit}")
-    } else {
-        tree::tree_digest(dir)?
-    };
+    if git_node {
+        validate_git_dir(dir)?;
+    }
+    validate_tree(dir)?;
+    let digest = tree::tree_digest(dir)?;
     let requirements = read_text(&dir.join("requirements.txt"), 256 * 1024);
     let hook = {
         let path = dir.join("install.py");
@@ -182,37 +171,106 @@ fn read_tree(dir: &Path, git_node: bool) -> Result<TreeSnapshot, NodeAppError> {
 
 /// Moves the only top-level directory of an extracted archive up one level, so GitHub-style
 /// `repo-main/...` archives and flat registry archives install the same way.
-fn hoist_single_root(staging: &Path, hoist: &Path) -> Result<(), NodeAppError> {
-    let entries: Vec<_> = fs::read_dir(staging)
-        .map_err(|_| NodeAppError::Filesystem)?
-        .flatten()
-        .collect();
+fn hoist_single_root(paths: &NodePaths, op: &NodeId) -> Result<(), NodeAppError> {
+    let staging = paths.staging(op);
+    let directory = staging.0.child(&staging.1, false).map_err(filesystem)?;
+    let entries = fs::read_dir(directory.anchored_path())
+        .map_err(filesystem)?
+        .collect::<io::Result<Vec<_>>>()
+        .map_err(filesystem)?;
     let [only] = entries.as_slice() else {
         return Ok(());
     };
-    let meta = only
-        .path()
-        .symlink_metadata()
-        .map_err(|_| NodeAppError::Filesystem)?;
-    if !meta.is_dir() || is_link(&meta) {
+    let name = only
+        .file_name()
+        .into_string()
+        .ok()
+        .and_then(|n| SafeFileName::new(n).ok())
+        .ok_or(NodeAppError::UnsafeSource)?;
+    let file = directory.open_entry(&name).map_err(filesystem)?;
+    if !file.metadata().map_err(filesystem)?.is_dir() {
         return Ok(());
     }
-    rename_no_replace(&only.path(), hoist).map_err(|_| NodeAppError::Filesystem)?;
-    for child in fs::read_dir(hoist)
-        .map_err(|_| NodeAppError::Filesystem)?
-        .flatten()
-    {
-        rename_no_replace(&child.path(), &staging.join(child.file_name()))
-            .map_err(|_| NodeAppError::Filesystem)?;
+    let hoist = paths.staging_hoist(op);
+    rename(&(directory.clone(), name), &hoist)?;
+    drop(file);
+    let hoisted = hoist.0.child(&hoist.1, false).map_err(filesystem)?;
+    for child in fs::read_dir(hoisted.anchored_path()).map_err(filesystem)? {
+        let name = child
+            .map_err(filesystem)?
+            .file_name()
+            .into_string()
+            .ok()
+            .and_then(|n| SafeFileName::new(n).ok())
+            .ok_or(NodeAppError::UnsafeSource)?;
+        rename(&(hoisted.clone(), name.clone()), &(directory.clone(), name))?;
     }
-    fs::remove_dir(hoist).map_err(|_| NodeAppError::Filesystem)
+    drop(hoisted);
+    remove(&hoist)
+}
+
+fn write_marker(
+    directory: &PinnedDirectory,
+    name: &str,
+    source: &NodeSource,
+    digest: Option<&str>,
+) -> Result<(), NodeAppError> {
+    let document = serde_json::json!({
+        "schema": 1, "name": name, "source": super::sqlite::source_to_json(source), "artifact_digest": digest,
+    });
+    let mut file = directory
+        .open(&safe_name(MARKER), true, true)
+        .map_err(filesystem)?;
+    file.write_all(&serde_json::to_vec_pretty(&document).map_err(|_| NodeAppError::Filesystem)?)
+        .and_then(|()| file.sync_all())
+        .map_err(filesystem)
+}
+
+fn write_tracking(directory: &PinnedDirectory) -> Result<(), NodeAppError> {
+    let path = directory.anchored_path();
+    let mut lines = Vec::new();
+    for entry in walkdir::WalkDir::new(&path)
+        .follow_links(false)
+        .sort_by_file_name()
+    {
+        let entry = entry.map_err(|_| NodeAppError::Filesystem)?;
+        if entry.depth() == 0 || !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(&path)
+            .map_err(|_| NodeAppError::Filesystem)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative != MARKER && relative != TRACKING {
+            lines.push(relative);
+        }
+    }
+    let mut file = directory
+        .open(&safe_name(TRACKING), true, true)
+        .map_err(filesystem)?;
+    file.write_all((lines.join("\n") + "\n").as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(filesystem)
+}
+
+fn recycle_backup(paths: &NodePaths, op: &NodeId, recycler: &Recycler) -> Result<(), NodeAppError> {
+    let backup = paths.backup(op);
+    if !entry_exists(&backup)? {
+        return Ok(());
+    }
+    let file = backup.0.open_entry(&backup.1).map_err(filesystem)?;
+    let expected = identity(&file).map_err(filesystem)?;
+    drop(file);
+    recycler(&backup.0, &backup.1, &expected).map_err(filesystem)?;
+    if entry_exists(&backup)? {
+        return Err(NodeAppError::Filesystem);
+    }
+    Ok(())
 }
 
 impl LocalNodeFiles {
-    fn paths(&self, root: &Path) -> Paths {
-        Paths::new(root)
-    }
-
     async fn prepare_registry(
         &self,
         root: &Path,
@@ -222,17 +280,14 @@ impl LocalNodeFiles {
         prior: Option<&InstalledNode>,
         ctx: &StepContext,
     ) -> Result<StagedNode, NodeAppError> {
-        let paths = self.paths(root);
+        let paths = Arc::new(NodePaths::open(root, true)?);
         let name = match prior {
             Some(prior) => prior.name.clone(),
             None => safe_folder(id).ok_or(NodeAppError::InvalidRequest)?,
         };
-        {
-            let layout = Paths::new(root);
-            blocking(move || layout.ensure_layout()).await?;
-        }
         if prior.is_none()
-            && (exists(&paths.location(&name, true)) || exists(&paths.location(&name, false)))
+            && (entry_exists(&paths.named_location(&name, true))?
+                || entry_exists(&paths.named_location(&name, false))?)
         {
             return Err(NodeAppError::TargetExists);
         }
@@ -261,83 +316,88 @@ impl LocalNodeFiles {
             .download_url
             .clone()
             .ok_or(NodeAppError::InvalidRegistry)?;
-        let node = self.registry.node(id).await.ok();
-        let (publisher, repository) = match (&node, prior.map(|p| &p.source)) {
-            (Some(n), _) => (n.publisher.clone(), n.repository.clone()),
-            (
-                None,
-                Some(NodeSource::Registry {
-                    publisher,
-                    repository,
-                    ..
-                }),
-            ) => (publisher.clone(), repository.clone()),
-            _ => (None, None),
-        };
+        // Node-level metadata is part of the review: a refusal or an unreadable body aborts the
+        // preparation before anything is downloaded, with the registry's own error.
+        let node = self.registry.node(id).await?;
         let source = NodeSource::Registry {
             id: id.to_owned(),
-            publisher,
+            publisher: node.publisher.clone(),
             version: exact.clone(),
-            repository,
+            repository: node.repository.clone(),
         };
         ctx.log(format!("Downloading {id} {exact}"));
         let zip = paths.staging_zip(op);
         let staging = paths.staging(op);
         let hoist = paths.staging_hoist(op);
+        // Refuse foreign entries before acquiring anything owned by this attempt.
+        if entry_exists(&staging)? || entry_exists(&hoist)? {
+            return Err(NodeAppError::UnsafeSource);
+        }
+        let mut archive = zip.0.open(&zip.1, true, true).map_err(|e| {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                NodeAppError::UnsafeSource
+            } else {
+                filesystem(e)
+            }
+        })?;
+        let archive_identity = identity(&archive).map_err(filesystem)?;
+        #[cfg(test)]
+        registry_boundary();
         let result = async {
-            let artifact = self.registry.download(&url, &zip, &ctx.cancel).await?;
+            let artifact = self
+                .registry
+                .download(&url, &mut archive, &ctx.cancel)
+                .await?;
             let limits = self.limits;
-            let (zip_path, staging_path, hoist_path, marker_source, marker_name, digest) = (
-                zip.clone(),
-                staging.clone(),
-                hoist.clone(),
+            let (layout, operation, marker_source, marker_name, digest) = (
+                paths.clone(),
+                op.clone(),
                 source.clone(),
                 name.as_str().to_owned(),
                 artifact.sha256.clone(),
             );
             let tree = blocking(move || {
-                fs::create_dir(&staging_path).map_err(|_| NodeAppError::Filesystem)?;
-                extract(&zip_path, ArchiveKind::Zip, &staging_path, limits)
-                    .map_err(archive_error)?;
-                hoist_single_root(&staging_path, &hoist_path)?;
-                // The app owns these two files; an archive may not supply them.
-                if exists(&staging_path.join(MARKER)) {
-                    return Err(NodeAppError::UnsafeSource);
+                let staging = layout.staging(&operation);
+                if entry_exists(&staging)? {
+                    return Err(NodeAppError::Filesystem);
                 }
-                validate_tree(&staging_path)?;
-                remove_owned(&staging_path.join(TRACKING));
-                let snapshot = read_tree(&staging_path, false)?;
-                provenance::write_tracking(&staging_path).map_err(|_| NodeAppError::Filesystem)?;
-                provenance::write_marker(
-                    &staging_path,
-                    &marker_name,
-                    &marker_source,
-                    Some(&digest),
-                )
-                .map_err(|_| NodeAppError::Filesystem)?;
-                let _ = fs::remove_file(&zip_path);
-                Ok(snapshot)
+                fs::create_dir(entry_path(&staging)).map_err(filesystem)?;
+                let directory = staging.0.child(&staging.1, false).map_err(filesystem)?;
+                let owned = identity(&directory.file).map_err(filesystem)?;
+                let extracted = (|| {
+                    tree::extract_zip(archive, &directory, limits)?;
+                    hoist_single_root(&layout, &operation)?;
+                    let staging_path = directory.anchored_path();
+                    if entry_exists(&(directory.clone(), safe_name(MARKER)))? {
+                        return Err(NodeAppError::UnsafeSource);
+                    }
+                    validate_tree(&staging_path)?;
+                    remove(&(directory.clone(), safe_name(TRACKING)))?;
+                    let snapshot = read_tree(&staging_path, false)?;
+                    write_tracking(&directory)?;
+                    write_marker(&directory, &marker_name, &marker_source, Some(&digest))?;
+                    Ok(snapshot)
+                })();
+                drop(directory);
+                if extracted.is_err() {
+                    remove_owned(&staging, &owned)?;
+                    // A refused foreign hoist entry was rejected before this attempt began, so
+                    // any hoist entry present now belongs to this extraction.
+                    remove(&layout.staging_hoist(&operation))?;
+                }
+                extracted
             })
             .await?;
             Ok::<_, NodeAppError>((artifact, tree))
         }
         .await;
-        remove_owned(&zip);
-        let (artifact, tree) = match result {
-            Ok(value) => value,
-            Err(error) => {
-                remove_owned(&staging);
-                remove_owned(&hoist);
-                return Err(error);
-            }
-        };
-        let host = self.registry.host();
-        let mut warnings = evaluate(&info.metadata, &host).warnings();
-        if info.metadata.deprecated == Some(true)
-            && !warnings.iter().any(|w| w.contains("deprecated"))
-        {
-            warnings.push("This node version is deprecated".into());
-        }
+        // Refuse a substituted entry and preserve protected copies for recovery.
+        remove_owned(&zip, &archive_identity)?;
+        let (artifact, tree) = result?;
+        let warnings = review_warnings(
+            evaluate(&info.metadata, &self.registry.host()),
+            &node.evaluated,
+        );
         Ok(StagedNode {
             source,
             name,
@@ -359,7 +419,7 @@ impl LocalNodeFiles {
         reference: Option<&str>,
         ctx: &StepContext,
     ) -> Result<StagedNode, NodeAppError> {
-        let paths = self.paths(root);
+        let paths = Arc::new(NodePaths::open(root, true)?);
         let remote = self.git.validate(url)?;
         let name = repository_folder(&remote.identity)
             .or_else(|| {
@@ -370,50 +430,83 @@ impl LocalNodeFiles {
                     .and_then(|n| safe_folder(n.strip_suffix(".git").unwrap_or(n)))
             })
             .ok_or(NodeAppError::UnsafeSource)?;
+        if entry_exists(&paths.named_location(&name, true))?
+            || entry_exists(&paths.named_location(&name, false))?
         {
-            let layout = Paths::new(root);
-            blocking(move || layout.ensure_layout()).await?;
-        }
-        if exists(&paths.location(&name, true)) || exists(&paths.location(&name, false)) {
             return Err(NodeAppError::TargetExists);
         }
         let hooks = paths.hooks();
         ctx.log("Resolving the repository reference");
         let resolved = self
             .git
-            .resolve(root, &hooks, &remote, reference, &ctx.cancel)
+            .resolve(
+                &paths.root.anchored_path(),
+                &hooks,
+                &remote,
+                reference,
+                &ctx.cancel,
+            )
             .await?;
-        let staging = paths.staging(op);
+        let staged = paths.staging(op);
+        if entry_exists(&staged)? {
+            return Err(NodeAppError::Filesystem);
+        }
+        let directory = staged.0.child(&staged.1, true).map_err(filesystem)?;
+        let staging = directory.anchored_path();
         ctx.log(format!("Cloning at commit {}", resolved.commit));
         let cloned = async {
             self.git
-                .clone_checkout(root, &hooks, &remote, &resolved, &staging, ctx)
+                .clone_checkout(
+                    &paths.root.anchored_path(),
+                    &hooks,
+                    &remote,
+                    &resolved,
+                    &staging,
+                    ctx,
+                )
                 .await?;
-            let staging = staging.clone();
+            let checkout = staging.clone();
+            let directory = directory.clone();
             let source = git_source(&remote.identity, &resolved);
             let (marker_source, marker_name) = (source.clone(), name.as_str().to_owned());
             let tree = blocking(move || {
-                validate_tree(&staging)?;
+                validate_tree(&checkout)?;
                 // Keep the app's marker out of `git status`.
-                let exclude = staging.join(".git").join("info").join("exclude");
-                if let Some(parent) = exclude.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-                let mut text = fs::read_to_string(&exclude).unwrap_or_default();
+                let git = directory
+                    .child(&safe_name(".git"), false)
+                    .map_err(filesystem)?;
+                let info = git.child(&safe_name("info"), true).map_err(filesystem)?;
+                let exclude = safe_name("exclude");
+                let mut text = read_text(&info.anchored_path().join(exclude.as_str()), 1 << 20)
+                    .unwrap_or_default();
                 text.push_str(&format!("\n{MARKER}\n{TRACKING}\n"));
-                fs::write(&exclude, text).map_err(|_| NodeAppError::Filesystem)?;
-                provenance::write_marker(&staging, &marker_name, &marker_source, None)
-                    .map_err(|_| NodeAppError::Filesystem)?;
-                read_tree(&staging, true)
+                let mut file = match info.open(&exclude, true, false) {
+                    Ok(file) => file,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                        info.open(&exclude, true, true).map_err(filesystem)?
+                    }
+                    Err(e) => return Err(filesystem(e)),
+                };
+                file.set_len(0)
+                    .and_then(|()| file.write_all(text.as_bytes()))
+                    .and_then(|()| file.sync_all())
+                    .map_err(filesystem)?;
+                write_marker(&directory, &marker_name, &marker_source, None)?;
+                read_tree(&checkout, true)
             })
             .await?;
+            // The reviewed tree is exactly the checkout of the resolved commit.
+            self.git
+                .require_clean(&paths.root.anchored_path(), &hooks, &staging)
+                .await?;
             Ok::<_, NodeAppError>((source, tree))
         }
         .await;
         let (source, tree) = match cloned {
             Ok(value) => value,
             Err(error) => {
-                remove_owned(&staging);
+                drop(directory);
+                remove(&staged)?;
                 return Err(error);
             }
         };
@@ -448,12 +541,10 @@ impl LocalNodeFiles {
         reference: Option<&str>,
         ctx: &StepContext,
     ) -> Result<StagedNode, NodeAppError> {
-        let paths = self.paths(root);
-        {
-            let layout = Paths::new(root);
-            blocking(move || layout.ensure_layout()).await?;
-        }
-        let dir = paths.live(prior);
+        let paths = Arc::new(NodePaths::open(root, true)?);
+        let live = paths.location(prior);
+        let live_directory = live.0.child(&live.1, false).map_err(filesystem)?;
+        let dir = live_directory.anchored_path();
         let NodeSource::Git {
             repository, branch, ..
         } = &prior.source
@@ -461,69 +552,131 @@ impl LocalNodeFiles {
             return Err(NodeAppError::InvalidRequest);
         };
         {
-            let dir = dir.clone();
-            blocking(move || not_link(&dir)).await?;
-        }
-        if scan::read_git(&dir).is_none() {
-            return Err(NodeAppError::GitRefused);
+            let (dir, live_directory) = (dir.clone(), live_directory.clone());
+            blocking(move || {
+                not_link(&dir)?;
+                pin_git_dir(&live_directory)
+            })
+            .await?;
         }
         let hooks = paths.hooks();
         ctx.log("Fetching and freezing the update target");
         let target = self
             .git
-            .freeze_update(root, &hooks, &dir, reference, ctx)
+            .freeze_update(&paths.root.anchored_path(), &hooks, &dir, reference, ctx)
             .await?;
-        // Dependencies are previewed from the target's files, read without checking them out.
-        let staging = paths.staging(op);
-        let requirements = self
+        // The reviewed tree comes from the repository the node was installed from.
+        let remote = self
             .git
-            .show_blob(root, &hooks, &dir, &target, "requirements.txt")
-            .await;
-        let hook = self
-            .git
-            .show_blob(root, &hooks, &dir, &target, "install.py")
-            .await;
-        let stub = staging.clone();
-        let (requirements_text, hook_text) = (requirements.clone(), hook.clone());
-        blocking(move || {
-            fs::create_dir(&stub).map_err(|_| NodeAppError::Filesystem)?;
-            if let Some(text) = &requirements_text {
-                fs::write(stub.join("requirements.txt"), text)
-                    .map_err(|_| NodeAppError::Filesystem)?;
+            .origin(&paths.root.anchored_path(), &hooks, &dir)
+            .await?;
+        if remote.identity != *repository {
+            return Err(NodeAppError::UnsafeSource);
+        }
+        // The live update stays an in-place fast-forward; this complete checkout of the frozen
+        // target is the evidence that is reviewed and later compared with the live result.
+        let staged = paths.staging(op);
+        if entry_exists(&staged)? {
+            return Err(NodeAppError::Filesystem);
+        }
+        let directory = staged.0.child(&staged.1, true).map_err(filesystem)?;
+        let staging = directory.anchored_path();
+        ctx.log(format!("Staging the complete tree at commit {target}"));
+        let frozen = Resolved {
+            commit: target.clone(),
+            branch: None,
+            kind: RefKind::Commit,
+        };
+        let cloned = async {
+            self.git
+                .clone_checkout(
+                    &paths.root.anchored_path(),
+                    &hooks,
+                    &remote,
+                    &frozen,
+                    &staging,
+                    ctx,
+                )
+                .await?;
+            let checkout = staging.clone();
+            let tree = blocking(move || read_tree(&checkout, true)).await?;
+            self.git
+                .require_clean(&paths.root.anchored_path(), &hooks, &staging)
+                .await?;
+            Ok::<_, NodeAppError>(tree)
+        }
+        .await;
+        let tree = match cloned {
+            Ok(tree) => tree,
+            Err(error) => {
+                // The staging directory was created by this attempt after the foreign-entry check.
+                drop(directory);
+                remove(&staged)?;
+                return Err(error);
             }
-            if let Some(text) = &hook_text {
-                fs::write(stub.join("install.py"), text).map_err(|_| NodeAppError::Filesystem)?;
-            }
-            Ok(())
-        })
-        .await?;
+        };
         let mut warnings = Vec::new();
-        if self
-            .git
-            .show_blob(root, &hooks, &dir, &target, ".gitmodules")
-            .await
-            .is_some()
-        {
+        if staging.join(".gitmodules").is_file() {
             warnings.push("This repository declares submodules; they are not updated".into());
         }
         Ok(StagedNode {
             source: NodeSource::Git {
                 repository: repository.clone(),
-                commit: target.clone(),
+                commit: target,
                 branch: branch.clone(),
             },
             name: prior.name.clone(),
-            tree_digest: format!("git:{target}"),
+            tree_digest: tree.digest,
             artifact_digest: None,
-            requirement_lines: requirements
-                .as_deref()
-                .map(parse_requirement_lines)
-                .unwrap_or_default(),
-            requirements_digest: requirements.as_ref().map(|t| sha256_hex(t.as_bytes())),
-            hook_digest: hook.as_ref().map(|t| sha256_hex(t.as_bytes())),
+            requirement_lines: tree.requirement_lines,
+            requirements_digest: tree.requirements_digest,
+            hook_digest: tree.hook_digest,
             dependencies: Vec::new(),
             warnings,
         })
+    }
+
+    /// Checks a live Git update against the review. Nothing is reset or cleaned on failure: edits
+    /// stay in place and recovery keeps the operation unresolved until the files are the reviewed
+    /// ones.
+    async fn verify_applied(
+        &self,
+        paths: &NodePaths,
+        directory: &Arc<PinnedDirectory>,
+        operation: &NodeOperation,
+    ) -> Result<(), NodeAppError> {
+        let NodeSource::Git {
+            repository, commit, ..
+        } = &operation.node.source
+        else {
+            return Err(NodeAppError::InvalidRequest);
+        };
+        let (root, hooks, dir) = (
+            paths.root.anchored_path(),
+            paths.hooks(),
+            directory.anchored_path(),
+        );
+        let applied = self.git.require_clean(&root, &hooks, &dir).await?;
+        if applied.revision.commit != *commit {
+            return Err(NodeAppError::Failed(
+                "The repository is not at the reviewed commit".into(),
+            ));
+        }
+        if self.git.origin(&root, &hooks, &dir).await?.identity != *repository {
+            return Err(NodeAppError::UnsafeSource);
+        }
+        let checked = directory.clone();
+        let digest = blocking(move || {
+            let path = checked.anchored_path();
+            validate_git_dir(&path)?;
+            validate_tree(&path)?;
+            tree::tree_digest(&path)
+        })
+        .await?;
+        if digest != operation.node.tree_digest {
+            return Err(NodeAppError::StalePlan);
+        }
+        Ok(())
     }
 }
 
@@ -549,28 +702,28 @@ impl NodeFiles for LocalNodeFiles {
         if node.single_file || !is_git(node) {
             return Err(NodeAppError::InvalidRequest);
         }
-        let paths = self.paths(root);
-        let location = paths.live(node);
-        let checked = location.clone();
-        let enabled = node.enabled;
-        let validation = Paths::new(root);
+        let paths = Arc::new(NodePaths::open(root, true)?);
+        let entry = paths.location(node);
+        let directory = entry.0.child(&entry.1, false).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                NodeAppError::NotFound
+            } else {
+                filesystem(error)
+            }
+        })?;
+        let location = directory.anchored_path();
+        let checked = directory.clone();
         blocking(move || {
-            for path in [
-                &validation.root,
-                &validation.root.join("ComfyUI"),
-                &validation.cn,
-            ] {
-                not_link(path)?;
-            }
-            if !enabled {
-                not_link(&validation.disabled)?;
-            }
-            not_link(&checked)?;
-            not_link(&checked.join(".git"))?;
-            validate_tree(&checked)
+            checked
+                .child(&safe_name(".git"), false)
+                .map_err(filesystem)?;
+            validate_tree(&checked.anchored_path())
         })
         .await?;
-        let mut inspection = self.git.inspect(root, &paths.hooks(), &location).await?;
+        let mut inspection = self
+            .git
+            .inspect(&paths.root.anchored_path(), &paths.hooks(), &location)
+            .await?;
         inspection.state.status = crate::shared::logging::redact(&inspection.state.status)
             .chars()
             .take(2000)
@@ -624,9 +777,8 @@ impl NodeFiles for LocalNodeFiles {
             },
             _ => Err(NodeAppError::InvalidRequest),
         };
-        if outcome.is_err() {
-            self.discard_staging(root, operation).await.ok();
-        }
+        // Each preparation removes only the entries it created itself: a refused create-new
+        // may have met a foreign entry, which must survive.
         outcome
     }
 
@@ -636,47 +788,122 @@ impl NodeFiles for LocalNodeFiles {
         node: &InstalledNode,
         staged: Option<&NodeId>,
     ) -> Result<TreeSnapshot, NodeAppError> {
-        let paths = self.paths(root);
+        let paths = Arc::new(NodePaths::open(root, true)?);
         let node = node.clone();
-        let location = match staged {
+        let entry = match staged {
             Some(op) => paths.staging(op),
-            None => paths.live(&node),
+            None => paths.location(&node),
         };
-        let git_update_stub = staged.is_some() && is_git(&node) && !location.join(".git").exists();
-        blocking(move || {
+        let require_clean = staged.is_some() && is_git(&node);
+        let (snapshot, directory) = blocking(move || {
             if node.single_file {
-                not_link(&location)?;
-                let digest = sha256_file(&location).map_err(|_| NodeAppError::Filesystem)?;
-                return Ok(TreeSnapshot {
-                    digest: format!("file:{digest}"),
-                    requirements_digest: None,
-                    hook_digest: None,
-                    requirement_lines: Vec::new(),
-                });
+                let mut file = entry.0.open(&entry.1, false, false).map_err(filesystem)?;
+                let digest = crate::shared::model_paths::digest(&mut file).map_err(filesystem)?;
+                return Ok((
+                    TreeSnapshot {
+                        digest: format!("file:{}", digest.as_str()),
+                        requirements_digest: None,
+                        hook_digest: None,
+                        requirement_lines: Vec::new(),
+                    },
+                    None,
+                ));
             }
-            if git_update_stub {
-                // The stub holds only the target's requirement and hook files.
-                let mut snapshot = read_tree_files_only(&location)?;
-                if let NodeSource::Git { commit, .. } = &node.source {
-                    snapshot.digest = format!("git:{commit}");
+            let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
+            let snapshot = snapshot_directory(&directory, &node)?;
+            Ok((snapshot, Some(directory)))
+        })
+        .await?;
+        // A staged Git checkout is review evidence: it must still be exactly its commit. Live
+        // nodes are never required to be clean, so dirty ones stay inspectable and removable.
+        if let (true, Some(directory)) = (require_clean, directory) {
+            self.git
+                .require_clean(
+                    &paths.root.anchored_path(),
+                    &paths.hooks(),
+                    &directory.anchored_path(),
+                )
+                .await?;
+        }
+        Ok(snapshot)
+    }
+
+    async fn pin_location(
+        &self,
+        root: &Path,
+        node: &InstalledNode,
+        staged: Option<&NodeId>,
+    ) -> Result<Box<dyn NodeLocationGuard>, NodeAppError> {
+        if node.single_file {
+            return Err(NodeAppError::InvalidRequest);
+        }
+        let paths = Arc::new(NodePaths::open(root, true)?);
+        let node = node.clone();
+        let entry = match staged {
+            Some(op) => paths.staging(op),
+            None => paths.location(&node),
+        };
+        blocking(move || {
+            let directory = entry.0.child(&entry.1, false).map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    NodeAppError::NotFound
+                } else {
+                    filesystem(error)
                 }
-                return Ok(snapshot);
-            }
-            read_tree(&location, is_git(&node))
+            })?;
+            let mut inputs = Vec::new();
+            let requirements = read_input(&directory, "requirements.txt", REQUIREMENTS_LIMIT)?
+                .and_then(|(bytes, file)| {
+                    inputs.push(file);
+                    bytes
+                });
+            let script = match read_input(&directory, "install.py", SCRIPT_LIMIT)? {
+                Some((Some(bytes), file)) => {
+                    inputs.push(file);
+                    Some(bytes)
+                }
+                Some(_) => return Err(NodeAppError::UnsafeSource),
+                None => None,
+            };
+            let mut snapshot = snapshot_directory(&directory, &node)?;
+            // Execution consumes the bytes just read, so the plan is bound to exactly those.
+            let requirements = requirements.filter(|bytes| std::str::from_utf8(bytes).is_ok());
+            let text = requirements
+                .as_deref()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+            snapshot.requirements_digest = text.as_ref().map(|t| sha256_hex(t.as_bytes()));
+            snapshot.requirement_lines = text
+                .as_deref()
+                .map(parse_requirement_lines)
+                .unwrap_or_default();
+            snapshot.hook_digest = script.as_ref().map(|bytes| sha256_hex(bytes));
+            Ok(Box::new(PinnedLocation::new(
+                paths,
+                directory,
+                inputs,
+                requirements,
+                script,
+                snapshot,
+            )) as Box<dyn NodeLocationGuard>)
         })
         .await
     }
 
     fn path(&self, root: &Path, node: &InstalledNode, staged: Option<&NodeId>) -> PathBuf {
-        let paths = self.paths(root);
+        // This is a display/port path, not authority for mutations. Each adapter operation
+        // acquires its own retained pins before using the filesystem.
+        let cn = root.join("ComfyUI/custom_nodes");
         match staged {
-            Some(op) => paths.staging(op),
-            None => paths.live(node),
+            Some(op) => cn
+                .join(".disabled")
+                .join(format!(".vjump-staging-{}", op.as_str())),
+            None if node.enabled => cn.join(node.name.as_str()),
+            None => cn.join(".disabled").join(node.name.as_str()),
         }
     }
 
     async fn publish(&self, root: &Path, operation: &NodeOperation) -> Result<(), NodeAppError> {
-        let paths = self.paths(root);
+        let paths = Arc::new(NodePaths::open(root, true)?);
         let node = &operation.node;
         if let (Some(prior), true) = (&operation.prior, is_git(node)) {
             // Git updates fast-forward in place; there is nothing staged to move.
@@ -685,46 +912,35 @@ impl NodeFiles for LocalNodeFiles {
             else {
                 return Err(NodeAppError::InvalidRequest);
             };
-            let dir = paths.live(prior);
+            let entry = paths.location(prior);
+            let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
+            let dir = directory.anchored_path();
             let ctx = quiet_context(operation);
-            return self
-                .git
-                .apply(root, &paths.hooks(), &dir, head, target, &ctx)
-                .await;
+            self.git
+                .apply(
+                    &paths.root.anchored_path(),
+                    &paths.hooks(),
+                    &dir,
+                    head,
+                    target,
+                    &ctx,
+                )
+                .await?;
+            // Before any dependency or hook runs, the live result must be the reviewed one.
+            return self.verify_applied(&paths, &directory, operation).await;
         }
-        let (staging, destination) = (paths.staging(&operation.id), paths.live(node));
-        let layout = Paths::new(root);
-        blocking(move || {
-            layout.ensure_layout()?;
-            if exists(&destination) {
-                return Err(NodeAppError::TargetExists);
-            }
-            not_link(&staging)?;
-            rename_no_replace(&staging, &destination).map_err(|error| {
-                if error.kind() == io::ErrorKind::AlreadyExists {
-                    NodeAppError::TargetExists
-                } else {
-                    NodeAppError::Filesystem
-                }
-            })
-        })
-        .await
+        let (staging, destination) = (paths.staging(&operation.id), paths.location(node));
+        blocking(move || rename(&staging, &destination)).await
     }
 
     async fn backup(&self, root: &Path, operation: &NodeOperation) -> Result<(), NodeAppError> {
-        let paths = self.paths(root);
+        let paths = Arc::new(NodePaths::open(root, true)?);
         let prior = operation.prior.as_ref().ok_or(NodeAppError::NotFound)?;
         if operation.kind == OperationKind::Update && is_git(prior) {
             return Ok(());
         }
-        let (source, backup) = (paths.live(prior), paths.backup(&operation.id));
-        let layout = Paths::new(root);
-        blocking(move || {
-            layout.ensure_layout()?;
-            not_link(&source)?;
-            rename_no_replace(&source, &backup).map_err(|_| NodeAppError::Filesystem)
-        })
-        .await
+        let (source, backup) = (paths.location(prior), paths.backup(&operation.id));
+        blocking(move || rename(&source, &backup)).await
     }
 
     async fn move_enabled(
@@ -733,53 +949,25 @@ impl NodeFiles for LocalNodeFiles {
         prior: &InstalledNode,
         enabled: bool,
     ) -> Result<(), NodeAppError> {
-        let paths = self.paths(root);
-        let (from, to) = (paths.live(prior), paths.location(&prior.name, enabled));
-        let layout = Paths::new(root);
-        blocking(move || {
-            layout.ensure_layout()?;
-            not_link(&from)?;
-            rename_no_replace(&from, &to).map_err(|error| {
-                if error.kind() == io::ErrorKind::AlreadyExists {
-                    NodeAppError::TargetExists
-                } else {
-                    NodeAppError::Filesystem
-                }
-            })
-        })
-        .await
+        let paths = Arc::new(NodePaths::open(root, true)?);
+        let (from, to) = (
+            paths.location(prior),
+            paths.named_location(&prior.name, enabled),
+        );
+        blocking(move || rename(&from, &to)).await
     }
 
     async fn recycle(&self, root: &Path, operation: &NodeOperation) -> Result<(), NodeAppError> {
-        let backup = self.paths(root).backup(&operation.id);
+        let paths = Arc::new(NodePaths::open(root, true)?);
+        let operation = operation.id.clone();
         let recycler = self.recycler.clone();
-        blocking(move || {
-            if !exists(&backup) {
-                return Ok(());
-            }
-            recycler(&backup).map_err(|_| NodeAppError::Filesystem)?;
-            if exists(&backup) {
-                return Err(NodeAppError::Filesystem);
-            }
-            Ok(())
-        })
-        .await
+        blocking(move || recycle_backup(&paths, &operation, &recycler)).await
     }
 
     async fn discard_staging(&self, root: &Path, operation: &NodeId) -> Result<(), NodeAppError> {
-        let paths = self.paths(root);
+        let paths = Arc::new(NodePaths::open(root, true)?);
         let operation = operation.clone();
-        blocking(move || {
-            for path in [
-                paths.staging(&operation),
-                paths.staging_zip(&operation),
-                paths.staging_hoist(&operation),
-            ] {
-                remove_owned(&path);
-            }
-            Ok(())
-        })
-        .await
+        blocking(move || paths.discard(&operation)).await
     }
 
     async fn recover(
@@ -787,27 +975,45 @@ impl NodeFiles for LocalNodeFiles {
         root: &Path,
         operation: &NodeOperation,
     ) -> Result<RecoveryAction, NodeAppError> {
-        let paths = self.paths(root);
+        let paths = Arc::new(NodePaths::open(root, true)?);
         let op = operation.clone();
-        let git_head = match (&op.prior, is_git(&op.node)) {
-            (Some(prior), true) => scan::read_git(&paths.live(prior)).and_then(|m| m.commit),
-            _ => None,
-        };
         let recycler = self.recycler.clone();
-        blocking(move || recover_blocking(&paths, &op, git_head, &recycler)).await
+        blocking(move || {
+            let git_head = match (&op.prior, is_git(&op.node)) {
+                (Some(prior), true) => {
+                    let entry = paths.location(prior);
+                    if entry_exists(&entry)? {
+                        let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
+                        scan::read_git(&directory.anchored_path()).and_then(|m| m.commit)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            recover_blocking(&paths, &op, git_head, &recycler)
+        })
+        .await
     }
 
     async fn scan(&self, root: &Path) -> Result<Vec<InstalledNode>, NodeAppError> {
-        let paths = self.paths(root);
+        let paths = Arc::new(NodePaths::open(root, true)?);
         let cn = paths.cn.clone();
-        let mut nodes = blocking(move || Ok(scan::scan(&cn))).await?;
-        if self.git.available(root) {
+        let mut nodes = blocking(move || Ok(scan::scan(&cn.anchored_path()))).await?;
+        if self.git.available(&paths.root.anchored_path()) {
             let hooks = paths.hooks();
-            if hooks.is_dir() {
-                for node in &mut nodes {
-                    if matches!(node.source, NodeSource::Git { .. }) && !node.single_file {
-                        node.dirty = self.git.is_dirty(root, &hooks, &paths.live(node)).await;
-                    }
+            for node in &mut nodes {
+                if matches!(node.source, NodeSource::Git { .. }) && !node.single_file {
+                    let entry = paths.location(node);
+                    let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
+                    node.dirty = self
+                        .git
+                        .is_dirty(
+                            &paths.root.anchored_path(),
+                            &hooks,
+                            &directory.anchored_path(),
+                        )
+                        .await;
                 }
             }
         }
@@ -815,20 +1021,27 @@ impl NodeFiles for LocalNodeFiles {
     }
 }
 
-/// Requirement and hook files of an update stub; the digest is filled in by the caller.
-fn read_tree_files_only(stub: &Path) -> Result<TreeSnapshot, NodeAppError> {
-    not_link(stub)?;
-    let requirements = read_text(&stub.join("requirements.txt"), 256 * 1024);
-    let hook = read_text(&stub.join("install.py"), 1 << 20);
-    Ok(TreeSnapshot {
-        digest: String::new(),
-        requirements_digest: requirements.as_ref().map(|t| sha256_hex(t.as_bytes())),
-        hook_digest: hook.as_ref().map(|t| sha256_hex(t.as_bytes())),
-        requirement_lines: requirements
-            .as_deref()
-            .map(parse_requirement_lines)
-            .unwrap_or_default(),
-    })
+/// The digests `NodeFiles::snapshot` reports for the pinned directory of a node.
+fn snapshot_directory(
+    directory: &Arc<PinnedDirectory>,
+    node: &InstalledNode,
+) -> Result<TreeSnapshot, NodeAppError> {
+    read_tree(&directory.anchored_path(), is_git(node))
+}
+
+/// Pins a Git node's `.git` without following links. Missing repository metadata is refused with
+/// an explanation; it is never replaced by a guess.
+fn pin_git_dir(directory: &Arc<PinnedDirectory>) -> Result<(), NodeAppError> {
+    directory
+        .child(&safe_name(".git"), false)
+        .map(drop)
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                refused("", "The repository metadata (.git) is missing.")
+            } else {
+                filesystem(error)
+            }
+        })
 }
 
 fn quiet_context(operation: &NodeOperation) -> StepContext {
@@ -842,52 +1055,54 @@ fn quiet_context(operation: &NodeOperation) -> StepContext {
     }
 }
 
-fn digest_of(path: &Path, node: &InstalledNode) -> Option<String> {
+fn digest_of(entry: &Entry, node: &InstalledNode) -> Option<String> {
     if node.single_file {
-        return sha256_file(path).ok().map(|d| format!("file:{d}"));
+        let mut file = entry.0.open(&entry.1, false, false).ok()?;
+        return crate::shared::model_paths::digest(&mut file)
+            .ok()
+            .map(|d| format!("file:{}", d.as_str()));
     }
-    read_tree(path, is_git(node)).ok().map(|s| s.digest)
+    let directory = entry.0.child(&entry.1, false).ok()?;
+    read_tree(&directory.anchored_path(), is_git(node))
+        .ok()
+        .map(|s| s.digest)
 }
 
 /// Conservative reconciliation: every action is derived from what exists on disk now, compared
 /// with the identities recorded in the journal. Anything ambiguous blocks and keeps all copies.
 fn recover_blocking(
-    paths: &Paths,
+    paths: &NodePaths,
     op: &NodeOperation,
     git_head: Option<String>,
     recycler: &Recycler,
 ) -> Result<RecoveryAction, NodeAppError> {
     let staging = paths.staging(&op.id);
     let backup = paths.backup(&op.id);
-    let discard = |paths: &Paths| {
-        remove_owned(&paths.staging(&op.id));
-        remove_owned(&paths.staging_zip(&op.id));
-        remove_owned(&paths.staging_hoist(&op.id));
-    };
     if matches!(
         op.phase,
         OperationPhase::Verified | OperationPhase::CleanupPending
     ) {
-        discard(paths);
-        if exists(&backup) && (recycler(&backup).is_err() || exists(&backup)) {
-            return Ok(RecoveryAction::CleanupPending);
+        paths.discard(&op.id)?;
+        match recycle_backup(paths, &op.id, recycler) {
+            Ok(()) => {}
+            Err(NodeAppError::UnsafeSource) => return Err(NodeAppError::UnsafeSource),
+            Err(_) => return Ok(RecoveryAction::CleanupPending),
         }
         return Ok(RecoveryAction::RolledForward);
     }
     if op.phase == OperationPhase::Prepared || op.kind == OperationKind::RetryDependencies {
-        discard(paths);
+        paths.discard(&op.id)?;
         return Ok(RecoveryAction::Discarded);
     }
-    paths.ensure_layout().ok();
-    let restore = |from: &Path, to: &Path| rename_no_replace(from, to).is_ok();
+    let restore = |from: &Entry, to: &Entry| rename(from, to).is_ok();
     match op.kind {
         OperationKind::Enable | OperationKind::Disable => {
             let prior = op.prior.as_ref().ok_or(NodeAppError::Storage)?;
             let (from, to) = (
-                paths.live(prior),
-                paths.location(&prior.name, op.node.enabled),
+                paths.location(prior),
+                paths.named_location(&prior.name, op.node.enabled),
             );
-            Ok(match (exists(&from), exists(&to)) {
+            Ok(match (entry_exists(&from)?, entry_exists(&to)?) {
                 (true, false) => RecoveryAction::RolledBack,
                 (false, true) => RecoveryAction::RolledForward,
                 _ => RecoveryAction::Blocked,
@@ -895,8 +1110,8 @@ fn recover_blocking(
         }
         OperationKind::Uninstall => {
             let prior = op.prior.as_ref().ok_or(NodeAppError::Storage)?;
-            let live = paths.live(prior);
-            Ok(match (exists(&live), exists(&backup)) {
+            let live = paths.location(prior);
+            Ok(match (entry_exists(&live)?, entry_exists(&backup)?) {
                 (true, false) => RecoveryAction::RolledBack,
                 (false, true) => {
                     if restore(&backup, &live) {
@@ -916,15 +1131,26 @@ fn recover_blocking(
                 else {
                     return Ok(RecoveryAction::Blocked);
                 };
-                discard(paths);
+                paths.discard(&op.id)?;
                 return Ok(match git_head {
-                    Some(head) if head == *new => RecoveryAction::RolledForward,
+                    // The files moved: they are only accepted when they are the reviewed ones.
+                    Some(head)
+                        if head == *new
+                            && digest_of(&paths.location(prior), &op.node).as_deref()
+                                == Some(op.node.tree_digest.as_str()) =>
+                    {
+                        RecoveryAction::RolledForward
+                    }
                     Some(head) if head == *old => RecoveryAction::RolledBack,
                     _ => RecoveryAction::Blocked,
                 });
             }
-            let final_path = paths.live(&op.node);
-            let (f, b, s) = (exists(&final_path), exists(&backup), exists(&staging));
+            let final_path = paths.location(&op.node);
+            let (f, b, s) = (
+                entry_exists(&final_path)?,
+                entry_exists(&backup)?,
+                entry_exists(&staging)?,
+            );
             let new_digest = &op.node.tree_digest;
             let published =
                 || digest_of(&final_path, &op.node).as_deref() == Some(new_digest.as_str());
@@ -936,7 +1162,7 @@ fn recover_blocking(
             match (op.prior.is_some(), f, b, s) {
                 // Nothing was published: the staging copy is the only thing to remove.
                 (false, false, _, true) => {
-                    discard(paths);
+                    paths.discard(&op.id)?;
                     Ok(RecoveryAction::Discarded)
                 }
                 (false, false, _, false) => Ok(RecoveryAction::Discarded),
@@ -946,12 +1172,12 @@ fn recover_blocking(
                     RecoveryAction::Blocked
                 }),
                 (true, true, false, true) => {
-                    discard(paths);
+                    paths.discard(&op.id)?;
                     Ok(RecoveryAction::RolledBack)
                 }
                 (true, false, true, true) | (true, false, true, false) => {
                     if restore(&backup, &final_path) {
-                        discard(paths);
+                        paths.discard(&op.id)?;
                         Ok(RecoveryAction::RolledBack)
                     } else {
                         Ok(RecoveryAction::Blocked)

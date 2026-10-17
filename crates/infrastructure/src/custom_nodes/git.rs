@@ -12,7 +12,7 @@ use crate::{
     shared::process::{self, CommandSpec, DiscardSink, RunError, RunLimits},
 };
 use application::{custom_nodes::NodeAppError, environment::StepContext, shared::CancelToken};
-use domain::comfy_runtime::{RepoState, Revision, UpdateTarget, can_update};
+use domain::comfy_runtime::{RepoState, Revision, UpdateRefusal, UpdateTarget, can_update};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -54,6 +54,33 @@ pub fn is_object_id(text: &str) -> bool {
 
 fn failed(message: impl Into<String>) -> NodeAppError {
     NodeAppError::Failed(message.into())
+}
+
+/// A Git refusal that keeps what the user needs to act: the bounded, redacted, repository-relative
+/// `git status` text, or a fixed explanation when Git printed nothing (divergence, no upstream).
+pub(crate) fn refused(status: &str, explanation: &str) -> NodeAppError {
+    let status: String = crate::shared::logging::redact(status)
+        .trim_end()
+        .chars()
+        .take(2000)
+        .collect();
+    NodeAppError::GitRefused {
+        status: if status.trim().is_empty() {
+            explanation.to_owned()
+        } else {
+            status
+        },
+    }
+}
+
+fn update_refused(state: &RepoState, reason: &UpdateRefusal) -> NodeAppError {
+    let reason = reason.to_string();
+    let mut letters = reason.chars();
+    let explanation = letters
+        .next()
+        .map(|first| format!("{}{}.", first.to_uppercase(), letters.as_str()))
+        .unwrap_or_default();
+    refused(&state.status, &explanation)
 }
 
 impl GitNodes {
@@ -401,23 +428,6 @@ impl GitNodes {
         }
     }
 
-    /// The text of `path` at `commit`, read from the object database without a checkout.
-    pub async fn show_blob(
-        &self,
-        root: &Path,
-        hooks: &Path,
-        dir: &Path,
-        commit: &str,
-        path: &str,
-    ) -> Option<String> {
-        if !is_object_id(commit) {
-            return None;
-        }
-        self.read(root, hooks, dir, &["show", &format!("{commit}:{path}")])
-            .await
-            .ok()
-    }
-
     pub async fn origin(
         &self,
         root: &Path,
@@ -427,7 +437,32 @@ impl GitNodes {
         let out = self
             .read(root, hooks, dir, &["config", "--get", "remote.origin.url"])
             .await?;
-        validate_remote(out.trim(), self.allow_local).ok_or(NodeAppError::GitRefused)
+        validate_remote(out.trim(), self.allow_local)
+            .ok_or_else(|| refused("", "The origin remote is not a supported HTTPS repository."))
+    }
+
+    /// Refuses a checkout that is dirty or in the middle of an operation. Staged checkouts are
+    /// review evidence and must match their commit exactly; live nodes are never held to this.
+    pub async fn require_clean(
+        &self,
+        root: &Path,
+        hooks: &Path,
+        dir: &Path,
+    ) -> Result<Inspection, NodeAppError> {
+        let now = self.inspect(root, hooks, dir).await?;
+        if now.state.dirty {
+            return Err(refused(
+                &now.state.status,
+                "The checkout has uncommitted changes.",
+            ));
+        }
+        if now.state.unfinished_operation {
+            return Err(refused(
+                &now.state.status,
+                "The checkout has an unfinished merge, rebase or cherry-pick.",
+            ));
+        }
+        Ok(now)
     }
 
     pub async fn inspect(
@@ -543,10 +578,6 @@ impl GitNodes {
         ctx: &StepContext,
     ) -> Result<String, NodeAppError> {
         let before = self.inspect(root, hooks, dir).await?;
-        let refused = |reason: domain::comfy_runtime::UpdateRefusal| {
-            let _ = reason;
-            NodeAppError::GitRefused
-        };
         can_update(
             &before.state,
             &before.revision,
@@ -556,7 +587,7 @@ impl GitNodes {
                 &UpdateTarget::BranchFfOnly
             },
         )
-        .map_err(refused)?;
+        .map_err(|reason| update_refused(&before.state, &reason))?;
         // Only an HTTPS origin is ever contacted.
         self.origin(root, hooks, dir).await?;
         self.run(
@@ -580,11 +611,14 @@ impl GitNodes {
                 &UpdateTarget::BranchFfOnly
             },
         )
-        .map_err(refused)?;
+        .map_err(|reason| update_refused(&after.state, &reason))?;
         let target = match reference.map(str::trim).filter(|r| !r.is_empty()) {
             None => {
                 if after.state.ahead > 0 {
-                    return Err(NodeAppError::GitRefused);
+                    return Err(refused(
+                        &after.state.status,
+                        "The branch has local commits that are not in its upstream.",
+                    ));
                 }
                 let out = self
                     .read(
@@ -621,7 +655,10 @@ impl GitNodes {
                 .await
                 .is_ok();
             if !forward {
-                return Err(NodeAppError::GitRefused);
+                return Err(refused(
+                    &after.state.status,
+                    "The selected target does not contain the current commit, so the branch cannot fast-forward.",
+                ));
             }
         }
         Ok(target)
@@ -705,7 +742,7 @@ impl GitNodes {
             return Err(NodeAppError::StalePlan);
         }
         can_update(&now.state, &now.revision, &UpdateTarget::LatestRelease)
-            .map_err(|_| NodeAppError::GitRefused)?;
+            .map_err(|reason| update_refused(&now.state, &reason))?;
         let timeout = Duration::from_secs(600);
         if now.revision.branch.is_some() {
             self.run(
