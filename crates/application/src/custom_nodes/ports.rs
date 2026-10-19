@@ -55,6 +55,7 @@ pub trait NodeFiles: Send + Sync {
         &self,
         root: &Path,
         node: &InstalledNode,
+        retained: Retained,
     ) -> Result<NodeGitStatus, NodeAppError>;
     /// On failure, clean only entries acquired by this attempt. Callers must not discard
     /// staging blindly: a refused create-new may have encountered a foreign entry.
@@ -71,6 +72,7 @@ pub trait NodeFiles: Send + Sync {
         root: &Path,
         node: &InstalledNode,
         staged: Option<&NodeId>,
+        retained: Retained,
     ) -> Result<TreeSnapshot, NodeAppError>;
     /// Returns a derived, informational path only. It is never authority for execution.
     fn path(&self, root: &Path, node: &InstalledNode, staged: Option<&NodeId>) -> PathBuf;
@@ -83,7 +85,12 @@ pub trait NodeFiles: Send + Sync {
         node: &InstalledNode,
         staged: Option<&NodeId>,
     ) -> Result<Box<dyn NodeLocationGuard>, NodeAppError>;
-    async fn publish(&self, root: &Path, operation: &NodeOperation) -> Result<(), NodeAppError>;
+    async fn publish(
+        &self,
+        root: &Path,
+        operation: &NodeOperation,
+        retained: Retained,
+    ) -> Result<(), NodeAppError>;
     async fn backup(&self, root: &Path, operation: &NodeOperation) -> Result<(), NodeAppError>;
     async fn move_enabled(
         &self,
@@ -98,8 +105,13 @@ pub trait NodeFiles: Send + Sync {
         &self,
         root: &Path,
         operation: &NodeOperation,
+        retained: Retained,
     ) -> Result<RecoveryAction, NodeAppError>;
-    async fn scan(&self, root: &Path) -> Result<Vec<InstalledNode>, NodeAppError>;
+    async fn scan(
+        &self,
+        root: &Path,
+        retained: Retained,
+    ) -> Result<Vec<InstalledNode>, NodeAppError>;
 }
 /// A node location whose containment protection lives exactly as long as this value. Hold it
 /// across every use of the paths and snapshots it hands out: previews, installation, the hook and

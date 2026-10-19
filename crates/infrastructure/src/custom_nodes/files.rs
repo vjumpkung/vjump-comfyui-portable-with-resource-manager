@@ -4,8 +4,8 @@
 use super::{
     git::{GitNodes, RefKind, Resolved, refused},
     paths::{
-        Entry, NodePaths, PinnedLocation, entry_path, exists as entry_exists, filesystem,
-        read_input, remove, rename, safe_name,
+        Entry, NodePaths, PinnedLocation, exists as entry_exists, filesystem, read_input, remove,
+        rename, safe_name,
     },
     provenance::{MARKER, TRACKING, repository_folder, safe_folder},
     registry::RegistryHttp,
@@ -20,7 +20,10 @@ use crate::{
         model_paths::{PinnedDirectory, identity},
     },
 };
-use application::{custom_nodes::*, environment::StepContext};
+use application::{
+    custom_nodes::*,
+    environment::{Retained, StepContext},
+};
 use async_trait::async_trait;
 use domain::{
     custom_nodes::*, models::acquisition::FileIdentity, shared::model_values::SafeFileName,
@@ -89,9 +92,52 @@ fn remove_owned(entry: &Entry, expected: &FileIdentity) -> Result<(), NodeAppErr
     remove(entry)
 }
 
+pub(crate) fn create_staging(entry: &Entry) -> Result<Arc<PinnedDirectory>, NodeAppError> {
+    if entry_exists(entry)? {
+        return Err(NodeAppError::UnsafeSource);
+    }
+    #[cfg(test)]
+    STAGING_BOUNDARY.with(|slot| {
+        if let Some(boundary) = slot.borrow_mut().take() {
+            boundary();
+        }
+    });
+    entry.0.create_new_child(&entry.1).map_err(|e| {
+        if e.kind() == io::ErrorKind::AlreadyExists {
+            NodeAppError::UnsafeSource
+        } else {
+            filesystem(e)
+        }
+    })
+}
+
 #[cfg(test)]
 thread_local! {
     static REGISTRY_BOUNDARY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static GIT_APPLY_BOUNDARY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static STAGING_BOUNDARY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn before_staging_create(boundary: impl FnOnce() + 'static) {
+    STAGING_BOUNDARY.with(|slot| *slot.borrow_mut() = Some(Box::new(boundary)));
+}
+
+#[cfg(test)]
+pub(crate) fn after_git_apply(boundary: impl FnOnce() + 'static) {
+    GIT_APPLY_BOUNDARY.with(|slot| {
+        assert!(slot.borrow().is_none());
+        *slot.borrow_mut() = Some(Box::new(boundary));
+    });
+}
+
+#[cfg(test)]
+fn git_apply_boundary() {
+    GIT_APPLY_BOUNDARY.with(|slot| {
+        if let Some(boundary) = slot.borrow_mut().take() {
+            boundary();
+        }
+    });
 }
 
 #[cfg(test)]
@@ -111,52 +157,28 @@ fn registry_boundary() {
     });
 }
 
-/// A Git node's `.git` must be a real directory. The tree walk leaves it to Git, so a link or
-/// special entry there would otherwise go unchecked. A missing one is not refused: the node can
-/// still be inspected, disabled and removed.
-fn validate_git_dir(dir: &Path) -> Result<(), NodeAppError> {
-    match dir.join(".git").symlink_metadata() {
-        Ok(meta) if meta.is_dir() && !is_link(&meta) => Ok(()),
-        Ok(_) => Err(NodeAppError::UnsafeSource),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(filesystem(error)),
-    }
+/// Exact-release compatibility with flags from that release or the top-level node.
+fn review_warnings(mut release: Compatibility, node: &RegistryNode) -> Vec<String> {
+    release.flagged |= node.node_flagged;
+    release.deprecated |= node.node_deprecated;
+    release.warnings()
 }
 
-/// Review warnings of an exact release, completed by the node's own metadata. A dimension the
-/// release leaves unknown falls back to the node's, and a flag or deprecation on either applies.
-/// The warnings come from one merged evaluation, so none repeats and the order is fixed.
-fn review_warnings(release: Compatibility, node: &Compatibility) -> Vec<String> {
-    let known = |own: Support, other: Support| {
-        if own == Support::Unknown { other } else { own }
-    };
-    Compatibility {
-        os: known(release.os, node.os),
-        accelerator: known(release.accelerator, node.accelerator),
-        comfyui: known(release.comfyui, node.comfyui),
-        flagged: release.flagged || node.flagged,
-        deprecated: release.deprecated || node.deprecated,
-    }
-    .warnings()
-}
-
-/// A Git node's `.git` must be a real directory. The tree walk leaves it to Git, so a link or
-/// tree digest covers every file, tracked or not, except the app's own files, the top-level
+/// The tree digest covers every file, tracked or not, except the app's own files, the top-level
 /// `.git` and `__pycache__`; a Git node's exact commit is carried by its source instead.
-fn read_tree(dir: &Path, git_node: bool) -> Result<TreeSnapshot, NodeAppError> {
-    not_link(dir)?;
-    if git_node {
-        validate_git_dir(dir)?;
-    }
-    validate_tree(dir)?;
-    let digest = tree::tree_digest(dir)?;
-    let requirements = read_text(&dir.join("requirements.txt"), 256 * 1024);
-    let hook = {
-        let path = dir.join("install.py");
-        match path.symlink_metadata() {
-            Ok(meta) if meta.is_file() && !is_link(&meta) => sha256_file(&path).ok(),
-            _ => None,
-        }
+fn read_tree(dir: &Arc<PinnedDirectory>, git_node: bool) -> Result<TreeSnapshot, NodeAppError> {
+    let digest = if git_node {
+        tree::tree_digest(dir)?
+    } else {
+        tree::digest_tree(dir, false)?
+    };
+    let requirements = read_input(dir, &safe_name("requirements.txt"), REQUIREMENTS_LIMIT)?
+        .and_then(|(bytes, _)| bytes)
+        .and_then(|bytes| String::from_utf8(bytes).ok());
+    let hook = match sha256_file(dir, &safe_name("install.py")) {
+        Ok(hash) => Some(hash),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(filesystem(e)),
     };
     Ok(TreeSnapshot {
         digest,
@@ -191,10 +213,14 @@ fn hoist_single_root(paths: &NodePaths, op: &NodeId) -> Result<(), NodeAppError>
     if !file.metadata().map_err(filesystem)?.is_dir() {
         return Ok(());
     }
+    let owned = identity(&file).map_err(filesystem)?;
     let hoist = paths.staging_hoist(op);
     rename(&(directory.clone(), name), &hoist)?;
     drop(file);
     let hoisted = hoist.0.child(&hoist.1, false).map_err(filesystem)?;
+    if identity(&hoisted.file).map_err(filesystem)?.platform_id != owned.platform_id {
+        return Err(NodeAppError::UnsafeSource);
+    }
     for child in fs::read_dir(hoisted.anchored_path()).map_err(filesystem)? {
         let name = child
             .map_err(filesystem)?
@@ -206,7 +232,7 @@ fn hoist_single_root(paths: &NodePaths, op: &NodeId) -> Result<(), NodeAppError>
         rename(&(hoisted.clone(), name.clone()), &(directory.clone(), name))?;
     }
     drop(hoisted);
-    remove(&hoist)
+    remove_owned(&hoist, &owned)
 }
 
 fn write_marker(
@@ -226,27 +252,14 @@ fn write_marker(
         .map_err(filesystem)
 }
 
-fn write_tracking(directory: &PinnedDirectory) -> Result<(), NodeAppError> {
-    let path = directory.anchored_path();
+fn write_tracking(directory: &Arc<PinnedDirectory>) -> Result<(), NodeAppError> {
     let mut lines = Vec::new();
-    for entry in walkdir::WalkDir::new(&path)
-        .follow_links(false)
-        .sort_by_file_name()
-    {
-        let entry = entry.map_err(|_| NodeAppError::Filesystem)?;
-        if entry.depth() == 0 || !entry.file_type().is_file() {
-            continue;
-        }
-        let relative = entry
-            .path()
-            .strip_prefix(&path)
-            .map_err(|_| NodeAppError::Filesystem)?
-            .to_string_lossy()
-            .replace('\\', "/");
+    tree::walk_files(directory, false, false, |_, _, relative, _| {
         if relative != MARKER && relative != TRACKING {
-            lines.push(relative);
+            lines.push(relative.to_owned());
         }
-    }
+        Ok(())
+    })?;
     let mut file = directory
         .open(&safe_name(TRACKING), true, true)
         .map_err(filesystem)?;
@@ -358,22 +371,17 @@ impl LocalNodeFiles {
             );
             let tree = blocking(move || {
                 let staging = layout.staging(&operation);
-                if entry_exists(&staging)? {
-                    return Err(NodeAppError::Filesystem);
-                }
-                fs::create_dir(entry_path(&staging)).map_err(filesystem)?;
-                let directory = staging.0.child(&staging.1, false).map_err(filesystem)?;
+                let directory = create_staging(&staging)?;
                 let owned = identity(&directory.file).map_err(filesystem)?;
                 let extracted = (|| {
                     tree::extract_zip(archive, &directory, limits)?;
                     hoist_single_root(&layout, &operation)?;
-                    let staging_path = directory.anchored_path();
                     if entry_exists(&(directory.clone(), safe_name(MARKER)))? {
                         return Err(NodeAppError::UnsafeSource);
                     }
-                    validate_tree(&staging_path)?;
+                    validate_tree(&directory, false)?;
                     remove(&(directory.clone(), safe_name(TRACKING)))?;
-                    let snapshot = read_tree(&staging_path, false)?;
+                    let snapshot = read_tree(&directory, false)?;
                     write_tracking(&directory)?;
                     write_marker(&directory, &marker_name, &marker_source, Some(&digest))?;
                     Ok(snapshot)
@@ -381,9 +389,6 @@ impl LocalNodeFiles {
                 drop(directory);
                 if extracted.is_err() {
                     remove_owned(&staging, &owned)?;
-                    // A refused foreign hoist entry was rejected before this attempt began, so
-                    // any hoist entry present now belongs to this extraction.
-                    remove(&layout.staging_hoist(&operation))?;
                 }
                 extracted
             })
@@ -394,10 +399,7 @@ impl LocalNodeFiles {
         // Refuse a substituted entry and preserve protected copies for recovery.
         remove_owned(&zip, &archive_identity)?;
         let (artifact, tree) = result?;
-        let warnings = review_warnings(
-            evaluate(&info.metadata, &self.registry.host()),
-            &node.evaluated,
-        );
+        let warnings = review_warnings(evaluate(&info.metadata, &self.registry.host()), &node);
         Ok(StagedNode {
             source,
             name,
@@ -436,9 +438,11 @@ impl LocalNodeFiles {
             return Err(NodeAppError::TargetExists);
         }
         let hooks = paths.hooks();
-        ctx.log("Resolving the repository reference");
-        let resolved = self
+        let git = self
             .git
+            .bound(paths.clone(), vec![], ctx.retained.clone())?;
+        ctx.log("Resolving the repository reference");
+        let resolved = git
             .resolve(
                 &paths.root.anchored_path(),
                 &hooks,
@@ -448,37 +452,35 @@ impl LocalNodeFiles {
             )
             .await?;
         let staged = paths.staging(op);
-        if entry_exists(&staged)? {
-            return Err(NodeAppError::Filesystem);
-        }
-        let directory = staged.0.child(&staged.1, true).map_err(filesystem)?;
+        let directory = create_staging(&staged)?;
+        let owned = identity(&directory.file).map_err(filesystem)?;
         let staging = directory.anchored_path();
+        let git = self
+            .git
+            .bound(paths.clone(), vec![directory.clone()], ctx.retained.clone())?;
         ctx.log(format!("Cloning at commit {}", resolved.commit));
         let cloned = async {
-            self.git
-                .clone_checkout(
-                    &paths.root.anchored_path(),
-                    &hooks,
-                    &remote,
-                    &resolved,
-                    &staging,
-                    ctx,
-                )
-                .await?;
-            let checkout = staging.clone();
+            git.clone_checkout(
+                &paths.root.anchored_path(),
+                &hooks,
+                &remote,
+                &resolved,
+                &staging,
+                ctx,
+            )
+            .await?;
             let directory = directory.clone();
             let source = git_source(&remote.identity, &resolved);
             let (marker_source, marker_name) = (source.clone(), name.as_str().to_owned());
             let tree = blocking(move || {
-                validate_tree(&checkout)?;
+                tree::validate_fresh_git(&directory)?;
                 // Keep the app's marker out of `git status`.
                 let git = directory
                     .child(&safe_name(".git"), false)
                     .map_err(filesystem)?;
                 let info = git.child(&safe_name("info"), true).map_err(filesystem)?;
                 let exclude = safe_name("exclude");
-                let mut text = read_text(&info.anchored_path().join(exclude.as_str()), 1 << 20)
-                    .unwrap_or_default();
+                let mut text = read_text(&info, &exclude, 1 << 20).unwrap_or_default();
                 text.push_str(&format!("\n{MARKER}\n{TRACKING}\n"));
                 let mut file = match info.open(&exclude, true, false) {
                     Ok(file) => file,
@@ -492,12 +494,11 @@ impl LocalNodeFiles {
                     .and_then(|()| file.sync_all())
                     .map_err(filesystem)?;
                 write_marker(&directory, &marker_name, &marker_source, None)?;
-                read_tree(&checkout, true)
+                read_tree(&directory, true)
             })
             .await?;
             // The reviewed tree is exactly the checkout of the resolved commit.
-            self.git
-                .require_clean(&paths.root.anchored_path(), &hooks, &staging)
+            git.require_clean(&paths.root.anchored_path(), &hooks, &staging)
                 .await?;
             Ok::<_, NodeAppError>((source, tree))
         }
@@ -506,7 +507,9 @@ impl LocalNodeFiles {
             Ok(value) => value,
             Err(error) => {
                 drop(directory);
-                remove(&staged)?;
+                if !matches!(error, NodeAppError::UnsafeSource) {
+                    remove_owned(&staged, &owned)?;
+                }
                 return Err(error);
             }
         };
@@ -551,23 +554,26 @@ impl LocalNodeFiles {
         else {
             return Err(NodeAppError::InvalidRequest);
         };
-        {
+        let _git = {
             let (dir, live_directory) = (dir.clone(), live_directory.clone());
             blocking(move || {
                 not_link(&dir)?;
                 pin_git_dir(&live_directory)
             })
-            .await?;
-        }
+            .await?
+        };
         let hooks = paths.hooks();
+        let git = self.git.bound(
+            paths.clone(),
+            vec![live_directory.clone()],
+            ctx.retained.clone(),
+        )?;
         ctx.log("Fetching and freezing the update target");
-        let target = self
-            .git
+        let target = git
             .freeze_update(&paths.root.anchored_path(), &hooks, &dir, reference, ctx)
             .await?;
         // The reviewed tree comes from the repository the node was installed from.
-        let remote = self
-            .git
+        let remote = git
             .origin(&paths.root.anchored_path(), &hooks, &dir)
             .await?;
         if remote.identity != *repository {
@@ -576,11 +582,12 @@ impl LocalNodeFiles {
         // The live update stays an in-place fast-forward; this complete checkout of the frozen
         // target is the evidence that is reviewed and later compared with the live result.
         let staged = paths.staging(op);
-        if entry_exists(&staged)? {
-            return Err(NodeAppError::Filesystem);
-        }
-        let directory = staged.0.child(&staged.1, true).map_err(filesystem)?;
+        let directory = create_staging(&staged)?;
+        let owned = identity(&directory.file).map_err(filesystem)?;
         let staging = directory.anchored_path();
+        let git = self
+            .git
+            .bound(paths.clone(), vec![directory.clone()], ctx.retained.clone())?;
         ctx.log(format!("Staging the complete tree at commit {target}"));
         let frozen = Resolved {
             commit: target.clone(),
@@ -588,20 +595,22 @@ impl LocalNodeFiles {
             kind: RefKind::Commit,
         };
         let cloned = async {
-            self.git
-                .clone_checkout(
-                    &paths.root.anchored_path(),
-                    &hooks,
-                    &remote,
-                    &frozen,
-                    &staging,
-                    ctx,
-                )
-                .await?;
-            let checkout = staging.clone();
-            let tree = blocking(move || read_tree(&checkout, true)).await?;
-            self.git
-                .require_clean(&paths.root.anchored_path(), &hooks, &staging)
+            git.clone_checkout(
+                &paths.root.anchored_path(),
+                &hooks,
+                &remote,
+                &frozen,
+                &staging,
+                ctx,
+            )
+            .await?;
+            let checkout = directory.clone();
+            let tree = blocking(move || {
+                tree::validate_fresh_git(&checkout)?;
+                read_tree(&checkout, true)
+            })
+            .await?;
+            git.require_clean(&paths.root.anchored_path(), &hooks, &staging)
                 .await?;
             Ok::<_, NodeAppError>(tree)
         }
@@ -609,9 +618,10 @@ impl LocalNodeFiles {
         let tree = match cloned {
             Ok(tree) => tree,
             Err(error) => {
-                // The staging directory was created by this attempt after the foreign-entry check.
                 drop(directory);
-                remove(&staged)?;
+                if !matches!(error, NodeAppError::UnsafeSource) {
+                    remove_owned(&staged, &owned)?;
+                }
                 return Err(error);
             }
         };
@@ -641,10 +651,14 @@ impl LocalNodeFiles {
     /// ones.
     async fn verify_applied(
         &self,
-        paths: &NodePaths,
+        paths: &Arc<NodePaths>,
         directory: &Arc<PinnedDirectory>,
         operation: &NodeOperation,
+        retained: Retained,
     ) -> Result<(), NodeAppError> {
+        let git = self
+            .git
+            .bound(paths.clone(), vec![directory.clone()], retained)?;
         let NodeSource::Git {
             repository, commit, ..
         } = &operation.node.source
@@ -656,24 +670,19 @@ impl LocalNodeFiles {
             paths.hooks(),
             directory.anchored_path(),
         );
-        let applied = self.git.require_clean(&root, &hooks, &dir).await?;
+        let _git = pin_git_dir(directory)?;
+        let checked = directory.clone();
+        let snapshot = blocking(move || read_tree(&checked, true)).await?;
+        let applied = git.require_clean(&root, &hooks, &dir).await?;
         if applied.revision.commit != *commit {
             return Err(NodeAppError::Failed(
                 "The repository is not at the reviewed commit".into(),
             ));
         }
-        if self.git.origin(&root, &hooks, &dir).await?.identity != *repository {
+        if git.origin(&root, &hooks, &dir).await?.identity != *repository {
             return Err(NodeAppError::UnsafeSource);
         }
-        let checked = directory.clone();
-        let digest = blocking(move || {
-            let path = checked.anchored_path();
-            validate_git_dir(&path)?;
-            validate_tree(&path)?;
-            tree::tree_digest(&path)
-        })
-        .await?;
-        if digest != operation.node.tree_digest {
+        if snapshot.digest != operation.node.tree_digest {
             return Err(NodeAppError::StalePlan);
         }
         Ok(())
@@ -698,6 +707,7 @@ impl NodeFiles for LocalNodeFiles {
         &self,
         root: &Path,
         node: &InstalledNode,
+        retained: Retained,
     ) -> Result<NodeGitStatus, NodeAppError> {
         if node.single_file || !is_git(node) {
             return Err(NodeAppError::InvalidRequest);
@@ -717,11 +727,13 @@ impl NodeFiles for LocalNodeFiles {
             checked
                 .child(&safe_name(".git"), false)
                 .map_err(filesystem)?;
-            validate_tree(&checked.anchored_path())
+            validate_tree(&checked, true)
         })
         .await?;
-        let mut inspection = self
+        let git = self
             .git
+            .bound(paths.clone(), vec![directory.clone()], retained)?;
+        let mut inspection = git
             .inspect(&paths.root.anchored_path(), &paths.hooks(), &location)
             .await?;
         inspection.state.status = crate::shared::logging::redact(&inspection.state.status)
@@ -787,6 +799,7 @@ impl NodeFiles for LocalNodeFiles {
         root: &Path,
         node: &InstalledNode,
         staged: Option<&NodeId>,
+        retained: Retained,
     ) -> Result<TreeSnapshot, NodeAppError> {
         let paths = Arc::new(NodePaths::open(root, true)?);
         let node = node.clone();
@@ -795,6 +808,7 @@ impl NodeFiles for LocalNodeFiles {
             None => paths.location(&node),
         };
         let require_clean = staged.is_some() && is_git(&node);
+        let source = node.source.clone();
         let (snapshot, directory) = blocking(move || {
             if node.single_file {
                 let mut file = entry.0.open(&entry.1, false, false).map_err(filesystem)?;
@@ -817,13 +831,22 @@ impl NodeFiles for LocalNodeFiles {
         // A staged Git checkout is review evidence: it must still be exactly its commit. Live
         // nodes are never required to be clean, so dirty ones stay inspectable and removable.
         if let (true, Some(directory)) = (require_clean, directory) {
-            self.git
+            let _git = pin_git_dir(&directory)?;
+            let git = self
+                .git
+                .bound(paths.clone(), vec![directory.clone()], retained)?;
+            let checked = git
                 .require_clean(
                     &paths.root.anchored_path(),
                     &paths.hooks(),
                     &directory.anchored_path(),
                 )
                 .await?;
+            if let NodeSource::Git { commit, .. } = &source
+                && checked.revision.commit != *commit
+            {
+                return Err(NodeAppError::StalePlan);
+            }
         }
         Ok(snapshot)
     }
@@ -852,12 +875,16 @@ impl NodeFiles for LocalNodeFiles {
                 }
             })?;
             let mut inputs = Vec::new();
-            let requirements = read_input(&directory, "requirements.txt", REQUIREMENTS_LIMIT)?
-                .and_then(|(bytes, file)| {
-                    inputs.push(file);
-                    bytes
-                });
-            let script = match read_input(&directory, "install.py", SCRIPT_LIMIT)? {
+            let requirements = read_input(
+                &directory,
+                &safe_name("requirements.txt"),
+                REQUIREMENTS_LIMIT,
+            )?
+            .and_then(|(bytes, file)| {
+                inputs.push(file);
+                bytes
+            });
+            let script = match read_input(&directory, &safe_name("install.py"), SCRIPT_LIMIT)? {
                 Some((Some(bytes), file)) => {
                     inputs.push(file);
                     Some(bytes)
@@ -902,7 +929,12 @@ impl NodeFiles for LocalNodeFiles {
         }
     }
 
-    async fn publish(&self, root: &Path, operation: &NodeOperation) -> Result<(), NodeAppError> {
+    async fn publish(
+        &self,
+        root: &Path,
+        operation: &NodeOperation,
+        retained: Retained,
+    ) -> Result<(), NodeAppError> {
         let paths = Arc::new(NodePaths::open(root, true)?);
         let node = &operation.node;
         if let (Some(prior), true) = (&operation.prior, is_git(node)) {
@@ -914,20 +946,27 @@ impl NodeFiles for LocalNodeFiles {
             };
             let entry = paths.location(prior);
             let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
+            let _git = pin_git_dir(&directory)?;
             let dir = directory.anchored_path();
-            let ctx = quiet_context(operation);
-            self.git
-                .apply(
-                    &paths.root.anchored_path(),
-                    &paths.hooks(),
-                    &dir,
-                    head,
-                    target,
-                    &ctx,
-                )
-                .await?;
+            let ctx = quiet_context(operation, retained.clone());
+            let git = self
+                .git
+                .bound(paths.clone(), vec![directory.clone()], retained.clone())?;
+            git.apply(
+                &paths.root.anchored_path(),
+                &paths.hooks(),
+                &dir,
+                head,
+                target,
+                &ctx,
+            )
+            .await?;
+            #[cfg(test)]
+            git_apply_boundary();
             // Before any dependency or hook runs, the live result must be the reviewed one.
-            return self.verify_applied(&paths, &directory, operation).await;
+            return self
+                .verify_applied(&paths, &directory, operation, retained)
+                .await;
         }
         let (staging, destination) = (paths.staging(&operation.id), paths.location(node));
         blocking(move || rename(&staging, &destination)).await
@@ -974,17 +1013,44 @@ impl NodeFiles for LocalNodeFiles {
         &self,
         root: &Path,
         operation: &NodeOperation,
+        retained: Retained,
     ) -> Result<RecoveryAction, NodeAppError> {
         let paths = Arc::new(NodePaths::open(root, true)?);
         let op = operation.clone();
         let recycler = self.recycler.clone();
+        // A failed post-apply check must not be settled as successful merely because HEAD moved.
+        if op.kind == OperationKind::Update
+            && is_git(&op.node)
+            && !matches!(
+                op.phase,
+                OperationPhase::Prepared
+                    | OperationPhase::Verified
+                    | OperationPhase::CleanupPending
+            )
+            && let Some(prior) = &op.prior
+        {
+            let entry = paths.location(prior);
+            if entry_exists(&entry)? {
+                let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
+                let head = scan::read_git(&directory).and_then(|m| m.commit);
+                if let NodeSource::Git { commit, .. } = &op.node.source
+                    && head.as_ref() == Some(commit)
+                    && self
+                        .verify_applied(&paths, &directory, &op, retained.clone())
+                        .await
+                        .is_err()
+                {
+                    return Ok(RecoveryAction::Blocked);
+                }
+            }
+        }
         blocking(move || {
             let git_head = match (&op.prior, is_git(&op.node)) {
                 (Some(prior), true) => {
                     let entry = paths.location(prior);
                     if entry_exists(&entry)? {
                         let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
-                        scan::read_git(&directory.anchored_path()).and_then(|m| m.commit)
+                        scan::read_git(&directory).and_then(|m| m.commit)
                     } else {
                         None
                     }
@@ -996,18 +1062,27 @@ impl NodeFiles for LocalNodeFiles {
         .await
     }
 
-    async fn scan(&self, root: &Path) -> Result<Vec<InstalledNode>, NodeAppError> {
+    async fn scan(
+        &self,
+        root: &Path,
+        retained: Retained,
+    ) -> Result<Vec<InstalledNode>, NodeAppError> {
         let paths = Arc::new(NodePaths::open(root, true)?);
         let cn = paths.cn.clone();
-        let mut nodes = blocking(move || Ok(scan::scan(&cn.anchored_path()))).await?;
+        let mut nodes = blocking(move || Ok(scan::scan(&cn))).await?;
         if self.git.available(&paths.root.anchored_path()) {
             let hooks = paths.hooks();
             for node in &mut nodes {
-                if matches!(node.source, NodeSource::Git { .. }) && !node.single_file {
+                if matches!(node.source, NodeSource::Git { .. })
+                    && !node.single_file
+                    && !node.conflict
+                {
                     let entry = paths.location(node);
                     let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
-                    node.dirty = self
-                        .git
+                    let git =
+                        self.git
+                            .bound(paths.clone(), vec![directory.clone()], retained.clone())?;
+                    node.dirty = git
                         .is_dirty(
                             &paths.root.anchored_path(),
                             &hooks,
@@ -1026,25 +1101,22 @@ fn snapshot_directory(
     directory: &Arc<PinnedDirectory>,
     node: &InstalledNode,
 ) -> Result<TreeSnapshot, NodeAppError> {
-    read_tree(&directory.anchored_path(), is_git(node))
+    read_tree(directory, is_git(node))
 }
 
 /// Pins a Git node's `.git` without following links. Missing repository metadata is refused with
 /// an explanation; it is never replaced by a guess.
-fn pin_git_dir(directory: &Arc<PinnedDirectory>) -> Result<(), NodeAppError> {
-    directory
-        .child(&safe_name(".git"), false)
-        .map(drop)
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::NotFound {
-                refused("", "The repository metadata (.git) is missing.")
-            } else {
-                filesystem(error)
-            }
-        })
+fn pin_git_dir(directory: &Arc<PinnedDirectory>) -> Result<Arc<PinnedDirectory>, NodeAppError> {
+    directory.child(&safe_name(".git"), false).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            refused("", "The repository metadata (.git) is missing.")
+        } else {
+            filesystem(error)
+        }
+    })
 }
 
-fn quiet_context(operation: &NodeOperation) -> StepContext {
+fn quiet_context(operation: &NodeOperation, retained: Retained) -> StepContext {
     StepContext {
         run_id: application::environment::RunId::new(operation.id.as_str())
             .expect("operation IDs are valid run IDs"),
@@ -1052,6 +1124,7 @@ fn quiet_context(operation: &NodeOperation) -> StepContext {
         sink: Arc::new(application::environment::NullSink),
         cancel: application::shared::CancelToken::new(),
         allow_source_builds: false,
+        retained,
     }
 }
 
@@ -1063,9 +1136,7 @@ fn digest_of(entry: &Entry, node: &InstalledNode) -> Option<String> {
             .map(|d| format!("file:{}", d.as_str()));
     }
     let directory = entry.0.child(&entry.1, false).ok()?;
-    read_tree(&directory.anchored_path(), is_git(node))
-        .ok()
-        .map(|s| s.digest)
+    read_tree(&directory, is_git(node)).ok().map(|s| s.digest)
 }
 
 /// Conservative reconciliation: every action is derived from what exists on disk now, compared

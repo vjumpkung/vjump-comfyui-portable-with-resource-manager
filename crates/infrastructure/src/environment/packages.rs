@@ -2,6 +2,7 @@
 
 use std::{
     ffi::OsString,
+    io::Read,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -89,6 +90,210 @@ pub fn with_guarded(command: CommandSpec, spec: &InstallSpec) -> CommandSpec {
             .retain(guarded.retained.clone()),
         _ => command,
     }
+}
+
+fn preflight_refused() -> ProvisionError {
+    ProvisionError::Failed("Requirements need external inspection before previewing; editable and source-directory requirements are not permitted.".into())
+}
+
+/// A deliberately conservative subset of requirements syntax. Anything not understood here
+/// is refused before uv can ask a source tree's build backend for metadata.
+fn preflight_requirements(spec: &InstallSpec) -> Result<(), ProvisionError> {
+    let directory = match &spec.guarded {
+        Some(guarded) => guarded.directory.clone(),
+        None => std::env::current_dir().map_err(|_| preflight_refused())?,
+    };
+    let mut pending = Vec::new();
+    for requirement in &spec.requirements {
+        preflight_line(requirement, &directory, &mut pending)?;
+    }
+    for path in spec
+        .requirement_files
+        .iter()
+        .chain(spec.constraint_file.iter())
+    {
+        if let Some(guarded) = &spec.guarded
+            && path == &guarded.path
+        {
+            preflight_text(&guarded.text, &guarded.directory, &mut pending)?;
+        } else {
+            pending.push(path.clone());
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut total = 0usize;
+    while let Some(path) = pending.pop() {
+        let path = path.canonicalize().map_err(|_| preflight_refused())?;
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        if seen.len() > 64 {
+            return Err(preflight_refused());
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+            };
+            options
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let file = options.open(&path).map_err(|_| preflight_refused())?;
+        let metadata = file.metadata().map_err(|_| preflight_refused())?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes()
+                & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                != 0
+            {
+                return Err(preflight_refused());
+            }
+        }
+        if !metadata.is_file() || metadata.len() > 256 * 1024 {
+            return Err(preflight_refused());
+        }
+        let mut text = Vec::new();
+        file.take(256 * 1024 + 1)
+            .read_to_end(&mut text)
+            .map_err(|_| preflight_refused())?;
+        total += text.len();
+        if total > 1024 * 1024 {
+            return Err(preflight_refused());
+        }
+        preflight_text(
+            &text,
+            path.parent().ok_or_else(preflight_refused)?,
+            &mut pending,
+        )?;
+    }
+    Ok(())
+}
+
+fn preflight_text(
+    text: &[u8],
+    directory: &Path,
+    pending: &mut Vec<PathBuf>,
+) -> Result<(), ProvisionError> {
+    if text.len() > 256 * 1024 {
+        return Err(preflight_refused());
+    }
+    for line in std::str::from_utf8(text)
+        .map_err(|_| preflight_refused())?
+        .trim_start_matches('\u{feff}')
+        .lines()
+    {
+        preflight_line(line, directory, pending)?;
+    }
+    Ok(())
+}
+
+fn preflight_line(
+    line: &str,
+    directory: &Path,
+    pending: &mut Vec<PathBuf>,
+) -> Result<(), ProvisionError> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return Ok(());
+    }
+    let line = line.split_once(" #").map_or(line, |(line, _)| line).trim();
+    for prefix in [
+        "--requirement=",
+        "--constraint=",
+        "--requirement ",
+        "--constraint ",
+        "-r",
+        "-c",
+    ] {
+        if let Some(path) = line.strip_prefix(prefix) {
+            let path = path.trim();
+            if path.is_empty()
+                || path.contains(['\'', '"', '$', '\0'])
+                || path.chars().any(char::is_whitespace)
+                || path.contains("://")
+            {
+                return Err(preflight_refused());
+            }
+            pending.push(directory.join(path));
+            return Ok(());
+        }
+    }
+    // An environment marker only decides whether the requirement applies. Its alphabet cannot
+    // name a path or a URL, so it cannot turn a plain requirement into a source build.
+    let line = match line.split_once(';') {
+        Some((requirement, marker)) => {
+            if marker.trim().is_empty()
+                || !marker
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || " _.'\"()<>=!~,*+-".contains(c))
+            {
+                return Err(preflight_refused());
+            }
+            requirement.trim()
+        }
+        None => line,
+    };
+    if line.is_empty()
+        || line.starts_with('-')
+        || line.contains(['$', '\\', '\0'])
+        || !line.is_ascii()
+        || directory.join(line).is_dir()
+    {
+        return Err(preflight_refused());
+    }
+    let target = line
+        .split_once('@')
+        .map_or(line, |(_, target)| target.trim());
+    if target.ends_with(".whl") {
+        if target.chars().any(char::is_whitespace) {
+            return Err(preflight_refused());
+        }
+        if target.starts_with("https://") || directory.join(target).is_file() {
+            return Ok(());
+        }
+        return Err(preflight_refused());
+    }
+    if line.contains('@') || !line.as_bytes()[0].is_ascii_alphanumeric() {
+        return Err(preflight_refused());
+    }
+    let name_end = line
+        .find(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '-' | '_' | '.'))
+        .unwrap_or(line.len());
+    let mut rest = line[name_end..].trim();
+    if let Some(extras) = rest.strip_prefix('[') {
+        let (extras, tail) = extras.split_once(']').ok_or_else(preflight_refused)?;
+        if extras.is_empty()
+            || !extras
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ','))
+        {
+            return Err(preflight_refused());
+        }
+        rest = tail.trim();
+    }
+    if !rest.is_empty()
+        && (!rest.starts_with(['=', '<', '>', '!', '~'])
+            || !rest.chars().all(|c| {
+                c.is_ascii_alphanumeric()
+                    || matches!(
+                        c,
+                        '=' | '<' | '>' | '!' | '~' | ',' | '.' | '*' | '+' | '-' | '_' | ' '
+                    )
+            }))
+    {
+        return Err(preflight_refused());
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -201,6 +406,7 @@ impl PackageInstaller for UvPackages {
         spec: &InstallSpec,
         ctx: &StepContext,
     ) -> Result<ResolutionPreview, ProvisionError> {
+        preflight_requirements(spec)?;
         let layout = Layout::new(root);
         let command = with_guarded(
             uv(&layout).args(install_args(&venv_python(env_path), spec, true)),
@@ -224,6 +430,7 @@ impl PackageInstaller for UvPackages {
         &self,
         root: &Path,
         env_path: &Path,
+        ctx: Option<&StepContext>,
     ) -> Result<Vec<InstalledPackage>, ProvisionError> {
         let layout = Layout::new(root);
         let command = uv(&layout)
@@ -234,9 +441,11 @@ impl PackageInstaller for UvPackages {
             max_stdout_bytes: 16 << 20,
             ..RunLimits::default()
         };
-        let output = run_quiet(&command, &application::shared::CancelToken::new(), &limits)
-            .await
-            .map_err(failure_summary)?;
+        let result = match ctx {
+            Some(ctx) => run_step(&command, ctx, &limits).await,
+            None => run_quiet(&command, &application::shared::CancelToken::new(), &limits).await,
+        };
+        let output = result.map_err(failure_summary)?;
         parse_list(&output.stdout)
     }
 

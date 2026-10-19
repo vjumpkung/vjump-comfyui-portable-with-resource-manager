@@ -2,13 +2,15 @@
 //! marker and the Manager-compatible `.tracking` inventory. Metadata found on disk is an
 //! observation; none of it authorizes anything.
 use super::{
+    paths::safe_name,
     sqlite::{source_from_json, source_to_json},
     tree::{is_link, read_text},
 };
+use crate::shared::model_paths::PinnedDirectory;
 use domain::{custom_nodes::NodeSource, shared::model_values::SafeFileName};
 use percent_encoding::percent_decode_str;
 use serde_json::{Value, json};
-use std::{fs, io, path::Path};
+use std::{fs, io, path::Path, sync::Arc};
 use url::Url;
 use walkdir::WalkDir;
 
@@ -100,8 +102,9 @@ pub fn write_marker(
 }
 
 /// Marker schema 1, or `None` for anything else (including a marker that is a link).
-pub fn read_marker(node_dir: &Path) -> Option<NodeSource> {
-    let value: Value = serde_json::from_str(&read_text(&node_dir.join(MARKER), 64 * 1024)?).ok()?;
+pub fn read_marker(node_dir: &Arc<PinnedDirectory>) -> Option<NodeSource> {
+    let value: Value =
+        serde_json::from_str(&read_text(node_dir, &safe_name(MARKER), 64 * 1024)?).ok()?;
     if value.get("schema")?.as_u64()? != 1 {
         return None;
     }
@@ -138,9 +141,9 @@ pub fn write_tracking(node_dir: &Path) -> io::Result<()> {
 }
 
 /// Manager registry provenance: `.tracking` together with `pyproject.toml`'s name and version.
-pub fn read_manager_registry(node_dir: &Path) -> Option<NodeSource> {
-    read_text(&node_dir.join(TRACKING), 4 << 20)?;
-    let pyproject = read_text(&node_dir.join("pyproject.toml"), 256 * 1024)?;
+pub fn read_manager_registry(node_dir: &Arc<PinnedDirectory>) -> Option<NodeSource> {
+    read_text(node_dir, &safe_name(TRACKING), 4 << 20)?;
+    let pyproject = read_text(node_dir, &safe_name("pyproject.toml"), 256 * 1024)?;
     let document: toml::Value = toml::from_str(&pyproject).ok()?;
     let project = document.get("project")?;
     let id = project.get("name")?.as_str()?.trim().to_owned();
@@ -170,6 +173,7 @@ pub fn read_manager_registry(node_dir: &Path) -> Option<NodeSource> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::model_paths::pin_absolute;
 
     #[test]
     fn remotes_are_https_only_and_normalized() {
@@ -233,13 +237,16 @@ mod tests {
             repository: None,
         };
         write_marker(directory.path(), "n", &source, Some("abc")).unwrap();
-        assert_eq!(read_marker(directory.path()), Some(source));
+        assert_eq!(
+            read_marker(&pin_absolute(directory.path()).unwrap()),
+            Some(source)
+        );
         fs::write(
             directory.path().join(MARKER),
             r#"{"schema":2,"source":{"kind":"manual"}}"#,
         )
         .unwrap();
-        assert_eq!(read_marker(directory.path()), None);
+        assert_eq!(read_marker(&pin_absolute(directory.path()).unwrap()), None);
     }
 
     #[test]
@@ -250,10 +257,13 @@ mod tests {
             "[project]\nname = \"foo-nodes\"\nversion = \"1.2.3\"\n[project.urls]\nRepository = \"https://github.com/o/foo\"\n[tool.comfy]\nPublisherId = \"o\"\n",
         )
         .unwrap();
-        assert_eq!(read_manager_registry(directory.path()), None);
+        assert_eq!(
+            read_manager_registry(&pin_absolute(directory.path()).unwrap()),
+            None
+        );
         fs::write(directory.path().join(TRACKING), "a.py\n").unwrap();
         assert_eq!(
-            read_manager_registry(directory.path()),
+            read_manager_registry(&pin_absolute(directory.path()).unwrap()),
             Some(NodeSource::Registry {
                 id: "foo-nodes".into(),
                 publisher: Some("o".into()),
@@ -262,7 +272,10 @@ mod tests {
             })
         );
         fs::write(directory.path().join("pyproject.toml"), "not = [toml").unwrap();
-        assert_eq!(read_manager_registry(directory.path()), None);
+        assert_eq!(
+            read_manager_registry(&pin_absolute(directory.path()).unwrap()),
+            None
+        );
     }
 
     #[test]

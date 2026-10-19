@@ -1,6 +1,7 @@
 use std::{io::Cursor, io::Write, sync::Arc};
 
 use application::environment::{NullSink, RunId, StepId};
+use application::shared::CancelToken;
 use flate2::{Compression, write::GzEncoder};
 use zip::write::SimpleFileOptions;
 
@@ -118,6 +119,7 @@ fn ctx() -> StepContext {
         sink: Arc::new(NullSink),
         cancel: CancelToken::new(),
         allow_source_builds: false,
+        retained: Default::default(),
     }
 }
 

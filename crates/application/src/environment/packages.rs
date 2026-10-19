@@ -154,6 +154,7 @@ fn silent_context() -> StepContext {
         sink: Arc::new(NullSink),
         cancel: CancelToken::new(),
         allow_source_builds: false,
+        retained: Default::default(),
     }
 }
 
@@ -320,7 +321,11 @@ impl ApplyPackageChange {
             .plans
             .get(plan_id)
             .ok_or(EnvironmentAppError::PlanNotFound)?;
-        let _lease = deps.gate.try_acquire().await?;
+        let lease = deps.gate.try_acquire().await?;
+        let ctx = StepContext {
+            retained: lease.retained(),
+            ..silent_context()
+        };
         let root = deps.root.current().root;
         deps.runtime.ensure_stopped(&root).await?;
 
@@ -329,7 +334,7 @@ impl ApplyPackageChange {
             return Err(EnvironmentAppError::PlanStale);
         }
         let protected = protected_names(&env);
-        let installed = deps.packages.list(&root, &env.path).await?;
+        let installed = deps.packages.list(&root, &env.path, Some(&ctx)).await?;
         if pins_of(&installed, &protected) != plan.current_pins {
             return Err(EnvironmentAppError::PlanStale);
         }
@@ -369,7 +374,6 @@ impl ApplyPackageChange {
             env.mark_repair_required(&deps.clock.now())?;
             deps.envs.save(&env).await?;
         }
-        let ctx = silent_context();
         let result = match &plan.operation {
             PackageOperation::Install(specs) | PackageOperation::Upgrade(specs) => {
                 let spec = InstallSpec {
@@ -394,7 +398,7 @@ impl ApplyPackageChange {
             });
         }
 
-        let after = match deps.packages.list(&root, &env.path).await {
+        let after = match deps.packages.list(&root, &env.path, Some(&ctx)).await {
             Ok(installed) => pins_of(&installed, &protected),
             Err(error) => return Err(error.into()),
         };

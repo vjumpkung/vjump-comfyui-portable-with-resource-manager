@@ -66,7 +66,9 @@ impl ExecuteSetup {
                 return Err(error.into());
             }
         };
-        let result = self.run_locked(run_id, sink, cancel).await;
+        let result = self
+            .run_locked(run_id, sink, cancel, lease.retained())
+            .await;
         deps.active_runs.remove(run_id);
         drop(lease);
         result
@@ -77,6 +79,7 @@ impl ExecuteSetup {
         run_id: &RunId,
         sink: Arc<dyn SetupProgressSink>,
         cancel: CancelToken,
+        retained: super::Retained,
     ) -> Result<RunOutcome, EnvironmentAppError> {
         let run = self
             .deps
@@ -94,6 +97,7 @@ impl ExecuteSetup {
             constraints: None,
             sink,
             cancel,
+            retained,
         }
         .drive()
         .await
@@ -107,6 +111,7 @@ struct Execution {
     constraints: Option<PathBuf>,
     sink: Arc<dyn SetupProgressSink>,
     cancel: CancelToken,
+    retained: super::Retained,
 }
 
 fn storage(error: EnvRepoError) -> ProvisionError {
@@ -133,6 +138,7 @@ impl Execution {
             sink: self.sink.clone(),
             cancel: self.cancel.clone(),
             allow_source_builds: self.run.request.allow_source_builds,
+            retained: self.retained.clone(),
         }
     }
 
@@ -356,7 +362,7 @@ impl Execution {
             Ok(report) => {
                 let installed = deps
                     .packages
-                    .list(&root, &active.path)
+                    .list(&root, &active.path, Some(&self.ctx(StepId::Preflight)))
                     .await
                     .map_err(|error| failed(describe(&error)))?;
                 let pins = pins_of(&installed, &self.run.profile.protected_distributions());
@@ -550,7 +556,11 @@ impl Execution {
         let installed = self
             .deps
             .packages
-            .list(&self.root(), &self.env_path())
+            .list(
+                &self.root(),
+                &self.env_path(),
+                Some(&self.ctx(StepId::ComfyRequirements)),
+            )
             .await?;
         Ok(pins_of(
             &installed,

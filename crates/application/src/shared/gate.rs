@@ -11,7 +11,9 @@ pub enum GateError {
 
 /// Proof that the holder owns the maintenance gate. Dropping the lease releases the gate, so
 /// owners keep it alive through cancellation, process cleanup and filesystem cleanup.
-pub trait MaintenanceLease: Send {}
+pub trait MaintenanceLease: Send + Sync {
+    fn retained(&self) -> super::Retained;
+}
 
 /// The single scheduler that serializes maintenance operations (spec section 3.3.3).
 /// Composed workflows acquire it once; there is no recursive locking.

@@ -1,4 +1,7 @@
 //! Authorized roots and pinned, non-following parent traversal shared with M4.
+#[cfg(all(unix, not(target_os = "linux")))]
+compile_error!("Pinned filesystem operations support Linux and Windows only");
+
 use domain::{
     models::acquisition::FileIdentity,
     shared::model_values::{RelativeModelPath, SafeFileName, Sha256},
@@ -142,6 +145,21 @@ fn open_directory(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 impl PinnedDirectory {
+    /// Creates an operation-owned directory. An existing entry is never adopted.
+    pub fn create_new_child(self: &Arc<Self>, name: &SafeFileName) -> io::Result<Arc<Self>> {
+        #[cfg(windows)]
+        fs::create_dir(self.path.join(name.as_str()))?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let text = std::ffi::CString::new(name.as_str())?;
+            if unsafe { libc::mkdirat(self.file.as_raw_fd(), text.as_ptr(), 0o755) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        self.child(name, false)
+    }
+
     /// A path anchored to this handle for consumers which require a path. Retain the pin
     /// until those consumers (including subprocesses) have finished.
     pub(crate) fn anchored_path(&self) -> PathBuf {
@@ -220,7 +238,7 @@ impl PinnedDirectory {
             let file = o.open(self.path.join(name.as_str()))?;
             reject_reparse(&file)?;
             if !file.metadata()?.is_file() {
-                return Err(io::ErrorKind::InvalidInput.into());
+                return Err(io::ErrorKind::PermissionDenied.into());
             }
             Ok(file)
         }
@@ -231,6 +249,7 @@ impl PinnedDirectory {
             let flags = if write { libc::O_RDWR } else { libc::O_RDONLY }
                 | libc::O_NOFOLLOW
                 | libc::O_CLOEXEC
+                | libc::O_NONBLOCK
                 | if create_new {
                     libc::O_CREAT | libc::O_EXCL
                 } else {
@@ -242,7 +261,7 @@ impl PinnedDirectory {
             }
             let file = unsafe { File::from_raw_fd(fd) };
             if !file.metadata()?.is_file() {
-                return Err(io::ErrorKind::InvalidInput.into());
+                return Err(io::ErrorKind::PermissionDenied.into());
             }
             Ok(file)
         }
@@ -327,31 +346,84 @@ impl PinnedDirectory {
     /// Removes an operation-owned tree using non-following, pinned parents. A link or
     /// unrepresentable entry causes refusal; it is never traversed.
     pub fn remove_owned_tree(&self, name: &SafeFileName) -> io::Result<()> {
+        struct Frame {
+            parent: Arc<PinnedDirectory>,
+            directory: Arc<PinnedDirectory>,
+            name: SafeFileName,
+            expected: String,
+            entries: fs::ReadDir,
+        }
+
+        fn frame(
+            parent: Arc<PinnedDirectory>,
+            name: SafeFileName,
+            expected: String,
+        ) -> io::Result<Frame> {
+            let directory = parent.child(&name, false)?;
+            if expected != identity(&directory.file)?.platform_id {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            let entries = fs::read_dir(directory.anchored_path())?;
+            Ok(Frame {
+                parent,
+                directory,
+                name,
+                expected,
+                entries,
+            })
+        }
+
         let entry = self.open_entry(name)?;
         let expected = identity(&entry)?.platform_id;
         let is_dir = entry.metadata()?.is_dir();
         drop(entry);
-        if is_dir {
-            let directory = Arc::new(Self {
-                path: self.path.clone(),
-                file: self.file.try_clone()?,
-                _parents: Vec::new(),
-            })
-            .child(name, false)?;
-            if expected != identity(&directory.file)?.platform_id {
-                return Err(io::ErrorKind::PermissionDenied.into());
-            }
-            for child in fs::read_dir(directory.anchored_path())? {
-                let child = child?;
-                let name = child
+        if !is_dir {
+            return self.remove_checked_entry(name, &expected);
+        }
+        let parent = Arc::new(Self {
+            path: self.path.clone(),
+            file: self.file.try_clone()?,
+            _parents: Vec::new(),
+        });
+        let mut stack = vec![frame(parent, name.clone(), expected)?];
+        while let Some(current) = stack.last_mut() {
+            if let Some(child) = current.entries.next() {
+                let name = child?
                     .file_name()
                     .into_string()
                     .ok()
                     .and_then(|n| SafeFileName::new(n).ok())
                     .ok_or(io::ErrorKind::PermissionDenied)?;
-                directory.remove_owned_tree(&name)?;
+                let entry = current.directory.open_entry(&name)?;
+                let expected = identity(&entry)?.platform_id;
+                let is_dir = entry.metadata()?.is_dir();
+                drop(entry);
+                if is_dir {
+                    let parent = current.directory.clone();
+                    if stack.len() >= 64 {
+                        return Err(io::ErrorKind::PermissionDenied.into());
+                    }
+                    stack.push(frame(parent, name, expected)?);
+                } else {
+                    current.directory.remove_checked_entry(&name, &expected)?;
+                }
+            } else {
+                let Frame {
+                    parent,
+                    directory,
+                    name,
+                    expected,
+                    entries,
+                } = stack.pop().unwrap();
+                drop(entries);
+                drop(directory);
+                parent.remove_checked_entry(&name, &expected)?;
             }
         }
+        Ok(())
+    }
+
+    fn remove_checked_entry(&self, name: &SafeFileName, expected: &str) -> io::Result<()> {
         let entry = self.open_entry(name)?;
         if expected != identity(&entry)?.platform_id {
             return Err(io::ErrorKind::PermissionDenied.into());

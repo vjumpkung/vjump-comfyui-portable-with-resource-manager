@@ -1,6 +1,10 @@
 //! Git for custom nodes. HTTPS only, immutable commit resolution, staged clones with hooks
 //! disabled and fast-forward-only updates. Nothing here resets, cleans or discards edits.
-use super::provenance::{Remote, observed_identity, validate_remote};
+use super::{
+    paths::{NodePaths, filesystem, safe_name},
+    provenance::{Remote, observed_identity, validate_remote},
+    tree::is_link,
+};
 use crate::{
     comfy_runtime::git::{parse_counts, porcelain_dirty},
     environment::{
@@ -11,10 +15,15 @@ use crate::{
     },
     shared::process::{self, CommandSpec, DiscardSink, RunError, RunLimits},
 };
-use application::{custom_nodes::NodeAppError, environment::StepContext, shared::CancelToken};
+use application::{
+    custom_nodes::NodeAppError,
+    environment::{Retained, StepContext},
+    shared::CancelToken,
+};
 use domain::comfy_runtime::{RepoState, Revision, UpdateRefusal, UpdateTarget, can_update};
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -39,10 +48,27 @@ pub struct Inspection {
     pub revision: Revision,
 }
 
+struct GitResources {
+    paths: Arc<NodePaths>,
+    directories: Vec<Arc<crate::shared::model_paths::PinnedDirectory>>,
+    config: tempfile::NamedTempFile,
+    retained: Retained,
+}
+
 pub struct GitNodes {
     program: Option<PathBuf>,
+    resources: Option<Arc<GitResources>>,
     /// Tests only: accept local repositories as remotes.
     pub(crate) allow_local: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: every command this thread built, while recording is enabled.
+    pub(crate) static TEST_SPECS: std::cell::RefCell<Option<Vec<CommandSpec>>> = const { std::cell::RefCell::new(None) };
+    /// Tests only: record a marker instead of the owners themselves, so that recording never
+    /// keeps the node pinned while the operation under test settles it.
+    pub(crate) static TEST_RELEASE_OWNERS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub fn is_object_id(text: &str) -> bool {
@@ -83,10 +109,34 @@ fn update_refused(state: &RepoState, reason: &UpdateRefusal) -> NodeAppError {
     refused(&state.status, &explanation)
 }
 
+fn config_refused() -> NodeAppError {
+    refused("", "Repository configuration requires external inspection.")
+}
+
+fn safe_config(config: &str) -> bool {
+    config
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .all(|entry| {
+            let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
+            let key = key.to_ascii_lowercase();
+            !key.starts_with("filter.")
+                && key != "include.path"
+                && !(key.starts_with("includeif.") && key.ends_with(".path"))
+                && key != "core.worktree"
+                && (key != "extensions.worktreeconfig"
+                    || matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "false" | "no" | "off" | "0"
+                    ))
+        })
+}
+
 impl GitNodes {
     pub fn new() -> Self {
         Self {
             program: None,
+            resources: None,
             allow_local: false,
         }
     }
@@ -94,14 +144,39 @@ impl GitNodes {
     pub fn with_program(program: PathBuf, allow_local: bool) -> Self {
         Self {
             program: Some(program),
+            resources: None,
             allow_local,
         }
     }
 
+    pub(crate) fn bound(
+        &self,
+        paths: Arc<NodePaths>,
+        directories: Vec<Arc<crate::shared::model_paths::PinnedDirectory>>,
+        retained: Retained,
+    ) -> Result<Self, NodeAppError> {
+        let config = tempfile::NamedTempFile::new().map_err(filesystem)?;
+        Ok(Self {
+            program: self.program.clone(),
+            allow_local: self.allow_local,
+            resources: Some(Arc::new(GitResources {
+                paths,
+                directories,
+                config,
+                retained,
+            })),
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn spec_for_test(&self, root: &Path) -> CommandSpec {
-        self.spec(root, Path::new("/hooks"), None, &["status"])
-            .unwrap()
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("ComfyUI/custom_nodes")).unwrap();
+        let paths = Arc::new(NodePaths::open(directory.path(), true).unwrap());
+        let bound = self
+            .bound(paths.clone(), vec![], Retained::new(Arc::new(directory)))
+            .unwrap();
+        bound.spec(root, &paths.hooks(), None, &["status"]).unwrap()
     }
 
     pub fn validate(&self, url: &str) -> Result<Remote, NodeAppError> {
@@ -122,6 +197,7 @@ impl GitNodes {
         cwd: Option<&Path>,
         args: &[&str],
     ) -> Result<CommandSpec, NodeAppError> {
+        let resources = self.resources.as_ref().ok_or(NodeAppError::UnsafeSource)?;
         let layout = Layout::new(root);
         let program = self
             .program
@@ -151,7 +227,63 @@ impl GitNodes {
         if let Some(cwd) = cwd {
             spec = spec.arg("-C").arg(cwd);
         }
-        Ok(spec.args(args.iter().copied()))
+        spec.env
+            .retain(|(key, _)| key != "GIT_CONFIG_GLOBAL" && key != "GIT_CONFIG_NOSYSTEM");
+        spec.env.push((
+            "GIT_CONFIG_GLOBAL".into(),
+            resources.config.path().as_os_str().to_owned(),
+        ));
+        spec.env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
+        if !matches!(args.first(), Some(&"fetch" | &"clone" | &"ls-remote")) {
+            spec.env.retain(|(key, _)| {
+                !matches!(
+                    key.to_str().unwrap_or("").to_ascii_lowercase().as_str(),
+                    "http_proxy" | "https_proxy" | "all_proxy" | "no_proxy" | "ssh_auth_sock"
+                )
+            });
+        }
+        spec = spec
+            .retain(Retained::new(resources.clone()))
+            .retain(resources.retained.clone());
+        if let Some(cwd) = cwd {
+            let directory = resources
+                .directories
+                .iter()
+                .find(|directory| directory.anchored_path() == cwd)
+                .ok_or(NodeAppError::UnsafeSource)?;
+            let git = directory
+                .child(&safe_name(".git"), false)
+                .map_err(|_| config_refused())?;
+            if ["commondir", "gitdir"]
+                .iter()
+                .any(|name| git.open_entry(&safe_name(*name)).is_ok())
+            {
+                return Err(config_refused());
+            }
+            spec = spec.retain(Retained::new(git));
+        }
+        if hooks != resources.paths.hooks() {
+            return Err(NodeAppError::UnsafeSource);
+        }
+        let spec = spec
+            .args([
+                "-c",
+                "status.relativePaths=true",
+                "-c",
+                "core.quotePath=true",
+            ])
+            .args(args.iter().copied());
+        #[cfg(test)]
+        TEST_SPECS.with(|slot| {
+            if let Some(specs) = slot.borrow_mut().as_mut() {
+                let mut recorded = spec.clone();
+                if TEST_RELEASE_OWNERS.with(std::cell::Cell::get) && !recorded.retained.is_empty() {
+                    recorded.retained = Retained::new(Arc::new(()));
+                }
+                specs.push(recorded);
+            }
+        });
+        Ok(spec)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -166,6 +298,33 @@ impl GitNodes {
         timeout: Duration,
     ) -> Result<String, NodeAppError> {
         let spec = self.spec(root, hooks, cwd, args)?;
+        if let Some(dir) = cwd {
+            let query = self.spec(
+                root,
+                hooks,
+                Some(dir),
+                &["config", "--local", "--no-includes", "--null", "--list"],
+            )?;
+            let limits = RunLimits {
+                timeout: Some(Duration::from_secs(120)),
+                ..Default::default()
+            };
+            let config = process::run(&query, &DiscardSink, cancel, &limits)
+                .await
+                .map_err(|error| match error {
+                    RunError::Cancelled { .. } => NodeAppError::Cancelled,
+                    RunError::Spawn(std::io::ErrorKind::NotFound) => NodeAppError::GitUnavailable,
+                    _ => config_refused(),
+                })?;
+            if config.stdout.len() >= limits.max_stdout_bytes || !safe_config(&config.stdout) {
+                return Err(config_refused());
+            }
+        }
+        let spec = if let Some(ctx) = ctx {
+            spec.retain(ctx.retained.clone())
+        } else {
+            spec
+        };
         let limits = RunLimits {
             timeout: Some(timeout),
             ..Default::default()
@@ -182,8 +341,7 @@ impl GitNodes {
                 if looks_transient(&tail) {
                     Err(NodeAppError::Offline)
                 } else {
-                    let start = tail.len().saturating_sub(3);
-                    Err(failed(format!("Git failed: {}", tail[start..].join(" "))))
+                    Err(failed("The Git command failed."))
                 }
             }
             Err(RunError::Spawn(std::io::ErrorKind::NotFound)) => Err(NodeAppError::GitUnavailable),
@@ -198,6 +356,16 @@ impl GitNodes {
         dir: &Path,
         args: &[&str],
     ) -> Result<String, NodeAppError> {
+        let metadata = dir.join(".git").symlink_metadata().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                refused("", "The repository metadata (.git) is missing.")
+            } else {
+                filesystem(error)
+            }
+        })?;
+        if !metadata.is_dir() || is_link(&metadata) {
+            return Err(NodeAppError::UnsafeSource);
+        }
         self.run(
             root,
             hooks,
@@ -476,7 +644,13 @@ impl GitNodes {
                 root,
                 hooks,
                 dir,
-                &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                &[
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                    "--ignore-submodules=all",
+                ],
             )
             .await?;
         let dirty = porcelain_dirty(&porcelain).map_err(|_| failed("Git status was incomplete"))?;
@@ -523,7 +697,12 @@ impl GitNodes {
                 root,
                 hooks,
                 dir,
-                &["status", "--short", "--untracked-files=all"],
+                &[
+                    "status",
+                    "--short",
+                    "--untracked-files=all",
+                    "--ignore-submodules=all",
+                ],
             )
             .await
             .unwrap_or_default();
@@ -545,7 +724,10 @@ impl GitNodes {
                 ahead,
                 behind,
                 has_upstream,
-                status: status.chars().take(2000).collect(),
+                status: crate::shared::logging::redact(&status)
+                    .chars()
+                    .take(2000)
+                    .collect(),
             },
             revision: Revision {
                 commit: self.head(root, hooks, dir).await?,
@@ -561,7 +743,13 @@ impl GitNodes {
                 root,
                 hooks,
                 dir,
-                &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                &[
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                    "--ignore-submodules=all",
+                ],
             )
             .await
             .ok()?;

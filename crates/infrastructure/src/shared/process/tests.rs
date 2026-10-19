@@ -565,6 +565,166 @@ impl Drop for DropFlag {
 }
 
 #[tokio::test]
+async fn maintenance_lease_survives_cleanup_failure() {
+    use application::shared::{GateError, MaintenanceGate};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let gate = crate::shared::gate::TokioMaintenanceGate::new();
+    let lease = gate.acquire().await.unwrap();
+    let alive = Arc::new(AtomicBool::new(true));
+    CLEANUP_SURVIVORS.with(|slot| *slot.borrow_mut() = Some(alive.clone()));
+    let spec = shell("echo done").retain(lease.retained());
+    assert!(matches!(
+        run_default(&spec).await.0,
+        Err(RunError::CleanupFailed { .. })
+    ));
+    drop(spec);
+    drop(lease);
+    assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
+    alive.store(false, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(5), gate.acquire())
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn command_retention_merges_lease_and_filesystem_pins() {
+    use application::shared::{GateError, MaintenanceGate};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let gate = crate::shared::gate::TokioMaintenanceGate::new();
+    let lease = gate.acquire().await.unwrap();
+    let released = Arc::new(AtomicBool::new(false));
+    let pin = Retained::new(Arc::new(DropFlag(released.clone())));
+    let alive = Arc::new(AtomicBool::new(true));
+    CLEANUP_SURVIVORS.with(|slot| *slot.borrow_mut() = Some(alive.clone()));
+    let spec = shell("echo done").retain(pin);
+    let ctx = application::environment::StepContext {
+        run_id: application::environment::RunId::new("retained-test").unwrap(),
+        step: application::environment::StepId::ComfyRequirements,
+        sink: Arc::new(application::environment::NullSink),
+        cancel: CancelToken::new(),
+        allow_source_builds: false,
+        retained: lease.retained(),
+    };
+    assert!(
+        crate::environment::exec::run_step(&spec, &ctx, &RunLimits::default())
+            .await
+            .is_err()
+    );
+    drop(spec);
+    drop(ctx);
+    drop(lease);
+    assert!(!released.load(Ordering::SeqCst));
+    assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
+    alive.store(false, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(5), gate.acquire())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(released.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn stdin_delivery_failure_cannot_report_success() {
+    let spec = shell("exit 0").stdin(Arc::from(vec![b'x'; 16 << 20]));
+    assert!(matches!(
+        run_default(&spec).await.0,
+        Err(RunError::InputFailed { .. })
+    ));
+}
+
+#[tokio::test]
+async fn stdin_writer_obeys_cancellation_and_timeout() {
+    for cancelled in [true, false] {
+        let spec = shell(if cfg!(windows) {
+            "ping -n 999 127.0.0.1 >nul"
+        } else {
+            "sleep 999"
+        })
+        .stdin(Arc::from(vec![b'x'; 16 << 20]));
+        let cancel = CancelToken::new();
+        let limits = RunLimits {
+            timeout: (!cancelled).then_some(Duration::from_millis(200)),
+            kill_grace: Duration::from_secs(1),
+            ..Default::default()
+        };
+        let future = run(&spec, &DiscardSink, &cancel, &limits);
+        let trigger = async {
+            if cancelled {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                cancel.cancel();
+            }
+        };
+        let started = Instant::now();
+        let (result, ()) = tokio::join!(future, trigger);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(
+            if cancelled {
+                matches!(result, Err(RunError::Cancelled { .. }))
+            } else {
+                matches!(result, Err(RunError::TimedOut { .. }))
+            },
+            "{result:?}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_children_exclude_cwd_from_default_dll_search() {
+    let directory = tempfile::tempdir().unwrap();
+    let name = format!("vjump-dll-policy-{}.dll", std::process::id());
+    std::fs::write(directory.path().join(&name), b"invalid DLL").unwrap();
+    // The helper is started by the runner, like every tool, with the planted file as its cwd.
+    let mut spec = CommandSpec::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "shared::process::tests::dll_lookup_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .cwd(directory.path())
+        .env_vars(base_env())
+        .arg("--test-threads=1");
+    spec.env.push(("VJUMP_DLL_LOOKUP_NAME".into(), name.into()));
+    run_default(&spec).await.0.unwrap();
+}
+
+/// The process-wide policy applies to the process that sets it. Windows 11 does not hand it
+/// to child processes (verified with `CreateProcess` children): a process that must exclude its
+/// working directory from the default DLL search has to run the initializer itself, as the app
+/// and the runner's spawn path do.
+#[cfg(windows)]
+#[test]
+#[ignore = "helper executed only by windows_children_exclude_cwd_from_default_dll_search"]
+fn dll_lookup_child() {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::LibraryLoader::LoadLibraryW;
+    const BAD_EXE_FORMAT: i32 = 193;
+    const MOD_NOT_FOUND: i32 = 126;
+    let name = std::env::var_os("VJUMP_DLL_LOOKUP_NAME").expect("parent supplies unique DLL name");
+    let name: Vec<u16> = name.encode_wide().chain(Some(0)).collect();
+    // A cwd hit reports ERROR_BAD_EXE_FORMAT; excluding cwd reports ERROR_MOD_NOT_FOUND.
+    // SAFETY: the DLL name is terminated and valid throughout this call.
+    let module = unsafe { LoadLibraryW(name.as_ptr()) };
+    assert!(module.is_null());
+    let before = io::Error::last_os_error().raw_os_error();
+    assert!(
+        matches!(before, Some(BAD_EXE_FORMAT | MOD_NOT_FOUND)),
+        "unexpected error before the policy: {before:?}"
+    );
+    initialize_tool_policy().unwrap();
+    // SAFETY: this repeats the same terminated DLL name after applying the policy.
+    let module = unsafe { LoadLibraryW(name.as_ptr()) };
+    assert!(module.is_null());
+    assert_eq!(
+        io::Error::last_os_error().raw_os_error(),
+        Some(MOD_NOT_FOUND),
+        "the policy must exclude cwd"
+    );
+}
+
+#[tokio::test]
 async fn cleanup_failure_retains_execution_resources_until_children_exit() {
     use std::sync::atomic::{AtomicBool, Ordering};
     let released = Arc::new(AtomicBool::new(false));

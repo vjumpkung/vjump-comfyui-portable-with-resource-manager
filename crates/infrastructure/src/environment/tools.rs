@@ -8,10 +8,7 @@ use std::{
     time::Duration,
 };
 
-use application::{
-    environment::{ProvisionError, StepContext, ToolInfo, ToolProvisioner},
-    shared::CancelToken,
-};
+use application::environment::{ProvisionError, StepContext, ToolInfo, ToolProvisioner};
 use async_trait::async_trait;
 use domain::environment::PythonVersion;
 
@@ -133,14 +130,14 @@ async fn check_version(
     layout: &Layout,
     executable: &Path,
     source: &ToolSource,
-    cancel: &CancelToken,
+    ctx: &StepContext,
 ) -> Result<String, ProvisionError> {
     let spec = command(layout, Tool::Plain, executable).args(source.version_args.clone());
     let limits = RunLimits {
         timeout: Some(Duration::from_secs(60)),
         ..RunLimits::default()
     };
-    let output = run_quiet(&spec, cancel, &limits).await?;
+    let output = run_step(&spec, ctx, &limits).await?;
     let first = output
         .stdout
         .lines()
@@ -325,7 +322,7 @@ impl Tools {
         } else {
             ready.join(&source.executable)
         };
-        let version = match check_version(layout, &executable, source, &ctx.cancel).await {
+        let version = match check_version(layout, &executable, source, ctx).await {
             Ok(version) => version,
             Err(error) => {
                 if flatten {
@@ -439,7 +436,7 @@ impl ToolProvisioner for Tools {
         let source = &self.sources.uv;
         let executable = layout.uv_exe();
         if executable.is_file()
-            && let Ok(version) = check_version(&layout, &executable, source, &ctx.cancel).await
+            && let Ok(version) = check_version(&layout, &executable, source, ctx).await
         {
             return Ok(ToolInfo {
                 name: "uv".into(),
@@ -461,7 +458,7 @@ impl ToolProvisioner for Tools {
             let source = &self.sources.mingit;
             let executable = layout.mingit_exe();
             if executable.is_file()
-                && let Ok(version) = check_version(&layout, &executable, source, &ctx.cancel).await
+                && let Ok(version) = check_version(&layout, &executable, source, ctx).await
             {
                 return Ok(ToolInfo {
                     name: "git".into(),
@@ -484,7 +481,12 @@ impl ToolProvisioner for Tools {
             )));
         };
         let spec = command(&layout, Tool::Git, &git).arg("--version");
-        let output = run_quiet(&spec, &ctx.cancel, &RunLimits::default()).await?;
+        let output = run_quiet(
+            &spec.clone().retain(ctx.retained.clone()),
+            &ctx.cancel,
+            &RunLimits::default(),
+        )
+        .await?;
         let line = output
             .stdout
             .lines()

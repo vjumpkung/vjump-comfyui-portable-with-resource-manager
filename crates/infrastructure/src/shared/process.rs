@@ -36,6 +36,13 @@ use unix as platform;
 #[cfg(windows)]
 use windows as platform;
 
+/// Establish process-wide tool launch policy before workers are started.
+pub fn initialize_tool_policy() -> io::Result<()> {
+    #[cfg(windows)]
+    windows::initialize_dll_policy()?;
+    Ok(())
+}
+
 /// Read-only membership in the process scope owned by this runner. This never
 /// grants termination authority to a PID read from persistent storage.
 pub struct ProcessScope {
@@ -126,7 +133,7 @@ impl CommandSpec {
     }
 
     pub fn retain(mut self, retained: Retained) -> Self {
-        self.retained = retained;
+        self.retained = self.retained.merge(retained);
         self
     }
 
@@ -204,6 +211,9 @@ pub enum RunError {
         tail: Vec<String>,
     },
     TimedOut {
+        tail: Vec<String>,
+    },
+    InputFailed {
         tail: Vec<String>,
     },
     CleanupFailed {
@@ -415,6 +425,12 @@ enum Ended {
     Exited(io::Result<std::process::ExitStatus>),
     Cancelled,
     TimedOut,
+    InputFailed,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CLEANUP_SURVIVORS: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Runs `spec` to completion, streaming redacted lines to `sink`.
@@ -444,6 +460,8 @@ async fn run_inner(
     limits: &RunLimits,
     observer: Option<&dyn ProcessObserver>,
 ) -> Result<Output, RunError> {
+    #[cfg(test)]
+    let cleanup_survivors = CLEANUP_SURVIVORS.with(|slot| slot.borrow_mut().take());
     let mut command = Command::new(&spec.program);
     command
         .args(&spec.args)
@@ -476,12 +494,7 @@ async fn run_inner(
     }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    if let (Some(mut stdin), Some(bytes)) = (child.stdin.take(), spec.stdin.clone()) {
-        // Closing the pipe signals the end of input. A child that stops reading is not an error.
-        tokio::spawn(async move {
-            let _ = stdin.write_all(&bytes).await;
-        });
-    }
+    let stdin = child.stdin.take();
 
     let collector = Collector {
         sink,
@@ -513,18 +526,48 @@ async fn run_inner(
     let mut ticker = tokio::time::interval(Duration::from_millis(40));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pump_done = false;
-    let ended = loop {
-        tokio::select! {
-            status = child.wait() => break Ended::Exited(status),
-            _ = ticker.tick() => {
-                if cancel.is_cancelled() {
-                    break Ended::Cancelled;
-                }
-                if limits.timeout.is_some_and(|timeout| started.elapsed() >= timeout) {
-                    break Ended::TimedOut;
-                }
+    let ended = {
+        let input = async move {
+            if let Some(bytes) = &spec.stdin {
+                let mut stdin = stdin.ok_or(io::ErrorKind::BrokenPipe)?;
+                stdin.write_all(bytes).await?;
+                stdin.shutdown().await?;
             }
-            () = &mut pump, if !pump_done => pump_done = true,
+            Ok::<_, io::Error>(())
+        };
+        tokio::pin!(input);
+        let mut input_done = false;
+        loop {
+            if cancel.is_cancelled() {
+                break Ended::Cancelled;
+            }
+            if limits
+                .timeout
+                .is_some_and(|timeout| started.elapsed() >= timeout)
+            {
+                break Ended::TimedOut;
+            }
+            tokio::select! {
+                biased;
+                result = &mut input, if !input_done => {
+                    input_done = true;
+                    if result.is_err() {
+                        break Ended::InputFailed;
+                    }
+                }
+                status = child.wait() => {
+                    break if input_done { Ended::Exited(status) } else { Ended::InputFailed };
+                }
+                _ = ticker.tick() => {
+                    if cancel.is_cancelled() {
+                        break Ended::Cancelled;
+                    }
+                    if limits.timeout.is_some_and(|timeout| started.elapsed() >= timeout) {
+                        break Ended::TimedOut;
+                    }
+                }
+                () = &mut pump, if !pump_done => pump_done = true,
+            }
         }
     };
 
@@ -533,7 +576,7 @@ async fn run_inner(
             // Stragglers that outlive the main process must not keep the pipes open.
             tree.kill(true);
         }
-        Ended::Cancelled | Ended::TimedOut => {
+        Ended::Cancelled | Ended::TimedOut | Ended::InputFailed => {
             tree.kill(false);
             if tokio::time::timeout(limits.kill_grace, child.wait())
                 .await
@@ -556,13 +599,28 @@ async fn run_inner(
     }
 
     let tail = collector.tail();
+    #[cfg(test)]
+    let cleanup_verified = cleanup_verified
+        && cleanup_survivors
+            .as_ref()
+            .is_none_or(|alive| !alive.load(std::sync::atomic::Ordering::SeqCst));
     if !cleanup_verified {
         // Survivors may still use the command's inputs: hand the protection to a task that
         // releases it only once the tree is empty.
         let (survivors, grace) = (tree.clone(), limits.kill_grace);
         retain_until_empty(spec.retained.clone(), move || {
             let tree = survivors.clone();
-            async move { tree.wait_empty(grace).await }
+            #[cfg(test)]
+            let injected = cleanup_survivors.clone();
+            async move {
+                let empty = tree.wait_empty(grace).await;
+                #[cfg(test)]
+                let empty = empty
+                    && injected
+                        .as_ref()
+                        .is_none_or(|alive| !alive.load(std::sync::atomic::Ordering::SeqCst));
+                empty
+            }
         });
         return Err(RunError::CleanupFailed { tail });
     }
@@ -570,6 +628,7 @@ async fn run_inner(
     match ended {
         Ended::Cancelled => Err(RunError::Cancelled { tail }),
         Ended::TimedOut => Err(RunError::TimedOut { tail }),
+        Ended::InputFailed => Err(RunError::InputFailed { tail }),
         Ended::Exited(Err(_)) => Err(RunError::Failed {
             exit_code: None,
             tail,

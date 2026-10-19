@@ -636,6 +636,8 @@ mod tests {
                 flagged: true,
                 deprecated: false,
             },
+            node_flagged: false,
+            node_deprecated: false,
         };
         let dto = RegistryNodeDto::from(&node);
         assert_eq!(dto.supported_os, node.compatibility.supported_os);

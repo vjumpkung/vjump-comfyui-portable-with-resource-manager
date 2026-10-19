@@ -169,12 +169,21 @@ export function ComfyPage() {
     queryKey: comfyKeys.extraPaths,
     queryFn: () => gateway.comfyReadExtraModelPaths(),
   })
+  // The report to select by hand when the clipboard could not be written.
+  const [diagnosticsFallback, setDiagnosticsFallback] = useState<string | null>(
+    null,
+  )
   const copyDiagnostics = useMutation({
-    mutationFn: async () => {
-      const diagnostics = await gateway.comfyDiagnostics()
-      await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2))
+    mutationFn: () => gateway.appCopyDiagnostics(),
+    onSuccess: (result) => {
+      if (result.copied) {
+        setDiagnosticsFallback(null)
+        toast.success('Diagnostics copied to the clipboard.')
+      } else {
+        setDiagnosticsFallback(result.text)
+        toast.error('The clipboard is unavailable. Select the report below.')
+      }
     },
-    onSuccess: () => toast.success('Diagnostics copied to the clipboard.'),
     onError,
   })
 
@@ -293,6 +302,16 @@ export function ComfyPage() {
               Copy diagnostics
             </Button>
           </div>
+          {diagnosticsFallback !== null && (
+            <textarea
+              readOnly
+              aria-label="Diagnostics report"
+              value={diagnosticsFallback}
+              rows={12}
+              onFocus={(event) => event.currentTarget.select()}
+              className="w-full rounded-md border bg-muted p-3 font-mono text-xs"
+            />
+          )}
         </CardContent>
       </Card>
 

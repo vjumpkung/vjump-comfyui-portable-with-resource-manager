@@ -65,9 +65,20 @@ impl LibrarySupervisor {
 
     /// The scan loop. The first pass scans everything.
     pub async fn run(self: Arc<Self>) {
+        let (_shutdown, stopped) = oneshot::channel();
+        self.run_until(stopped).await;
+    }
+
+    /// Stops between scans so blocking traversal and catalog writes are never detached.
+    /// Each run owns a fresh stop channel and recreates its watcher on the first scan.
+    pub async fn run_until(self: Arc<Self>, mut stopped: oneshot::Receiver<()>) {
         self.dirty.mark_all_now();
         loop {
-            let pending = self.dirty.take_due().await;
+            let pending = tokio::select! {
+                biased;
+                _ = &mut stopped => break,
+                pending = self.dirty.take_due() => pending,
+            };
             let waiters =
                 std::mem::take(&mut *self.waiters.lock().unwrap_or_else(|p| p.into_inner()));
             let only = (!pending.all).then_some(pending.roots);
@@ -79,6 +90,16 @@ impl LibrarySupervisor {
                 let _ = waiter.send(());
             }
         }
+        self.watcher
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).watcher = WatcherState::Unavailable;
+        self.waiters
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.bump();
     }
 
     /// One scan with compare-and-apply: observations from before a catalog change are discarded

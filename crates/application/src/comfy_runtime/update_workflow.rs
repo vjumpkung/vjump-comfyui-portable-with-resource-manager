@@ -65,7 +65,7 @@ impl UpdateComfy {
             (None, None) => {
                 let revision = deps.repository.revision(&root).await?;
                 self.check_repo(&revision, &input.target).await?;
-                let ctx = context("update-fetch", cancel.clone())?;
+                let ctx = context("update-fetch", cancel.clone(), lease.retained())?;
                 deps.repository.fetch(&root, &ctx).await?;
                 self.check_repo(&revision, &input.target).await?;
                 let target = deps.repository.freeze(&root, &input.target).await?;
@@ -89,7 +89,7 @@ impl UpdateComfy {
             }
         };
         run.failure = None;
-        let ctx = context(run.id.as_str(), cancel)?;
+        let ctx = context(run.id.as_str(), cancel, lease.retained())?;
         let result = self.finish(&mut run, &mut env, &ctx).await;
         if let Err(error) = result {
             // The phase is deliberately retained. Source checkout is never reset on failure.
@@ -209,7 +209,11 @@ impl UpdateComfy {
             .packages
             .install(&root, &env.path, &spec, ctx)
             .await?;
-        let installed = deps.environment.packages.list(&root, &env.path).await?;
+        let installed = deps
+            .environment
+            .packages
+            .list(&root, &env.path, Some(ctx))
+            .await?;
         let mut actual = PinSet::new();
         for package in installed {
             if let Ok(name) = DistName::new(&package.name)
@@ -286,12 +290,17 @@ impl UpdateComfy {
     }
 }
 
-fn context(id: &str, cancel: CancelToken) -> Result<StepContext, RuntimeError> {
+fn context(
+    id: &str,
+    cancel: CancelToken,
+    retained: crate::shared::Retained,
+) -> Result<StepContext, RuntimeError> {
     Ok(StepContext {
         run_id: RunId::new(id).map_err(|_| RuntimeError::InvalidRecord)?,
         step: StepId::ComfyRequirements,
         sink: Arc::new(NullSink),
         cancel,
         allow_source_builds: false,
+        retained,
     })
 }

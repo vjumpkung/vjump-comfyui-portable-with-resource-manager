@@ -418,7 +418,12 @@ impl PackageInstaller for Stubs {
         Err(stub_failure())
     }
 
-    async fn list(&self, _: &Path, _: &Path) -> Result<Vec<InstalledPackage>, ProvisionError> {
+    async fn list(
+        &self,
+        _: &Path,
+        _: &Path,
+        _: Option<&StepContext>,
+    ) -> Result<Vec<InstalledPackage>, ProvisionError> {
         self.calls.hit();
         Ok(Vec::new())
     }

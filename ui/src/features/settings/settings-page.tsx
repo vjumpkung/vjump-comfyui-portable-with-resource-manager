@@ -1,5 +1,7 @@
 import { CredentialsPanel } from './credentials-panel'
+import { DiagnosticsPanel } from './diagnostics-panel'
 import { SettingsForm } from './settings-form'
+import { UpdatesPanel } from './updates-panel'
 import type { SetupModeDto } from '@/shared/ipc/gateway'
 import { Button } from '@/shared/ui/button'
 import {
@@ -70,6 +72,8 @@ export function SettingsPage({
           </div>
         </CardContent>
       </Card>
+      <UpdatesPanel maintenanceBusy={maintenanceBusy} />
+      <DiagnosticsPanel />
     </div>
   )
 }

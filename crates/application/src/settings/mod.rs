@@ -1,5 +1,7 @@
 use std::sync::Arc;
 pub mod credential_tester;
+pub mod diagnostics;
+pub mod updates;
 
 use async_trait::async_trait;
 use domain::settings::{CredentialKind, Settings, SettingsError};

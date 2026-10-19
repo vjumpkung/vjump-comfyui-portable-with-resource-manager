@@ -1,12 +1,19 @@
 pub mod app_lifecycle;
 pub mod comfy_window;
+pub mod diagnostics;
 pub mod ipc;
 pub mod picker;
 pub mod state;
+pub mod updates;
+
+#[cfg(all(test, target_os = "windows", target_env = "msvc"))]
+#[link(name = "resource", kind = "static")]
+unsafe extern "C" {}
 
 use std::sync::{Arc, Mutex};
 
 use infrastructure::shared::{
+    clock::RandomIds,
     logging,
     paths::{AppPaths, resolve_root},
 };
@@ -18,11 +25,14 @@ pub use state::{AppState, RecoveryInfo, Services};
 pub const MANAGER_WINDOW: &str = "manager";
 
 pub fn run() {
+    // Before any worker starts. A failure does not stop the app: every tool launch repeats the
+    // initialization and is refused for as long as it fails.
+    let _ = infrastructure::shared::process::initialize_tool_policy();
     let bindings = ipc::bindings::builder::<tauri::Wry>();
     let logging_guard: Arc<Mutex<Option<logging::LoggingGuard>>> = Arc::new(Mutex::new(None));
     let setup_guard = logging_guard.clone();
 
-    let app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // A second launch restores the manager, which is absent in background mode.
             app_lifecycle::restore_manager(app);
@@ -36,6 +46,24 @@ pub fn run() {
         // Registered for the native pickers. The manager calls the app's own pick commands;
         // no capability grants the plugin's commands to any webview.
         .plugin(tauri_plugin_dialog::init())
+        // Used from Rust only, for Copy diagnostics; no capability grants its commands either.
+        .plugin(tauri_plugin_clipboard_manager::init());
+    // The signed updater exists only in builds that carry both the public key and the HTTPS
+    // endpoint. Without them nothing is registered and the update commands refuse.
+    let updater_config = updates::UpdaterBuildConfig::from_build_env();
+    if updater_config.is_some() {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    let mut context = tauri::generate_context!();
+    if let Some(config) = &updater_config {
+        context
+            .config_mut()
+            .plugins
+            .0
+            .insert("updater".to_owned(), config.plugin_config());
+    }
+
+    let app = builder
         .invoke_handler(bindings.invoke_handler())
         .on_window_event(|window, event| {
             if window.label() == MANAGER_WINDOW
@@ -81,11 +109,23 @@ pub fn run() {
                 ))?,
             };
             state.install_shell(Arc::new(app_lifecycle::TauriShell(app.handle().clone())));
+            state.install_clipboard(Arc::new(diagnostics::TauriClipboard::new(
+                app.handle().clone(),
+            )));
+            state.install_updater(Arc::new(updates::SignedUpdater::new(
+                updater_config.clone(),
+                |_| Box::new(updates::PluginChannel::new(app.handle().clone())),
+                Arc::new(updates::AppQuiesce::new(
+                    app.handle().clone(),
+                    setup_guard.clone(),
+                )),
+                Arc::new(RandomIds::default()),
+            )));
             app.manage(state);
             app_lifecycle::spawn_runtime_watch(app.handle().clone());
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building the application");
 
     let code = app.run_return(|app, event| {
@@ -94,6 +134,7 @@ pub fn run() {
             // Running transfers are paused and cleaned up before the process ends.
             let state = app.state::<AppState>();
             tauri::async_runtime::block_on(state.shutdown_downloads());
+            tauri::async_runtime::block_on(state.shutdown_library());
         }
         if let RunEvent::ExitRequested {
             code: None, api, ..

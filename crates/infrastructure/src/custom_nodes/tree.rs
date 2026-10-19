@@ -12,12 +12,14 @@ use std::{collections::HashMap, io::Write, sync::Arc};
 use std::{
     fs::{self, File},
     io::{self, Read},
-    path::Path,
 };
-use walkdir::WalkDir;
 
 const MAX_ENTRIES: usize = 200_000;
 const MAX_BYTES: u64 = 8 << 30;
+pub(crate) const MAX_NODE_PATH_COMPONENTS: usize = 64;
+pub(crate) const MAX_NODE_RELATIVE_PATH_BYTES: usize = 1024;
+pub(crate) const MAX_ARCHIVE_NAME_BYTES: usize = 1024;
+pub(crate) const MAX_ARCHIVE_PLANNED_NAME_BYTES: usize = 8 * 1024 * 1024;
 
 /// Names that belong to the app, not to the node, and so are excluded from digests.
 fn app_owned(depth: usize, name: &str) -> bool {
@@ -38,40 +40,148 @@ pub(crate) fn is_link(meta: &fs::Metadata) -> bool {
     false
 }
 
-fn walker(root: &Path) -> impl Iterator<Item = walkdir::Result<walkdir::DirEntry>> {
-    WalkDir::new(root)
-        .follow_links(false)
-        .follow_root_links(false)
-        .sort_by_file_name()
-        .into_iter()
-        .filter_entry(|entry| !(entry.depth() == 1 && entry.file_name() == ".git"))
+pub(crate) fn validate_components(components: &[String]) -> Result<(), NodeAppError> {
+    let bytes =
+        components.iter().map(String::len).sum::<usize>() + components.len().saturating_sub(1);
+    if components.is_empty()
+        || components.len() > MAX_NODE_PATH_COMPONENTS
+        || bytes > MAX_NODE_RELATIVE_PATH_BYTES
+        || components
+            .iter()
+            .any(|name| SafeFileName::new(name).is_err())
+    {
+        return Err(NodeAppError::UnsafeSource);
+    }
+    Ok(())
 }
 
-/// Rejects links, reparse points, devices and oversized trees. The top-level `.git` directory is
-/// not walked: Git owns it and a clone cannot place links there.
-pub fn validate_tree(root: &Path) -> Result<(), NodeAppError> {
-    let mut entries = 0usize;
-    let mut bytes = 0u64;
-    for entry in walker(root) {
-        let entry = entry.map_err(|_| NodeAppError::UnsafeSource)?;
-        entries += 1;
-        let meta = entry
-            .path()
-            .symlink_metadata()
-            .map_err(|_| NodeAppError::UnsafeSource)?;
-        if is_link(&meta) || !(meta.is_file() || meta.is_dir()) {
+struct Frame {
+    directory: Arc<PinnedDirectory>,
+    names: std::vec::IntoIter<SafeFileName>,
+    relative: String,
+    depth: usize,
+    cache: bool,
+}
+
+fn frame(
+    directory: Arc<PinnedDirectory>,
+    relative: String,
+    depth: usize,
+    cache: bool,
+    entries: &mut usize,
+) -> Result<Frame, NodeAppError> {
+    let mut names = Vec::new();
+    for entry in fs::read_dir(directory.anchored_path()).map_err(filesystem)? {
+        *entries += 1;
+        if *entries > MAX_ENTRIES {
             return Err(NodeAppError::UnsafeSource);
         }
-        bytes = bytes.saturating_add(meta.len());
-        if entries > MAX_ENTRIES || bytes > MAX_BYTES {
+        let name = entry
+            .map_err(filesystem)?
+            .file_name()
+            .into_string()
+            .map_err(|_| NodeAppError::UnsafeSource)?;
+        names.push(SafeFileName::new(name).map_err(|_| NodeAppError::UnsafeSource)?);
+    }
+    names.sort();
+    Ok(Frame {
+        directory,
+        names: names.into_iter(),
+        relative,
+        depth,
+        cache,
+    })
+}
+
+/// A single bounded traversal shared by validation, inventory and hashing. Only the
+/// active ancestor chain is pinned; every leaf is opened relative to its pinned parent.
+pub(crate) fn walk_files(
+    directory: &Arc<PinnedDirectory>,
+    git_node: bool,
+    reject_cache: bool,
+    mut visit: impl FnMut(&Arc<PinnedDirectory>, &SafeFileName, &str, bool) -> Result<(), NodeAppError>,
+) -> Result<(), NodeAppError> {
+    let mut entries = 0;
+    let mut bytes = 0u64;
+    let mut stack = vec![frame(
+        directory.clone(),
+        String::new(),
+        0,
+        false,
+        &mut entries,
+    )?];
+    while let Some(current) = stack.last_mut() {
+        let Some(name) = current.names.next() else {
+            stack.pop();
+            continue;
+        };
+        let depth = current.depth + 1;
+        let relative = if current.relative.is_empty() {
+            name.as_str().to_owned()
+        } else {
+            format!("{}/{}", current.relative, name.as_str())
+        };
+        if depth > MAX_NODE_PATH_COMPONENTS || relative.len() > MAX_NODE_RELATIVE_PATH_BYTES {
             return Err(NodeAppError::UnsafeSource);
+        }
+        let cache = current.cache || name.as_str().eq_ignore_ascii_case("__pycache__");
+        if cache && reject_cache {
+            return Err(NodeAppError::UnsafeSource);
+        }
+        #[cfg(test)]
+        read_boundary();
+        let child = match current.directory.child(&name, false) {
+            Ok(child) => Some(child),
+            Err(e) if e.kind() == io::ErrorKind::NotADirectory => None,
+            Err(e) => return Err(filesystem(e)),
+        };
+        let leaf = if child.is_none() {
+            Some(current.directory.open_read_pin(&name).map_err(filesystem)?)
+        } else {
+            None
+        };
+        let meta = match &child {
+            Some(child) => child.file.metadata(),
+            None => leaf.as_ref().unwrap().metadata(),
+        }
+        .map_err(filesystem)?;
+        bytes = bytes.saturating_add(meta.len());
+        if bytes > MAX_BYTES {
+            return Err(NodeAppError::UnsafeSource);
+        }
+        if name.as_str().eq_ignore_ascii_case(".git") {
+            if !git_node || depth != 1 || child.is_none() {
+                return Err(NodeAppError::UnsafeSource);
+            }
+            // The directory handle itself was validated before excluding Git's contents.
+            continue;
+        }
+        if let Some(child) = child {
+            stack.push(frame(child, relative, depth, cache, &mut entries)?);
+        } else {
+            visit(
+                &current.directory,
+                &name,
+                &relative,
+                cache || app_owned(depth, name.as_str()),
+            )?;
         }
     }
     Ok(())
 }
 
-pub fn sha256_file(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
+pub fn validate_tree(directory: &Arc<PinnedDirectory>, git_node: bool) -> Result<(), NodeAppError> {
+    walk_files(directory, git_node, false, |_, _, _, _| Ok(()))
+}
+
+pub(crate) fn validate_fresh_git(directory: &Arc<PinnedDirectory>) -> Result<(), NodeAppError> {
+    walk_files(directory, true, true, |_, _, _, _| Ok(()))
+}
+
+pub fn sha256_file(parent: &PinnedDirectory, name: &SafeFileName) -> io::Result<String> {
+    #[cfg(test)]
+    read_boundary();
+    let mut file = parent.open_read_pin(name)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 256 * 1024];
     loop {
@@ -85,51 +195,31 @@ pub fn sha256_file(path: &Path) -> io::Result<String> {
 }
 
 /// A digest of the node's files and their relative names. Order-stable and link-free.
-pub fn tree_digest(root: &Path) -> Result<String, NodeAppError> {
+pub fn tree_digest(directory: &Arc<PinnedDirectory>) -> Result<String, NodeAppError> {
+    digest_tree(directory, true)
+}
+
+pub(crate) fn digest_tree(
+    directory: &Arc<PinnedDirectory>,
+    git_node: bool,
+) -> Result<String, NodeAppError> {
     let mut hasher = Sha256::new();
-    let mut entries = 0usize;
-    for entry in walker(root) {
-        let entry = entry.map_err(|_| NodeAppError::Filesystem)?;
-        if entry.depth() == 0 {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy();
-        if app_owned(entry.depth(), &name) || name == "__pycache__" {
-            continue;
-        }
-        let meta = entry
-            .path()
-            .symlink_metadata()
-            .map_err(|_| NodeAppError::Filesystem)?;
-        if is_link(&meta) {
-            return Err(NodeAppError::UnsafeSource);
-        }
-        if !meta.is_file() {
-            continue;
-        }
-        if entry
-            .path()
-            .components()
-            .any(|c| c.as_os_str() == "__pycache__")
-        {
-            continue;
-        }
-        entries += 1;
-        if entries > MAX_ENTRIES {
-            return Err(NodeAppError::UnsafeSource);
-        }
-        let relative = entry
-            .path()
-            .strip_prefix(root)
-            .map_err(|_| NodeAppError::Filesystem)?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let file = sha256_file(entry.path()).map_err(|_| NodeAppError::Filesystem)?;
-        hasher.update(relative.as_bytes());
-        hasher.update([0]);
-        hasher.update(file.as_bytes());
-        hasher.update(*b"\n");
-    }
+    walk_files(
+        directory,
+        git_node,
+        false,
+        |parent, name, relative, excluded| {
+            if excluded {
+                return Ok(());
+            }
+            let file = sha256_file(parent, name).map_err(filesystem)?;
+            hasher.update(relative.as_bytes());
+            hasher.update([0]);
+            hasher.update(file.as_bytes());
+            hasher.update(*b"\n");
+            Ok(())
+        },
+    )?;
     Ok(format!(
         "tree:{}",
         crate::shared::download::hex(&hasher.finalize())
@@ -137,12 +227,71 @@ pub fn tree_digest(root: &Path) -> Result<String, NodeAppError> {
 }
 
 /// Reads a small text file without following a link.
-pub fn read_text(path: &Path, limit: u64) -> Option<String> {
-    let meta = path.symlink_metadata().ok()?;
-    if is_link(&meta) || !meta.is_file() || meta.len() > limit {
-        return None;
+pub fn read_text(parent: &PinnedDirectory, name: &SafeFileName, limit: u64) -> Option<String> {
+    #[cfg(test)]
+    read_boundary();
+    let file = parent.open_read_pin(name).ok()?;
+    let mut text = String::new();
+    file.take(limit + 1).read_to_string(&mut text).ok()?;
+    (text.len() as u64 <= limit).then_some(text)
+}
+
+#[cfg(test)]
+thread_local! {
+    static READ_BOUNDARY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn before_read(boundary: impl FnOnce() + 'static) {
+    READ_BOUNDARY.with(|slot| *slot.borrow_mut() = Some(Box::new(boundary)));
+}
+
+#[cfg(test)]
+fn read_boundary() {
+    READ_BOUNDARY.with(|slot| {
+        if let Some(boundary) = slot.borrow_mut().take() {
+            boundary();
+        }
+    });
+}
+
+#[derive(Default)]
+struct ComponentTrie(HashMap<(usize, String), TrieEntry>);
+
+struct TrieEntry {
+    spelling: String,
+    id: usize,
+    is_dir: bool,
+    explicit: bool,
+}
+
+impl ComponentTrie {
+    fn add(&mut self, components: &[String], is_dir: bool) -> Result<(), NodeAppError> {
+        let mut parent = 0;
+        for (index, component) in components.iter().enumerate() {
+            let explicit = index + 1 == components.len();
+            let wanted_dir = !explicit || is_dir;
+            let next_id = self.0.len() + 1;
+            let entry = self
+                .0
+                .entry((parent, component.to_lowercase()))
+                .or_insert_with(|| TrieEntry {
+                    spelling: component.clone(),
+                    id: next_id,
+                    is_dir: wanted_dir,
+                    explicit: false,
+                });
+            if entry.spelling != *component
+                || entry.is_dir != wanted_dir
+                || (explicit && entry.explicit)
+            {
+                return Err(NodeAppError::UnsafeSource);
+            }
+            entry.explicit |= explicit;
+            parent = entry.id;
+        }
+        Ok(())
     }
-    fs::read_to_string(path).ok()
 }
 
 /// Node ZIP extraction keeps each output parent pinned through creation and writing.
@@ -165,10 +314,11 @@ pub(crate) fn extract_zip(
     if zip.len() > limits.max_entries {
         return Err(unsafe_source());
     }
-    let mut seen = HashMap::new();
+    let mut seen = ComponentTrie::default();
     let mut planned = Vec::new();
     let mut total = 0u64;
     let mut compressed = 0u64;
+    let mut planned_name_bytes = 0usize;
     for index in 0..zip.len() {
         let entry = zip.by_index_raw(index).map_err(|_| unsafe_source())?;
         if entry.encrypted()
@@ -182,21 +332,23 @@ pub(crate) fn extract_zip(
         {
             return Err(unsafe_source());
         }
-        let components = validate_entry_name(&entry.name().map_err(|_| unsafe_source())?)
-            .map_err(|_| unsafe_source())?;
-        let mut relative = String::new();
+        let decoded = entry.name().map_err(|_| unsafe_source())?;
+        planned_name_bytes = planned_name_bytes.saturating_add(decoded.len());
+        if decoded.len() > MAX_ARCHIVE_NAME_BYTES
+            || planned_name_bytes > MAX_ARCHIVE_PLANNED_NAME_BYTES
+        {
+            return Err(unsafe_source());
+        }
+        let components = validate_entry_name(&decoded).map_err(|_| unsafe_source())?;
+        validate_components(&components)?;
+        if components.iter().any(|name| {
+            name.eq_ignore_ascii_case(".git") || name.eq_ignore_ascii_case("__pycache__")
+        }) {
+            return Err(unsafe_source());
+        }
+        seen.add(&components, entry.is_dir())?;
         let mut names = Vec::new();
-        for (position, name) in components.iter().enumerate() {
-            if !relative.is_empty() {
-                relative.push('/');
-            }
-            relative.push_str(&name.to_lowercase());
-            let is_dir = position + 1 < components.len() || entry.is_dir();
-            if let Some(previous) = seen.insert(relative.clone(), is_dir)
-                && !(previous && is_dir)
-            {
-                return Err(unsafe_source());
-            }
+        for name in &components {
             names.push(SafeFileName::new(name).map_err(|_| unsafe_source())?);
         }
         total = total.saturating_add(entry.size());
@@ -274,6 +426,7 @@ pub(crate) fn extract_zip(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::model_paths::pin_absolute;
 
     #[test]
     fn digest_ignores_app_files_and_changes_with_content() {
@@ -282,14 +435,14 @@ mod tests {
         fs::create_dir_all(node.join("sub")).unwrap();
         fs::write(node.join("a.py"), "one").unwrap();
         fs::write(node.join("sub/b.py"), "two").unwrap();
-        let first = tree_digest(&node).unwrap();
+        let first = tree_digest(&pin_absolute(&node).unwrap()).unwrap();
         fs::write(node.join(".vjump-node.json"), "{}").unwrap();
         fs::write(node.join(".tracking"), "a.py\n").unwrap();
         fs::create_dir_all(node.join("__pycache__")).unwrap();
         fs::write(node.join("__pycache__/x.pyc"), "cache").unwrap();
-        assert_eq!(first, tree_digest(&node).unwrap());
+        assert_eq!(first, tree_digest(&pin_absolute(&node).unwrap()).unwrap());
         fs::write(node.join("a.py"), "changed").unwrap();
-        assert_ne!(first, tree_digest(&node).unwrap());
+        assert_ne!(first, tree_digest(&pin_absolute(&node).unwrap()).unwrap());
     }
 
     #[cfg(unix)]
@@ -301,8 +454,8 @@ mod tests {
             let node = directory.path().join("node");
             fs::create_dir(&node).unwrap();
             std::os::unix::fs::symlink("/etc/passwd", node.join("link")).unwrap();
-            assert!(validate_tree(&node).is_err());
-            assert!(tree_digest(&node).is_err());
+            assert!(validate_tree(&pin_absolute(&node).unwrap(), false).is_err());
+            assert!(tree_digest(&pin_absolute(&node).unwrap()).is_err());
         }
     }
 }

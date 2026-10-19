@@ -730,3 +730,74 @@ async fn the_supervisor_scans_on_start_rescans_on_demand_and_announces_changes()
     assert_ne!(status.watcher, WatcherState::Unavailable);
     task.abort();
 }
+
+#[tokio::test]
+async fn library_shutdown_waits_for_the_in_flight_scan_and_catalog_write() {
+    #[derive(Default)]
+    struct HeldRoots {
+        entered: tokio::sync::Notify,
+        resume: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl ExtraModelPaths for HeldRoots {
+        async fn read(&self, _: &Path) -> std::result::Result<Vec<ModelRoot>, RuntimeError> {
+            self.entered.notify_one();
+            self.resume.notified().await;
+            Ok(Vec::new())
+        }
+    }
+
+    let fx = Fx::new().await;
+    fx.write("checkpoints/first.safetensors", b"1");
+    let held = Arc::new(HeldRoots::default());
+    let roots = super::roots::LibraryRoots::new(
+        fx.models.parent().unwrap().parent().unwrap(),
+        held.clone(),
+        Arc::new(PathLocks::default()),
+    )
+    .unwrap();
+    let supervisor =
+        super::supervisor::LibrarySupervisor::new(fx.stack.catalog.clone(), Arc::new(roots));
+    let (shutdown, stopped) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(supervisor.clone().run_until(stopped));
+    held.entered.notified().await;
+    shutdown.send(()).unwrap();
+    tokio::task::yield_now().await;
+    assert!(!task.is_finished(), "shutdown detached an in-flight scan");
+    held.resume.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fx.list().await, ["models:checkpoints/first.safetensors"]);
+    assert!(!supervisor.status().scanning);
+    assert_eq!(supervisor.status().watcher, WatcherState::Unavailable);
+}
+
+#[tokio::test]
+async fn library_shutdown_drops_the_watcher_and_a_new_run_rescans_and_watches() {
+    let fx = Fx::new().await;
+    fx.write("checkpoints/first.safetensors", b"1");
+    for expected_count in [1, 2] {
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(fx.stack.supervisor.clone().run_until(stopped));
+        fx.stack.deps.control.rescan().await.unwrap();
+        assert_eq!(fx.list().await.len(), expected_count);
+        assert_ne!(
+            fx.stack.deps.control.status().watcher,
+            WatcherState::Unavailable
+        );
+        shutdown.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!fx.stack.deps.control.status().scanning);
+        assert_eq!(
+            fx.stack.deps.control.status().watcher,
+            WatcherState::Unavailable
+        );
+        fx.write("checkpoints/second.safetensors", b"2");
+    }
+}

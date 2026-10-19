@@ -52,6 +52,7 @@ pub(crate) fn safe_name(name: impl Into<String>) -> SafeFileName {
     SafeFileName::new(name).expect("app-owned component is a safe filename")
 }
 
+#[cfg(test)]
 pub(crate) fn entry_path(entry: &Entry) -> PathBuf {
     entry.0.anchored_path().join(entry.1.as_str())
 }
@@ -188,10 +189,10 @@ type Input = (Option<Vec<u8>>, File);
 /// so the pin outlives the read.
 pub(crate) fn read_input(
     directory: &PinnedDirectory,
-    name: &str,
+    name: &SafeFileName,
     limit: u64,
 ) -> Result<Option<Input>, NodeAppError> {
-    let mut file = match directory.open_read_pin(&safe_name(name)) {
+    let mut file = match directory.open_read_pin(name) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(filesystem(e)),

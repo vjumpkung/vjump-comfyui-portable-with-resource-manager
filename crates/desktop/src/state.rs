@@ -39,6 +39,8 @@ use application::{
         ClearCredential, CredentialStore, GetCredentialStatus, GetSettings, SetCredential,
         SettingsRepository, UpdateSettings,
         credential_tester::{CredentialTester, TestCredential},
+        diagnostics::{CollectDiagnostics, PinnedTool},
+        updates::{AppUpdater, InstallAppUpdate},
     },
     shared::{CancelToken, IdGenerator, MaintenanceLease},
 };
@@ -54,7 +56,7 @@ use infrastructure::{
     },
     custom_nodes::stack::{HubSink, NodeEvent, NodeHub, NodeStack},
     environment::{
-        hardware::SystemHardware, manifest::FsManifestStore, packages::UvPackages,
+        hardware::SystemHardware, manifest::FsManifestStore, packages::UvPackages, pins,
         profiles::BundledProfiles, python::PythonAdapter, source::GitSource,
         sqlite::SqliteEnvironmentStore, switcher::FsRootSwitcher, tools::Tools,
         verify::PythonVerifier,
@@ -70,17 +72,20 @@ use infrastructure::{
     shared::{
         clock::{RandomIds, SystemClock},
         gate::TokioMaintenanceGate,
+        log_tail::FileLogTail,
         paths::{AppPaths, ResolvedRoot, RootError, bootstrap_path},
     },
 };
 
 use crate::{
     app_lifecycle::{CloseCoordinator, ShellActions},
+    diagnostics::{Clipboard, UnavailableClipboard},
     ipc::{
         error::IpcError,
         node_dto::{NodeOutcomeDto, PlanReviewDto},
     },
     picker::FilePicker,
+    updates::SignedUpdater,
 };
 
 /// Why the app started without an install root. Only recovery guidance is available then.
@@ -283,12 +288,10 @@ impl DownloadServices {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
-        if let Some(handle) = handle
-            && tokio::time::timeout(std::time::Duration::from_secs(15), handle)
-                .await
-                .is_err()
-        {
-            tracing::warn!("downloads did not stop within 15 seconds");
+        if let Some(handle) = handle {
+            // Keep ownership until transfer/process cleanup has finished. Dropping a timed-out
+            // join handle would detach writers while the installer replaces the application.
+            let _ = handle.await;
         }
     }
 }
@@ -311,7 +314,12 @@ pub struct LibraryServices {
     pub(crate) epoch: String,
     pub(crate) subscriptions: Mutex<HashMap<u32, tauri::async_runtime::JoinHandle<()>>>,
     next_subscription: AtomicU32,
-    run: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    run: Mutex<Option<LibraryRun>>,
+}
+
+struct LibraryRun {
+    handle: tauri::async_runtime::JoinHandle<()>,
+    shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
 impl LibraryServices {
@@ -352,12 +360,23 @@ impl LibraryServices {
 
     /// Starts the scan loop and file watching.
     pub fn start(&self) {
+        let mut run = self.run.lock().unwrap_or_else(|p| p.into_inner());
+        if run.is_some() {
+            return;
+        }
         let supervisor = self.stack.supervisor.clone();
-        let handle = tauri::async_runtime::spawn(supervisor.run());
-        *self
-            .run
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handle);
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let handle = tauri::async_runtime::spawn(supervisor.run_until(stopped));
+        *run = Some(LibraryRun { handle, shutdown });
+    }
+
+    /// Finishes any in-flight scan, then drops the watcher before returning.
+    pub async fn shutdown(&self) {
+        let run = self.run.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(run) = run {
+            let _ = run.shutdown.send(());
+            let _ = run.handle.await;
+        }
     }
 }
 
@@ -532,6 +551,8 @@ pub struct Services {
     pub(crate) downloads: DownloadServices,
     pub(crate) library: LibraryServices,
     pub(crate) nodes: NodeServices,
+    pub(crate) install_update: InstallAppUpdate,
+    pub(crate) diagnostics: CollectDiagnostics,
 }
 
 impl Services {
@@ -556,7 +577,36 @@ impl Services {
             service: Arc::new(nodes.service.clone()),
             hub: nodes.stack.hub.clone(),
         });
+        let diagnostics = CollectDiagnostics::new(
+            RuntimeDeps {
+                environment: deps.clone(),
+                nodes: node_lifecycle.clone(),
+                supervisor: runtime.supervisor.clone(),
+                store: runtime.store.clone(),
+                repository: runtime.repository.clone(),
+                ports: runtime.ports.clone(),
+                preflight: runtime.preflight.clone(),
+                extra_paths: runtime.extra_paths.clone(),
+            },
+            Arc::new(FileLogTail::new(&logs_dir)),
+            Arc::new(runtime.hub.clone()),
+            env!("CARGO_PKG_VERSION"),
+            // Pinned and verified when provisioned, not probed at report time.
+            vec![
+                PinnedTool {
+                    name: "uv".to_owned(),
+                    version: pins::UV_VERSION.to_owned(),
+                },
+                PinnedTool {
+                    name: "hf".to_owned(),
+                    version: pins::HF_VERSION.to_owned(),
+                },
+            ],
+        );
+        let install_update = InstallAppUpdate::new(&deps);
         Self {
+            diagnostics,
+            install_update,
             comfy: ComfyServices::new(deps.clone(), runtime, node_lifecycle),
             downloads: DownloadServices::new(downloads),
             library: LibraryServices::new(library),
@@ -594,6 +644,8 @@ pub struct AppState {
     pub(crate) data_dir: PathBuf,
     pub(crate) close: Arc<CloseCoordinator>,
     shell: OnceLock<Arc<dyn ShellActions>>,
+    updater: OnceLock<Arc<dyn AppUpdater>>,
+    clipboard: OnceLock<Arc<dyn Clipboard>>,
 }
 
 impl AppState {
@@ -615,6 +667,8 @@ impl AppState {
             data_dir,
             close: Arc::new(CloseCoordinator::default()),
             shell: OnceLock::new(),
+            updater: OnceLock::new(),
+            clipboard: OnceLock::new(),
         }
     }
 
@@ -629,6 +683,32 @@ impl AppState {
         let _ = self.shell.set(shell);
     }
 
+    /// Installs the signed updater once the application handle exists.
+    pub fn install_updater(&self, updater: Arc<dyn AppUpdater>) {
+        let _ = self.updater.set(updater);
+    }
+
+    /// The installed updater, or one that refuses everything as not configured.
+    pub(crate) fn updater(&self) -> Arc<dyn AppUpdater> {
+        self.updater
+            .get()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(SignedUpdater::disabled()))
+    }
+
+    /// Installs the system clipboard once the application handle exists.
+    pub fn install_clipboard(&self, clipboard: Arc<dyn Clipboard>) {
+        let _ = self.clipboard.set(clipboard);
+    }
+
+    /// The installed clipboard, or one that reports every copy as failed.
+    pub(crate) fn clipboard(&self) -> Arc<dyn Clipboard> {
+        self.clipboard
+            .get()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(UnavailableClipboard))
+    }
+
     pub(crate) fn shell(&self) -> Result<&Arc<dyn ShellActions>, IpcError> {
         self.shell
             .get()
@@ -639,6 +719,19 @@ impl AppState {
     pub async fn shutdown_downloads(&self) {
         if let Ok(services) = self.services() {
             services.downloads.shutdown().await;
+        }
+    }
+
+    pub async fn shutdown_library(&self) {
+        if let Ok(services) = self.services() {
+            services.library.shutdown().await;
+        }
+    }
+
+    /// Library runs use fresh stop channels; the download supervisor is single-use.
+    pub fn restore_library(&self) {
+        if let Ok(services) = self.services() {
+            services.library.start();
         }
     }
 
@@ -791,9 +884,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct Lease;
-    impl MaintenanceLease for Lease {}
+    use application::shared::MaintenanceGate;
 
     struct LifecycleResult(Result<(), RuntimeError>);
 
@@ -817,9 +908,11 @@ mod tests {
                 service: Arc::new(LifecycleResult(result.clone())),
                 hub,
             };
-            assert_eq!(lifecycle.before_start(&mut Lease).await, result);
+            let gate = TokioMaintenanceGate::new();
+            let mut lease = gate.acquire().await.unwrap();
+            assert_eq!(lifecycle.before_start(&mut *lease).await, result);
             assert!(receiver.try_recv().is_err());
-            assert_eq!(lifecycle.after_stop(&mut Lease).await, result);
+            assert_eq!(lifecycle.after_stop(&mut *lease).await, result);
             assert_eq!(receiver.try_recv().unwrap().1, NodeEvent::Changed);
         }
     }

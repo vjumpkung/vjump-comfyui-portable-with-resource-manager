@@ -258,7 +258,12 @@ impl PackageInstaller for Sim {
         Ok(ResolutionPreview::default())
     }
 
-    async fn list(&self, _: &Path, _: &Path) -> Result<Vec<InstalledPackage>, ProvisionError> {
+    async fn list(
+        &self,
+        _: &Path,
+        _: &Path,
+        _: Option<&StepContext>,
+    ) -> Result<Vec<InstalledPackage>, ProvisionError> {
         Ok(self.installed.lock().unwrap().clone())
     }
 

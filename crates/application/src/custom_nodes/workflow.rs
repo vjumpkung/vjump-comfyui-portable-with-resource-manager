@@ -30,13 +30,14 @@ fn guarded_files(guard: Option<&dyn NodeLocationGuard>) -> InstallSpec {
 }
 
 impl NodeService {
-    fn step(&self, id: &NodeId, ctx: &NodeContext) -> StepContext {
+    fn step(&self, id: &NodeId, ctx: &NodeContext, retained: Retained) -> StepContext {
         StepContext {
             run_id: RunId::new(id.as_str()).expect("validated node operation ID"),
             step: StepId::ComfyRequirements,
             sink: ctx.sink.clone(),
             cancel: ctx.cancel.clone(),
             allow_source_builds: false,
+            retained,
         }
     }
     async fn selected(&self, repair: bool) -> Result<PythonEnvironment, NodeAppError> {
@@ -58,7 +59,7 @@ impl NodeService {
         &self,
         request: PrepareRequest,
         ctx: &NodeContext,
-        _lease: &mut dyn MaintenanceLease,
+        lease: &mut dyn MaintenanceLease,
     ) -> Result<PlanReview, NodeAppError> {
         self.ensure_reconciled().await?;
         if self
@@ -118,7 +119,12 @@ impl NodeService {
             {
                 return Err(NodeAppError::UnsafeSource);
             }
-            node.tree_digest = self.deps.files.snapshot(&root, node, None).await?.digest;
+            node.tree_digest = self
+                .deps
+                .files
+                .snapshot(&root, node, None, lease.retained())
+                .await?
+                .digest;
         }
         let kind = match &request {
             PrepareRequest::Update { .. } => OperationKind::Update,
@@ -172,7 +178,7 @@ impl NodeService {
                     &id,
                     &request,
                     op.prior.as_ref(),
-                    &self.step(&id, ctx),
+                    &self.step(&id, ctx, lease.retained()),
                 )
                 .await
             {
@@ -196,7 +202,11 @@ impl NodeService {
             warnings = prepared.warnings;
             requirement_lines = prepared.requirement_lines;
         } else {
-            let snapshot = self.deps.files.snapshot(&root, &op.node, None).await?;
+            let snapshot = self
+                .deps
+                .files
+                .snapshot(&root, &op.node, None, lease.retained())
+                .await?;
             op.requirements_digest = snapshot.requirements_digest;
             op.hook_digest = snapshot.hook_digest;
             requirement_lines = snapshot.requirement_lines;
@@ -222,7 +232,16 @@ impl NodeService {
             OperationKind::Install | OperationKind::Update | OperationKind::RetryDependencies
         );
         let package = if needs_deps {
-            match self.preview_packages(&root, &env, &op, staged, ctx).await {
+            match self
+                .preview_packages(
+                    &root,
+                    &env,
+                    &op,
+                    staged,
+                    &self.step(&id, ctx, lease.retained()),
+                )
+                .await
+            {
                 Ok(package) => package,
                 Err(error) => {
                     self.abandon(&root, &mut op, &error).await;
@@ -324,7 +343,7 @@ impl NodeService {
         env: &PythonEnvironment,
         op: &NodeOperation,
         staged: bool,
-        ctx: &NodeContext,
+        step: &StepContext,
     ) -> Result<Option<PackagePlan>, NodeAppError> {
         if op.requirements_digest.is_none() && op.dependency_requirements.is_empty() {
             return Ok(None);
@@ -351,12 +370,11 @@ impl NodeService {
             constraint_file: Some(constraint),
             ..guarded_files(guard.as_deref())
         };
-        let step = self.step(&op.id, ctx);
         // Node dependencies resolve under the protected-package constraints or not at all: there
         // is no unconstrained retry, because a node operation must never move a protected package.
         let preview = d
             .packages
-            .preview_install(root, &env.path, &base, &step)
+            .preview_install(root, &env.path, &base, step)
             .await
             .map_err(|_| NodeAppError::ResolutionFailed)?;
         let mut after = env.pins.clone();
@@ -391,7 +409,7 @@ impl NodeService {
         id: &str,
         decision: CommitDecision,
         ctx: &NodeContext,
-        _lease: &mut dyn MaintenanceLease,
+        lease: &mut dyn MaintenanceLease,
     ) -> Result<NodeOutcome, NodeAppError> {
         let mut plan = self
             .deps
@@ -443,7 +461,8 @@ impl NodeService {
         if !decision.protected_changes.is_empty() {
             return Err(NodeAppError::ConsentRequired);
         }
-        self.assert_pins(&root, &env, &env.pins).await?;
+        let step = self.step(&plan.operation.id, ctx, lease.retained());
+        self.assert_pins(&root, &env, &env.pins, &step).await?;
         let staged = matches!(
             plan.operation.kind,
             OperationKind::Install | OperationKind::Update
@@ -455,6 +474,7 @@ impl NodeService {
                 &root,
                 &plan.operation.node,
                 staged.then_some(&plan.operation.id),
+                step.retained.clone(),
             )
             .await?;
         if snapshot.digest != plan.review.tree_digest
@@ -474,7 +494,13 @@ impl NodeService {
                 .ok_or(NodeAppError::StalePlan)?;
             if current.source != prior.source
                 || current.enabled != prior.enabled
-                || self.deps.files.snapshot(&root, prior, None).await?.digest != prior.tree_digest
+                || self
+                    .deps
+                    .files
+                    .snapshot(&root, prior, None, lease.retained())
+                    .await?
+                    .digest
+                    != prior.tree_digest
             {
                 return Err(NodeAppError::StalePlan);
             }
@@ -491,9 +517,9 @@ impl NodeService {
         self.phase(&mut plan.operation, OperationPhase::PublishIntent)
             .await?;
         let mut op = plan.operation;
-        if let Err(error) = self.mutate_files(&root, &mut op).await {
+        if let Err(error) = self.mutate_files(&root, &mut op, lease.retained()).await {
             // Nothing may stay half-moved: settle the files from what is actually on disk.
-            let _ = self.settle(&root, op).await;
+            let _ = self.settle(&root, op, lease.retained()).await;
             return Err(error);
         }
         self.phase(&mut op, OperationPhase::Published).await?;
@@ -503,7 +529,7 @@ impl NodeService {
         ) {
             self.deps.store.save_node(&op.node).await?;
             if let Err(error) = self
-                .dependencies(&root, &mut op, env, plan.package.as_ref(), &decision, ctx)
+                .dependencies(&root, &mut op, env, plan.package.as_ref(), &decision, &step)
                 .await
             {
                 op.node.dependencies = DependencyState::Failed;
@@ -567,6 +593,7 @@ impl NodeService {
         &self,
         root: &std::path::Path,
         op: &mut NodeOperation,
+        retained: Retained,
     ) -> Result<(), NodeAppError> {
         match op.kind {
             OperationKind::Install | OperationKind::Update => {
@@ -574,7 +601,7 @@ impl NodeService {
                     self.deps.files.backup(root, op).await?;
                     self.phase(op, OperationPhase::OldBackedUp).await?;
                 }
-                self.deps.files.publish(root, op).await?;
+                self.deps.files.publish(root, op, retained).await?;
             }
             OperationKind::Enable | OperationKind::Disable => {
                 let prior = op.prior.clone().ok_or(NodeAppError::StalePlan)?;
@@ -604,12 +631,13 @@ impl NodeService {
         root: &std::path::Path,
         env: &PythonEnvironment,
         expected: &PinSet,
+        ctx: &StepContext,
     ) -> Result<(), NodeAppError> {
         let installed = self
             .deps
             .environment
             .packages
-            .list(root, &env.path)
+            .list(root, &env.path, Some(ctx))
             .await
             .map_err(|_| NodeAppError::PinDrift)?;
         for (name, version) in expected.iter() {
@@ -631,7 +659,7 @@ impl NodeService {
         ctx: &StepContext,
     ) -> Result<(), NodeAppError> {
         let d = &self.deps.environment;
-        if self.assert_pins(root, env, pins).await.is_err() {
+        if self.assert_pins(root, env, pins, ctx).await.is_err() {
             let constraints = d
                 .packages
                 .write_constraints(root, &env.id, pins, &[])
@@ -651,7 +679,7 @@ impl NodeService {
                 .await
                 .map_err(|_| NodeAppError::PinDrift)?;
         }
-        self.assert_pins(root, env, pins).await
+        self.assert_pins(root, env, pins, ctx).await
     }
     async fn dependencies(
         &self,
@@ -660,7 +688,7 @@ impl NodeService {
         mut env: PythonEnvironment,
         package: Option<&PackagePlan>,
         decision: &CommitDecision,
-        ctx: &NodeContext,
+        step: &StepContext,
     ) -> Result<(), NodeAppError> {
         let d = &self.deps.environment;
         // Acquired after publication and held through the awaited cleanup below, so a refused
@@ -676,7 +704,6 @@ impl NodeService {
         let was_verified = env.state() == EnvState::Verified;
         // Node operations keep the protected pins exactly as recorded.
         let run_pins = env.pins.clone();
-        let step = self.step(&op.id, ctx);
         // Persist both intent records before spawning the first package/hook mutation.
         self.phase(op, OperationPhase::DependenciesInProgress)
             .await?;
@@ -714,8 +741,8 @@ impl NodeService {
                 constraint_file: Some(constraint),
                 ..guarded_files(guard.as_deref())
             };
-            let result = d.packages.install(root, &env.path, &spec, &step).await;
-            let guard = self.reassert(root, &env, &run_pins, &step).await;
+            let result = d.packages.install(root, &env.path, &spec, step).await;
+            let guard = self.reassert(root, &env, &run_pins, step).await;
             if result.is_err() {
                 return Err(NodeAppError::DependenciesFailed);
             }
@@ -723,24 +750,24 @@ impl NodeService {
         }
         if decision.consent.run_install_py {
             let location = guard.as_deref().ok_or(NodeAppError::UnsafeSource)?;
-            let result = self.deps.hook.run(root, &env, location, &step).await;
-            let guard = self.reassert(root, &env, &run_pins, &step).await;
+            let result = self.deps.hook.run(root, &env, location, step).await;
+            let guard = self.reassert(root, &env, &run_pins, step).await;
             if result.is_err() {
                 return Err(NodeAppError::DependenciesFailed);
             }
             guard?;
         }
-        if ctx.cancel.is_cancelled() {
+        if step.cancel.is_cancelled() {
             return Err(NodeAppError::Cancelled);
         }
-        self.assert_pins(root, &env, &run_pins).await?;
+        self.assert_pins(root, &env, &run_pins, step).await?;
         let mut expectations = profile.verify;
         if let Some(v) = run_pins.get(&DistName::new("torch").expect("static distribution")) {
             expectations.torch_version_prefix = v.into();
         }
         let report = d
             .verifier
-            .verify_final(root, &env.path, &expectations, &step)
+            .verify_final(root, &env.path, &expectations, step)
             .await
             .map_err(|_| NodeAppError::DependenciesFailed)?;
         env.record_pins(run_pins.clone(), &d.clock.now());

@@ -3,6 +3,7 @@ pub mod clock;
 pub mod download;
 pub mod fs;
 pub mod gate;
+pub mod log_tail;
 pub mod logging;
 pub mod model_paths;
 pub mod path_locks;

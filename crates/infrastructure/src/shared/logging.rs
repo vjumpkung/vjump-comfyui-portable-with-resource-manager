@@ -76,9 +76,7 @@ impl Redactor {
                 }
                 if bytes.get(index) == Some(&b'=') {
                     let key = &lower[start..index];
-                    if matches!(key, "token" | "access_token" | "api_key")
-                        || key.starts_with("x-amz-")
-                    {
+                    if is_credential_key(key) {
                         let value_start = index + 1;
                         let end = value_end(bytes, value_start);
                         if end > value_start {
@@ -139,6 +137,26 @@ impl Redactor {
         output.push_str(&input[cursor..]);
         Cow::Owned(output)
     }
+}
+
+/// Query parameters (lowercased) that carry a credential or the signature of a presigned URL:
+/// plain tokens, AWS (`x-amz-*`), Google (`x-goog-*`), Alibaba (`x-oss-*`), Azure SAS (`sig`),
+/// CloudFront (`signature`, `key-pair-id`, `policy`) and the legacy S3/GCS access-key forms.
+fn is_credential_key(key: &str) -> bool {
+    matches!(
+        key,
+        "token"
+            | "access_token"
+            | "api_key"
+            | "signature"
+            | "sig"
+            | "key-pair-id"
+            | "policy"
+            | "awsaccesskeyid"
+            | "googleaccessid"
+    ) || key.starts_with("x-amz-")
+        || key.starts_with("x-goog-")
+        || key.starts_with("x-oss-")
 }
 
 fn is_key_byte(byte: u8) -> bool {

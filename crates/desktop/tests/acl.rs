@@ -380,6 +380,17 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
             json!({ "subscriptionId": 4_000_000 }),
             HandlerError,
         ),
+        // The test app has no updater configuration: the handlers answer with
+        // `updater_not_configured` without any network access.
+        ("app_update_status", json!({}), HandlerError),
+        ("app_update_check", json!({}), HandlerError),
+        (
+            "app_update_install",
+            json!({ "updateId": "update-unknown", "onEvent": "__CHANNEL__:6" }),
+            HandlerError,
+        ),
+        ("app_diagnostics", json!({}), Success),
+        ("app_copy_diagnostics", json!({}), Success),
         ("pick_folder", json!({ "title": null }), Success),
         (
             "pick_file",
@@ -666,4 +677,59 @@ fn the_dialog_plugin_commands_are_not_granted_to_any_window() {
     .unwrap();
     assert!(!capability.contains("dialog:"));
     let _ = MANAGER_WINDOW;
+}
+
+#[test]
+fn the_updater_and_clipboard_plugin_commands_are_not_granted_to_any_window() {
+    // Updates and the clipboard are used from Rust only, through the app's own commands.
+    let capability = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/capabilities/manager.json"
+    ))
+    .unwrap();
+    assert!(!capability.contains("updater:"));
+    assert!(!capability.contains("clipboard-manager:"));
+}
+
+#[test]
+fn update_and_diagnostics_commands_answer_without_configuration() {
+    let app = build_app();
+    let window = manager_window(&app);
+    let call = |cmd: &str, body: Value| get_ipc_response(&window, request(cmd, local_url(), body));
+
+    let status = call("app_update_status", json!({})).unwrap();
+    let status = serde_json::from_slice::<Value>(&body_bytes(&status)).unwrap();
+    assert_eq!(status["configured"], false);
+    assert_eq!(status["currentVersion"], env!("CARGO_PKG_VERSION"));
+
+    for (cmd, body) in [
+        ("app_update_check", json!({})),
+        (
+            "app_update_install",
+            json!({ "updateId": "update-unknown", "onEvent": "__CHANNEL__:6" }),
+        ),
+    ] {
+        let error = call(cmd, body).unwrap_err();
+        assert_eq!(error["code"], "updater_not_configured", "{cmd}");
+    }
+
+    // The clipboard is not available in the test app: the redacted text comes back to select.
+    let copied = call("app_copy_diagnostics", json!({})).unwrap();
+    let copied = serde_json::from_slice::<Value>(&body_bytes(&copied)).unwrap();
+    assert_eq!(copied["copied"], false);
+    let text = copied["text"].as_str().unwrap();
+    assert!(text.contains("== Availability warnings =="));
+    assert!(!text.contains(&app.root.display().to_string()));
+    let report = call("app_diagnostics", json!({})).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body_bytes(&report)).unwrap(),
+        copied["text"]
+    );
+}
+
+fn body_bytes(body: &tauri::ipc::InvokeResponseBody) -> Vec<u8> {
+    match body {
+        tauri::ipc::InvokeResponseBody::Json(text) => text.clone().into_bytes(),
+        tauri::ipc::InvokeResponseBody::Raw(bytes) => bytes.clone(),
+    }
 }

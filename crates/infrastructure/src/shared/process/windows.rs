@@ -16,12 +16,29 @@ use windows_sys::Win32::{
             JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
             TerminateJobObject,
         },
+        LibraryLoader::SetDllDirectoryW,
         Threading::{
             CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
             PROCESS_SYNCHRONIZE, WaitForSingleObject,
         },
     },
 };
+
+/// Remove the current directory from the default DLL search for this process and its children.
+pub(super) fn initialize_dll_policy() -> io::Result<()> {
+    static POLICY: std::sync::OnceLock<Result<(), i32>> = std::sync::OnceLock::new();
+    match POLICY.get_or_init(|| {
+        // SAFETY: a terminated empty UTF-16 string removes cwd; it is valid for the call.
+        if unsafe { SetDllDirectoryW([0u16].as_ptr()) } == 0 {
+            Err(io::Error::last_os_error().raw_os_error().unwrap_or(1))
+        } else {
+            Ok(())
+        }
+    }) {
+        Ok(()) => Ok(()),
+        Err(code) => Err(io::Error::from_raw_os_error(*code)),
+    }
+}
 
 // `windows-sys` does not expose `NtResumeProcess`. It resumes every thread of a process that
 // was started with CREATE_SUSPENDED; `std` and `tokio` close the primary thread handle, so
@@ -146,6 +163,7 @@ impl Drop for Tree {
 }
 
 pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Tree)> {
+    initialize_dll_policy()?;
     let tree = Tree::new()?;
     command.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
     let mut child = command.spawn()?;

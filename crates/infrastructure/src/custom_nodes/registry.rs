@@ -30,7 +30,7 @@ const COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
 
 pub const REGISTRY_BASE: &str = "https://api.comfy.org";
 /// Bump when the stored normalized shape changes.
-const CACHE_SCHEMA: u32 = 1;
+const CACHE_SCHEMA: u32 = 2;
 const MAX_RESPONSE_BYTES: usize = 8 << 20;
 const MAX_ARTIFACT_BYTES: u64 = 512 << 20;
 
@@ -296,12 +296,18 @@ fn metadata_of(version: &Value, node_status: Option<String>) -> CompatibilityMet
 pub(crate) fn parse_node(value: &Value) -> Option<RegistryNode> {
     let id = text(value, "id")?;
     let latest = value.get("latest_version");
-    let metadata = latest
+    let node_metadata = metadata_of(value, None);
+    let node_flagged = node_metadata.is_flagged();
+    let node_deprecated = node_metadata.deprecated == Some(true);
+    let mut metadata = latest
         .map(|v| metadata_of(v, text(value, "status")))
-        .unwrap_or_else(|| CompatibilityMetadata {
-            status: text(value, "status"),
-            ..Default::default()
-        });
+        .unwrap_or_else(|| node_metadata.clone());
+    if node_metadata.is_flagged() {
+        metadata.status = node_metadata.status;
+    }
+    if node_metadata.deprecated == Some(true) {
+        metadata.deprecated = Some(true);
+    }
     Some(RegistryNode {
         name: text(value, "name").unwrap_or_else(|| id.clone()),
         publisher: value.get("publisher").and_then(|p| text(p, "id")),
@@ -312,6 +318,8 @@ pub(crate) fn parse_node(value: &Value) -> Option<RegistryNode> {
         repository: text(value, "repository"),
         compatibility: metadata,
         evaluated: unknown_evaluation(),
+        node_flagged,
+        node_deprecated,
         id,
     })
 }
@@ -369,6 +377,7 @@ fn page_to_json(page: &RegistryPage) -> Value {
             "os": n.compatibility.supported_os, "accelerators": n.compatibility.supported_accelerators,
             "comfyui": n.compatibility.comfyui_expression, "status": n.compatibility.status,
             "deprecated": n.compatibility.deprecated,
+            "node_flagged": n.node_flagged, "node_deprecated": n.node_deprecated,
         })).collect::<Vec<_>>(),
     })
 }
@@ -396,6 +405,8 @@ fn page_from_json(value: &Value) -> Option<RegistryPage> {
                     deprecated: n.get("deprecated").and_then(Value::as_bool),
                 },
                 evaluated: unknown_evaluation(),
+                node_flagged: n.get("node_flagged")?.as_bool()?,
+                node_deprecated: n.get("node_deprecated")?.as_bool()?,
             })
         })
         .collect::<Option<Vec<_>>>()?;

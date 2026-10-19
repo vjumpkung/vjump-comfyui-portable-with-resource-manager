@@ -67,6 +67,48 @@ fn redacts_all_signed_query_parameters_without_removing_safe_parameters() {
     }
 }
 
+#[test]
+fn redacts_non_aws_signed_url_credentials() {
+    for (url, secrets, safe) in [
+        // Google Cloud Storage V4.
+        (
+            "https://storage.example.test/o?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=goog-credential&X-Goog-Date=20261017T000000Z&X-Goog-Expires=3600&X-Goog-Signature=goog-signature&download=1",
+            &["goog-credential", "goog-signature", "20261017T000000Z"][..],
+            "download=1",
+        ),
+        // Azure SAS.
+        (
+            "https://account.blob.example.test/c/b?sv=2024-01-01&sp=r&sig=azure-signature&se=2026-10-18&name=model",
+            &["azure-signature"][..],
+            "name=model",
+        ),
+        // CloudFront, as served by the Hugging Face CDN.
+        (
+            "https://cdn.example.test/repos/ab/cd/blob?response-content-disposition=attachment&Expires=1792000000&Signature=cloudfront-signature&Key-Pair-Id=KEYPAIRID123&Policy=cloudfront-policy",
+            &["cloudfront-signature", "KEYPAIRID123", "cloudfront-policy"][..],
+            "response-content-disposition=attachment",
+        ),
+        // Legacy signed URLs.
+        (
+            "https://bucket.example.test/o?AWSAccessKeyId=legacy-key&Signature=legacy-signature&GoogleAccessId=legacy-id&keep=me",
+            &["legacy-key", "legacy-signature", "legacy-id"][..],
+            "keep=me",
+        ),
+    ] {
+        let output = redact(url);
+        assert!(output.contains(safe), "{output}");
+        assert!(output.contains("[REDACTED]"), "{output}");
+        for secret in secrets {
+            assert!(!output.contains(secret), "{secret} leaked: {output}");
+        }
+    }
+    // A signed URL inside prose, with a trailing sentence, keeps its surroundings.
+    assert_eq!(
+        redact("fetching https://h.test/f?sig=abc123&x=1 (retry 2)"),
+        "fetching https://h.test/f?sig=[REDACTED]&x=1 (retry 2)"
+    );
+}
+
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Vec<u8>>>);
 

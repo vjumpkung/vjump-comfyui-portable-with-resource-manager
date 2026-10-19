@@ -181,6 +181,7 @@ fn ctx() -> StepContext {
         sink: Arc::new(NullSink),
         cancel: CancelToken::new(),
         allow_source_builds: false,
+        retained: Default::default(),
     }
 }
 

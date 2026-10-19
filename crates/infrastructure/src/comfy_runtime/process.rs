@@ -131,11 +131,13 @@ impl RuntimeProcessRunner for SharedRuntimeRunner {
                 spawn_failed: false,
                 cleanup_verified: true,
             },
-            Err(process::RunError::Spawn(_)) => ProcessCompletion {
-                exit_code: None,
-                spawn_failed: true,
-                cleanup_verified: true,
-            },
+            Err(process::RunError::Spawn(_) | process::RunError::InputFailed { .. }) => {
+                ProcessCompletion {
+                    exit_code: None,
+                    spawn_failed: true,
+                    cleanup_verified: true,
+                }
+            }
             Err(process::RunError::Failed { exit_code, .. }) => ProcessCompletion {
                 exit_code,
                 spawn_failed: false,
@@ -763,6 +765,7 @@ impl LaunchPreflight for PythonLaunchPreflight {
             sink: Arc::new(NullSink),
             cancel: cancel.clone(),
             allow_source_builds: false,
+            retained: Default::default(),
         };
         let expectations = VerifyExpectations {
             torch_version_prefix: torch.into(),

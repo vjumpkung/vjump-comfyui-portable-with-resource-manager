@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use application::shared::{GateError, MaintenanceGate, MaintenanceLease};
+use application::shared::{GateError, MaintenanceGate, MaintenanceLease, Retained};
 use async_trait::async_trait;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
@@ -18,21 +18,29 @@ impl TokioMaintenanceGate {
 }
 
 struct TokioLease {
-    _guard: OwnedMutexGuard<()>,
+    guard: Arc<OwnedMutexGuard<()>>,
 }
 
-impl MaintenanceLease for TokioLease {}
+impl MaintenanceLease for TokioLease {
+    fn retained(&self) -> Retained {
+        Retained::new(self.guard.clone())
+    }
+}
 
 #[async_trait]
 impl MaintenanceGate for TokioMaintenanceGate {
     async fn acquire(&self) -> Result<Box<dyn MaintenanceLease>, GateError> {
         let guard = self.mutex.clone().lock_owned().await;
-        Ok(Box::new(TokioLease { _guard: guard }))
+        Ok(Box::new(TokioLease {
+            guard: Arc::new(guard),
+        }))
     }
 
     async fn try_acquire(&self) -> Result<Box<dyn MaintenanceLease>, GateError> {
         match self.mutex.clone().try_lock_owned() {
-            Ok(guard) => Ok(Box::new(TokioLease { _guard: guard })),
+            Ok(guard) => Ok(Box::new(TokioLease {
+                guard: Arc::new(guard),
+            })),
             Err(_) => Err(GateError::Busy),
         }
     }

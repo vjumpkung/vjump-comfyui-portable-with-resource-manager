@@ -91,6 +91,7 @@ impl NodeFiles for FakeFiles {
         &self,
         root: &Path,
         node: &InstalledNode,
+        _retained: crate::shared::Retained,
     ) -> Result<NodeGitStatus, NodeAppError> {
         assert_eq!(root, Path::new(ROOT));
         assert!(
@@ -135,6 +136,7 @@ impl NodeFiles for FakeFiles {
         _root: &Path,
         node: &InstalledNode,
         staged: Option<&NodeId>,
+        _retained: crate::shared::Retained,
     ) -> Result<TreeSnapshot, NodeAppError> {
         let state = self.state.lock().unwrap();
         let digest = if staged.is_none() {
@@ -190,7 +192,12 @@ impl NodeFiles for FakeFiles {
             resources: Arc::new(()),
         }))
     }
-    async fn publish(&self, _root: &Path, _op: &NodeOperation) -> Result<(), NodeAppError> {
+    async fn publish(
+        &self,
+        _root: &Path,
+        _op: &NodeOperation,
+        _retained: crate::shared::Retained,
+    ) -> Result<(), NodeAppError> {
         self.world.call("files:publish");
         match self.state.lock().unwrap().publish_error.take() {
             Some(error) => Err(error),
@@ -226,6 +233,7 @@ impl NodeFiles for FakeFiles {
         &self,
         _root: &Path,
         _op: &NodeOperation,
+        _retained: crate::shared::Retained,
     ) -> Result<RecoveryAction, NodeAppError> {
         self.world.call("files:recover");
         Ok(self
@@ -235,7 +243,11 @@ impl NodeFiles for FakeFiles {
             .recover
             .unwrap_or(RecoveryAction::Blocked))
     }
-    async fn scan(&self, _root: &Path) -> Result<Vec<InstalledNode>, NodeAppError> {
+    async fn scan(
+        &self,
+        _root: &Path,
+        _retained: crate::shared::Retained,
+    ) -> Result<Vec<InstalledNode>, NodeAppError> {
         self.world.call("files:scan");
         let state = self.state.lock().unwrap();
         match &state.scan_error {
@@ -1107,6 +1119,34 @@ fn node_previews_refuse_protected_package_changes() {
         h.env().pins.get(&DistName::new("torch").unwrap()),
         Some("2.14.1+cu130")
     );
+    // An invalid retained review cannot authorize a protected change either.
+    let h = Harness::new();
+    let review = h.prepare();
+    h.service
+        .deps
+        .plans
+        .0
+        .lock()
+        .unwrap()
+        .get_mut(&review.id)
+        .unwrap()
+        .review
+        .protected_changes
+        .push(domain::environment::PinChange {
+            name: DistName::new("torch").unwrap(),
+            from: Some("2.14.1+cu130".into()),
+            to: Some("2.15.0".into()),
+        });
+    assert_eq!(
+        block_on(
+            h.service
+                .commit(&review.id, Harness::decision(&review), &h.ctx())
+        )
+        .unwrap_err(),
+        NodeAppError::ResolutionFailed
+    );
+    assert_eq!(h.world.count("files:publish"), 0);
+    assert_eq!(h.world.count("install:node"), 0);
 }
 
 #[test]
@@ -1277,6 +1317,69 @@ fn a_failed_publish_is_settled_from_the_disk_state() {
     );
     let blocked = block_on(h.service.prepare(Harness::registry_request(), &h.ctx()));
     assert_eq!(blocked.unwrap_err(), NodeAppError::RecoveryRequired);
+}
+
+#[test]
+fn git_post_apply_refusals_keep_dependencies_and_hooks_unexecuted() {
+    for error in [
+        NodeAppError::StalePlan,
+        NodeAppError::UnsafeSource,
+        NodeAppError::GitRefused {
+            status: " M nodes/code.py".into(),
+        },
+    ] {
+        let h = Harness::new();
+        let source = |commit: String| NodeSource::Git {
+            repository: "https://github.com/pub/pack".into(),
+            commit,
+            branch: Some("main".into()),
+        };
+        h.files
+            .state
+            .lock()
+            .unwrap()
+            .staged
+            .as_mut()
+            .unwrap()
+            .source = source("a".repeat(40));
+        let installed = h.installed();
+        {
+            let mut state = h.files.state.lock().unwrap();
+            let mut target = staged("1.1.0");
+            target.source = source("b".repeat(40));
+            target.hook_digest = Some("hook".into());
+            state.staged = Some(target);
+            state.digest = "tree:1.1.0".into();
+            state.hook_digest = Some("hook".into());
+            state.publish_error = Some(error.clone());
+            state.recover = Some(RecoveryAction::Blocked);
+        }
+        let review = block_on(h.service.prepare(
+            PrepareRequest::Update {
+                node: installed.id,
+                reference: None,
+            },
+            &h.ctx(),
+        ))
+        .unwrap();
+        let mut decision = Harness::decision(&review);
+        decision.consent.run_install_py = true;
+        decision.consent.acknowledge_warnings = true;
+        assert_eq!(
+            block_on(h.service.commit(&review.id, decision, &h.ctx())).unwrap_err(),
+            error
+        );
+        assert_eq!(h.world.count("files:publish"), 1);
+        assert_eq!(h.world.count("install:node"), 0);
+        assert_eq!(h.world.count("hook:run"), 0);
+        assert!(!h.phases().iter().any(|p| p == "dependencies_in_progress"));
+        assert_eq!(block_on(h.service.unresolved()).unwrap().len(), 1);
+        assert_eq!(
+            block_on(h.service.ensure_reconciled()).unwrap_err(),
+            NodeAppError::RecoveryRequired
+        );
+        assert_eq!(h.env().state(), EnvState::Verified);
+    }
 }
 
 fn interrupted(h: &Harness, phase: OperationPhase, kind: OperationKind) -> NodeOperation {

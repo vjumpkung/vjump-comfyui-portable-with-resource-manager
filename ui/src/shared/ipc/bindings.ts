@@ -127,6 +127,26 @@ export const commands = {
 	 */
 	nodeSubscribe: (onEvent: Channel<NodeEventDto>) => typedError<number, IpcError>(__TAURI_INVOKE("node_subscribe", { onEvent })),
 	nodeUnsubscribe: (subscriptionId: number) => typedError<null, IpcError>(__TAURI_INVOKE("node_unsubscribe", { subscriptionId })),
+	appUpdateStatus: () => typedError<UpdateStatusDto, IpcError>(__TAURI_INVOKE("app_update_status")),
+	/**  Looks for a newer signed release. The offer it returns replaces every earlier one. */
+	appUpdateCheck: () => typedError<{
+	updateId: string,
+	version: string,
+	date: string | null,
+	/**  Plain text from the update server; never markup. */
+	notes: string | null,
+} | null, IpcError>(__TAURI_INVOKE("app_update_check")),
+	/**
+	 *  Installs the release the user reviewed, named by the `update_id` of its offer. Success means
+	 *  the application is restarting.
+	 */
+	appUpdateInstall: (updateId: string, onEvent: Channel<UpdateProgressDto>) => typedError<null, IpcError>(__TAURI_INVOKE("app_update_install", { updateId, onEvent })),
+	appDiagnostics: () => typedError<string, IpcError>(__TAURI_INVOKE("app_diagnostics")),
+	/**
+	 *  Collects the same redacted report, puts it on the clipboard and returns it, so the UI can
+	 *  offer it for manual selection when the clipboard is unavailable.
+	 */
+	appCopyDiagnostics: () => typedError<CopyDiagnosticsDto, IpcError>(__TAURI_INVOKE("app_copy_diagnostics")),
 };
 
 /* Types */
@@ -209,6 +229,15 @@ export type ConflictChoiceDto = { kind: "skip" } | { kind: "keep_both" } | { kin
 export type ConsentDto = {
 	source: string,
 	commit: string,
+};
+
+/**
+ *  The redacted report and whether it reached the system clipboard. When `copied` is false the
+ *  UI shows `text` for manual selection.
+ */
+export type CopyDiagnosticsDto = {
+	text: string,
+	copied: boolean,
 };
 
 export type CredentialBackendDto = "keyring" | "session_memory";
@@ -1048,6 +1077,21 @@ export type UpdateInput = {
 	retry: string | null,
 };
 
+/**
+ *  A newer release for the user to review. `update_id` must be echoed back to install exactly
+ *  this release.
+ */
+export type UpdateOfferDto = {
+	updateId: string,
+	version: string,
+	date: string | null,
+	/**  Plain text from the update server; never markup. */
+	notes: string | null,
+};
+
+/**  Installation progress. `failed` carries the stable error code of the failure. */
+export type UpdateProgressDto = { kind: "downloading"; downloadedBytes: number | null; totalBytes: number | null } | { kind: "installing" } | { kind: "restarting" } | { kind: "failed"; code: string };
+
 export type UpdateResultDto = { kind: "updated"; run: UpdateRunDto } | 
 /**  ComfyUI is running; resubmit with explicit authorization to stop it. */
 { kind: "needs_stop" } | 
@@ -1070,6 +1114,12 @@ export type UpdateSettingsDto = {
 	theme: ThemeDto,
 	registryCacheTtl: number,
 	bandwidthCapKibS: number | null,
+};
+
+export type UpdateStatusDto = {
+	/**  False when this build carries no complete signed-update configuration. */
+	configured: boolean,
+	currentVersion: string,
 };
 
 export type UpdateTargetDto = { kind: "latest_release" } | { kind: "tag"; name: string } | { kind: "branch_ff_only" };

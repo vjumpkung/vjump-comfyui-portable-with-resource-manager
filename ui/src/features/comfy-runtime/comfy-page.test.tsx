@@ -39,7 +39,7 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
     comfyReadExtraModelPaths: vi.fn(),
     comfyOpenWindow: vi.fn(),
     comfyOpenBrowser: vi.fn(),
-    comfyDiagnostics: vi.fn(),
+    appCopyDiagnostics: vi.fn(),
     appCloseDecide: vi.fn(),
     envInfo: vi.fn(),
   },
@@ -182,6 +182,27 @@ it('shows the git status when an update is refused and nothing changed', async (
     await screen.findByText(/Update refused: the working tree has local changes/),
   ).toBeTruthy()
   expect(screen.getByText('M main.py')).toBeTruthy()
+})
+
+it('copies the redacted app report and falls back to selectable text', async () => {
+  vi.mocked(gateway.appCopyDiagnostics)
+    .mockResolvedValueOnce({ text: 'REPORT', copied: true })
+    .mockResolvedValueOnce({ text: 'REPORT', copied: false })
+  mount(<ComfyPage />)
+  await snapshot()
+  const copy = await screen.findByRole('button', { name: 'Copy diagnostics' })
+
+  fireEvent.click(copy)
+  await waitFor(() => expect(gateway.appCopyDiagnostics).toHaveBeenCalledTimes(1))
+  expect(screen.queryByLabelText('Diagnostics report')).toBeNull()
+
+  await waitFor(() => expect((copy as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(copy)
+  const report = await screen.findByLabelText<HTMLTextAreaElement>(
+    'Diagnostics report',
+  )
+  expect(report.readOnly).toBe(true)
+  expect(report.value).toBe('REPORT')
 })
 
 it('asks before closing and sends the chosen answer', async () => {

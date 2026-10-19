@@ -1,7 +1,8 @@
 use tauri_specta::{Builder, ErrorHandlingMode, collect_commands};
 
 use super::{
-    comfy_commands, commands, download_commands, env_commands, library_commands, node_commands,
+    app_commands, comfy_commands, commands, download_commands, env_commands, library_commands,
+    node_commands,
 };
 
 /// The single source of truth for the command list. It is used by `run()`, the binding
@@ -85,6 +86,11 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
             node_commands::node_operation_status,
             node_commands::node_subscribe,
             node_commands::node_unsubscribe,
+            app_commands::app_update_status,
+            app_commands::app_update_check,
+            app_commands::app_update_install,
+            app_commands::app_diagnostics,
+            app_commands::app_copy_diagnostics,
         ])
         .error_handling(ErrorHandlingMode::Result)
 }

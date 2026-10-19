@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-app-copy-diagnostics"
+description = "Enables the app_copy_diagnostics command without any pre-configured scope."
+commands.allow = ["app_copy_diagnostics"]
+
+[[permission]]
+identifier = "deny-app-copy-diagnostics"
+description = "Denies the app_copy_diagnostics command without any pre-configured scope."
+commands.deny = ["app_copy_diagnostics"]

@@ -30,6 +30,7 @@ import type {
   SetEnabledInput,
   NodeEventDto,
   NodeGitStatusDto,
+  UpdateProgressDto,
 } from './bindings'
 export type * from './bindings'
 import type {
@@ -247,6 +248,23 @@ export const gateway = {
     }),
   nodeUnsubscribe: (subscriptionId: number) =>
     unwrap(() => commands.nodeUnsubscribe(subscriptionId)),
+  appUpdateStatus: () => unwrap(() => commands.appUpdateStatus()),
+  /** Resolves to the newer release for the user to review, or null. */
+  appUpdateCheck: () => unwrap(() => commands.appUpdateCheck()),
+  /** Installs exactly the reviewed release named by its `updateId`; the app then restarts. */
+  appUpdateInstall: (
+    updateId: string,
+    onEvent: (event: UpdateProgressDto) => void,
+  ) =>
+    unwrap(() => {
+      const channel = new Channel<UpdateProgressDto>()
+      channel.onmessage = onEvent
+      return commands.appUpdateInstall(updateId, channel)
+    }),
+  /** The redacted diagnostics report. */
+  appDiagnostics: () => unwrap(() => commands.appDiagnostics()),
+  /** Copies the redacted report; `copied` is false when the clipboard was unavailable. */
+  appCopyDiagnostics: () => unwrap(() => commands.appCopyDiagnostics()),
   pickFolder: (title: string) => unwrap(() => commands.pickFolder(title)),
   pickFile: (title: string, extensions: string[] = []) =>
     unwrap(() => commands.pickFile(title, extensions)),

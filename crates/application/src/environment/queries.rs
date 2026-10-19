@@ -266,7 +266,7 @@ impl ListPackages {
             .await?
             .ok_or(EnvironmentAppError::NoActiveEnvironment)?;
         let root = deps.root.current().root;
-        let mut packages = deps.packages.list(&root, &env.path).await?;
+        let mut packages = deps.packages.list(&root, &env.path, None).await?;
         packages.sort_by_key(|package| package.name.to_lowercase());
         Ok(packages)
     }

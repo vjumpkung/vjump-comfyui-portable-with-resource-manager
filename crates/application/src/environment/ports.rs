@@ -70,6 +70,7 @@ pub struct StepContext {
     pub cancel: CancelToken,
     /// Allows source distributions whose build hooks run third-party code.
     pub allow_source_builds: bool,
+    pub retained: Retained,
 }
 
 impl StepContext {
@@ -312,43 +313,7 @@ pub trait PythonProvisioner: Send + Sync {
     async fn remove_environment(&self, env: &PythonEnvironment) -> Result<(), ProvisionError>;
 }
 
-/// Opaque protection (pinned directories, open files) that the adapter running a command must
-/// keep alive until the command and every process it left behind have exited, even when the
-/// caller drops its own guard because the command failed.
-#[derive(Clone, Default)]
-pub struct Retained(Option<Arc<dyn Send + Sync>>);
-
-impl Retained {
-    pub fn new(resources: Arc<dyn Send + Sync>) -> Self {
-        Self(Some(resources))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_none()
-    }
-}
-
-impl std::fmt::Debug for Retained {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.0.is_some() {
-            "Retained(..)"
-        } else {
-            "Retained(none)"
-        })
-    }
-}
-
-impl PartialEq for Retained {
-    fn eq(&self, other: &Self) -> bool {
-        match (&self.0, &other.0) {
-            (None, None) => true,
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            _ => false,
-        }
-    }
-}
-
-impl Eq for Retained {}
+pub use crate::shared::Retained;
 
 /// A requirements file read once through a guarded node location. Adapters must take the
 /// requirements from `text` rather than reopening `path`, and resolve relative `-r`/`-c` includes
@@ -408,6 +373,7 @@ pub trait PackageInstaller: Send + Sync {
         &self,
         root: &Path,
         env_path: &Path,
+        ctx: Option<&StepContext>,
     ) -> Result<Vec<InstalledPackage>, ProvisionError>;
     /// Writes the constraints file for an environment and returns its path.
     async fn write_constraints(

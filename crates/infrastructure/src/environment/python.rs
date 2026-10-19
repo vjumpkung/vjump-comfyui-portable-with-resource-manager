@@ -302,8 +302,16 @@ impl PythonAdapter {
         }
     }
 
-    async fn msvc_loads(&self, layout: &Layout, python: &Path, cancel: &CancelToken) -> bool {
-        let spec = command(layout, Tool::Python, python).args(["-I", "-c", MSVC_SCRIPT]);
+    async fn msvc_loads(
+        &self,
+        layout: &Layout,
+        python: &Path,
+        cancel: &CancelToken,
+        retained: application::shared::Retained,
+    ) -> bool {
+        let spec = command(layout, Tool::Python, python)
+            .args(["-I", "-c", MSVC_SCRIPT])
+            .retain(retained);
         let limits = RunLimits {
             timeout: Some(Duration::from_secs(60)),
             ..RunLimits::default()
@@ -338,7 +346,10 @@ impl PythonAdapter {
             });
         };
         let msvc = if os == OsKind::Windows {
-            Some(self.msvc_loads(layout, python, &cancel).await)
+            Some(
+                self.msvc_loads(layout, python, &cancel, Default::default())
+                    .await,
+            )
         } else {
             None
         };
@@ -578,7 +589,10 @@ impl PythonProvisioner for PythonAdapter {
             copy_runtime_dlls(&venv_scripts(venv), home)
                 .map_err(|_| failed("the MSVC runtime DLLs could not be copied"))?;
         }
-        if self.msvc_loads(&layout, &python, &ctx.cancel).await {
+        if self
+            .msvc_loads(&layout, &python, &ctx.cancel, ctx.retained.clone())
+            .await
+        {
             ctx.log("The MSVC runtime DLLs load.");
             Ok(())
         } else {

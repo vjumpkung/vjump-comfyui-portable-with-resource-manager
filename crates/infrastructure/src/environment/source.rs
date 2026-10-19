@@ -327,7 +327,12 @@ impl GitSource {
             .arg("-C")
             .arg(repository)
             .args(["rev-parse", "HEAD"]);
-        let output = run_quiet(&spec, &ctx.cancel, &RunLimits::default()).await?;
+        let output = run_quiet(
+            &spec.clone().retain(ctx.retained.clone()),
+            &ctx.cancel,
+            &RunLimits::default(),
+        )
+        .await?;
         output
             .stdout
             .lines()

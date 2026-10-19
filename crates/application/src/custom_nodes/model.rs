@@ -81,6 +81,9 @@ pub struct RegistryNode {
     pub repository: Option<String>,
     pub compatibility: CompatibilityMetadata,
     pub evaluated: Compatibility,
+    /// Top-level node flags, independent of the latest release's metadata.
+    pub node_flagged: bool,
+    pub node_deprecated: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryPage {

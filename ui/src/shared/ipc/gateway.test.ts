@@ -11,6 +11,11 @@ const commands = vi.hoisted(() => ({
   envPipApply: vi.fn(),
   nodeOpenRepository: vi.fn(),
   nodeGitStatus: vi.fn(),
+  appUpdateStatus: vi.fn(),
+  appUpdateCheck: vi.fn(),
+  appUpdateInstall: vi.fn(),
+  appDiagnostics: vi.fn(),
+  appCopyDiagnostics: vi.fn(),
 }))
 
 vi.mock('./bindings', () => ({ commands }))
@@ -44,6 +49,71 @@ describe('gateway', () => {
     commands.nodeGitStatus.mockResolvedValue({ status: 'ok', data: status })
     await expect(gateway.nodeGitStatus('node-1')).resolves.toEqual(status)
     expect(commands.nodeGitStatus).toHaveBeenCalledWith({ nodeId: 'node-1' })
+  })
+
+  it('app_update_commands_send_exact_payloads_and_keep_the_channel_inside', async () => {
+    commands.appUpdateStatus.mockResolvedValue({
+      status: 'ok',
+      data: { configured: true, currentVersion: '0.1.0' },
+    })
+    await expect(gateway.appUpdateStatus()).resolves.toEqual({
+      configured: true,
+      currentVersion: '0.1.0',
+    })
+    expect(commands.appUpdateStatus).toHaveBeenCalledWith()
+
+    const offer = {
+      updateId: 'update-1',
+      version: '0.2.0',
+      date: '2026-10-17',
+      notes: 'plain notes',
+    }
+    commands.appUpdateCheck.mockResolvedValue({ status: 'ok', data: offer })
+    await expect(gateway.appUpdateCheck()).resolves.toEqual(offer)
+    expect(commands.appUpdateCheck).toHaveBeenCalledWith()
+
+    commands.appUpdateInstall.mockResolvedValue({ status: 'ok', data: null })
+    const receive = vi.fn()
+    await expect(
+      gateway.appUpdateInstall('update-1', receive),
+    ).resolves.toBeNull()
+    expect(commands.appUpdateInstall).toHaveBeenCalledTimes(1)
+    const [updateId, channel] = commands.appUpdateInstall.mock.calls[0] as [
+      string,
+      { onmessage: (event: unknown) => void },
+    ]
+    expect(updateId).toBe('update-1')
+    const event = { kind: 'downloading', downloadedBytes: 5, totalBytes: 10 }
+    channel.onmessage(event)
+    expect(receive).toHaveBeenCalledWith(event)
+  })
+
+  it('app_update_errors_keep_their_stable_codes', async () => {
+    commands.appUpdateInstall.mockResolvedValue({
+      status: 'error',
+      error: { code: 'update_stale', message: 'Check again.' },
+    })
+    const failure = await gateway
+      .appUpdateInstall('update-1', vi.fn())
+      .catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(IpcClientError)
+    expect(failure).toMatchObject({ code: 'update_stale' })
+  })
+
+  it('app_diagnostics_commands_take_no_arguments', async () => {
+    commands.appDiagnostics.mockResolvedValue({ status: 'ok', data: 'report' })
+    await expect(gateway.appDiagnostics()).resolves.toBe('report')
+    expect(commands.appDiagnostics).toHaveBeenCalledWith()
+
+    commands.appCopyDiagnostics.mockResolvedValue({
+      status: 'ok',
+      data: { text: 'report', copied: false },
+    })
+    await expect(gateway.appCopyDiagnostics()).resolves.toEqual({
+      text: 'report',
+      copied: false,
+    })
+    expect(commands.appCopyDiagnostics).toHaveBeenCalledWith()
   })
 
   it('unwraps ok results', async () => {

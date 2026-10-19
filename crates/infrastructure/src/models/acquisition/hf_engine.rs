@@ -143,7 +143,7 @@ impl Downloader for HfDownloader {
                 tokio::select! {
                     result = &mut future => return match result {
                         Ok(_) => Ok(()),
-                        Err(RunError::Spawn(_)) => Err(DownloadErrorCode::ToolLaunch.into()),
+                        Err(RunError::Spawn(_) | RunError::InputFailed { .. }) => Err(DownloadErrorCode::ToolLaunch.into()),
                         Err(RunError::Cancelled { .. }) => Err(DownloadErrorCode::Cancelled.into()),
                         Err(RunError::TimedOut { .. }) => Err(DownloadErrorCode::Network.into()),
                         Err(RunError::CleanupFailed { .. }) => Err(DownloadErrorCode::ProcessCleanupFailed.into()),

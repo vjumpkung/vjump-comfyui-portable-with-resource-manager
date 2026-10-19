@@ -26,7 +26,7 @@ impl NodeService {
         self.deps.store.nodes().await
     }
     pub async fn git_status(&self, id: &NodeId) -> Result<NodeGitStatus, NodeAppError> {
-        let _lease = self
+        let lease = self
             .deps
             .environment
             .gate
@@ -45,7 +45,10 @@ impl NodeService {
             return Err(NodeAppError::InvalidRequest);
         }
         let root = self.deps.environment.root.current().root;
-        self.deps.files.git_status(&root, &node).await
+        self.deps
+            .files
+            .git_status(&root, &node, lease.retained())
+            .await
     }
     /// Process-local reviews only; discovering a review never restores consent.
     pub fn pending_reviews(&self) -> Result<Vec<PlanReview>, NodeAppError> {
@@ -275,10 +278,10 @@ impl NodeService {
     }
     pub async fn scan_held(
         &self,
-        _lease: &mut dyn MaintenanceLease,
+        lease: &mut dyn MaintenanceLease,
     ) -> Result<Vec<InstalledNode>, NodeAppError> {
         let root = self.deps.environment.root.current().root;
-        let observed = self.deps.files.scan(&root).await?;
+        let observed = self.deps.files.scan(&root, lease.retained()).await?;
         let old = self.deps.store.nodes().await?;
         let mut result = Vec::new();
         for mut node in observed {
@@ -326,7 +329,7 @@ impl NodeService {
     }
     pub async fn reconcile_held(
         &self,
-        _lease: &mut dyn MaintenanceLease,
+        lease: &mut dyn MaintenanceLease,
     ) -> Result<(), NodeAppError> {
         let d = &self.deps.environment;
         let root = d.root.current().root;
@@ -376,7 +379,7 @@ impl NodeService {
                 op.failure = Some("Interrupted dependency mutation; use environment Repair".into());
                 op.phase = OperationPhase::Failed;
             } else {
-                self.settle(&root, op).await?;
+                self.settle(&root, op, lease.retained()).await?;
                 continue;
             }
             self.deps.store.save_operation(&op).await?;
@@ -389,9 +392,10 @@ impl NodeService {
         &self,
         root: &std::path::Path,
         mut op: NodeOperation,
+        retained: crate::shared::Retained,
     ) -> Result<NodeOperation, NodeAppError> {
         let before = op.phase;
-        match self.deps.files.recover(root, &op).await? {
+        match self.deps.files.recover(root, &op, retained).await? {
             RecoveryAction::Blocked => {}
             RecoveryAction::Discarded | RecoveryAction::RolledBack => {
                 match &op.prior {
@@ -464,7 +468,11 @@ impl NodeService {
             if node.single_file {
                 continue;
             }
-            let snapshot = self.deps.files.snapshot(&root, &node, None).await?;
+            let snapshot = self
+                .deps
+                .files
+                .snapshot(&root, &node, None, Default::default())
+                .await?;
             if snapshot.requirements_digest.is_some() {
                 result.push(
                     self.deps

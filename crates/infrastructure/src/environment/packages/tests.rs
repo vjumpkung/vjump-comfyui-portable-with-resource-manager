@@ -220,3 +220,71 @@ async fn constraints_are_written_atomically_under_the_cache() {
         1
     );
 }
+
+#[test]
+fn preview_preflight_accepts_binary_requirements_and_refuses_source_syntax() {
+    use application::environment::GuardedRequirements;
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("local-1.0-py3-none-any.whl"),
+        b"wheel",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("more.txt"),
+        "numpy>=1.25\n-r deeper.txt\n",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("deeper.txt"),
+        "--editable ../source\n",
+    )
+    .unwrap();
+    std::fs::write(directory.path().join("ok.txt"), "-r ok.txt\npillow\n").unwrap();
+    std::fs::create_dir(directory.path().join("source")).unwrap();
+    let check = |text: &str| {
+        let path = directory.path().join("requirements.txt");
+        preflight_requirements(&InstallSpec {
+            requirement_files: vec![path.clone()],
+            guarded: Some(GuardedRequirements {
+                path,
+                directory: directory.path().to_owned(),
+                text: std::sync::Arc::from(text.as_bytes()),
+                retained: Default::default(),
+            }),
+            ..InstallSpec::default()
+        })
+    };
+    for accepted in [
+        "numpy>=1.25,<3\n# comment\n\ntorch==2.7.0 # pinned\n",
+        "pywin32>=306 ; sys_platform == 'win32'\n",
+        "opencv-python[headless]~=4.8; python_version >= \"3.9\" and platform_machine != 'arm64'\n",
+        "./local-1.0-py3-none-any.whl\n",
+        "local @ ./local-1.0-py3-none-any.whl\n",
+        "wheel @ https://example.invalid/wheel-1.0-py3-none-any.whl\n",
+        // A file reached twice is read once, and an include cycle terminates.
+        "-r ok.txt\n-r ok.txt\n",
+    ] {
+        assert!(check(accepted).is_ok(), "{accepted:?}");
+    }
+    for refused in [
+        "-e ../source\n",
+        "--editable=../source\n",
+        "../source\n",
+        "source\n",
+        ".\n",
+        "pkg @ ../source\n",
+        "pkg @ file:///c/source\n",
+        "git+https://example.invalid/pkg.git\n",
+        "https://example.invalid/pkg-1.0.tar.gz\n",
+        "pkg==1.0 ; python_version > '3' @ ../source\n",
+        "pkg ; \n",
+        "--no-binary pkg\n",
+        "--unknown ../source\n",
+        "pkg \\n==1.0\n",
+        "-r more.txt\n",
+        "-r missing.txt\n",
+    ] {
+        assert!(check(refused).is_err(), "{refused:?}");
+    }
+}

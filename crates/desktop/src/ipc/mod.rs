@@ -1,3 +1,5 @@
+pub mod app_commands;
+pub mod app_dto;
 pub mod bindings;
 pub mod comfy_commands;
 pub mod comfy_dto;

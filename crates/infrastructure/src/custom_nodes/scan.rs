@@ -2,12 +2,16 @@
 //! reads. Nothing is executed or imported. Provenance read here is an observation.
 use super::{
     git::is_object_id,
+    paths::safe_name,
     provenance::{observed_identity, read_manager_registry, read_marker},
     tree::{is_link, read_text},
 };
-use crate::{environment::source::valid_ref_name, shared::download::sha256_hex};
+use crate::{
+    environment::source::valid_ref_name,
+    shared::{download::sha256_hex, model_paths::PinnedDirectory},
+};
 use domain::{custom_nodes::*, shared::model_values::SafeFileName};
-use std::{fs, path::Path};
+use std::{fs, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitMeta {
@@ -37,7 +41,30 @@ fn remote_url(config: &str) -> Option<String> {
             && let Some((key, value)) = line.split_once('=')
             && key.trim().eq_ignore_ascii_case("url")
         {
-            let value = value.trim().to_owned();
+            let value = value.trim();
+            let value = {
+                let quoted = value
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .unwrap_or(value);
+                let mut decoded = String::new();
+                let mut chars = quoted.chars();
+                while let Some(c) = chars.next() {
+                    decoded.push(if c == '\\' {
+                        match chars.next()? {
+                            'n' => '\n',
+                            't' => '\t',
+                            'b' => '\u{8}',
+                            '\\' => '\\',
+                            '"' => '"',
+                            _ => return None,
+                        }
+                    } else {
+                        c
+                    });
+                }
+                decoded
+            };
             if name == "origin" && origin.is_none() {
                 origin = Some(value.clone());
             }
@@ -48,22 +75,32 @@ fn remote_url(config: &str) -> Option<String> {
 }
 
 /// Reads HEAD, the branch ref and the remote URL from the `.git` directory as plain files.
-pub fn read_git(dir: &Path) -> Option<GitMeta> {
-    let git = dir.join(".git");
-    let meta = git.symlink_metadata().ok()?;
-    if is_link(&meta) || !meta.is_dir() {
-        return None;
-    }
-    let head = read_text(&git.join("HEAD"), 1024)?;
+pub fn read_git(dir: &Arc<PinnedDirectory>) -> Option<GitMeta> {
+    let git = dir.child(&safe_name(".git"), false).ok()?;
+    let head = read_text(&git, &safe_name("HEAD"), 1024)?;
     let head = head.trim();
     let (branch, commit) = if let Some(reference) = head.strip_prefix("ref: refs/heads/") {
         let reference = reference.trim();
         if !valid_ref_name(reference) {
             return None;
         }
-        let loose = read_text(&git.join("refs").join("heads").join(reference), 256);
+        let components = format!("refs/heads/{reference}")
+            .split('/')
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        super::tree::validate_components(&components).ok()?;
+        let (name, parents) = components.split_last()?;
+        let loose = (|| {
+            let mut parent = git.clone();
+            for component in parents {
+                parent = parent
+                    .child(&SafeFileName::new(component).ok()?, false)
+                    .ok()?;
+            }
+            read_text(&parent, &SafeFileName::new(name).ok()?, 256)
+        })();
         let commit = loose.map(|t| t.trim().to_owned()).or_else(|| {
-            let packed = read_text(&git.join("packed-refs"), 8 << 20)?;
+            let packed = read_text(&git, &safe_name("packed-refs"), 8 << 20)?;
             let wanted = format!("refs/heads/{reference}");
             packed.lines().find_map(|line| {
                 let (sha, name) = line.split_once(' ')?;
@@ -74,7 +111,7 @@ pub fn read_git(dir: &Path) -> Option<GitMeta> {
     } else {
         (None, Some(head.to_owned()))
     };
-    let repository = read_text(&git.join("config"), 256 * 1024)
+    let repository = read_text(&git, &safe_name("config"), 256 * 1024)
         .and_then(|c| remote_url(&c))
         .map(|raw| observed_identity(&raw));
     Some(GitMeta {
@@ -84,41 +121,52 @@ pub fn read_git(dir: &Path) -> Option<GitMeta> {
     })
 }
 
-fn classify(dir: &Path) -> (NodeSource, bool) {
-    let marker = read_marker(dir);
-    if let Some(meta) = read_git(dir) {
-        let source = NodeSource::Git {
-            repository: meta.repository.clone().unwrap_or_default(),
-            commit: meta.commit.unwrap_or_default(),
-            branch: meta.branch,
-        };
-        let conflict = match &marker {
-            Some(NodeSource::Git { repository, .. }) => {
-                meta.repository.as_deref() != Some(repository.as_str())
-            }
-            Some(_) => true,
-            None => false,
-        };
-        return (source, conflict);
-    }
+fn classify(dir: &Arc<PinnedDirectory>) -> (NodeSource, bool) {
+    let marker = read_marker(dir).or_else(|| read_manager_registry(dir));
+    let meta = read_git(dir);
+    let git_present = dir.open_entry(&safe_name(".git")).is_ok();
     if let Some(source) = marker {
-        return (source, false);
+        return match (&source, meta) {
+            (NodeSource::Git { repository, .. }, Some(meta))
+                if meta.repository.as_deref() == Some(repository.as_str()) =>
+            {
+                (
+                    NodeSource::Git {
+                        repository: repository.clone(),
+                        commit: meta.commit.unwrap_or_default(),
+                        branch: meta.branch,
+                    },
+                    false,
+                )
+            }
+            (NodeSource::Git { .. }, _) => (source, true),
+            _ => (source, git_present),
+        };
     }
-    if let Some(source) = read_manager_registry(dir) {
-        return (source, false);
+    if let Some(meta) = meta {
+        return (
+            NodeSource::Git {
+                repository: meta.repository.unwrap_or_default(),
+                commit: meta.commit.unwrap_or_default(),
+                branch: meta.branch,
+            },
+            false,
+        );
     }
     (NodeSource::Manual, false)
 }
 
 /// Lists directory nodes and top-level `.py` nodes in both locations. App staging, backups and
 /// every other dot-prefixed name are never nodes.
-pub fn scan(custom_nodes: &Path) -> Vec<InstalledNode> {
+pub fn scan(custom_nodes: &Arc<PinnedDirectory>) -> Vec<InstalledNode> {
     let mut nodes = Vec::new();
-    for (location, enabled) in [
-        (custom_nodes.to_path_buf(), true),
-        (custom_nodes.join(".disabled"), false),
-    ] {
-        let Ok(entries) = fs::read_dir(&location) else {
+    for (location, enabled) in std::iter::once((custom_nodes.clone(), true)).chain(
+        custom_nodes
+            .child(&safe_name(".disabled"), false)
+            .ok()
+            .map(|dir| (dir, false)),
+    ) {
+        let Ok(entries) = fs::read_dir(location.anchored_path()) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -141,7 +189,10 @@ pub fn scan(custom_nodes: &Path) -> Vec<InstalledNode> {
                 if linked {
                     (false, NodeSource::Manual, false)
                 } else {
-                    let (source, conflict) = classify(&path);
+                    let Ok(directory) = location.child(&safe, false) else {
+                        continue;
+                    };
+                    let (source, conflict) = classify(&directory);
                     (false, source, conflict)
                 }
             } else if (meta.is_file() || linked) && name.to_ascii_lowercase().ends_with(".py") {
@@ -176,6 +227,8 @@ pub fn scan(custom_nodes: &Path) -> Vec<InstalledNode> {
 mod tests {
     use super::*;
     use crate::custom_nodes::provenance::{MARKER, TRACKING, write_marker};
+    use crate::shared::model_paths::pin_absolute;
+    use std::path::Path;
 
     fn write(path: &Path, text: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -217,7 +270,7 @@ mod tests {
         write(&cn.join("__pycache__/x.pyc"), "x");
         write(&cn.join("readme.txt"), "x");
 
-        let nodes = scan(cn);
+        let nodes = scan(&pin_absolute(cn).unwrap());
         let by_name = |n: &str| nodes.iter().find(|node| node.name.as_str() == n).unwrap();
         assert_eq!(nodes.len(), 5, "{nodes:?}");
         assert!(by_name("solo.py").single_file);
@@ -268,13 +321,13 @@ mod tests {
             None,
         )
         .unwrap();
-        let nodes = scan(directory.path());
+        let nodes = scan(&pin_absolute(directory.path()).unwrap());
         assert!(nodes[0].conflict);
         assert_eq!(
             nodes[0].source,
             NodeSource::Git {
-                repository: "https://github.com/o/real".into(),
-                commit: "b".repeat(40),
+                repository: "https://github.com/o/claimed".into(),
+                commit: "c".repeat(40),
                 branch: None
             }
         );
@@ -287,6 +340,19 @@ mod tests {
         let node = directory.path().join("n");
         write(&node.join(".git/HEAD"), "ref: refs/heads/../../../secret\n");
         write(&directory.path().join("secret"), "x");
-        assert!(read_git(&node).is_none());
+        assert!(read_git(&pin_absolute(&node).unwrap()).is_none());
+    }
+
+    #[test]
+    fn multi_component_git_refs_are_read_through_pinned_parents() {
+        let directory = tempfile::tempdir().unwrap();
+        let node = directory.path().join("node");
+        let commit = "c".repeat(40);
+        write(&node.join(".git/HEAD"), "ref: refs/heads/feature/topic\n");
+        write(&node.join(".git/refs/heads/feature/topic"), &commit);
+        let pinned = pin_absolute(&node).unwrap();
+        let meta = read_git(&pinned).unwrap();
+        assert_eq!(meta.branch.as_deref(), Some("feature/topic"));
+        assert_eq!(meta.commit.as_deref(), Some(commit.as_str()));
     }
 }

@@ -30,6 +30,7 @@ pub async fn run_step(
     ctx: &StepContext,
     limits: &RunLimits,
 ) -> Result<Output, ProvisionError> {
+    let spec = &spec.clone().retain(ctx.retained.clone());
     let sink = StepSink(ctx);
     map(spec, process::run(spec, &sink, &ctx.cancel, limits).await)
 }
@@ -50,6 +51,9 @@ fn map(spec: &CommandSpec, result: Result<Output, RunError>) -> Result<Output, P
     match result {
         Ok(output) => Ok(output),
         Err(RunError::Cancelled { .. }) => Err(ProvisionError::Cancelled),
+        Err(RunError::InputFailed { .. }) => Err(ProvisionError::Failed(
+            "The command input could not be delivered.".into(),
+        )),
         Err(RunError::Spawn(_)) => Err(ProvisionError::Failed(format!(
             "{} could not be started.",
             program_name(spec)

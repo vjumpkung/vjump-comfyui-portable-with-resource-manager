@@ -82,6 +82,11 @@
     "allow-node-cancel",
     "allow-node-operation-status",
     "allow-node-subscribe",
-    "allow-node-unsubscribe"
+    "allow-node-unsubscribe",
+    "allow-app-update-status",
+    "allow-app-update-check",
+    "allow-app-update-install",
+    "allow-app-diagnostics",
+    "allow-app-copy-diagnostics"
   ]
 }

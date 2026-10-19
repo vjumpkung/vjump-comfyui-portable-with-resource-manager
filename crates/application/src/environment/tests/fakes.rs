@@ -115,11 +115,16 @@ pub struct FakeGate {
     pub try_acquires: AtomicUsize,
 }
 
-struct FakeLease(Arc<AtomicBool>);
+struct FakeLease(Arc<FakeLeaseOwner>);
+struct FakeLeaseOwner(Arc<AtomicBool>);
 
-impl MaintenanceLease for FakeLease {}
+impl MaintenanceLease for FakeLease {
+    fn retained(&self) -> crate::shared::Retained {
+        crate::shared::Retained::new(self.0.clone())
+    }
+}
 
-impl Drop for FakeLease {
+impl Drop for FakeLeaseOwner {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
     }
@@ -130,8 +135,22 @@ impl FakeGate {
         if self.busy.swap(true, Ordering::SeqCst) {
             return Err(GateError::Busy);
         }
-        Ok(Box::new(FakeLease(self.busy.clone())))
+        Ok(Box::new(FakeLease(Arc::new(FakeLeaseOwner(
+            self.busy.clone(),
+        )))))
     }
+}
+
+#[test]
+fn fake_lease_retention_delays_release() {
+    let gate = FakeGate::default();
+    let lease = gate.take().unwrap();
+    let retained = lease.retained();
+    drop(lease);
+    assert!(gate.busy.load(Ordering::SeqCst));
+    assert_eq!(gate.take().err(), Some(GateError::Busy));
+    drop(retained);
+    assert!(!gate.busy.load(Ordering::SeqCst));
 }
 
 #[async_trait]
@@ -665,6 +684,7 @@ impl PackageInstaller for World {
         &self,
         _root: &Path,
         _env_path: &Path,
+        _ctx: Option<&StepContext>,
     ) -> Result<Vec<InstalledPackage>, ProvisionError> {
         self.call("list");
         self.injected("list")?;

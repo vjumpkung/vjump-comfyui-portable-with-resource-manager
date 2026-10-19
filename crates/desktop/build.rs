@@ -1,4 +1,8 @@
 fn main() {
+    // The signed updater exists only in builds that carry both values (see `updates.rs`).
+    println!("cargo:rerun-if-env-changed=VJUMP_UPDATER_PUBKEY");
+    println!("cargo:rerun-if-env-changed=VJUMP_UPDATER_ENDPOINT");
+
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "app_info",
@@ -77,15 +81,26 @@ fn main() {
             "node_operation_status",
             "node_subscribe",
             "node_unsubscribe",
+            "app_update_status",
+            "app_update_check",
+            "app_update_install",
+            "app_diagnostics",
+            "app_copy_diagnostics",
         ]),
     ))
     .expect("failed to run tauri build script");
 
     // tauri-build embeds the Common Controls v6 manifest into the binary only. Test
-    // executables link the same Windows controls code, so they need the manifest too.
+    // executables (including library unit tests) need it too. `rustc-link-arg-tests`
+    // only covers integration-test targets, not the library's test executable.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
     {
+        // lib.rs links the generated resource library under cfg(test).
+        println!(
+            "cargo:rustc-link-search=native={}",
+            std::env::var("OUT_DIR").unwrap()
+        );
         println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
         println!(
             "cargo:rustc-link-arg-tests=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
