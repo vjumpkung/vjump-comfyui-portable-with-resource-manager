@@ -1,7 +1,7 @@
 //! Offline tests: a loopback registry, zip fixtures and local Git repositories created with the
 //! `git` binary (skipped with a message when it is missing).
 use super::{
-    files::{LocalNodeFiles, Recycler, node_limits},
+    files::{LocalNodeFiles, REQUIREMENTS_LIMIT, Recycler, node_limits},
     git::GitNodes,
     registry::RegistryHttp,
     scan,
@@ -75,6 +75,95 @@ macro_rules! require_git {
 
 fn node_id(text: &str) -> NodeId {
     NodeId::new(text).unwrap()
+}
+
+#[tokio::test]
+async fn startup_scaffold_from_real_creators_is_absent_and_clones() {
+    use crate::{
+        comfy_runtime::extra_paths::YamlExtraModelPaths,
+        environment::source::{Endpoints, GitSource},
+        models::{acquisition::stack::DownloadStack, library::roots::LibraryRoots},
+        settings::secrets::{CredentialSnapshot, CredentialVault},
+        shared::{model_paths::identity, path_locks::PathLocks},
+    };
+    use application::{
+        environment::{Checkout, ComfySource, ResolvedGit},
+        settings::CredentialStoreError,
+    };
+    use domain::settings::CredentialKind;
+
+    struct NoCredentials;
+    #[async_trait::async_trait]
+    impl CredentialVault for NoCredentials {
+        async fn read(
+            &self,
+            _: CredentialKind,
+        ) -> Result<CredentialSnapshot, CredentialStoreError> {
+            Ok(CredentialSnapshot {
+                generation: 0,
+                value: None,
+            })
+        }
+        async fn generation(&self, _: CredentialKind) -> Result<u64, CredentialStoreError> {
+            Ok(0)
+        }
+    }
+
+    let git = locate_git().expect("Git must execute in the startup scaffold regression test");
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("first run ไทย");
+    let db = Db::open(directory.path().join("app.db")).await.unwrap();
+    let locks = Arc::new(PathLocks::default());
+    // Match startup order and retain all three real creators throughout publication.
+    let downloads =
+        DownloadStack::open(&root, db, Arc::new(NoCredentials), 1, locks.clone()).unwrap();
+    let library = LibraryRoots::new(&root, Arc::new(YamlExtraModelPaths), locks).unwrap();
+    let nodes = super::paths::NodePaths::open(&root, true).unwrap();
+    let models = pin_absolute(&root.join("ComfyUI/models")).unwrap();
+    let models_id = identity(&models.file).unwrap().platform_id;
+    let nodes_id = identity(&nodes.cn.file).unwrap().platform_id;
+    let comfy_id = identity(&pin_absolute(&root.join("ComfyUI")).unwrap().file)
+        .unwrap()
+        .platform_id;
+
+    let remote = Repo::new(directory.path(), &git, "local remote");
+    remote.commit("models/checkpoints/README.md", "models\n", "models");
+    remote.commit("custom_nodes/example.py", "# example\n", "nodes");
+    let commit = remote.commit("README.md", "ComfyUI\n", "top level");
+    let url = remote.dir.to_string_lossy().into_owned();
+    let source = GitSource::with(Downloader::new(), Endpoints::pinned(), Some(git.clone()));
+    assert_eq!(
+        source.inspect_checkout(&root).await.unwrap(),
+        Checkout::Absent
+    );
+    let resolved = ResolvedGit {
+        url,
+        reference: "HEAD".into(),
+        branch: None,
+        commit: commit.clone(),
+    };
+    source
+        .clone_comfyui(&root, &resolved, &ctx())
+        .await
+        .unwrap();
+    let checkout = Repo {
+        dir: root.join("ComfyUI"),
+        git,
+    };
+    assert_eq!(checkout.run(&["rev-parse", "HEAD"]), commit);
+    assert!(checkout.run(&["status", "--porcelain"]).is_empty());
+    assert_eq!(identity(&models.file).unwrap().platform_id, models_id);
+    assert_eq!(identity(&nodes.cn.file).unwrap().platform_id, nodes_id);
+    assert_eq!(
+        identity(&pin_absolute(&checkout.dir).unwrap().file)
+            .unwrap()
+            .platform_id,
+        comfy_id
+    );
+    assert!(fs::read_dir(nodes.hooks()).unwrap().next().is_none());
+    assert!(!root.join(".ComfyUI.cloning").try_exists().unwrap());
+    assert!(!root.join(".ComfyUI.publish.json").try_exists().unwrap());
+    drop((downloads, library, nodes, models));
 }
 
 #[tokio::test]
@@ -1941,319 +2030,580 @@ fn dirs(fixture: &Fixture, paths: &[&str]) {
     }
 }
 
+fn recovery_copy(
+    fixture: &Fixture,
+    path: &str,
+    node: &InstalledNode,
+    contents: &str,
+) -> InstalledNode {
+    fs::create_dir_all(fixture.disabled()).unwrap();
+    let directory = fixture.cn().join(path);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("__init__.py"), contents).unwrap();
+    super::provenance::write_marker(&directory, node.name.as_str(), &node.source, None).unwrap();
+    let mut recorded = node.clone();
+    recorded.tree_digest = tree::tree_digest(&pin_absolute(&directory).unwrap()).unwrap();
+    recorded
+}
+
+fn assert_recovery_copies(fixture: &Fixture, id: &str, contents: [Option<&str>; 3]) {
+    let paths = [
+        "pack".into(),
+        format!(".disabled/.vjump-staging-{id}"),
+        format!(".disabled/.vjump-backup-{id}"),
+    ];
+    for (path, expected) in paths.iter().zip(contents) {
+        let path = fixture.cn().join(path);
+        match expected {
+            Some(expected) => assert_eq!(
+                fs::read_to_string(path.join("__init__.py")).unwrap(),
+                expected,
+                "{}",
+                path.display()
+            ),
+            None => assert!(
+                !path.exists(),
+                "unexpected surviving copy: {}",
+                path.display()
+            ),
+        }
+    }
+}
+
 #[tokio::test]
 async fn install_recovery_at_every_boundary() {
-    let fixture = Fixture::new().await;
-    let mut new = node("pack", registry_source("pack", "1.0.0"), true);
-    // Crash before publication: only staging exists and it is discarded.
-    dirs(&fixture, &[".disabled/.vjump-staging-node-a"]);
-    let op = operation(
-        OperationKind::Install,
-        "node-a",
-        new.clone(),
-        None,
-        OperationPhase::PublishIntent,
-    );
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::Discarded
-    );
-    assert!(fixture.owned().is_empty());
-    // Crash after publication with a matching tree: roll forward, keep the node.
-    dirs(&fixture, &["pack"]);
-    new.tree_digest =
-        tree::tree_digest(&pin_absolute(&fixture.cn().join("pack")).unwrap()).unwrap();
-    let op = operation(
-        OperationKind::Install,
-        "node-b",
-        new.clone(),
-        None,
-        OperationPhase::PublishIntent,
-    );
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::RolledForward
-    );
-    // The folder holds something this operation did not publish: block, preserve everything.
-    fs::write(
-        fixture.cn().join("pack/__init__.py"),
-        "changed by someone else",
-    )
-    .unwrap();
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::Blocked
-    );
-    assert!(fixture.cn().join("pack/__init__.py").is_file());
-    // Both staging and the published folder: ambiguous.
-    dirs(&fixture, &[".disabled/.vjump-staging-node-c"]);
-    let op = operation(
-        OperationKind::Install,
-        "node-c",
-        new.clone(),
-        None,
-        OperationPhase::PublishIntent,
-    );
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::Blocked
-    );
-    assert!(fixture.disabled().join(".vjump-staging-node-c").is_dir());
-    // A prepared plan that was never committed is discarded.
-    dirs(&fixture, &[".disabled/.vjump-staging-node-d"]);
-    let op = operation(
-        OperationKind::Install,
-        "node-d",
-        new,
-        None,
+    for phase in [
         OperationPhase::Prepared,
-    );
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::Discarded
-    );
-    assert!(!fixture.disabled().join(".vjump-staging-node-d").exists());
+        OperationPhase::PublishIntent,
+        OperationPhase::OldBackedUp,
+        OperationPhase::Published,
+        OperationPhase::Verified,
+        OperationPhase::CleanupPending,
+    ] {
+        for (live, staging) in [(false, false), (false, true), (true, false), (true, true)] {
+            let fixture = Fixture::new().await;
+            let id = "install-boundary";
+            let template = node("pack", registry_source("pack", "1.0.0"), true);
+            let recorded = recovery_copy(
+                &fixture,
+                ".disabled/.vjump-staging-install-boundary",
+                &template,
+                "new",
+            );
+            if live {
+                recovery_copy(&fixture, "pack", &recorded, "new");
+            }
+            if !staging {
+                fs::remove_dir_all(fixture.disabled().join(".vjump-staging-install-boundary"))
+                    .unwrap();
+            }
+            let op = operation(OperationKind::Install, id, recorded, None, phase);
+            let verified = matches!(
+                phase,
+                OperationPhase::Verified | OperationPhase::CleanupPending
+            );
+            let expected = if phase == OperationPhase::Prepared || (!verified && !live) {
+                RecoveryAction::Discarded
+            } else if live && (verified || !staging) {
+                RecoveryAction::RolledForward
+            } else {
+                RecoveryAction::Blocked
+            };
+            assert_eq!(
+                fixture
+                    .files
+                    .recover(&fixture.root, &op, Default::default())
+                    .await
+                    .unwrap(),
+                expected,
+                "{phase:?} live={live} staging={staging}"
+            );
+            assert_recovery_copies(
+                &fixture,
+                id,
+                [
+                    live.then_some("new"),
+                    (staging && expected == RecoveryAction::Blocked).then_some("new"),
+                    None,
+                ],
+            );
+            assert!(fixture.recycled.lock().unwrap().is_empty());
+        }
+    }
 }
 
 #[tokio::test]
 async fn update_recovery_preserves_the_only_recoverable_copy() {
-    let fixture = Fixture::new().await;
-    let mut prior = node("pack", registry_source("pack", "1.0.0"), true);
-    let new_node = {
-        let mut n = prior.clone();
-        n.source = registry_source("pack", "2.0.0");
-        n
-    };
-    let cases = |id: &str, prior: &InstalledNode| {
-        operation(
-            OperationKind::Update,
-            id,
-            new_node.clone(),
-            Some(prior.clone()),
-            OperationPhase::OldBackedUp,
-        )
-    };
-    // (live, backup, staging) = (T, F, T): nothing moved yet.
-    dirs(&fixture, &["pack", ".disabled/.vjump-staging-node-u1"]);
-    prior.tree_digest =
-        tree::tree_digest(&pin_absolute(&fixture.cn().join("pack")).unwrap()).unwrap();
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &cases("node-u1", &prior), Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::RolledBack
-    );
-    assert!(fixture.cn().join("pack").is_dir() && fixture.owned().is_empty());
-    // (F, T, T): old copy backed up, new one not published: restore the old copy.
-    fs::rename(
-        fixture.cn().join("pack"),
-        fixture.disabled().join(".vjump-backup-node-u2"),
-    )
-    .unwrap();
-    dirs(&fixture, &[".disabled/.vjump-staging-node-u2"]);
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &cases("node-u2", &prior), Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::RolledBack
-    );
-    assert_eq!(
-        fs::read_to_string(fixture.cn().join("pack/__init__.py")).unwrap(),
-        "pack"
-    );
-    assert!(fixture.owned().is_empty());
-    // (T, T, F): new copy published, old one retained: roll forward and keep the backup.
-    let mut published = new_node.clone();
-    fs::rename(
-        fixture.cn().join("pack"),
-        fixture.disabled().join(".vjump-backup-node-u3"),
-    )
-    .unwrap();
-    dirs(&fixture, &["pack-new"]);
-    fs::rename(fixture.cn().join("pack-new"), fixture.cn().join("pack")).unwrap();
-    published.tree_digest =
-        tree::tree_digest(&pin_absolute(&fixture.cn().join("pack")).unwrap()).unwrap();
-    let op = operation(
-        OperationKind::Update,
-        "node-u3",
-        published,
-        Some(prior.clone()),
+    for phase in [
+        OperationPhase::Prepared,
+        OperationPhase::PublishIntent,
+        OperationPhase::OldBackedUp,
         OperationPhase::Published,
-    );
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::RolledForward
-    );
-    assert!(
-        fixture.disabled().join(".vjump-backup-node-u3").is_dir(),
-        "the backup is retained"
-    );
-    // After verification the same state completes by recycling the backup.
-    let mut done = op.clone();
-    done.phase = OperationPhase::CleanupPending;
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &done, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::RolledForward
-    );
-    assert!(fixture.owned().is_empty());
-    assert_eq!(fixture.recycled.lock().unwrap().len(), 1);
-    // (T, T, T) and an unknown live tree are ambiguous: nothing is touched.
-    dirs(
-        &fixture,
-        &[
-            ".disabled/.vjump-backup-node-u4",
-            ".disabled/.vjump-staging-node-u4",
-        ],
-    );
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &cases("node-u4", &prior), Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::Blocked
-    );
-    assert!(fixture.disabled().join(".vjump-backup-node-u4").is_dir());
-    assert!(fixture.disabled().join(".vjump-staging-node-u4").is_dir());
+        OperationPhase::Verified,
+        OperationPhase::CleanupPending,
+    ] {
+        for (live, backup, staging) in [
+            (None, false, false),
+            (None, false, true),
+            (None, true, false),
+            (None, true, true),
+            (Some("old"), false, false),
+            (Some("old"), false, true),
+            (Some("new"), true, false),
+            (Some("new"), true, true),
+        ] {
+            let fixture = Fixture::new().await;
+            let id = "update-boundary";
+            let old_template = node("pack", registry_source("pack", "1"), true);
+            let new_template = node("pack", registry_source("pack", "2"), true);
+            let prior = recovery_copy(
+                &fixture,
+                ".disabled/.vjump-backup-update-boundary",
+                &old_template,
+                "old",
+            );
+            let new = recovery_copy(
+                &fixture,
+                ".disabled/.vjump-staging-update-boundary",
+                &new_template,
+                "new",
+            );
+            if let Some(contents) = live {
+                recovery_copy(
+                    &fixture,
+                    "pack",
+                    if contents == "old" { &prior } else { &new },
+                    contents,
+                );
+            }
+            if !backup {
+                fs::remove_dir_all(fixture.disabled().join(".vjump-backup-update-boundary"))
+                    .unwrap();
+            }
+            if !staging {
+                fs::remove_dir_all(fixture.disabled().join(".vjump-staging-update-boundary"))
+                    .unwrap();
+            }
+            let op = operation(OperationKind::Update, id, new, Some(prior), phase);
+            let verified = matches!(
+                phase,
+                OperationPhase::Verified | OperationPhase::CleanupPending
+            );
+            let expected = if phase == OperationPhase::Prepared {
+                RecoveryAction::Discarded
+            } else if verified {
+                if live == Some("new") {
+                    RecoveryAction::RolledForward
+                } else {
+                    RecoveryAction::Blocked
+                }
+            } else if live == Some("old") && !backup || live.is_none() && backup {
+                RecoveryAction::RolledBack
+            } else if live == Some("new") && !staging {
+                RecoveryAction::RolledForward
+            } else {
+                RecoveryAction::Blocked
+            };
+            assert_eq!(
+                fixture
+                    .files
+                    .recover(&fixture.root, &op, Default::default())
+                    .await
+                    .unwrap(),
+                expected,
+                "{phase:?} {live:?} backup={backup} staging={staging}"
+            );
+            let restored = expected == RecoveryAction::RolledBack && live.is_none();
+            let recycled = verified && expected == RecoveryAction::RolledForward && backup;
+            assert_recovery_copies(
+                &fixture,
+                id,
+                [
+                    if restored { Some("old") } else { live },
+                    (staging && expected == RecoveryAction::Blocked).then_some("new"),
+                    (backup && !restored && !recycled).then_some("old"),
+                ],
+            );
+            assert_eq!(
+                fixture.recycled.lock().unwrap().len(),
+                usize::from(recycled)
+            );
+        }
+    }
 }
 
 #[tokio::test]
 async fn uninstall_and_toggle_recovery() {
-    let fixture = Fixture::new().await;
-    let prior = node("pack", NodeSource::Manual, true);
-    dirs(&fixture, &["pack"]);
-    fs::create_dir_all(fixture.disabled()).unwrap();
-    // Uninstall: moved to the backup, crash before the node record changed: put it back.
-    fs::rename(
-        fixture.cn().join("pack"),
-        fixture.disabled().join(".vjump-backup-node-x1"),
-    )
-    .unwrap();
-    let op = operation(
-        OperationKind::Uninstall,
-        "node-x1",
-        prior.clone(),
-        Some(prior.clone()),
-        OperationPhase::OldBackedUp,
-    );
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::RolledBack
-    );
-    assert!(fixture.cn().join("pack/__init__.py").is_file());
-    // Uninstall after verification finishes the recycle.
-    fs::rename(
-        fixture.cn().join("pack"),
-        fixture.disabled().join(".vjump-backup-node-x2"),
-    )
-    .unwrap();
-    let mut op = operation(
-        OperationKind::Uninstall,
-        "node-x2",
-        prior.clone(),
-        Some(prior.clone()),
-        OperationPhase::CleanupPending,
-    );
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::RolledForward
-    );
-    assert!(fixture.owned().is_empty());
-    // A failing recycler keeps the backup and reports pending cleanup.
-    dirs(&fixture, &[".disabled/.vjump-backup-node-x3"]);
-    op.id = node_id("node-x3");
-    let failing: Recycler = Arc::new(|_, _, _| Err(std::io::Error::other("no trash")));
-    let stuck = LocalNodeFiles {
-        registry: fixture.files.registry.clone(),
-        git: fixture.files.git.clone(),
-        recycler: failing,
-        limits: node_limits(),
-    };
-    assert_eq!(
-        stuck
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::CleanupPending
-    );
-    assert!(fixture.disabled().join(".vjump-backup-node-x3").is_dir());
-    // Toggle: the move completed, or did not start; anything else blocks.
-    dirs(&fixture, &["pack"]);
-    let mut disable = prior.clone();
-    disable.enabled = false;
-    let op = operation(
-        OperationKind::Disable,
-        "node-t1",
-        disable.clone(),
-        Some(prior.clone()),
+    for phase in [
         OperationPhase::PublishIntent,
-    );
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::RolledBack
-    );
-    fs::rename(fixture.cn().join("pack"), fixture.disabled().join("pack")).unwrap();
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::RolledForward
-    );
-    dirs(&fixture, &["pack"]);
-    assert_eq!(
-        fixture
-            .files
-            .recover(&fixture.root, &op, Default::default())
-            .await
-            .unwrap(),
-        RecoveryAction::Blocked
-    );
+        OperationPhase::OldBackedUp,
+        OperationPhase::Published,
+        OperationPhase::Verified,
+        OperationPhase::CleanupPending,
+    ] {
+        for (live, backup) in [(false, false), (true, false), (false, true), (true, true)] {
+            let fixture = Fixture::new().await;
+            let id = "uninstall-boundary";
+            let prior = recovery_copy(
+                &fixture,
+                ".disabled/.vjump-backup-uninstall-boundary",
+                &node("pack", NodeSource::Manual, true),
+                "old",
+            );
+            if live {
+                recovery_copy(&fixture, "pack", &prior, "old");
+            }
+            if !backup {
+                fs::remove_dir_all(fixture.disabled().join(".vjump-backup-uninstall-boundary"))
+                    .unwrap();
+            }
+            let op = operation(
+                OperationKind::Uninstall,
+                id,
+                prior.clone(),
+                Some(prior),
+                phase,
+            );
+            let verified = matches!(
+                phase,
+                OperationPhase::Verified | OperationPhase::CleanupPending
+            );
+            let expected = if verified && !live {
+                RecoveryAction::RolledForward
+            } else if !verified && live != backup {
+                RecoveryAction::RolledBack
+            } else {
+                RecoveryAction::Blocked
+            };
+            assert_eq!(
+                fixture
+                    .files
+                    .recover(&fixture.root, &op, Default::default())
+                    .await
+                    .unwrap(),
+                expected
+            );
+            let restored = expected == RecoveryAction::RolledBack && backup;
+            let recycled = verified && expected == RecoveryAction::RolledForward && backup;
+            assert_recovery_copies(
+                &fixture,
+                id,
+                [
+                    (live || restored).then_some("old"),
+                    None,
+                    (backup && !restored && !recycled).then_some("old"),
+                ],
+            );
+            assert_eq!(
+                fixture.recycled.lock().unwrap().len(),
+                usize::from(recycled)
+            );
+        }
+    }
+    for enabled in [true, false] {
+        for moved in [false, true] {
+            let fixture = Fixture::new().await;
+            let prior_path = if enabled { ".disabled/pack" } else { "pack" };
+            let target_path = if enabled { "pack" } else { ".disabled/pack" };
+            let mut prior = recovery_copy(
+                &fixture,
+                prior_path,
+                &node("pack", NodeSource::Manual, !enabled),
+                "old",
+            );
+            prior.enabled = !enabled;
+            let mut target = prior.clone();
+            target.enabled = enabled;
+            if moved {
+                fs::rename(
+                    fixture.cn().join(prior_path),
+                    fixture.cn().join(target_path),
+                )
+                .unwrap();
+            }
+            let op = operation(
+                if enabled {
+                    OperationKind::Enable
+                } else {
+                    OperationKind::Disable
+                },
+                "toggle",
+                target,
+                Some(prior),
+                OperationPhase::PublishIntent,
+            );
+            assert_eq!(
+                fixture
+                    .files
+                    .recover(&fixture.root, &op, Default::default())
+                    .await
+                    .unwrap(),
+                if moved {
+                    RecoveryAction::RolledForward
+                } else {
+                    RecoveryAction::RolledBack
+                }
+            );
+            assert_eq!(
+                fs::read_to_string(
+                    fixture
+                        .cn()
+                        .join(if moved { target_path } else { prior_path })
+                        .join("__init__.py")
+                )
+                .unwrap(),
+                "old"
+            );
+            assert!(
+                !fixture
+                    .cn()
+                    .join(if moved { prior_path } else { target_path })
+                    .exists()
+            );
+            assert!(fixture.owned().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn recovery_preserves_foreign_destinations() {
+    for kind in [
+        OperationKind::Install,
+        OperationKind::Update,
+        OperationKind::Uninstall,
+    ] {
+        for phase in [
+            OperationPhase::Prepared,
+            OperationPhase::PublishIntent,
+            OperationPhase::OldBackedUp,
+            OperationPhase::Verified,
+            OperationPhase::CleanupPending,
+        ] {
+            let fixture = Fixture::new().await;
+            let id = "foreign";
+            let prior = recovery_copy(
+                &fixture,
+                ".disabled/.vjump-backup-foreign",
+                &node("pack", registry_source("pack", "1"), true),
+                "old",
+            );
+            let new = recovery_copy(
+                &fixture,
+                ".disabled/.vjump-staging-foreign",
+                &node("pack", registry_source("pack", "2"), true),
+                "new",
+            );
+            // Identical contents with foreign provenance must still block recovery.
+            recovery_copy(
+                &fixture,
+                "pack",
+                &node("pack", registry_source("foreign", "2"), true),
+                "new",
+            );
+            let op = operation(
+                kind,
+                id,
+                new,
+                (kind != OperationKind::Install).then_some(prior),
+                phase,
+            );
+            let expected = if phase == OperationPhase::Prepared {
+                RecoveryAction::Discarded
+            } else {
+                RecoveryAction::Blocked
+            };
+            assert_eq!(
+                fixture
+                    .files
+                    .recover(&fixture.root, &op, Default::default())
+                    .await
+                    .unwrap(),
+                expected
+            );
+            assert_recovery_copies(
+                &fixture,
+                id,
+                [
+                    Some("new"),
+                    (phase != OperationPhase::Prepared).then_some("new"),
+                    Some("old"),
+                ],
+            );
+            assert!(fixture.recycled.lock().unwrap().is_empty());
+            assert_eq!(
+                super::provenance::read_marker(&pin_absolute(&fixture.cn().join("pack")).unwrap()),
+                Some(registry_source("foreign", "2"))
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn verified_recovery_preserves_changed_published_trees() {
+    for kind in [
+        OperationKind::Install,
+        OperationKind::Update,
+        OperationKind::RetryDependencies,
+    ] {
+        for phase in [OperationPhase::Verified, OperationPhase::CleanupPending] {
+            let fixture = Fixture::new().await;
+            let id = "changed-live";
+            let prior = recovery_copy(
+                &fixture,
+                ".disabled/.vjump-backup-changed-live",
+                &node("pack", registry_source("pack", "1"), true),
+                "old",
+            );
+            let new = recovery_copy(
+                &fixture,
+                "pack",
+                &node("pack", registry_source("pack", "2"), true),
+                "new",
+            );
+            recovery_copy(
+                &fixture,
+                ".disabled/.vjump-staging-changed-live",
+                &new,
+                "new",
+            );
+            fs::write(fixture.cn().join("pack/__init__.py"), "local edits").unwrap();
+            let op = operation(kind, id, new, Some(prior), phase);
+            assert_eq!(
+                fixture
+                    .files
+                    .recover(&fixture.root, &op, Default::default())
+                    .await
+                    .unwrap(),
+                RecoveryAction::Blocked
+            );
+            assert_recovery_copies(
+                &fixture,
+                id,
+                [Some("local edits"), Some("new"), Some("old")],
+            );
+            assert!(fixture.recycled.lock().unwrap().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn recovery_never_restores_or_recycles_a_modified_backup() {
+    for kind in [OperationKind::Update, OperationKind::Uninstall] {
+        for phase in [
+            OperationPhase::OldBackedUp,
+            OperationPhase::Verified,
+            OperationPhase::CleanupPending,
+        ] {
+            for live in [false, true] {
+                let fixture = Fixture::new().await;
+                let id = "changed-backup";
+                let prior = recovery_copy(
+                    &fixture,
+                    ".disabled/.vjump-backup-changed-backup",
+                    &node("pack", registry_source("pack", "1"), true),
+                    "old",
+                );
+                let new = recovery_copy(
+                    &fixture,
+                    ".disabled/.vjump-staging-changed-backup",
+                    &node("pack", registry_source("pack", "2"), true),
+                    "new",
+                );
+                if live {
+                    recovery_copy(&fixture, "pack", &new, "new");
+                }
+                fs::write(
+                    fixture
+                        .disabled()
+                        .join(".vjump-backup-changed-backup/__init__.py"),
+                    "backup edits",
+                )
+                .unwrap();
+                let op = operation(kind, id, new, Some(prior), phase);
+                assert_eq!(
+                    fixture
+                        .files
+                        .recover(&fixture.root, &op, Default::default())
+                        .await
+                        .unwrap(),
+                    RecoveryAction::Blocked
+                );
+                assert_recovery_copies(
+                    &fixture,
+                    id,
+                    [live.then_some("new"), Some("new"), Some("backup edits")],
+                );
+                assert!(fixture.recycled.lock().unwrap().is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn toggle_recovery_requires_matching_content() {
+    for enabled in [true, false] {
+        for moved in [false, true] {
+            for both in [false, true] {
+                let fixture = Fixture::new().await;
+                let from = if enabled { ".disabled/pack" } else { "pack" };
+                let to = if enabled { "pack" } else { ".disabled/pack" };
+                let prior = recovery_copy(
+                    &fixture,
+                    from,
+                    &node("pack", NodeSource::Manual, !enabled),
+                    "reviewed",
+                );
+                let mut new = prior.clone();
+                new.enabled = enabled;
+                if moved {
+                    fs::rename(fixture.cn().join(from), fixture.cn().join(to)).unwrap();
+                }
+                let location = if moved { to } else { from };
+                fs::write(
+                    fixture.cn().join(location).join("__init__.py"),
+                    "foreign edits",
+                )
+                .unwrap();
+                if both {
+                    recovery_copy(&fixture, if moved { from } else { to }, &prior, "reviewed");
+                }
+                let op = operation(
+                    if enabled {
+                        OperationKind::Enable
+                    } else {
+                        OperationKind::Disable
+                    },
+                    "toggle-content",
+                    new,
+                    Some(prior),
+                    OperationPhase::PublishIntent,
+                );
+                assert_eq!(
+                    fixture
+                        .files
+                        .recover(&fixture.root, &op, Default::default())
+                        .await
+                        .unwrap(),
+                    RecoveryAction::Blocked
+                );
+                assert_eq!(
+                    fs::read_to_string(fixture.cn().join(location).join("__init__.py")).unwrap(),
+                    "foreign edits"
+                );
+                let other = fixture.cn().join(if moved { from } else { to });
+                if both {
+                    assert_eq!(
+                        fs::read_to_string(other.join("__init__.py")).unwrap(),
+                        "reviewed"
+                    );
+                } else {
+                    assert!(!other.exists());
+                }
+                assert!(fixture.owned().is_empty());
+                assert!(fixture.recycled.lock().unwrap().is_empty());
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -2385,7 +2735,7 @@ async fn nodes_operations_dependencies_and_trust_round_trip() {
             .save_dependency(&DependencyOutcome {
                 node: first.id.clone(),
                 environment: EnvId::new(env).unwrap(),
-                source_identity: first.source.identity(),
+                source_identity: first.dependency_identity(),
                 state,
             })
             .await
@@ -2402,6 +2752,144 @@ async fn nodes_operations_dependencies_and_trust_round_trip() {
         .await
         .unwrap();
     assert_eq!(count, 2);
+}
+
+#[tokio::test]
+async fn dependency_lookup_uses_node_environment_and_exact_identity() {
+    let fixture = Fixture::new().await;
+    let store = &fixture.store;
+    let first = node("alpha", registry_source("alpha", "1.0.0"), true);
+    let second = node("beta", registry_source("alpha", "1.0.0"), true);
+    let environment = EnvId::new("env-1").unwrap();
+    let other_environment = EnvId::new("env-2").unwrap();
+    let identity = first.dependency_identity();
+    let mut changed = first.clone();
+    changed.tree_digest = "changed-content".into();
+    let changed_identity = changed.dependency_identity();
+    for (node, environment, source_identity, state) in [
+        (&first.id, &environment, &identity, DependencyState::Ok),
+        (&second.id, &environment, &identity, DependencyState::Failed),
+        (
+            &first.id,
+            &other_environment,
+            &identity,
+            DependencyState::NotRun,
+        ),
+        (
+            &first.id,
+            &environment,
+            &changed_identity,
+            DependencyState::Failed,
+        ),
+    ] {
+        store
+            .save_dependency(&DependencyOutcome {
+                node: node.clone(),
+                environment: environment.clone(),
+                source_identity: source_identity.clone(),
+                state,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .dependency(node, environment, source_identity)
+                .await
+                .unwrap(),
+            Some(state)
+        );
+    }
+    assert_eq!(
+        store
+            .dependency(&first.id, &environment, &identity)
+            .await
+            .unwrap(),
+        Some(DependencyState::Ok)
+    );
+    assert_eq!(
+        store
+            .dependency(&first.id, &environment, "unknown")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .dependency(&node_id("missing"), &environment, &identity)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .dependency(&first.id, &EnvId::new("missing").unwrap(), &identity)
+            .await
+            .unwrap(),
+        None
+    );
+    for corrupt in ["'unknown'", "X'00FF'"] {
+        store
+            .db
+            .run(move |connection| {
+                connection
+                    .execute_batch(&format!(
+                        "PRAGMA ignore_check_constraints = ON; \
+                         UPDATE node_env_deps SET state = {corrupt}; \
+                         PRAGMA ignore_check_constraints = OFF;"
+                    ))
+                    .unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store.dependency(&first.id, &environment, &identity).await,
+            Err(NodeAppError::Storage)
+        );
+    }
+}
+
+#[tokio::test]
+async fn equal_timestamp_operations_have_deterministic_creation_order() {
+    let fixture = Fixture::new().await;
+    let store = &fixture.store;
+    let installed = node("alpha", registry_source("alpha", "1.0.0"), true);
+    for id in ["z-first", "a-second", "m-third"] {
+        store
+            .save_operation(&operation(
+                OperationKind::RetryDependencies,
+                id,
+                installed.clone(),
+                None,
+                OperationPhase::Completed,
+            ))
+            .await
+            .unwrap();
+    }
+    store
+        .db
+        .run(|connection| {
+            connection
+                .execute("UPDATE node_operations SET created_at = 'same-time'", [])
+                .unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // Updating an older journal record never changes its creation order.
+    let mut first = store.operations().await.unwrap().remove(0);
+    first.failure = Some("later update".into());
+    store.save_operation(&first).await.unwrap();
+    assert_eq!(
+        store
+            .operations()
+            .await
+            .unwrap()
+            .iter()
+            .map(|operation| operation.id.as_str())
+            .collect::<Vec<_>>(),
+        ["z-first", "a-second", "m-third"]
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -3618,6 +4106,238 @@ async fn git_update_recovery_compares_the_head_with_the_recorded_commits() {
     );
 }
 
+#[tokio::test]
+async fn git_recovery_requires_source_commit_and_content() {
+    let g = git_fixture(locate_git().expect("real Git is required")).await;
+    let installed = g.install("identity-install", None).await;
+    g.repo.commit("next.py", "next = True\n", "next");
+    let op = g.update("identity-update", &installed, None).await.unwrap();
+    let live = g.fixture.cn().join(installed.name.as_str());
+    let staged = g
+        .fixture
+        .files
+        .path(&g.fixture.root, &op.node, Some(&op.id));
+    let original = fs::read(live.join("__init__.py")).unwrap();
+    let staged_digest = tree::tree_digest(&pin_absolute(&staged).unwrap()).unwrap();
+    let live_repo = Repo {
+        dir: live.clone(),
+        git: g.repo.git.clone(),
+    };
+    // Matching old HEAD cannot authorize removing staging when old contents changed.
+    fs::write(live.join("__init__.py"), "old local edits").unwrap();
+    assert_eq!(
+        g.fixture
+            .files
+            .recover(&g.fixture.root, &op, Default::default())
+            .await
+            .unwrap(),
+        RecoveryAction::Blocked
+    );
+    assert_eq!(
+        fs::read_to_string(live.join("__init__.py")).unwrap(),
+        "old local edits"
+    );
+    assert_eq!(
+        tree::tree_digest(&pin_absolute(&staged).unwrap()).unwrap(),
+        staged_digest
+    );
+    fs::write(live.join("__init__.py"), &original).unwrap();
+    let mut legacy = op.clone();
+    if let NodeSource::Git { commit, .. } = &installed.source {
+        legacy.prior.as_mut().unwrap().tree_digest = format!("git:{commit}");
+    }
+    assert_eq!(
+        g.fixture
+            .files
+            .recover(&g.fixture.root, &legacy, Default::default())
+            .await
+            .unwrap(),
+        RecoveryAction::Blocked
+    );
+    assert_eq!(fs::read(live.join("__init__.py")).unwrap(), original);
+    assert_eq!(
+        tree::tree_digest(&pin_absolute(&staged).unwrap()).unwrap(),
+        staged_digest
+    );
+    live_repo.run(&["remote", "set-url", "origin", "https://example.com/foreign"]);
+    assert!(
+        g.fixture
+            .files
+            .snapshot(&g.fixture.root, &installed, None, Default::default())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        g.fixture
+            .files
+            .recover(&g.fixture.root, &op, Default::default())
+            .await
+            .unwrap(),
+        RecoveryAction::Blocked
+    );
+    assert_eq!(fs::read(live.join("__init__.py")).unwrap(), original);
+    assert_eq!(
+        tree::tree_digest(&pin_absolute(&staged).unwrap()).unwrap(),
+        staged_digest
+    );
+    live_repo.run(&["remote", "set-url", "origin", &g.url]);
+    g.fixture
+        .files
+        .publish(&g.fixture.root, &op, Default::default())
+        .await
+        .unwrap();
+    fs::write(live.join("__init__.py"), "hook contents").unwrap();
+    let final_snapshot = g
+        .fixture
+        .files
+        .snapshot(&g.fixture.root, &op.node, None, Default::default())
+        .await
+        .unwrap();
+    assert_ne!(final_snapshot.digest, op.node.tree_digest);
+    for phase in [
+        OperationPhase::Published,
+        OperationPhase::Verified,
+        OperationPhase::CleanupPending,
+    ] {
+        let mut interrupted = op.clone();
+        interrupted.phase = phase;
+        assert_eq!(
+            g.fixture
+                .files
+                .recover(&g.fixture.root, &interrupted, Default::default())
+                .await
+                .unwrap(),
+            RecoveryAction::Blocked
+        );
+        assert_eq!(
+            fs::read_to_string(live.join("__init__.py")).unwrap(),
+            "hook contents"
+        );
+        assert_eq!(
+            tree::tree_digest(&pin_absolute(&staged).unwrap()).unwrap(),
+            staged_digest
+        );
+    }
+    let mut interrupted = op.clone();
+    interrupted.phase = OperationPhase::DependenciesInProgress;
+    assert_eq!(
+        g.fixture
+            .files
+            .recover(&g.fixture.root, &interrupted, Default::default())
+            .await
+            .unwrap(),
+        RecoveryAction::RolledForward
+    );
+    assert_eq!(
+        tree::tree_digest(&pin_absolute(&staged).unwrap()).unwrap(),
+        staged_digest
+    );
+    let mut verified = op.clone();
+    verified.phase = OperationPhase::Verified;
+    if let NodeSource::Git { commit, .. } = &op.node.source {
+        verified.node.tree_digest = format!("git:{commit}");
+    }
+    assert_eq!(
+        g.fixture
+            .files
+            .recover(&g.fixture.root, &verified, Default::default())
+            .await
+            .unwrap(),
+        RecoveryAction::Blocked
+    );
+    assert_eq!(
+        tree::tree_digest(&pin_absolute(&staged).unwrap()).unwrap(),
+        staged_digest
+    );
+    // Recording the consented final contents permits cleanup even with a dirty worktree.
+    verified.node.tree_digest = final_snapshot.digest;
+    assert_eq!(
+        g.fixture
+            .files
+            .recover(&g.fixture.root, &verified, Default::default())
+            .await
+            .unwrap(),
+        RecoveryAction::RolledForward
+    );
+    assert!(!staged.exists());
+    assert_eq!(
+        fs::read_to_string(live.join("__init__.py")).unwrap(),
+        "hook contents"
+    );
+    assert_eq!(
+        fs::read_to_string(live.join("next.py")).unwrap(),
+        "next = True\n"
+    );
+    assert!(g.fixture.owned().is_empty());
+    assert!(g.fixture.recycled.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn interrupted_recovery_requires_published_source_and_retains_all_copies() {
+    for publication in ["changed", "missing", "foreign"] {
+        let fixture = Fixture::new().await;
+        let id = "interrupted-deps";
+        let prior = recovery_copy(
+            &fixture,
+            ".disabled/.vjump-backup-interrupted-deps",
+            &node("pack", registry_source("pack", "1"), true),
+            "old",
+        );
+        let new = recovery_copy(
+            &fixture,
+            ".disabled/.vjump-staging-interrupted-deps",
+            &node("pack", registry_source("pack", "2"), true),
+            "reviewed",
+        );
+        if publication != "missing" {
+            let source = if publication == "foreign" {
+                node("pack", registry_source("foreign", "2"), true)
+            } else {
+                new.clone()
+            };
+            recovery_copy(&fixture, "pack", &source, "partial hook edits");
+        }
+        let op = operation(
+            OperationKind::Update,
+            id,
+            new.clone(),
+            Some(prior),
+            OperationPhase::DependenciesInProgress,
+        );
+        assert_eq!(
+            fixture
+                .files
+                .recover(&fixture.root, &op, Default::default())
+                .await
+                .unwrap(),
+            if publication == "changed" {
+                RecoveryAction::RolledForward
+            } else {
+                RecoveryAction::Blocked
+            }
+        );
+        assert_recovery_copies(
+            &fixture,
+            id,
+            [
+                (publication != "missing").then_some("partial hook edits"),
+                Some("reviewed"),
+                Some("old"),
+            ],
+        );
+        assert!(fixture.recycled.lock().unwrap().is_empty());
+        if publication == "foreign" {
+            assert!(
+                fixture
+                    .files
+                    .snapshot(&fixture.root, &new, None, Default::default())
+                    .await
+                    .is_err()
+            );
+        }
+    }
+}
+
 #[test]
 fn git_commands_disable_hooks_and_every_protocol_but_https() {
     let git = GitNodes::with_program(PathBuf::from("git"), false);
@@ -4208,7 +4928,11 @@ async fn node_mutations_resist_parent_substitution() {
                 panic!("Unix substitution must execute: {error}");
             }
         });
-        let prior = node("pack", NodeSource::Manual, true);
+        let mut prior = node("pack", NodeSource::Manual, true);
+        prior.tree_digest = tree::tree_digest(
+            &pin_absolute(&fixture.disabled().join(".vjump-backup-node-substitution")).unwrap(),
+        )
+        .unwrap();
         let mut op = operation(
             OperationKind::Install,
             id,
@@ -4344,7 +5068,8 @@ async fn failed_safe_recycling_retains_the_backup() {
         );
         Err(std::io::ErrorKind::Unsupported.into())
     });
-    let prior = node("pack", NodeSource::Manual, true);
+    let mut prior = node("pack", NodeSource::Manual, true);
+    prior.tree_digest = tree::tree_digest(&pin_absolute(&backup).unwrap()).unwrap();
     let op = operation(
         OperationKind::Uninstall,
         "node-retain",
@@ -4373,6 +5098,61 @@ async fn failed_safe_recycling_retains_the_backup() {
     wrong.platform_id.push_str("-changed");
     assert!(crate::shared::trash::recycle_entry(&parent, &name, &wrong).is_err());
     assert_eq!(fs::read(backup.join("__init__.py")).unwrap(), contents);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn node_recycle_refusal_retains_cleanup_pending_backup() {
+    let mut fixture = Fixture::new().await;
+    drop(super::paths::NodePaths::open(&fixture.root, true).unwrap());
+    dirs(&fixture, &["pack", ".disabled/.vjump-backup-node-refuse"]);
+    let live = fixture.cn().join("pack");
+    let backup = fixture.disabled().join(".vjump-backup-node-refuse");
+    fs::write(live.join("__init__.py"), b"verified publication").unwrap();
+    let old = fs::read(backup.join("__init__.py")).unwrap();
+    let refusal = crate::shared::trash::tests::refuse(&backup);
+    fixture.files.recycler = Arc::new(crate::shared::trash::recycle_entry);
+    let mut published = node("pack", NodeSource::Manual, true);
+    published.tree_digest = tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap();
+    let mut prior = published.clone();
+    prior.tree_digest = tree::tree_digest(&pin_absolute(&backup).unwrap()).unwrap();
+    let mut op = operation(
+        OperationKind::Update,
+        "node-refuse",
+        published.clone(),
+        Some(prior),
+        OperationPhase::Verified,
+    );
+    assert_eq!(
+        fixture.files.recycle(&fixture.root, &op).await.unwrap_err(),
+        NodeAppError::Filesystem
+    );
+    assert_eq!(
+        fixture
+            .files
+            .recover(&fixture.root, &op, Default::default())
+            .await
+            .unwrap(),
+        RecoveryAction::CleanupPending
+    );
+    assert!(refusal.was_refused());
+    op.phase = OperationPhase::CleanupPending;
+    fixture.store.save_operation(&op).await.unwrap();
+    assert!(
+        fixture
+            .store
+            .operations()
+            .await
+            .unwrap()
+            .iter()
+            .all(|op| !op.blocks_start()),
+        "ordinary cleanup must not block Start"
+    );
+    assert_eq!(fs::read(backup.join("__init__.py")).unwrap(), old);
+    assert_eq!(
+        fs::read(live.join("__init__.py")).unwrap(),
+        b"verified publication"
+    );
 }
 
 #[cfg(unix)]
@@ -4766,6 +5546,68 @@ async fn node_execution_refuses_linked_requirements_and_hooks() {
         "external contents"
     );
     assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn node_execution_refuses_oversized_and_non_utf8_requirements() {
+    for (enabled, staged) in [(true, false), (false, false), (true, true)] {
+        let fixture = Fixture::new().await;
+        for (name, bytes) in [
+            ("oversized", vec![b'#'; REQUIREMENTS_LIMIT as usize + 1]),
+            ("non-utf8", vec![0xff]),
+        ] {
+            let node = node(name, NodeSource::Manual, enabled);
+            let operation = node_id(name);
+            let staged = staged.then_some(&operation);
+            let directory = fixture.files.path(&fixture.root, &node, staged);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("requirements.txt"), bytes).unwrap();
+            assert_eq!(
+                fixture
+                    .files
+                    .pin_location(&fixture.root, &node, staged)
+                    .await
+                    .err(),
+                Some(NodeAppError::UnsafeSource),
+                "{name}, enabled={enabled}, staged={staged:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn node_execution_distinguishes_absent_empty_and_bounded_requirements() {
+    let bounded = format!("#{}", "é".repeat(REQUIREMENTS_LIMIT as usize / 2 - 1)) + "\n";
+    assert_eq!(bounded.len() as u64, REQUIREMENTS_LIMIT);
+    for (enabled, staged) in [(true, false), (false, false), (true, true)] {
+        let fixture = Fixture::new().await;
+        for (name, bytes) in [
+            ("absent", None),
+            ("empty", Some(b"".as_slice())),
+            ("bounded", Some(bounded.as_bytes())),
+        ] {
+            let node = node(name, NodeSource::Manual, enabled);
+            let operation = node_id(name);
+            let staged = staged.then_some(&operation);
+            let directory = fixture.files.path(&fixture.root, &node, staged);
+            fs::create_dir_all(&directory).unwrap();
+            if let Some(bytes) = bytes {
+                fs::write(directory.join("requirements.txt"), bytes).unwrap();
+            }
+            let guard = fixture
+                .files
+                .pin_location(&fixture.root, &node, staged)
+                .await
+                .unwrap();
+            assert_eq!(guard.requirements().as_deref(), bytes);
+            assert_eq!(
+                guard.snapshot().requirements_digest,
+                bytes.map(crate::shared::download::sha256_hex)
+            );
+            assert!(guard.snapshot().requirement_lines.is_empty());
+            assert!(!guard.retained().is_empty());
+        }
+    }
 }
 
 #[tokio::test]

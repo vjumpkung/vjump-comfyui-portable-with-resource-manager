@@ -23,7 +23,34 @@ impl NodeService {
         self.deps.registry.versions(id).await
     }
     pub async fn list(&self) -> Result<Vec<InstalledNode>, NodeAppError> {
-        self.deps.store.nodes().await
+        let mut nodes = self.deps.store.nodes().await?;
+        self.project_dependencies(&mut nodes).await?;
+        Ok(nodes)
+    }
+    async fn project_dependencies(&self, nodes: &mut [InstalledNode]) -> Result<(), NodeAppError> {
+        let active = self
+            .deps
+            .environment
+            .envs
+            .active()
+            .await
+            .map_err(|_| NodeAppError::Storage)?;
+        for node in nodes {
+            if node.conflict || node.tree_digest.is_empty() {
+                node.dependencies = DependencyState::NotRun;
+                continue;
+            }
+            node.dependencies = match &active {
+                Some(env) => self
+                    .deps
+                    .store
+                    .dependency(&node.id, &env.id, &node.dependency_identity())
+                    .await?
+                    .unwrap_or(DependencyState::NotRun),
+                None => DependencyState::NotRun,
+            };
+        }
+        Ok(())
     }
     pub async fn git_status(&self, id: &NodeId) -> Result<NodeGitStatus, NodeAppError> {
         let lease = self
@@ -61,12 +88,14 @@ impl NodeService {
         let mut reviews: Vec<_> = plans
             .values()
             .filter(|plan| {
-                matches!(
-                    plan.review.kind,
-                    OperationKind::Install
-                        | OperationKind::Update
-                        | OperationKind::RetryDependencies
-                )
+                // Setup plans belong to their run; only that run's review commits them.
+                plan.target == NodeTarget::Active
+                    && matches!(
+                        plan.review.kind,
+                        OperationKind::Install
+                            | OperationKind::Update
+                            | OperationKind::RetryDependencies
+                    )
             })
             .map(|plan| plan.review.clone())
             .collect();
@@ -199,6 +228,21 @@ impl NodeService {
         id: &str,
         _lease: &mut dyn MaintenanceLease,
     ) -> Result<(), NodeAppError> {
+        let setup = self
+            .deps
+            .plans
+            .0
+            .lock()
+            .map_err(|_| NodeAppError::Storage)?
+            .get(id)
+            .is_some_and(|plan| plan.target != NodeTarget::Active);
+        if setup {
+            return Err(NodeAppError::StalePlan);
+        }
+        self.discard_plan(id).await
+    }
+    /// Drops a reviewed plan of any target and removes its owned staging.
+    pub(crate) async fn discard_plan(&self, id: &str) -> Result<(), NodeAppError> {
         let plan = self.deps.take_plan(id)?;
         let mut op = plan.operation;
         self.deps.files.discard_staging(&plan.root, &op.id).await?;
@@ -228,7 +272,9 @@ impl NodeService {
                 .map_err(|_| NodeAppError::Storage)?;
             for (id, _) in &decisions {
                 match plans.get(id) {
-                    Some(plan) if plan.operation.kind == OperationKind::Update => {}
+                    Some(plan)
+                        if plan.operation.kind == OperationKind::Update
+                            && plan.target == NodeTarget::Active => {}
                     _ => return Err(NodeAppError::StalePlan),
                 }
             }
@@ -285,28 +331,26 @@ impl NodeService {
         let old = self.deps.store.nodes().await?;
         let mut result = Vec::new();
         for mut node in observed {
-            if let Some(stored) = old
-                .iter()
-                .find(|n| n.name == node.name && n.single_file == node.single_file)
-            {
-                node.id = stored.id.clone();
-                node.origin = stored.origin;
-                if stored.source.same_origin(&node.source) {
-                    // Manager or a manual pull may have moved the revision; record what is on disk.
-                    let source = stored.source.with_observed_revision(&node.source);
-                    node.dependencies = if source == stored.source {
-                        stored.dependencies
-                    } else {
-                        DependencyState::NotRun
-                    };
-                    node.source = source;
+            super::requirements::merge_observed(&mut node, &old);
+            if !node.conflict {
+                node.tree_digest = if node.single_file {
+                    self.deps
+                        .files
+                        .snapshot(&root, &node, None, lease.retained())
+                        .await?
+                        .digest
                 } else {
-                    // Observation never authorizes replacement of authoritative recorded provenance.
-                    node.conflict = true;
-                    node.source = stored.source.clone();
-                    node.dependencies = stored.dependencies;
-                }
+                    self.deps
+                        .files
+                        .pin_location(&root, &node, None)
+                        .await?
+                        .snapshot()
+                        .digest
+                        .clone()
+                };
             }
+            self.project_dependencies(std::slice::from_mut(&mut node))
+                .await?;
             self.deps.store.save_node(&node).await?;
             result.push(node);
         }
@@ -337,7 +381,8 @@ impl NodeService {
             .ensure_stopped(&root)
             .await
             .map_err(|_| NodeAppError::RuntimeRunning)?;
-        for mut op in self.deps.store.operations().await? {
+        self.discard_obsolete_setup_plans().await?;
+        for op in self.deps.store.operations().await? {
             if matches!(op.phase, OperationPhase::Completed | OperationPhase::Failed) {
                 continue;
             }
@@ -353,38 +398,37 @@ impl NodeService {
             {
                 continue;
             }
-            if op.phase == OperationPhase::DependenciesInProgress {
-                let mut env = d
-                    .envs
-                    .get(&op.environment)
-                    .await
-                    .map_err(|_| NodeAppError::Storage)?
-                    .ok_or(NodeAppError::RecoveryRequired)?;
-                if env.state() == EnvState::Verified {
-                    env.mark_repair_required(&d.clock.now())
-                        .map_err(|_| NodeAppError::EnvironmentUnavailable)?;
-                    d.envs.save(&env).await.map_err(|_| NodeAppError::Storage)?;
-                }
-                op.node.dependencies = DependencyState::Failed;
-                self.deps.store.save_node(&op.node).await?;
-                self.deps
-                    .store
-                    .save_dependency(&DependencyOutcome {
-                        node: op.node.id.clone(),
-                        environment: op.environment.clone(),
-                        source_identity: op.node.source.identity(),
-                        state: DependencyState::Failed,
-                    })
-                    .await?;
-                op.failure = Some("Interrupted dependency mutation; use environment Repair".into());
-                op.phase = OperationPhase::Failed;
-            } else {
-                self.settle(&root, op, lease.retained()).await?;
-                continue;
-            }
-            self.deps.store.save_operation(&op).await?;
+            self.settle(&root, op, lease.retained()).await?;
         }
         self.ensure_reconciled().await
+    }
+    async fn interrupted_dependencies(&self, op: &mut NodeOperation) -> Result<(), NodeAppError> {
+        let d = &self.deps.environment;
+        let mut env = d
+            .envs
+            .get(&op.environment)
+            .await
+            .map_err(|_| NodeAppError::Storage)?
+            .ok_or(NodeAppError::RecoveryRequired)?;
+        if env.state() == EnvState::Verified {
+            env.mark_repair_required(&d.clock.now())
+                .map_err(|_| NodeAppError::EnvironmentUnavailable)?;
+            d.envs.save(&env).await.map_err(|_| NodeAppError::Storage)?;
+        }
+        op.node.dependencies = DependencyState::Failed;
+        self.deps.store.save_node(&op.node).await?;
+        self.deps
+            .store
+            .save_dependency(&DependencyOutcome {
+                node: op.node.id.clone(),
+                environment: op.environment.clone(),
+                source_identity: op.node.dependency_identity(),
+                state: DependencyState::Failed,
+            })
+            .await?;
+        op.failure = Some("Interrupted dependency mutation; use environment Repair".into());
+        op.phase = OperationPhase::Failed;
+        Ok(())
     }
     /// Reconciles one interrupted operation's files from what is actually on disk, applies the
     /// outcome to the stored records and persists the operation.
@@ -395,8 +439,40 @@ impl NodeService {
         retained: crate::shared::Retained,
     ) -> Result<NodeOperation, NodeAppError> {
         let before = op.phase;
-        match self.deps.files.recover(root, &op, retained).await? {
-            RecoveryAction::Blocked => {}
+        let action = self
+            .deps
+            .files
+            .recover(root, &op, retained)
+            .await
+            .unwrap_or(RecoveryAction::Blocked);
+        if action != RecoveryAction::Blocked {
+            op.failure = None;
+        }
+        if before == OperationPhase::DependenciesInProgress {
+            // Even an ambiguous publication may have mutated the shared environment.
+            // Only a safely established publication authorizes updating the node record.
+            if action == RecoveryAction::RolledForward {
+                self.interrupted_dependencies(&mut op).await?;
+                self.deps.store.save_operation(&op).await?;
+                return Ok(op);
+            }
+            let d = &self.deps.environment;
+            if let Some(mut env) = d
+                .envs
+                .get(&op.environment)
+                .await
+                .map_err(|_| NodeAppError::Storage)?
+                && env.state() == EnvState::Verified
+            {
+                env.mark_repair_required(&d.clock.now())
+                    .map_err(|_| NodeAppError::EnvironmentUnavailable)?;
+                d.envs.save(&env).await.map_err(|_| NodeAppError::Storage)?;
+            }
+        }
+        match action {
+            RecoveryAction::Blocked => {
+                op.failure = Some("Node recovery could not establish file identity".into());
+            }
             RecoveryAction::Discarded | RecoveryAction::RolledBack => {
                 match &op.prior {
                     Some(prior) => self.deps.store.save_node(prior).await?,
@@ -459,29 +535,5 @@ impl NodeService {
         } else {
             Ok(())
         }
-    }
-    /// M1 Repair consumes every root requirement file, including disabled nodes. Hooks need new consent.
-    pub async fn repair_requirements(&self) -> Result<Vec<std::path::PathBuf>, NodeAppError> {
-        let root = self.deps.environment.root.current().root;
-        let mut result = Vec::new();
-        for node in self.deps.store.nodes().await? {
-            if node.single_file {
-                continue;
-            }
-            let snapshot = self
-                .deps
-                .files
-                .snapshot(&root, &node, None, Default::default())
-                .await?;
-            if snapshot.requirements_digest.is_some() {
-                result.push(
-                    self.deps
-                        .files
-                        .path(&root, &node, None)
-                        .join("requirements.txt"),
-                );
-            }
-        }
-        Ok(result)
     }
 }

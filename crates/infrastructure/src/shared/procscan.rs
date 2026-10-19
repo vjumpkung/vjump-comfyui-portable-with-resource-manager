@@ -39,3 +39,23 @@ pub fn snapshot() -> Vec<ProcessInfo> {
         })
         .collect()
 }
+
+/// A process-list source. Production code passes [`snapshot`]; tests whose assertions are not
+/// about the rest of the machine inject [`test_snapshot`], so they cannot be failed by it.
+pub type SnapshotFn = fn() -> Vec<ProcessInfo>;
+
+/// The real snapshot minus python interpreters whose location cannot be read. A python caught
+/// while starting or exiting (the parallel suite spawns many) briefly has no readable cwd, exe or
+/// command line, and `assess` rightly treats such a process as unassessable. Mirrors that rule.
+#[cfg(test)]
+pub fn test_snapshot() -> Vec<ProcessInfo> {
+    snapshot()
+        .into_iter()
+        .filter(|process| {
+            !(process.name.to_lowercase().contains("python")
+                && process.cwd.is_none()
+                && process.exe.is_none()
+                && process.cmd.is_empty())
+        })
+        .collect()
+}

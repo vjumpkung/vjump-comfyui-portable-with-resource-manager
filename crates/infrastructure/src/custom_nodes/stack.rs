@@ -143,18 +143,14 @@ pub struct NodeStack {
     pub files: Arc<LocalNodeFiles>,
 }
 
-impl NodeStack {
-    pub fn open(root: &Path, db: Db, environment: EnvironmentDeps, epoch: String) -> Self {
-        Self::open_with(root, db, environment, epoch, NodeOptions::default())
-    }
+pub struct NodeAdapters {
+    pub store: Arc<SqliteNodes>,
+    pub registry: Arc<RegistryHttp>,
+    pub files: Arc<LocalNodeFiles>,
+}
 
-    pub fn open_with(
-        root: &Path,
-        db: Db,
-        environment: EnvironmentDeps,
-        epoch: String,
-        options: NodeOptions,
-    ) -> Self {
+impl NodeAdapters {
+    pub fn open(root: &Path, db: Db, options: NodeOptions) -> Self {
         let store = Arc::new(SqliteNodes { db });
         let observed_root = root.to_owned();
         let registry = Arc::new(RegistryHttp::new(
@@ -169,6 +165,19 @@ impl NodeStack {
             recycler: options.recycler,
             limits: node_limits(),
         });
+        Self {
+            store,
+            registry,
+            files,
+        }
+    }
+
+    pub fn bind(self, environment: EnvironmentDeps, epoch: String) -> NodeStack {
+        let Self {
+            store,
+            registry,
+            files,
+        } = self;
         let deps = NodeDeps {
             environment,
             registry: registry.clone(),
@@ -177,12 +186,28 @@ impl NodeStack {
             hook: Arc::new(PythonHook),
             plans: Arc::<NodePlans>::default(),
         };
-        Self {
+        NodeStack {
             deps,
             hub: NodeHub::new(epoch),
             store,
             registry,
             files,
         }
+    }
+}
+
+impl NodeStack {
+    pub fn open(root: &Path, db: Db, environment: EnvironmentDeps, epoch: String) -> Self {
+        Self::open_with(root, db, environment, epoch, NodeOptions::default())
+    }
+
+    pub fn open_with(
+        root: &Path,
+        db: Db,
+        environment: EnvironmentDeps,
+        epoch: String,
+        options: NodeOptions,
+    ) -> Self {
+        NodeAdapters::open(root, db, options).bind(environment, epoch)
     }
 }

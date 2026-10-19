@@ -12,11 +12,7 @@ unsafe extern "C" {}
 
 use std::sync::{Arc, Mutex};
 
-use infrastructure::shared::{
-    clock::RandomIds,
-    logging,
-    paths::{AppPaths, resolve_root},
-};
+use infrastructure::shared::{clock::RandomIds, logging, paths::resolve_root};
 use tauri::{Manager, RunEvent, WindowEvent};
 
 pub use state::{AppState, RecoveryInfo, Services};
@@ -79,16 +75,19 @@ pub fn run() {
             // back to another root; the app starts in recovery mode instead.
             let state = match resolve_root() {
                 Ok(resolved) => {
-                    let paths = AppPaths::from_root(&resolved.root);
-                    paths.ensure_dirs()?;
-                    let guard = logging::init(&paths.logs_dir)?;
-                    *setup_guard
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(guard);
-                    tracing::info!(
-                        source = resolved.source.as_str(),
-                        "starting vjumpkung-comfyui-desktop"
-                    );
+                    // Before composing, so the reconciliation report and any failure to open the
+                    // root are logged. A missing root is not created just to hold logs.
+                    if let Some(logs_dir) = state::startup_logs_dir(&resolved)
+                        && let Ok(guard) = logging::init(&logs_dir)
+                    {
+                        *setup_guard
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(guard);
+                        tracing::info!(
+                            source = resolved.source.as_str(),
+                            "starting vjumpkung-comfyui-desktop"
+                        );
+                    }
                     match tauri::async_runtime::block_on(AppState::compose(
                         &resolved,
                         picker.clone(),
@@ -97,7 +96,7 @@ pub fn run() {
                         Err(error) => {
                             tracing::error!(%error, "the app could not open its install root");
                             tauri::async_runtime::block_on(AppState::compose_recovery(
-                                RecoveryInfo::startup_failed(),
+                                RecoveryInfo::startup_failed_for(&resolved),
                                 picker,
                             ))?
                         }
@@ -128,6 +127,8 @@ pub fn run() {
         .build(context)
         .expect("error while building the application");
 
+    // Retain the coordinator (and any exit lease) through run_return and log flushing.
+    let _close = app.state::<AppState>().close.clone();
     let code = app.run_return(|app, event| {
         // The last window closing must not end a retained background runtime.
         if let RunEvent::Exit = event {
@@ -139,9 +140,14 @@ pub fn run() {
         if let RunEvent::ExitRequested {
             code: None, api, ..
         } = event
-            && app_lifecycle::keep_core_alive(app)
         {
             api.prevent_exit();
+            if !app_lifecycle::keep_core_alive(app) {
+                tauri::async_runtime::spawn(app_lifecycle::perform(
+                    app.clone(),
+                    application::comfy_runtime::CloseAction::Exit,
+                ));
+            }
         }
     });
     // Dropping the guard flushes the non-blocking log writer.

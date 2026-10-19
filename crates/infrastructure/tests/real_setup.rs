@@ -13,14 +13,19 @@ use std::{
     time::Instant,
 };
 
-use application::environment::*;
+use application::{
+    custom_nodes::{NodeRequirements, NodeService},
+    environment::*,
+};
 use domain::environment::SetupMode;
 use infrastructure::{
+    custom_nodes::stack::{NodeAdapters, NodeOptions},
     environment::{
-        hardware::SystemHardware, manifest::FsManifestStore, packages::UvPackages,
-        profiles::BundledProfiles, python::PythonAdapter, runtime_guard::ProcessRuntimeGuard,
-        sinks::run_sink, source::GitSource, sqlite::SqliteEnvironmentStore,
-        switcher::FsRootSwitcher, tools::Tools, verify::PythonVerifier,
+        curated::BundledCuratedNodes, hardware::SystemHardware, manifest::FsManifestStore,
+        packages::UvPackages, profiles::BundledProfiles, python::PythonAdapter,
+        runtime_guard::ProcessRuntimeGuard, sinks::run_sink, source::GitSource,
+        sqlite::SqliteEnvironmentStore, switcher::FsRootSwitcher, tools::Tools,
+        verify::PythonVerifier,
     },
     settings::sqlite::SqliteSettingsRepository,
     shared::{
@@ -62,24 +67,40 @@ impl SetupProgressSink for Printer {
     }
 }
 
-async fn compose(root: &std::path::Path) -> EnvironmentDeps {
+async fn compose(root: &std::path::Path) -> (EnvironmentDeps, Arc<dyn SetupNodes>) {
     let paths = AppPaths::from_root(root);
     paths.ensure_dirs().unwrap();
     let db = Db::open(&paths.db_path).await.unwrap();
     let store = Arc::new(SqliteEnvironmentStore::new(db.clone()));
-    let settings = Arc::new(SqliteSettingsRepository::new(db));
+    let node_adapters = NodeAdapters::open(root, db.clone(), NodeOptions::default());
+    let settings = Arc::new(SqliteSettingsRepository::new(db.clone()));
     let current = RootInfo {
         root: root.to_owned(),
         source: RootSource::Default,
     };
-    EnvironmentDeps {
+    let deps = EnvironmentDeps {
+        installation: Arc::new(
+            infrastructure::environment::relocation::probe::FsInstallationProbe::new(),
+        ),
+        relocation: Arc::new(
+            infrastructure::environment::relocation::persistence::SqliteRelocationStore::new(db),
+        ),
+        relocation_runtime: Arc::new(
+            infrastructure::environment::relocation::opener::RelocationRuntimeGuard,
+        ),
         hardware: Arc::new(SystemHardware::new()),
         catalog: Arc::new(BundledProfiles::load().unwrap()),
+        curated: Arc::new(BundledCuratedNodes::load().unwrap()),
         tools: Arc::new(Tools::new()),
         python: Arc::new(PythonAdapter::new()),
         packages: Arc::new(UvPackages::new()),
+        wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
         verifier: Arc::new(PythonVerifier::new()),
         source: Arc::new(GitSource::new()),
+        node_requirements: Arc::new(NodeRequirements::new(
+            node_adapters.store.clone(),
+            node_adapters.files.clone(),
+        )),
         envs: store.clone(),
         runs: store.clone(),
         activation: store.clone(),
@@ -96,7 +117,11 @@ async fn compose(root: &std::path::Path) -> EnvironmentDeps {
         ids: Arc::new(RandomIds::default()),
         active_runs: Arc::new(ActiveRuns::default()),
         plans: Arc::new(PlanStore::default()),
-    }
+    };
+    let nodes = Arc::new(NodeService::new(
+        node_adapters.bind(deps.clone(), "real".into()).deps,
+    ));
+    (deps, nodes)
 }
 
 #[tokio::test]
@@ -114,7 +139,7 @@ async fn real_first_run_setup() {
         }
         .to_owned()
     });
-    let deps = compose(&root).await;
+    let (deps, nodes) = compose(&root).await;
     let started = StartSetup::new(deps.clone())
         .execute(SetupAction::New(Box::new(SetupRequest {
             mode: SetupMode::FirstRun,
@@ -123,6 +148,8 @@ async fn real_first_run_setup() {
             profile_id: profile,
             comfyui_ref: ComfyRef::Latest,
             install_manager: false,
+            accelerators: Vec::new(),
+            curated_nodes: Vec::new(),
             clean_cache: false,
             confirm_adopted_changes: false,
             allow_source_builds: false,
@@ -136,7 +163,7 @@ async fn real_first_run_setup() {
         printer,
     );
     println!("setup log: {}", log.display());
-    let outcome = ExecuteSetup::new(deps.clone())
+    let outcome = ExecuteSetup::new(deps.clone(), nodes.clone())
         .execute(&started, sink)
         .await
         .unwrap();
@@ -175,6 +202,8 @@ async fn real_first_run_setup() {
             profile_id: status.active_env.unwrap().profile_id,
             comfyui_ref: ComfyRef::KeepCurrent,
             install_manager: false,
+            accelerators: Vec::new(),
+            curated_nodes: Vec::new(),
             clean_cache: false,
             confirm_adopted_changes: false,
             allow_source_builds: false,
@@ -186,7 +215,7 @@ async fn real_first_run_setup() {
         repair.as_str(),
         Arc::new(Printer(Mutex::new(Instant::now()))),
     );
-    let outcome = ExecuteSetup::new(deps)
+    let outcome = ExecuteSetup::new(deps, nodes)
         .execute(&repair, repair_sink)
         .await
         .unwrap();

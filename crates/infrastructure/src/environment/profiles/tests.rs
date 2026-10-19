@@ -28,8 +28,25 @@ fn every_bundled_profile_parses_validates_and_has_a_unique_id() {
             "{}",
             profile.id
         );
-        assert!(profile.accelerators.is_empty(), "accelerators are M6");
-        assert_eq!(profile.revision, 1);
+        if profile.id == "win-py312-torch2100-cu130" {
+            assert_eq!(profile.revision, 2);
+            assert_eq!(profile.accelerators.len(), 6);
+            assert!(
+                profile
+                    .accelerators
+                    .iter()
+                    .all(|a| !a.default_selected && a.non_fatal)
+            );
+            assert!(
+                profile
+                    .accelerators
+                    .iter()
+                    .all(|a| a.no_deps == (a.id == "onnxruntime-gpu"))
+            );
+        } else {
+            assert!(profile.accelerators.is_empty());
+            assert_eq!(profile.revision, 1);
+        }
         // The id encodes OS, Python, torch and CUDA.
         let os = match profile.os {
             domain::environment::OsKind::Windows => "win",
@@ -246,7 +263,7 @@ fn documents_round_trip_and_reject_unknown_or_unsupported_content() {
         parse_profile(&value.to_string())
     };
     assert!(mutate(&|v| v["unexpected"] = true.into()).is_err());
-    assert!(mutate(&|v| v["schema_version"] = 2.into()).is_err());
+    assert!(mutate(&|v| v["schema_version"] = 3.into()).is_err());
     assert!(mutate(&|v| v["python"] = "3.13.x".into()).is_err());
     assert!(mutate(&|v| v["python"] = "3.13".into()).is_err());
     assert!(mutate(&|v| v["status"] = "beta".into()).is_err());
@@ -292,4 +309,79 @@ fn tool_pins_are_well_formed() {
             "each pinned line is followed by hash lines"
         );
     }
+}
+
+#[test]
+fn accelerator_specs_reject_invalid_artifacts() {
+    let profile = catalog().get("win-py312-torch2100-cu130").unwrap();
+    let base = serde_json::to_value(ProfileDoc::from(&profile)).unwrap();
+    let mutations: Vec<(&str, serde_json::Value)> = vec![
+        ("hash", serde_json::json!("g".repeat(64))),
+        ("filename", serde_json::json!("../escape.whl")),
+        ("extension", serde_json::json!("source.tar.gz")),
+        ("module", serde_json::json!(["invalid-module"])),
+        ("id", serde_json::json!("Upper ID")),
+        ("provenance", serde_json::json!(" ")),
+    ];
+    for (case, value) in mutations {
+        let mut doc = base.clone();
+        match case {
+            "hash" => doc["accelerators"][0]["source"]["sha256"] = value,
+            "filename" | "extension" => doc["accelerators"][0]["source"]["filename"] = value,
+            "module" => doc["accelerators"][0]["modules"] = value,
+            "id" => doc["accelerators"][0]["id"] = value,
+            "provenance" => doc["accelerators"][0]["provenance"] = value,
+            _ => unreachable!(),
+        }
+        assert!(parse_profile(&doc.to_string()).is_err(), "{case}");
+    }
+    for url in [
+        "http://example.test/a.whl",
+        "https://",
+        "https://user:secret@example.test/a.whl",
+        "https://@example.test/a.whl",
+        "https://example.test/a.whl?token=secret",
+        "https://example.test/a.whl?X-Amz-Signature=secret",
+        "https://example.test/a.whl?sig=secret",
+        "https://example.test/a.whl?api_key=secret",
+    ] {
+        let mut doc = base.clone();
+        doc["accelerators"][0]["source"]["url"] = url.into();
+        assert!(parse_profile(&doc.to_string()).is_err(), "{url}");
+    }
+    let mut doc = base;
+    doc["accelerators"][1]["id"] = doc["accelerators"][0]["id"].clone();
+    assert!(parse_profile(&doc.to_string()).is_err());
+    assert!(
+        profile
+            .accelerators
+            .iter()
+            .find(|a| a.id == "flashattention-3")
+            .unwrap()
+            .modules
+            .is_empty()
+    );
+}
+
+#[test]
+fn profile_v1_empty_and_v2_components_round_trip() {
+    let old = include_str!("../data/profiles/archive/win-py312-torch2100-cu130-r1.json");
+    let legacy = parse_profile(old).unwrap();
+    assert_eq!(legacy.schema_version, 1);
+    assert!(legacy.accelerators.is_empty());
+    let current = catalog().get("win-py312-torch2100-cu130").unwrap();
+    for profile in [legacy, current] {
+        let doc = serde_json::to_string(&ProfileDoc::from(&profile)).unwrap();
+        assert_eq!(parse_profile(&doc).unwrap(), profile);
+    }
+    let mut value: serde_json::Value = serde_json::from_str(old).unwrap();
+    value["accelerators"] = serde_json::json!([{"name":"legacy", "requirement":"x", "sha256":"0".repeat(64), "non_fatal":true}]);
+    assert!(parse_profile(&value.to_string()).is_err());
+    assert_eq!(
+        catalog()
+            .get_revision("win-py312-torch2100-cu130", 1)
+            .unwrap()
+            .revision,
+        1
+    );
 }

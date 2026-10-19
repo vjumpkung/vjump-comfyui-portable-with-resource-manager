@@ -28,9 +28,9 @@ print("VJ-VERIFY:" + json.dumps({"version": triton.__version__}))
 "#;
 
 /// The reference verification (`import sys, torch, triton, comfy`), plus a real CUDA tensor
-/// operation when CUDA is available, and the presence of the optional accelerator modules.
+/// operation when CUDA is available. Optional imports run in their own subprocesses.
 const FINAL_SCRIPT: &str = r#"
-import importlib.util, json, sys
+import json, sys
 import torch, triton, comfy
 info = {
     "python": sys.version.split()[0],
@@ -46,10 +46,6 @@ if info["cuda"]:
     torch.cuda.synchronize()
     info["cuda_ok"] = value == 16.0
     info["device"] = torch.cuda.get_device_name(0)
-info["accelerators"] = {
-    name: importlib.util.find_spec(name) is not None
-    for name in ("sageattention", "flash_attn", "llama_cpp")
-}
 print("VJ-VERIFY:" + json.dumps(info))
 "#;
 
@@ -73,7 +69,6 @@ struct FinalInfo {
     comfy: String,
     device: Option<String>,
     cuda_ok: Option<bool>,
-    accelerators: std::collections::BTreeMap<String, bool>,
 }
 
 fn marker_json(stdout: &str) -> Option<&str> {
@@ -150,6 +145,27 @@ impl Default for PythonVerifier {
 
 #[async_trait]
 impl EnvVerifier for PythonVerifier {
+    async fn verify_accelerator(
+        &self,
+        root: &Path,
+        env_path: &Path,
+        module: &str,
+        ctx: &StepContext,
+    ) -> Result<(), ProvisionError> {
+        let layout = Layout::new(root);
+        let spec = command(&layout, Tool::Python, venv_python(env_path)).args([
+            "-s",
+            "-c",
+            "import importlib, sys; importlib.import_module(sys.argv[1])",
+            module,
+        ]);
+        let limits = RunLimits {
+            timeout: Some(Duration::from_secs(60)),
+            ..RunLimits::default()
+        };
+        run_step(&spec, ctx, &limits).await.map(|_| ())
+    }
+
     async fn verify_torch(
         &self,
         root: &Path,
@@ -209,7 +225,7 @@ impl EnvVerifier for PythonVerifier {
             cuda_device: info.device,
             triton_version: Some(info.triton),
             comfy_path: Some(info.comfy),
-            accelerators: info.accelerators.into_iter().collect(),
+            accelerators: Vec::new(),
         })
     }
 }

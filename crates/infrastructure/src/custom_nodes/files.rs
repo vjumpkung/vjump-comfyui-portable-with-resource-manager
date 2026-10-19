@@ -7,7 +7,9 @@ use super::{
         Entry, NodePaths, PinnedLocation, exists as entry_exists, filesystem, read_input, remove,
         rename, safe_name,
     },
-    provenance::{MARKER, TRACKING, repository_folder, safe_folder},
+    provenance::{
+        MARKER, TRACKING, read_manager_registry, read_marker, repository_folder, safe_folder,
+    },
     registry::RegistryHttp,
     scan,
     tree::{self, is_link, read_text, sha256_file, validate_tree},
@@ -36,7 +38,7 @@ use std::{
 };
 
 /// Upper bounds for the root inputs a guarded location snapshots.
-const REQUIREMENTS_LIMIT: u64 = 256 * 1024;
+pub(super) const REQUIREMENTS_LIMIT: u64 = 256 * 1024;
 const SCRIPT_LIMIT: u64 = 16 << 20;
 
 pub type Recycler =
@@ -646,6 +648,102 @@ impl LocalNodeFiles {
         })
     }
 
+    async fn snapshot_entry(
+        &self,
+        paths: &Arc<NodePaths>,
+        entry: Entry,
+        node: &InstalledNode,
+        require_clean: bool,
+        retained: Retained,
+    ) -> Result<TreeSnapshot, NodeAppError> {
+        let expected = node.clone();
+        let (snapshot, directory) = blocking(move || {
+            if expected.single_file {
+                let mut file = entry.0.open(&entry.1, false, false).map_err(filesystem)?;
+                let digest = crate::shared::model_paths::digest(&mut file).map_err(filesystem)?;
+                return Ok((
+                    TreeSnapshot {
+                        digest: format!("file:{}", digest.as_str()),
+                        requirements_digest: None,
+                        hook_digest: None,
+                        requirement_lines: Vec::new(),
+                    },
+                    None,
+                ));
+            }
+            let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
+            if is_git(&expected) {
+                pin_git_dir(&directory)?;
+            }
+            let snapshot = snapshot_directory(&directory, &expected)?;
+            let marker = read_marker(&directory).or_else(|| read_manager_registry(&directory));
+            let git_present = entry_exists(&(directory.clone(), safe_name(".git")))?;
+            let matches = match &expected.source {
+                NodeSource::Git { .. } => {
+                    git_present
+                        && marker
+                            .as_ref()
+                            .is_none_or(|m| expected.source.same_origin(m))
+                }
+                NodeSource::Registry { .. } => {
+                    !git_present && marker.as_ref().is_some_and(|m| *m == expected.source)
+                }
+                NodeSource::Manual => {
+                    !git_present && marker.as_ref().is_none_or(|m| *m == NodeSource::Manual)
+                }
+            };
+            if !matches {
+                return Err(NodeAppError::UnsafeSource);
+            }
+            Ok((snapshot, Some(directory)))
+        })
+        .await?;
+        if let (
+            NodeSource::Git {
+                repository, commit, ..
+            },
+            Some(directory),
+        ) = (&node.source, directory)
+        {
+            let _git = pin_git_dir(&directory)?;
+            let git = self
+                .git
+                .bound(paths.clone(), vec![directory.clone()], retained)?;
+            let (root, hooks, dir) = (
+                paths.root.anchored_path(),
+                paths.hooks(),
+                directory.anchored_path(),
+            );
+            let inspection = if require_clean {
+                git.require_clean(&root, &hooks, &dir).await?
+            } else {
+                git.inspect(&root, &hooks, &dir).await?
+            };
+            if inspection.revision.commit != *commit
+                || git.origin(&root, &hooks, &dir).await?.identity != *repository
+            {
+                return Err(NodeAppError::StalePlan);
+            }
+        }
+        Ok(snapshot)
+    }
+
+    async fn matches_entry(
+        &self,
+        paths: &Arc<NodePaths>,
+        entry: &Entry,
+        node: &InstalledNode,
+        require_clean: bool,
+        retained: Retained,
+    ) -> bool {
+        if node.tree_digest.starts_with("git:") {
+            return false;
+        }
+        self.snapshot_entry(paths, entry.clone(), node, require_clean, retained)
+            .await
+            .is_ok_and(|snapshot| snapshot.digest == node.tree_digest)
+    }
+
     /// Checks a live Git update against the review. Nothing is reset or cleaned on failure: edits
     /// stay in place and recovery keeps the operation unresolved until the files are the reviewed
     /// ones.
@@ -802,53 +900,18 @@ impl NodeFiles for LocalNodeFiles {
         retained: Retained,
     ) -> Result<TreeSnapshot, NodeAppError> {
         let paths = Arc::new(NodePaths::open(root, true)?);
-        let node = node.clone();
         let entry = match staged {
             Some(op) => paths.staging(op),
-            None => paths.location(&node),
+            None => paths.location(node),
         };
-        let require_clean = staged.is_some() && is_git(&node);
-        let source = node.source.clone();
-        let (snapshot, directory) = blocking(move || {
-            if node.single_file {
-                let mut file = entry.0.open(&entry.1, false, false).map_err(filesystem)?;
-                let digest = crate::shared::model_paths::digest(&mut file).map_err(filesystem)?;
-                return Ok((
-                    TreeSnapshot {
-                        digest: format!("file:{}", digest.as_str()),
-                        requirements_digest: None,
-                        hook_digest: None,
-                        requirement_lines: Vec::new(),
-                    },
-                    None,
-                ));
-            }
-            let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
-            let snapshot = snapshot_directory(&directory, &node)?;
-            Ok((snapshot, Some(directory)))
-        })
-        .await?;
-        // A staged Git checkout is review evidence: it must still be exactly its commit. Live
-        // nodes are never required to be clean, so dirty ones stay inspectable and removable.
-        if let (true, Some(directory)) = (require_clean, directory) {
-            let _git = pin_git_dir(&directory)?;
-            let git = self
-                .git
-                .bound(paths.clone(), vec![directory.clone()], retained)?;
-            let checked = git
-                .require_clean(
-                    &paths.root.anchored_path(),
-                    &paths.hooks(),
-                    &directory.anchored_path(),
-                )
-                .await?;
-            if let NodeSource::Git { commit, .. } = &source
-                && checked.revision.commit != *commit
-            {
-                return Err(NodeAppError::StalePlan);
-            }
-        }
-        Ok(snapshot)
+        self.snapshot_entry(
+            &paths,
+            entry,
+            node,
+            staged.is_some() && is_git(node),
+            retained,
+        )
+        .await
     }
 
     async fn pin_location(
@@ -875,15 +938,19 @@ impl NodeFiles for LocalNodeFiles {
                 }
             })?;
             let mut inputs = Vec::new();
-            let requirements = read_input(
+            let requirements = match read_input(
                 &directory,
                 &safe_name("requirements.txt"),
                 REQUIREMENTS_LIMIT,
-            )?
-            .and_then(|(bytes, file)| {
-                inputs.push(file);
-                bytes
-            });
+            )? {
+                None => None,
+                Some((None, _)) => return Err(NodeAppError::UnsafeSource),
+                Some((Some(bytes), file)) => {
+                    std::str::from_utf8(&bytes).map_err(|_| NodeAppError::UnsafeSource)?;
+                    inputs.push(file);
+                    Some(bytes)
+                }
+            };
             let script = match read_input(&directory, &safe_name("install.py"), SCRIPT_LIMIT)? {
                 Some((Some(bytes), file)) => {
                     inputs.push(file);
@@ -894,7 +961,6 @@ impl NodeFiles for LocalNodeFiles {
             };
             let mut snapshot = snapshot_directory(&directory, &node)?;
             // Execution consumes the bytes just read, so the plan is bound to exactly those.
-            let requirements = requirements.filter(|bytes| std::str::from_utf8(bytes).is_ok());
             let text = requirements
                 .as_deref()
                 .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
@@ -1016,50 +1082,83 @@ impl NodeFiles for LocalNodeFiles {
         retained: Retained,
     ) -> Result<RecoveryAction, NodeAppError> {
         let paths = Arc::new(NodePaths::open(root, true)?);
+        let staging = paths.staging(&operation.id);
+        let backup = paths.backup(&operation.id);
+        let live = paths.location(&operation.node);
+        if operation.phase == OperationPhase::Prepared {
+            let op = operation.id.clone();
+            return blocking(move || {
+                paths.discard(&op)?;
+                Ok(RecoveryAction::Discarded)
+            })
+            .await;
+        }
+        // A partially executed hook may have changed contents. Establish source and location,
+        // preserve every copy, and let the application record the failed dependency mutation.
+        if operation.phase == OperationPhase::DependenciesInProgress {
+            return Ok(
+                if self
+                    .snapshot_entry(&paths, live, &operation.node, false, retained)
+                    .await
+                    .is_ok()
+                {
+                    RecoveryAction::RolledForward
+                } else {
+                    RecoveryAction::Blocked
+                },
+            );
+        }
+        let (f, b, s) = (
+            entry_exists(&live)?,
+            entry_exists(&backup)?,
+            entry_exists(&staging)?,
+        );
+        let require_clean = !matches!(
+            operation.phase,
+            OperationPhase::Verified | OperationPhase::CleanupPending
+        ) && matches!(
+            operation.kind,
+            OperationKind::Install | OperationKind::Update
+        );
+        let published = f
+            && self
+                .matches_entry(
+                    &paths,
+                    &live,
+                    &operation.node,
+                    require_clean,
+                    retained.clone(),
+                )
+                .await;
+        let mut prior_live = false;
+        let mut prior_backup = false;
+        if let Some(prior) = &operation.prior {
+            let location = paths.location(prior);
+            prior_live = entry_exists(&location)?
+                && self
+                    .matches_entry(&paths, &location, prior, false, retained.clone())
+                    .await;
+            prior_backup = b
+                && self
+                    .matches_entry(&paths, &backup, prior, false, retained.clone())
+                    .await;
+        }
+        let staged = s
+            && self
+                .matches_entry(&paths, &staging, &operation.node, false, retained)
+                .await;
+        let evidence = RecoveryEvidence {
+            live: f,
+            backup: b,
+            staging: s,
+            published,
+            prior_live,
+            prior_backup,
+            staged,
+        };
         let op = operation.clone();
         let recycler = self.recycler.clone();
-        // A failed post-apply check must not be settled as successful merely because HEAD moved.
-        if op.kind == OperationKind::Update
-            && is_git(&op.node)
-            && !matches!(
-                op.phase,
-                OperationPhase::Prepared
-                    | OperationPhase::Verified
-                    | OperationPhase::CleanupPending
-            )
-            && let Some(prior) = &op.prior
-        {
-            let entry = paths.location(prior);
-            if entry_exists(&entry)? {
-                let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
-                let head = scan::read_git(&directory).and_then(|m| m.commit);
-                if let NodeSource::Git { commit, .. } = &op.node.source
-                    && head.as_ref() == Some(commit)
-                    && self
-                        .verify_applied(&paths, &directory, &op, retained.clone())
-                        .await
-                        .is_err()
-                {
-                    return Ok(RecoveryAction::Blocked);
-                }
-            }
-        }
-        blocking(move || {
-            let git_head = match (&op.prior, is_git(&op.node)) {
-                (Some(prior), true) => {
-                    let entry = paths.location(prior);
-                    if entry_exists(&entry)? {
-                        let directory = entry.0.child(&entry.1, false).map_err(filesystem)?;
-                        scan::read_git(&directory).and_then(|m| m.commit)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            };
-            recover_blocking(&paths, &op, git_head, &recycler)
-        })
-        .await
+        blocking(move || recover_blocking(&paths, &op, evidence, &recycler)).await
     }
 
     async fn scan(
@@ -1128,147 +1227,104 @@ fn quiet_context(operation: &NodeOperation, retained: Retained) -> StepContext {
     }
 }
 
-fn digest_of(entry: &Entry, node: &InstalledNode) -> Option<String> {
-    if node.single_file {
-        let mut file = entry.0.open(&entry.1, false, false).ok()?;
-        return crate::shared::model_paths::digest(&mut file)
-            .ok()
-            .map(|d| format!("file:{}", d.as_str()));
-    }
-    let directory = entry.0.child(&entry.1, false).ok()?;
-    read_tree(&directory, is_git(node)).ok().map(|s| s.digest)
+struct RecoveryEvidence {
+    live: bool,
+    backup: bool,
+    staging: bool,
+    published: bool,
+    prior_live: bool,
+    prior_backup: bool,
+    staged: bool,
 }
 
-/// Conservative reconciliation: every action is derived from what exists on disk now, compared
-/// with the identities recorded in the journal. Anything ambiguous blocks and keeps all copies.
+/// Every copy is classified before any mutation. Ambiguity preserves all copies.
 fn recover_blocking(
     paths: &NodePaths,
     op: &NodeOperation,
-    git_head: Option<String>,
+    evidence: RecoveryEvidence,
     recycler: &Recycler,
 ) -> Result<RecoveryAction, NodeAppError> {
-    let staging = paths.staging(&op.id);
-    let backup = paths.backup(&op.id);
-    if matches!(
+    let RecoveryEvidence {
+        live,
+        backup,
+        staging,
+        published,
+        prior_live,
+        prior_backup,
+        staged,
+    } = evidence;
+    let verified = matches!(
         op.phase,
         OperationPhase::Verified | OperationPhase::CleanupPending
-    ) {
-        paths.discard(&op.id)?;
-        match recycle_backup(paths, &op.id, recycler) {
-            Ok(()) => {}
-            Err(NodeAppError::UnsafeSource) => return Err(NodeAppError::UnsafeSource),
-            Err(_) => return Ok(RecoveryAction::CleanupPending),
-        }
-        return Ok(RecoveryAction::RolledForward);
+    );
+    if matches!(op.kind, OperationKind::Enable | OperationKind::Disable) {
+        let prior = op.prior.as_ref().ok_or(NodeAppError::Storage)?;
+        let from = entry_exists(&paths.location(prior))?;
+        return Ok(match (from, live) {
+            (true, false) if prior_live => RecoveryAction::RolledBack,
+            (false, true) if published => RecoveryAction::RolledForward,
+            _ => RecoveryAction::Blocked,
+        });
     }
-    if op.phase == OperationPhase::Prepared || op.kind == OperationKind::RetryDependencies {
-        paths.discard(&op.id)?;
-        return Ok(RecoveryAction::Discarded);
+    if backup && !prior_backup {
+        return Ok(RecoveryAction::Blocked);
     }
-    let restore = |from: &Entry, to: &Entry| rename(from, to).is_ok();
-    match op.kind {
-        OperationKind::Enable | OperationKind::Disable => {
-            let prior = op.prior.as_ref().ok_or(NodeAppError::Storage)?;
-            let (from, to) = (
-                paths.location(prior),
-                paths.named_location(&prior.name, op.node.enabled),
-            );
-            Ok(match (entry_exists(&from)?, entry_exists(&to)?) {
-                (true, false) => RecoveryAction::RolledBack,
-                (false, true) => RecoveryAction::RolledForward,
-                _ => RecoveryAction::Blocked,
-            })
+    if verified {
+        if (op.kind == OperationKind::Uninstall && live)
+            || (op.kind != OperationKind::Uninstall && !published)
+        {
+            return Ok(RecoveryAction::Blocked);
         }
-        OperationKind::Uninstall => {
-            let prior = op.prior.as_ref().ok_or(NodeAppError::Storage)?;
-            let live = paths.location(prior);
-            Ok(match (entry_exists(&live)?, entry_exists(&backup)?) {
-                (true, false) => RecoveryAction::RolledBack,
-                (false, true) => {
-                    if restore(&backup, &live) {
-                        RecoveryAction::RolledBack
-                    } else {
-                        RecoveryAction::Blocked
-                    }
-                }
-                (false, false) => RecoveryAction::RolledForward,
-                (true, true) => RecoveryAction::Blocked,
-            })
-        }
-        OperationKind::Install | OperationKind::Update => {
-            if let (Some(prior), true) = (&op.prior, is_git(&op.node)) {
-                let (NodeSource::Git { commit: old, .. }, NodeSource::Git { commit: new, .. }) =
-                    (&prior.source, &op.node.source)
-                else {
-                    return Ok(RecoveryAction::Blocked);
-                };
-                paths.discard(&op.id)?;
-                return Ok(match git_head {
-                    // The files moved: they are only accepted when they are the reviewed ones.
-                    Some(head)
-                        if head == *new
-                            && digest_of(&paths.location(prior), &op.node).as_deref()
-                                == Some(op.node.tree_digest.as_str()) =>
-                    {
-                        RecoveryAction::RolledForward
-                    }
-                    Some(head) if head == *old => RecoveryAction::RolledBack,
-                    _ => RecoveryAction::Blocked,
-                });
-            }
-            let final_path = paths.location(&op.node);
-            let (f, b, s) = (
-                entry_exists(&final_path)?,
-                entry_exists(&backup)?,
-                entry_exists(&staging)?,
-            );
-            let new_digest = &op.node.tree_digest;
-            let published =
-                || digest_of(&final_path, &op.node).as_deref() == Some(new_digest.as_str());
-            let is_prior = || {
-                op.prior.as_ref().is_some_and(|p| {
-                    digest_of(&final_path, p).as_deref() == Some(p.tree_digest.as_str())
-                })
-            };
-            match (op.prior.is_some(), f, b, s) {
-                // Nothing was published: the staging copy is the only thing to remove.
-                (false, false, _, true) => {
-                    paths.discard(&op.id)?;
-                    Ok(RecoveryAction::Discarded)
-                }
-                (false, false, _, false) => Ok(RecoveryAction::Discarded),
-                (false, true, _, false) => Ok(if published() {
-                    RecoveryAction::RolledForward
-                } else {
-                    RecoveryAction::Blocked
-                }),
-                (true, true, false, true) => {
-                    paths.discard(&op.id)?;
-                    Ok(RecoveryAction::RolledBack)
-                }
-                (true, false, true, true) | (true, false, true, false) => {
-                    if restore(&backup, &final_path) {
-                        paths.discard(&op.id)?;
-                        Ok(RecoveryAction::RolledBack)
-                    } else {
-                        Ok(RecoveryAction::Blocked)
-                    }
-                }
-                (true, true, true, false) => Ok(if published() {
-                    RecoveryAction::RolledForward
-                } else {
-                    RecoveryAction::Blocked
-                }),
-                (true, true, false, false) => Ok(if published() {
-                    RecoveryAction::RolledForward
-                } else if is_prior() {
+        paths.discard(&op.id)?;
+        return Ok(match recycle_backup(paths, &op.id, recycler) {
+            Ok(()) => RecoveryAction::RolledForward,
+            // H3 recycle refusals are ordinary cleanup failures once identity is established.
+            Err(_) => RecoveryAction::CleanupPending,
+        });
+    }
+    if op.kind == OperationKind::Uninstall {
+        return Ok(match (live, backup) {
+            (true, false) if prior_live => RecoveryAction::RolledBack,
+            (false, true) => {
+                let prior = op.prior.as_ref().ok_or(NodeAppError::Storage)?;
+                if rename(&paths.backup(&op.id), &paths.location(prior)).is_ok() {
                     RecoveryAction::RolledBack
                 } else {
                     RecoveryAction::Blocked
-                }),
-                _ => Ok(RecoveryAction::Blocked),
+                }
+            }
+            _ => RecoveryAction::Blocked,
+        });
+    }
+    if op.kind == OperationKind::RetryDependencies {
+        return Ok(if published {
+            RecoveryAction::RolledForward
+        } else {
+            RecoveryAction::Blocked
+        });
+    }
+    if staging && !staged {
+        return Ok(RecoveryAction::Blocked);
+    }
+    let git_update = op.kind == OperationKind::Update && is_git(&op.node);
+    let action = match (op.prior.is_some(), live, backup, staging) {
+        (false, false, false, _) => RecoveryAction::Discarded,
+        (false, true, false, false) if published => RecoveryAction::RolledForward,
+        (true, true, false, _) if prior_live => RecoveryAction::RolledBack,
+        (true, false, true, _) => {
+            let prior = op.prior.as_ref().ok_or(NodeAppError::Storage)?;
+            if rename(&paths.backup(&op.id), &paths.location(prior)).is_ok() {
+                RecoveryAction::RolledBack
+            } else {
+                RecoveryAction::Blocked
             }
         }
-        OperationKind::RetryDependencies => Ok(RecoveryAction::Discarded),
+        (true, true, _, false) if published => RecoveryAction::RolledForward,
+        (true, true, false, true) if git_update && published => RecoveryAction::RolledForward,
+        _ => RecoveryAction::Blocked,
+    };
+    if action != RecoveryAction::Blocked {
+        paths.discard(&op.id)?;
     }
+    Ok(action)
 }

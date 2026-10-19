@@ -7,9 +7,23 @@ use crate::{
 const MAX_PLANS: usize = 128;
 use domain::{
     custom_nodes::*,
-    environment::{DistName, EnvState, PinSet, PythonEnvironment},
+    environment::{DistName, EnvState, PinSet, PythonEnvironment, SetupProfile},
     shared::model_values::SafeFileName,
 };
+use std::path::PathBuf;
+
+/// What an operation is bound to: the root, the environment and, for a setup candidate, the
+/// profile snapshot of its run. The active environment looks its profile up on demand.
+pub(crate) struct Bound {
+    pub root: PathBuf,
+    pub env: PythonEnvironment,
+    pub profile: Option<SetupProfile>,
+}
+
+/// Review text for a root `install.py` in the active environment, where the user may run it.
+const ACTIVE_HOOK_WARNING: &str = "Root install.py executes third-party code only if explicitly selected; a venv is not a sandbox";
+/// Review text for a root `install.py` during setup, which never runs it.
+pub(crate) const SETUP_HOOK_WARNING: &str = "This node has an install.py. Setup never runs it. If the node needs it, uninstall the node in Custom Nodes and install it again, approving install.py in the review.";
 
 /// The requirement file of a guarded location, read from its protected snapshot.
 fn guarded_files(guard: Option<&dyn NodeLocationGuard>) -> InstallSpec {
@@ -30,10 +44,25 @@ fn guarded_files(guard: Option<&dyn NodeLocationGuard>) -> InstallSpec {
 }
 
 impl NodeService {
-    fn step(&self, id: &NodeId, ctx: &NodeContext, retained: Retained) -> StepContext {
+    /// Setup operations report to their run's CuratedNodes step; the rest report under their own
+    /// operation ID.
+    fn step(
+        &self,
+        target: &NodeTarget,
+        id: &NodeId,
+        ctx: &NodeContext,
+        retained: Retained,
+    ) -> StepContext {
+        let (run_id, step) = match target {
+            NodeTarget::Active => (
+                RunId::new(id.as_str()).expect("validated node operation ID"),
+                StepId::ComfyRequirements,
+            ),
+            NodeTarget::Setup(run) => (run.clone(), StepId::CuratedNodes),
+        };
         StepContext {
-            run_id: RunId::new(id.as_str()).expect("validated node operation ID"),
-            step: StepId::ComfyRequirements,
+            run_id,
+            step,
             sink: ctx.sink.clone(),
             cancel: ctx.cancel.clone(),
             allow_source_builds: false,
@@ -55,8 +84,35 @@ impl NodeService {
         }
         Ok(env)
     }
+    /// The profile of the environment: the run's snapshot for a setup candidate, otherwise the
+    /// catalog entry of the recorded profile.
+    fn profile_of(
+        &self,
+        env: &PythonEnvironment,
+        supplied: Option<&SetupProfile>,
+    ) -> Result<SetupProfile, NodeAppError> {
+        match supplied {
+            Some(profile) => Ok(profile.clone()),
+            None => self
+                .deps
+                .environment
+                .catalog
+                .get(&env.profile_id)
+                .ok_or(NodeAppError::EnvironmentUnavailable),
+        }
+    }
     pub async fn prepare_held(
         &self,
+        request: PrepareRequest,
+        ctx: &NodeContext,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<PlanReview, NodeAppError> {
+        self.prepare_target(NodeTarget::Active, request, ctx, lease)
+            .await
+    }
+    pub(crate) async fn prepare_target(
+        &self,
+        scope: NodeTarget,
         request: PrepareRequest,
         ctx: &NodeContext,
         lease: &mut dyn MaintenanceLease,
@@ -74,18 +130,27 @@ impl NodeService {
             return Err(NodeAppError::Busy);
         }
         let d = &self.deps.environment;
-        let root = d.root.current().root;
-        d.runtime
-            .ensure_stopped(&root)
-            .await
-            .map_err(|_| NodeAppError::RuntimeRunning)?;
-        let repair = matches!(
-            request,
-            PrepareRequest::RetryDependencies { .. }
-                | PrepareRequest::SetEnabled { .. }
-                | PrepareRequest::Uninstall { .. }
-        );
-        let env = self.selected(repair).await?;
+        let Bound { root, env, profile } = match &scope {
+            NodeTarget::Active => {
+                let root = d.root.current().root;
+                d.runtime
+                    .ensure_stopped(&root)
+                    .await
+                    .map_err(|_| NodeAppError::RuntimeRunning)?;
+                let repair = matches!(
+                    request,
+                    PrepareRequest::RetryDependencies { .. }
+                        | PrepareRequest::SetEnabled { .. }
+                        | PrepareRequest::Uninstall { .. }
+                );
+                Bound {
+                    root,
+                    env: self.selected(repair).await?,
+                    profile: None,
+                }
+            }
+            NodeTarget::Setup(run) => self.setup_binding(run).await?,
+        };
         let id =
             NodeId::new(format!("node-{}", d.ids.new_id())).map_err(|_| NodeAppError::Storage)?;
         let target = match &request {
@@ -178,7 +243,7 @@ impl NodeService {
                     &id,
                     &request,
                     op.prior.as_ref(),
-                    &self.step(&id, ctx, lease.retained()),
+                    &self.step(&scope, &id, ctx, lease.retained()),
                 )
                 .await
             {
@@ -236,9 +301,10 @@ impl NodeService {
                 .preview_packages(
                     &root,
                     &env,
+                    profile.as_ref(),
                     &op,
                     staged,
-                    &self.step(&id, ctx, lease.retained()),
+                    &self.step(&scope, &id, ctx, lease.retained()),
                 )
                 .await
             {
@@ -261,8 +327,16 @@ impl NodeService {
             },
             None => None,
         };
+        let setup = scope != NodeTarget::Active;
         if op.hook_digest.is_some() && needs_deps {
-            warnings.push("Root install.py executes third-party code only if explicitly selected; a venv is not a sandbox".into());
+            warnings.push(
+                if setup {
+                    SETUP_HOOK_WARNING
+                } else {
+                    ACTIVE_HOOK_WARNING
+                }
+                .into(),
+            );
         }
         let mut requirements = op.dependency_requirements.clone();
         requirements.extend(requirement_lines);
@@ -286,10 +360,11 @@ impl NodeService {
                 .unwrap_or_default(),
             warnings,
             trusted_source: trust.is_some(),
-            trusted_install_py: trust.is_some_and(|t| t.allow_install_py),
+            trusted_install_py: !setup && trust.is_some_and(|t| t.allow_install_py),
             has_requirements: op.requirements_digest.is_some()
                 || !op.dependency_requirements.is_empty(),
-            has_install_py: op.hook_digest.is_some() && needs_deps,
+            // A setup plan offers no hook choice: the hook is explained in the warnings instead.
+            has_install_py: !setup && op.hook_digest.is_some() && needs_deps,
         };
         if let Err(error) = self.deps.store.save_operation(&op).await {
             self.abandon(&root, &mut op, &error).await;
@@ -308,6 +383,7 @@ impl NodeService {
                 operation: op,
                 root,
                 package,
+                target: scope,
             },
         );
         Ok(review)
@@ -341,30 +417,28 @@ impl NodeService {
         &self,
         root: &std::path::Path,
         env: &PythonEnvironment,
+        profile: Option<&SetupProfile>,
         op: &NodeOperation,
         staged: bool,
         step: &StepContext,
     ) -> Result<Option<PackagePlan>, NodeAppError> {
+        // Validate every directory before deciding whether its requirements can be omitted.
+        // The guard spans package preview and ends when this function returns.
+        let guard = if op.node.single_file {
+            None
+        } else {
+            Some(self.pin(root, op, staged.then_some(&op.id), false).await?)
+        };
         if op.requirements_digest.is_none() && op.dependency_requirements.is_empty() {
             return Ok(None);
         }
         let d = &self.deps.environment;
-        let extra = d
-            .catalog
-            .get(&env.profile_id)
-            .ok_or(NodeAppError::EnvironmentUnavailable)?
-            .constraints;
+        let extra = self.profile_of(env, profile)?.constraints;
         let constraint = d
             .packages
             .write_constraints(root, &env.id, &env.pins, &extra)
             .await
             .map_err(|_| NodeAppError::ResolutionFailed)?;
-        // The guard spans both previews and ends when this function returns.
-        let guard = if op.requirements_digest.is_some() {
-            Some(self.pin(root, op, staged.then_some(&op.id), false).await?)
-        } else {
-            None
-        };
         let base = InstallSpec {
             requirements: op.dependency_requirements.clone(),
             constraint_file: Some(constraint),
@@ -411,6 +485,17 @@ impl NodeService {
         ctx: &NodeContext,
         lease: &mut dyn MaintenanceLease,
     ) -> Result<NodeOutcome, NodeAppError> {
+        self.commit_target(NodeTarget::Active, id, decision, ctx, lease)
+            .await
+    }
+    pub(crate) async fn commit_target(
+        &self,
+        target: NodeTarget,
+        id: &str,
+        decision: CommitDecision,
+        ctx: &NodeContext,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<NodeOutcome, NodeAppError> {
         let mut plan = self
             .deps
             .plans
@@ -420,23 +505,42 @@ impl NodeService {
             .get(id)
             .cloned()
             .ok_or(NodeAppError::StalePlan)?;
+        // A plan only ever commits against the target it was prepared for.
+        if plan.target != target {
+            return Err(NodeAppError::StalePlan);
+        }
         let d = &self.deps.environment;
-        let root = d.root.current().root;
-        d.runtime
-            .ensure_stopped(&root)
-            .await
-            .map_err(|_| NodeAppError::RuntimeRunning)?;
-        self.ensure_reconciled().await?;
-        let env = self
-            .selected(matches!(
-                plan.operation.kind,
-                OperationKind::RetryDependencies
-                    | OperationKind::Enable
-                    | OperationKind::Disable
-                    | OperationKind::Uninstall
-            ))
-            .await?;
-        if root != plan.root || env.id != plan.review.environment || env.pins != plan.review.pins {
+        let bound = match &target {
+            NodeTarget::Active => {
+                let root = d.root.current().root;
+                d.runtime
+                    .ensure_stopped(&root)
+                    .await
+                    .map_err(|_| NodeAppError::RuntimeRunning)?;
+                self.ensure_reconciled().await?;
+                let env = self
+                    .selected(matches!(
+                        plan.operation.kind,
+                        OperationKind::RetryDependencies
+                            | OperationKind::Enable
+                            | OperationKind::Disable
+                            | OperationKind::Uninstall
+                    ))
+                    .await?;
+                Bound {
+                    root,
+                    env,
+                    profile: None,
+                }
+            }
+            NodeTarget::Setup(run) => {
+                let bound = self.setup_binding(run).await?;
+                self.ensure_reconciled().await?;
+                bound
+            }
+        };
+        let (root, env) = (&bound.root, &bound.env);
+        if *root != plan.root || env.id != plan.review.environment || env.pins != plan.review.pins {
             return Err(NodeAppError::StalePlan);
         }
         if ctx.cancel.is_cancelled() {
@@ -461,8 +565,8 @@ impl NodeService {
         if !decision.protected_changes.is_empty() {
             return Err(NodeAppError::ConsentRequired);
         }
-        let step = self.step(&plan.operation.id, ctx, lease.retained());
-        self.assert_pins(&root, &env, &env.pins, &step).await?;
+        let step = self.step(&target, &plan.operation.id, ctx, lease.retained());
+        self.assert_pins(root, env, &env.pins, &step).await?;
         let staged = matches!(
             plan.operation.kind,
             OperationKind::Install | OperationKind::Update
@@ -471,7 +575,7 @@ impl NodeService {
             .deps
             .files
             .snapshot(
-                &root,
+                root,
                 &plan.operation.node,
                 staged.then_some(&plan.operation.id),
                 step.retained.clone(),
@@ -497,7 +601,7 @@ impl NodeService {
                 || self
                     .deps
                     .files
-                    .snapshot(&root, prior, None, lease.retained())
+                    .snapshot(root, prior, None, lease.retained())
                     .await?
                     .digest
                     != prior.tree_digest
@@ -517,9 +621,9 @@ impl NodeService {
         self.phase(&mut plan.operation, OperationPhase::PublishIntent)
             .await?;
         let mut op = plan.operation;
-        if let Err(error) = self.mutate_files(&root, &mut op, lease.retained()).await {
+        if let Err(error) = self.mutate_files(root, &mut op, lease.retained()).await {
             // Nothing may stay half-moved: settle the files from what is actually on disk.
-            let _ = self.settle(&root, op, lease.retained()).await;
+            let _ = self.settle(root, op, lease.retained()).await;
             return Err(error);
         }
         self.phase(&mut op, OperationPhase::Published).await?;
@@ -529,9 +633,10 @@ impl NodeService {
         ) {
             self.deps.store.save_node(&op.node).await?;
             if let Err(error) = self
-                .dependencies(&root, &mut op, env, plan.package.as_ref(), &decision, &step)
+                .dependencies(&bound, &mut op, plan.package.as_ref(), &decision, &step)
                 .await
             {
+                let final_validation_failed = op.failure.is_some();
                 op.node.dependencies = DependencyState::Failed;
                 op.failure = Some(error.to_string());
                 self.deps.store.save_node(&op.node).await?;
@@ -540,22 +645,25 @@ impl NodeService {
                     .save_dependency(&DependencyOutcome {
                         node: op.node.id.clone(),
                         environment: op.environment.clone(),
-                        source_identity: op.node.source.identity(),
+                        source_identity: op.node.dependency_identity(),
                         state: DependencyState::Failed,
                     })
                     .await?;
                 // The environment stays RepairRequired and any recovery backup is retained.
-                op.phase = OperationPhase::Failed;
+                if !final_validation_failed {
+                    op.phase = OperationPhase::Failed;
+                }
                 self.deps.store.save_operation(&op).await?;
                 return Err(error);
             }
             op.node.dependencies = DependencyState::Ok;
+            self.deps.store.save_node(&op.node).await?;
             self.deps
                 .store
                 .save_dependency(&DependencyOutcome {
                     node: op.node.id.clone(),
                     environment: op.environment.clone(),
-                    source_identity: op.node.source.identity(),
+                    source_identity: op.node.dependency_identity(),
                     state: DependencyState::Ok,
                 })
                 .await?;
@@ -578,9 +686,9 @@ impl NodeService {
                 .await?;
         }
         self.phase(&mut op, OperationPhase::CleanupPending).await?;
-        let cleanup_pending = self.deps.files.recycle(&root, &op).await.is_err();
+        let cleanup_pending = self.deps.files.recycle(root, &op).await.is_err();
         if !cleanup_pending {
-            self.deps.files.discard_staging(&root, &op.id).await?;
+            self.deps.files.discard_staging(root, &op.id).await?;
             self.phase(&mut op, OperationPhase::Completed).await?;
         }
         Ok(NodeOutcome {
@@ -683,13 +791,14 @@ impl NodeService {
     }
     async fn dependencies(
         &self,
-        root: &std::path::Path,
+        bound: &Bound,
         op: &mut NodeOperation,
-        mut env: PythonEnvironment,
         package: Option<&PackagePlan>,
         decision: &CommitDecision,
         step: &StepContext,
     ) -> Result<(), NodeAppError> {
+        let root = bound.root.as_path();
+        let mut env = bound.env.clone();
         let d = &self.deps.environment;
         // Acquired after publication and held through the awaited cleanup below, so a refused
         // or substituted location fails before the environment is marked for repair.
@@ -712,10 +821,7 @@ impl NodeService {
                 .map_err(|_| NodeAppError::EnvironmentUnavailable)?;
             d.envs.save(&env).await.map_err(|_| NodeAppError::Storage)?;
         }
-        let profile = d
-            .catalog
-            .get(&env.profile_id)
-            .ok_or(NodeAppError::EnvironmentUnavailable)?;
+        let profile = self.profile_of(&env, bound.profile.as_ref())?;
         let constraint = d
             .packages
             .write_constraints(root, &env.id, &run_pins, &profile.constraints)
@@ -770,6 +876,27 @@ impl NodeService {
             .verify_final(root, &env.path, &expectations, step)
             .await
             .map_err(|_| NodeAppError::DependenciesFailed)?;
+        // A hook may change contents, but never the reviewed source revision. The adapter
+        // validates provenance and the link-free tree before repair or success is recorded.
+        let final_snapshot = self
+            .deps
+            .files
+            .snapshot(root, &op.node, None, step.retained.clone())
+            .await
+            .and_then(|snapshot| {
+                if !decision.consent.run_install_py && snapshot.digest != op.node.tree_digest {
+                    Err(NodeAppError::StalePlan)
+                } else {
+                    Ok(snapshot)
+                }
+            });
+        match final_snapshot {
+            Ok(snapshot) => op.node.tree_digest = snapshot.digest,
+            Err(error) => {
+                op.failure = Some("Final node validation failed; use environment Repair".into());
+                return Err(error);
+            }
+        }
         env.record_pins(run_pins.clone(), &d.clock.now());
         if was_verified {
             env.mark_repaired(run_pins, report.summary(), &d.clock.now())

@@ -1,10 +1,11 @@
 use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
+    path::PathBuf,
+    sync::{Arc, Mutex},
 };
 
 use domain::environment::{
-    DistName, Eligibility, EnvState, NewEnvironment, PinSet, PythonEnvironment, SetupMode, evaluate,
+    AcceleratorSource, DistName, Eligibility, EnvState, NewEnvironment, PinSet, PythonEnvironment,
+    SetupMode, evaluate,
 };
 
 use super::{
@@ -12,15 +13,20 @@ use super::{
     deps::EnvironmentDeps,
     error::EnvironmentAppError,
     model::{
-        ComfyRef, FailureKind, ProvisioningRun, ResolvedGit, RunId, RunStatus, StepFailure, StepId,
-        StepPolicy, StepStatus,
+        ComfyRef, ComponentStatus, ConsentRequest, CuratedNodeSpec, CuratedStatus, FailureKind,
+        ProvisioningRun, ResolvedGit, RunId, RunStatus, StepFailure, StepId, StepPolicy,
+        StepStatus,
     },
     ports::{
-        Checkout, EnvRepoError, InstallSpec, ProvisionError, SetupEvent, SetupProgressSink,
-        StepContext,
+        Checkout, EnvRepoError, InstallSpec, ProvisionError, SetupEvent, SetupNodeError,
+        SetupNodes, SetupProgressSink, StepContext,
     },
 };
-use crate::{comfy_runtime::RuntimeBlock, shared::CancelToken};
+use crate::{
+    comfy_runtime::RuntimeBlock,
+    custom_nodes::{CommitDecision, PlanReview, SETUP_HOOK_WARNING},
+    shared::{CancelToken, MaintenanceLease},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunOutcome {
@@ -38,15 +44,33 @@ enum StepOutcome {
     NothingToRepair,
 }
 
+const CURATED_DAMAGE_MESSAGE: &str = "The published node no longer matches its reviewed install or its candidate dependencies failed. Retry setup to repair it; this step cannot be skipped.";
+
+fn curated_hook_note(message: Option<&str>) -> Option<String> {
+    message?
+        .lines()
+        .find(|line| line.contains(SETUP_HOOK_WARNING))
+        .map(str::to_owned)
+}
+
 /// Runs a registered setup run to completion, failure or cancellation. The maintenance gate is
 /// acquired once and held until the run finished and all cleanup is done.
 pub struct ExecuteSetup {
     deps: EnvironmentDeps,
+    nodes: Arc<dyn SetupNodes>,
+    restart_lease: Mutex<Option<Box<dyn MaintenanceLease>>>,
 }
 
 impl ExecuteSetup {
-    pub fn new(deps: EnvironmentDeps) -> Self {
-        Self { deps }
+    /// `nodes` installs the curated custom nodes against the run's candidate environment. It is
+    /// injected here, not through `EnvironmentDeps`, because the node service itself builds on
+    /// the environment dependencies.
+    pub fn new(deps: EnvironmentDeps, nodes: Arc<dyn SetupNodes>) -> Self {
+        Self {
+            deps,
+            nodes,
+            restart_lease: Mutex::new(None),
+        }
     }
 
     pub async fn execute(
@@ -54,23 +78,42 @@ impl ExecuteSetup {
         run_id: &RunId,
         sink: Arc<dyn SetupProgressSink>,
     ) -> Result<RunOutcome, EnvironmentAppError> {
+        self.execute_inner(run_id, sink, false).await
+    }
+
+    /// The desktop retains successful rebuild maintenance ownership until restart.
+    pub async fn execute_for_restart(
+        &self,
+        run_id: &RunId,
+        sink: Arc<dyn SetupProgressSink>,
+    ) -> Result<RunOutcome, EnvironmentAppError> {
+        self.execute_inner(run_id, sink, true).await
+    }
+
+    async fn execute_inner(
+        &self,
+        run_id: &RunId,
+        sink: Arc<dyn SetupProgressSink>,
+        retain_on_success: bool,
+    ) -> Result<RunOutcome, EnvironmentAppError> {
         let deps = &self.deps;
         let cancel = deps
             .active_runs
             .get(run_id)
             .unwrap_or_else(|| deps.active_runs.register(run_id));
-        let lease = match deps.gate.acquire().await {
+        let mut lease = match deps.gate.acquire().await {
             Ok(lease) => lease,
             Err(error) => {
                 deps.active_runs.remove(run_id);
                 return Err(error.into());
             }
         };
-        let result = self
-            .run_locked(run_id, sink, cancel, lease.retained())
-            .await;
+        let result = self.run_locked(run_id, sink, cancel, &mut *lease).await;
+        deps.installation.invalidate();
         deps.active_runs.remove(run_id);
-        drop(lease);
+        if retain_on_success && matches!(result, Ok(RunOutcome::Succeeded)) {
+            *self.restart_lease.lock().unwrap_or_else(|p| p.into_inner()) = Some(lease);
+        }
         result
     }
 
@@ -79,7 +122,7 @@ impl ExecuteSetup {
         run_id: &RunId,
         sink: Arc<dyn SetupProgressSink>,
         cancel: CancelToken,
-        retained: super::Retained,
+        lease: &mut dyn MaintenanceLease,
     ) -> Result<RunOutcome, EnvironmentAppError> {
         let run = self
             .deps
@@ -87,31 +130,54 @@ impl ExecuteSetup {
             .get(run_id)
             .await?
             .ok_or(EnvironmentAppError::RunNotFound)?;
+        if !super::same_location(&run.request.install_root, &self.deps.root.current().root) {
+            return Err(EnvironmentAppError::RebuildRequired);
+        }
         if run.status != RunStatus::Registered {
             return Err(EnvironmentAppError::NotRunnable);
         }
+        if run.request.mode == SetupMode::Rebuild {
+            self.deps
+                .relocation_runtime
+                .ensure_stopped(&run.request.install_root)
+                .await?;
+            if let super::ManifestState::Valid(manifest) =
+                self.deps.manifests.read(&run.request.install_root).await?
+            {
+                self.deps
+                    .relocation_runtime
+                    .ensure_stopped(&manifest.install_root)
+                    .await?;
+            }
+        }
+        let retained = lease.retained();
         Execution {
             deps: self.deps.clone(),
+            nodes: self.nodes.clone(),
             run,
             env: None,
             constraints: None,
             sink,
             cancel,
             retained,
+            damaged: false,
         }
-        .drive()
+        .drive(lease)
         .await
     }
 }
 
 struct Execution {
     deps: EnvironmentDeps,
+    nodes: Arc<dyn SetupNodes>,
     run: ProvisioningRun,
     env: Option<PythonEnvironment>,
     constraints: Option<PathBuf>,
     sink: Arc<dyn SetupProgressSink>,
     cancel: CancelToken,
     retained: super::Retained,
+    /// Set when a published custom node left the candidate environment damaged.
+    damaged: bool,
 }
 
 fn storage(error: EnvRepoError) -> ProvisionError {
@@ -197,7 +263,10 @@ impl Execution {
         Ok(())
     }
 
-    async fn drive(mut self) -> Result<RunOutcome, EnvironmentAppError> {
+    async fn drive(
+        mut self,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<RunOutcome, EnvironmentAppError> {
         self.set_run_status(RunStatus::Running).await?;
         for step in StepId::ALL {
             if self.cancel.is_cancelled() {
@@ -209,7 +278,7 @@ impl Execution {
             self.run.step_mut(step).attempts += 1;
             self.set_step(step, StepStatus::Running, None);
             self.save_run().await?;
-            match self.run_step(step).await {
+            match self.run_step(step, &mut *lease).await {
                 Ok(StepOutcome::Done) => self.set_step(step, StepStatus::Succeeded, None),
                 Ok(StepOutcome::Skipped(reason)) => {
                     self.set_step(step, StepStatus::Skipped, Some(reason))
@@ -219,7 +288,11 @@ impl Execution {
                 }
                 Ok(StepOutcome::NothingToRepair) => return self.finish_nothing_to_repair().await,
                 Err(ProvisionError::Cancelled) => return self.finish_cancelled().await,
-                Err(error) if step.policy() == StepPolicy::BestEffort => {
+                Err(error)
+                    if step.policy() == StepPolicy::BestEffort
+                        && step != StepId::Accelerators
+                        && !matches!(error, ProvisionError::PinDrift(_)) =>
+                {
                     let message = describe(&error);
                     self.set_step(step, StepStatus::Warning, Some(message));
                 }
@@ -236,10 +309,14 @@ impl Execution {
         step: StepId,
         error: ProvisionError,
     ) -> Result<RunOutcome, EnvironmentAppError> {
-        let failure = to_failure(step, error);
+        let pin_drift = matches!(error, ProvisionError::PinDrift(_));
+        let mut failure = to_failure(step, error);
+        if self.damaged {
+            failure.can_skip = false;
+        }
         self.set_step(step, StepStatus::Failed, Some(failure.message.clone()));
         self.run.failure = Some(failure.clone());
-        if step.policy() == StepPolicy::Required {
+        if step.policy() == StepPolicy::Required || pin_drift || self.damaged {
             self.fail_env().await;
         }
         self.emit(SetupEvent::Failure {
@@ -284,7 +361,11 @@ impl Execution {
         }
     }
 
-    async fn run_step(&mut self, step: StepId) -> Result<StepOutcome, ProvisionError> {
+    async fn run_step(
+        &mut self,
+        step: StepId,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<StepOutcome, ProvisionError> {
         match step {
             StepId::Preflight => self.preflight().await,
             StepId::Tools => self.tools().await,
@@ -296,11 +377,36 @@ impl Execution {
             StepId::Triton => self.triton().await,
             StepId::Accelerators => self.accelerators().await,
             StepId::ComfyRequirements => self.comfy_requirements().await,
-            StepId::Manager => self.manager().await,
-            StepId::CuratedNodes => Ok(StepOutcome::Skipped(
-                "Curated custom nodes arrive in a later milestone.".into(),
-            )),
-            StepId::FinalVerify => self.final_verify().await,
+            StepId::Manager => {
+                if self.run.request.mode == SetupMode::Rebuild {
+                    return Ok(StepOutcome::Skipped(
+                        "The existing Manager and node requirements were retained.".into(),
+                    ));
+                }
+                let result = self.manager().await;
+                if let Some(manager) = &mut self.run.components.manager {
+                    manager.source_commit = self
+                        .run
+                        .resolved
+                        .manager
+                        .as_ref()
+                        .map(|git| git.commit.clone());
+                    manager.status = match &result {
+                        Ok(StepOutcome::Skipped(_)) => ComponentStatus::Skipped,
+                        Ok(_) => ComponentStatus::Installed,
+                        Err(_) => ComponentStatus::Failed,
+                    };
+                    manager.message = result.as_ref().err().map(describe);
+                }
+                let saved = self.save_components().await;
+                if matches!(result, Err(ProvisionError::PinDrift(_))) {
+                    return result;
+                }
+                saved?;
+                result
+            }
+            StepId::CuratedNodes => self.curated_nodes(lease).await,
+            StepId::FinalVerify => self.final_verify(lease).await,
             StepId::CacheClean => self.cache_clean().await,
         }
     }
@@ -348,9 +454,12 @@ impl Execution {
     async fn repair_check(&mut self) -> Result<bool, ProvisionError> {
         let deps = self.deps.clone();
         let root = self.root();
-        let Some(mut active) = deps.envs.active().await.map_err(storage)? else {
+        let Some(active) = deps.envs.active().await.map_err(storage)? else {
             return Ok(false);
         };
+        if active.state() != EnvState::Verified {
+            return Ok(false);
+        }
         let ctx = self.ctx(StepId::Preflight);
         match deps
             .verifier
@@ -359,7 +468,7 @@ impl Execution {
         {
             Err(ProvisionError::Cancelled) => Err(ProvisionError::Cancelled),
             Err(_) => Ok(false),
-            Ok(report) => {
+            Ok(_) => {
                 let installed = deps
                     .packages
                     .list(&root, &active.path, Some(&self.ctx(StepId::Preflight)))
@@ -369,15 +478,13 @@ impl Execution {
                 if pins != active.pins {
                     return Ok(false);
                 }
-                let now = deps.clock.now();
-                match active.state() {
-                    EnvState::RepairRequired => active
-                        .mark_repaired(pins, report.summary(), &now)
-                        .map_err(|error| failed(error.to_string()))?,
-                    EnvState::Verified => {}
-                    _ => return Ok(false),
+                if deps
+                    .node_requirements
+                    .needs_repair(&active.id, &root, self.retained.clone())
+                    .await?
+                {
+                    return Ok(false);
                 }
-                deps.envs.save(&active).await.map_err(storage)?;
                 Ok(true)
             }
         }
@@ -414,7 +521,20 @@ impl Execution {
                 env
             }
         };
+        if !env.pins.is_empty() {
+            self.constraints = Some(
+                deps.packages
+                    .write_constraints(
+                        &self.root(),
+                        &env.id,
+                        &env.pins,
+                        &self.run.profile.constraints,
+                    )
+                    .await?,
+            );
+        }
         self.env = Some(env);
+        self.save_components().await?;
         Ok(())
     }
 
@@ -426,7 +546,11 @@ impl Execution {
         self.check_cancel()?;
         deps.tools.ensure_git(&root, &ctx).await?;
         self.check_cancel()?;
-        deps.tools.ensure_hf_tool(&root, &ctx).await?;
+        if self.run.request.mode == SetupMode::Rebuild {
+            deps.tools.recreate_hf_tool(&root, &ctx).await?;
+        } else {
+            deps.tools.ensure_hf_tool(&root, &ctx).await?;
+        }
         Ok(StepOutcome::Done)
     }
 
@@ -452,7 +576,9 @@ impl Execution {
         } else {
             deps.python.inspect_venv(&root, &target.env_path).await?
         };
-        if !info.version.same_minor(profile_python) {
+        if !info.version.same_minor(profile_python)
+            || (self.run.request.mode == SetupMode::Rebuild && info.version != profile_python)
+        {
             return Err(failed(format!(
                 "The environment uses Python {} but the profile needs {}.{}.",
                 info.version, profile_python.major, profile_python.minor
@@ -467,10 +593,13 @@ impl Execution {
 
     async fn seed(&mut self) -> Result<StepOutcome, ProvisionError> {
         let ctx = self.ctx(StepId::Seed);
-        self.deps
+        let result = self
+            .deps
             .python
             .seed(&self.root(), &self.env_path(), self.run.profile.os, &ctx)
-            .await?;
+            .await;
+        self.reassert_pins(&ctx).await?;
+        result?;
         Ok(StepOutcome::Done)
     }
 
@@ -480,6 +609,15 @@ impl Execution {
         let ctx = self.ctx(StepId::CloneComfyUi);
         let keep_current = matches!(self.run.request.comfyui_ref, ComfyRef::KeepCurrent);
         let checkout = deps.source.inspect_checkout(&root).await?;
+        if self.run.request.mode == SetupMode::Rebuild && !matches!(checkout, Checkout::Repo { .. })
+        {
+            return Err(failed(
+                "The existing ComfyUI checkout is missing or unsafe; rebuild cannot replace it.",
+            ));
+        }
+        if self.run.request.mode == SetupMode::Rebuild {
+            deps.installation.validate_rebuild_checkout(&root).await?;
+        }
         let mut resolved = match self.run.resolved.comfyui.clone() {
             Some(resolved) => resolved,
             None if keep_current => match &checkout {
@@ -553,14 +691,15 @@ impl Execution {
     }
 
     async fn installed_pins(&self) -> Result<PinSet, ProvisionError> {
+        self.installed_pins_in(&self.ctx(StepId::ComfyRequirements))
+            .await
+    }
+
+    async fn installed_pins_in(&self, ctx: &StepContext) -> Result<PinSet, ProvisionError> {
         let installed = self
             .deps
             .packages
-            .list(
-                &self.root(),
-                &self.env_path(),
-                Some(&self.ctx(StepId::ComfyRequirements)),
-            )
+            .list(&self.root(), &self.env_path(), Some(ctx))
             .await?;
         Ok(pins_of(
             &installed,
@@ -592,31 +731,88 @@ impl Execution {
             .ok_or_else(|| failed("the constraints file was not prepared"))
     }
 
-    /// The pin guard: protected versions must be exactly what was recorded.
-    async fn reassert_pins(&self) -> Result<(), ProvisionError> {
-        let now = self.installed_pins().await?;
-        let expected = self
+    async fn save_components(&mut self) -> Result<(), ProvisionError> {
+        self.save_run()
+            .await
+            .map_err(|_| failed("the component results could not be saved"))?;
+        self.deps
+            .envs
+            .save_components(&self.run.target_env, &self.run.components)
+            .await
+            .map_err(storage)
+    }
+
+    /// Cleanup retains the maintenance lease and uses a fresh cancellation token.
+    async fn reassert_pins(&self, ctx: &StepContext) -> Result<(), ProvisionError> {
+        let expected = &self
             .env
             .as_ref()
-            .map(|env| env.pins.clone())
-            .unwrap_or_default();
-        let changes = expected.diff(&now);
+            .ok_or_else(|| failed("the target environment was not prepared"))?
+            .pins;
+        if expected.is_empty() {
+            return Ok(());
+        }
+        let drift = |error: ProvisionError| ProvisionError::PinDrift(describe(&error));
+        let mut cleanup = ctx.clone();
+        cleanup.cancel = CancelToken::new();
+        let installed = self.installed_pins_in(&cleanup).await.map_err(drift)?;
+        let changes: Vec<_> = expected
+            .iter()
+            .filter(|(name, version)| installed.get(name) != Some(*version))
+            .collect();
         if changes.is_empty() {
             return Ok(());
         }
-        let names: Vec<String> = changes
+        for (name, version) in changes {
+            cleanup.log(format!("Restoring protected package {name}=={version}."));
+            let spec = InstallSpec {
+                requirements: vec![format!("{name}=={version}")],
+                index_url: self
+                    .run
+                    .profile
+                    .torch
+                    .protected_distributions()
+                    .contains(name)
+                    .then(|| self.run.profile.torch.index_url.clone()),
+                constraint_file: Some(self.constraint_file().map_err(drift)?),
+                no_deps: true,
+                ..InstallSpec::default()
+            };
+            self.deps
+                .packages
+                .install(&self.root(), &self.env_path(), &spec, &cleanup)
+                .await
+                .map_err(|error| {
+                    ProvisionError::PinDrift(format!("{name}: {}", describe(&error)))
+                })?;
+        }
+        let restored = self.installed_pins_in(&cleanup).await.map_err(drift)?;
+        let remaining: Vec<_> = expected
             .iter()
-            .map(|change| change.name.to_string())
+            .filter(|(name, version)| restored.get(name) != Some(*version))
+            .map(|(name, _)| name.to_string())
             .collect();
-        Err(failed(format!(
-            "Protected packages changed during an install: {}.",
-            names.join(", ")
-        )))
+        if !remaining.is_empty() {
+            return Err(ProvisionError::PinDrift(remaining.join(", ")));
+        }
+        Ok(())
+    }
+
+    async fn guarded_install(
+        &self,
+        spec: &InstallSpec,
+        ctx: &StepContext,
+    ) -> Result<(), ProvisionError> {
+        let result = self
+            .deps
+            .packages
+            .install(&self.root(), &self.env_path(), spec, ctx)
+            .await;
+        self.reassert_pins(ctx).await?;
+        result
     }
 
     async fn install_torch(&mut self) -> Result<StepOutcome, ProvisionError> {
-        let deps = self.deps.clone();
-        let root = self.root();
         let ctx = self.ctx(StepId::InstallTorch);
         let mut pins = self.installed_pins().await?;
         if !self.torch_present(&pins) {
@@ -627,9 +823,7 @@ impl Execution {
                 allow_source_builds: false,
                 ..InstallSpec::default()
             };
-            deps.packages
-                .install(&root, &self.env_path(), &spec, &ctx)
-                .await?;
+            self.guarded_install(&spec, &ctx).await?;
             pins = self.installed_pins().await?;
         }
         if !self.torch_present(&pins) {
@@ -681,9 +875,7 @@ impl Execution {
             allow_source_builds: false,
             ..InstallSpec::default()
         };
-        deps.packages
-            .install(&root, &self.env_path(), &spec, &ctx)
-            .await?;
+        self.guarded_install(&spec, &ctx).await?;
         let pins = self.installed_pins().await?;
         if !pins.contains(&self.run.profile.triton.distribution) {
             return Err(failed("Triton was installed but could not be found."));
@@ -699,30 +891,44 @@ impl Execution {
 
     async fn accelerators(&mut self) -> Result<StepOutcome, ProvisionError> {
         let accelerators = self.run.profile.accelerators.clone();
-        if accelerators.is_empty() {
+        if self.run.request.accelerators.is_empty() {
             return Ok(StepOutcome::Skipped(
-                "This profile defines no accelerators yet.".into(),
+                "No accelerators were selected.".into(),
             ));
         }
-        let deps = self.deps.clone();
-        let root = self.root();
         let ctx = self.ctx(StepId::Accelerators);
         let mut warnings = Vec::new();
         for accelerator in accelerators {
+            if !self.run.request.accelerators.contains(&accelerator.id) {
+                continue;
+            }
             self.check_cancel()?;
-            let spec = InstallSpec {
-                requirements: vec![accelerator.requirement.clone()],
-                constraint_file: Some(self.constraint_file()?),
-                allow_source_builds: false,
-                ..InstallSpec::default()
+            let result = self.install_accelerator(&accelerator, &ctx).await;
+            let outcome = self
+                .run
+                .components
+                .accelerators
+                .iter_mut()
+                .find(|r| r.id == accelerator.id)
+                .ok_or_else(|| failed("the component selection was not recorded"))?;
+            outcome.status = if result.is_ok() {
+                ComponentStatus::Installed
+            } else {
+                ComponentStatus::Failed
             };
-            match deps
-                .packages
-                .install(&root, &self.env_path(), &spec, &ctx)
-                .await
-            {
-                Ok(()) => self.reassert_pins().await?,
-                Err(ProvisionError::Cancelled) => return Err(ProvisionError::Cancelled),
+            outcome.importable = None;
+            outcome.message = result.as_ref().err().map(describe);
+            let saved = self.save_components().await;
+            if let Err(error @ ProvisionError::PinDrift(_)) = result {
+                return Err(error);
+            }
+            saved?;
+            match result {
+                Ok(()) => {}
+                Err(error @ (ProvisionError::Cancelled | ProvisionError::PinDrift(_))) => {
+                    return Err(error);
+                }
+                Err(error) if !accelerator.non_fatal => return Err(error),
                 Err(error) => warnings.push(format!("{}: {}", accelerator.name, describe(&error))),
             }
         }
@@ -731,6 +937,82 @@ impl Execution {
         } else {
             Ok(StepOutcome::Warning(warnings.join("; ")))
         }
+    }
+
+    async fn install_accelerator(
+        &self,
+        accelerator: &domain::environment::AcceleratorSpec,
+        ctx: &StepContext,
+    ) -> Result<(), ProvisionError> {
+        let requirements = match &accelerator.source {
+            AcceleratorSource::Wheel { .. } => vec![
+                self.deps
+                    .wheels
+                    .fetch(&self.root(), accelerator, ctx)
+                    .await?
+                    .to_str()
+                    .ok_or_else(|| failed("the wheel path is not valid Unicode"))?
+                    .to_owned(),
+            ],
+            AcceleratorSource::Packages { requirements } => requirements.clone(),
+        };
+        self.guarded_install(
+            &InstallSpec {
+                requirements,
+                constraint_file: Some(self.constraint_file()?),
+                no_deps: accelerator.no_deps,
+                ..InstallSpec::default()
+            },
+            ctx,
+        )
+        .await
+    }
+
+    async fn accelerator_imports(
+        &mut self,
+        ctx: &StepContext,
+    ) -> Result<Vec<String>, ProvisionError> {
+        let mut warnings = Vec::new();
+        for spec in self.run.profile.accelerators.clone() {
+            let Some(index) = self.run.components.accelerators.iter().position(|r| {
+                r.id == spec.id && r.selected && r.status == ComponentStatus::Installed
+            }) else {
+                continue;
+            };
+            if spec.modules.is_empty() {
+                self.run.components.accelerators[index].message =
+                    Some(format!("Import untested: {}", spec.provenance));
+                self.save_components().await?;
+                continue;
+            }
+            let mut failures = Vec::new();
+            for module in spec.modules {
+                match self
+                    .deps
+                    .verifier
+                    .verify_accelerator(&self.root(), &self.env_path(), &module, ctx)
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(ProvisionError::Cancelled) => return Err(ProvisionError::Cancelled),
+                    Err(error) => failures.push(format!("{module}: {}", describe(&error))),
+                }
+                // Imported third-party code also runs under the original pin guard.
+                self.reassert_pins(ctx).await?;
+            }
+            let result = &mut self.run.components.accelerators[index];
+            result.importable = Some(failures.is_empty());
+            result.message = if failures.is_empty() {
+                None
+            } else {
+                Some(failures.join("; "))
+            };
+            if let Some(message) = &result.message {
+                warnings.push(message.clone());
+            }
+            self.save_components().await?;
+        }
+        Ok(warnings)
     }
 
     async fn comfy_requirements(&mut self) -> Result<StepOutcome, ProvisionError> {
@@ -744,39 +1026,35 @@ impl Execution {
             allow_source_builds: ctx.allow_source_builds,
             ..InstallSpec::default()
         };
-        deps.packages
-            .install(&root, &self.env_path(), &spec, &ctx)
-            .await?;
-        self.reassert_pins().await?;
-        // Existing custom nodes keep working in a replacement environment: their requirements are
-        // installed under the same pin guard. Failures are warnings for the affected node.
-        let mut warnings = Vec::new();
-        for file in files.nodes {
+        self.guarded_install(&spec, &ctx).await?;
+        for set in deps
+            .node_requirements
+            .requirement_sets(&root, ctx.retained.clone())
+            .await?
+        {
             self.check_cancel()?;
             let spec = InstallSpec {
-                requirement_files: vec![file.clone()],
+                requirements: set.extra.clone(),
+                requirement_files: set.file.iter().map(|file| file.path.clone()).collect(),
+                guarded: set.file.clone(),
                 constraint_file: Some(self.constraint_file()?),
                 allow_source_builds: ctx.allow_source_builds,
                 ..InstallSpec::default()
             };
-            match deps
-                .packages
-                .install(&root, &self.env_path(), &spec, &ctx)
-                .await
-            {
-                Ok(()) => self.reassert_pins().await?,
-                Err(ProvisionError::Cancelled) => return Err(ProvisionError::Cancelled),
-                Err(error) => warnings.push(format!("{}: {}", node_label(&file), describe(&error))),
-            }
+            let installed = self.guarded_install(&spec, &ctx).await;
+            let state = if installed.is_ok() {
+                domain::custom_nodes::DependencyState::Ok
+            } else {
+                domain::custom_nodes::DependencyState::Failed
+            };
+            let recorded = deps
+                .node_requirements
+                .record_outcome(&self.run.target_env, &set, state)
+                .await;
+            installed?;
+            recorded?;
         }
-        if warnings.is_empty() {
-            Ok(StepOutcome::Done)
-        } else {
-            Ok(StepOutcome::Warning(format!(
-                "Some custom node requirements could not be installed: {}",
-                warnings.join("; ")
-            )))
-        }
+        Ok(StepOutcome::Done)
     }
 
     async fn manager(&mut self) -> Result<StepOutcome, ProvisionError> {
@@ -816,28 +1094,369 @@ impl Execution {
                 allow_source_builds: ctx.allow_source_builds,
                 ..InstallSpec::default()
             };
-            deps.packages
-                .install(&root, &self.env_path(), &spec, &ctx)
-                .await?;
-            self.reassert_pins().await?;
+            self.guarded_install(&spec, &ctx).await?;
         }
         Ok(StepOutcome::Done)
     }
 
-    async fn final_verify(&mut self) -> Result<StepOutcome, ProvisionError> {
+    /// Installs the selected curated nodes into the candidate environment through the node
+    /// workflow, before the final verification and the activation. Every node is prepared at its
+    /// exact catalog commit, then the run pauses for the user's exact consent to each reviewed
+    /// plan, and only then are the plans committed one after another.
+    async fn curated_nodes(
+        &mut self,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<StepOutcome, ProvisionError> {
+        if self.run.curated.is_empty() {
+            return Ok(StepOutcome::Skipped(
+                "No curated custom nodes were selected.".into(),
+            ));
+        }
+        let ctx = self.ctx(StepId::CuratedNodes);
+        let catalog = self.deps.curated.list();
+        let nodes = self.nodes.clone();
+        let decisions = self.deps.active_runs.take_decisions(&self.run.id);
+        loop {
+            self.prepare_curated(&catalog, &ctx, lease).await?;
+            let prepared: Vec<usize> = (0..self.run.curated.len())
+                .filter(|&index| self.run.curated[index].status == CuratedStatus::Prepared)
+                .collect();
+            if prepared.is_empty() {
+                break;
+            }
+            let reviews = nodes
+                .pending(&self.run.id)
+                .map_err(|error| self.node_failure(error))?;
+            // Nothing is installed until every reviewed plan has its own exact decision.
+            let covered = |plan: &Option<String>| {
+                reviews
+                    .iter()
+                    .find(|review| Some(&review.id) == plan.as_ref())
+                    .is_some_and(|review| decisions.iter().any(|decision| covers(decision, review)))
+            };
+            if prepared
+                .iter()
+                .any(|&index| !covered(&self.run.curated[index].plan))
+            {
+                return Err(curated_review_pause());
+            }
+            let mut refresh = false;
+            for index in prepared {
+                self.check_cancel()?;
+                let Some(plan) = self.run.curated[index].plan.clone() else {
+                    continue;
+                };
+                let Some(decision) = decisions
+                    .iter()
+                    .find(|decision| decision.consent.plan_id == plan)
+                    .cloned()
+                else {
+                    continue;
+                };
+                let name = reviews
+                    .iter()
+                    .find(|review| review.id == plan)
+                    .map(|review| review.name.clone());
+                if let Some(name) = &name {
+                    ctx.log(format!("Installing {name}."));
+                }
+                match nodes
+                    .commit(&self.run.id, &plan, decision, &ctx, lease)
+                    .await
+                {
+                    Ok(outcome) => {
+                        let entry = &mut self.run.curated[index];
+                        entry.status = CuratedStatus::Installed;
+                        entry.plan = None;
+                        entry.operation = Some(outcome.operation.as_str().to_owned());
+                        entry.message = curated_hook_note(entry.message.as_deref());
+                        // The journal operation is on record before the next node starts.
+                        self.save_curated().await?;
+                    }
+                    Err(SetupNodeError::PlanStale) => {
+                        let entry = &mut self.run.curated[index];
+                        entry.status = CuratedStatus::Pending;
+                        entry.plan = None;
+                        entry.message =
+                            Some("The reviewed plan changed. Review the new plan.".into());
+                        self.save_curated().await?;
+                        refresh = true;
+                        break;
+                    }
+                    Err(SetupNodeError::ConsentRequired) => return Err(curated_review_pause()),
+                    Err(error) => {
+                        return Err(self.curated_failure(index, error).await);
+                    }
+                }
+            }
+            // A refreshed plan has no decision yet, so the next pass pauses for consent.
+            if !refresh {
+                break;
+            }
+        }
+        let hooks: Vec<_> = self
+            .run
+            .curated
+            .iter()
+            .filter(|entry| entry.status == CuratedStatus::Installed)
+            .filter_map(|entry| curated_hook_note(entry.message.as_deref()))
+            .collect();
+        if hooks.is_empty() {
+            Ok(StepOutcome::Done)
+        } else {
+            Ok(StepOutcome::Warning(hooks.join("\n")))
+        }
+    }
+
+    /// Prepares every node that has no live reviewed plan. A node that is already installed at
+    /// its exact commit with successful candidate dependencies is recognised, not fetched again.
+    async fn prepare_curated(
+        &mut self,
+        catalog: &[CuratedNodeSpec],
+        ctx: &StepContext,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<(), ProvisionError> {
+        let nodes = self.nodes.clone();
+        let live: Vec<String> = nodes
+            .pending(&self.run.id)
+            .map_err(|error| self.node_failure(error))?
+            .into_iter()
+            .map(|review| review.id)
+            .collect();
+        for index in 0..self.run.curated.len() {
+            let entry = &self.run.curated[index];
+            let current = match entry.status {
+                CuratedStatus::Installed | CuratedStatus::Skipped => continue,
+                CuratedStatus::Prepared => {
+                    entry.plan.as_ref().is_some_and(|plan| live.contains(plan))
+                }
+                CuratedStatus::Pending | CuratedStatus::Failed => false,
+            };
+            let published = entry.status == CuratedStatus::Failed
+                || entry.operation.is_some()
+                || if let Some(plan) = &entry.plan {
+                    nodes.publication_started(plan).await
+                } else {
+                    false
+                };
+            if current && !published {
+                continue;
+            }
+            let spec = catalog
+                .iter()
+                .find(|spec| spec.id == entry.id)
+                .cloned()
+                .ok_or_else(|| failed("A selected curated node is no longer in the catalog."))?;
+            self.check_cancel()?;
+            let recognised = match nodes.installed(&self.run.id, &spec, lease).await {
+                Ok(recognised) => recognised,
+                Err(error) => {
+                    let error = if published {
+                        SetupNodeError::Damaged(error.to_string())
+                    } else {
+                        error
+                    };
+                    return Err(self.curated_failure(index, error).await);
+                }
+            };
+            if recognised {
+                ctx.log(format!("{} is already installed.", spec.name));
+                let entry = &mut self.run.curated[index];
+                entry.status = CuratedStatus::Installed;
+                entry.plan = None;
+                entry.message = curated_hook_note(entry.message.as_deref())
+                    .or_else(|| Some("Already installed.".into()));
+                self.save_curated().await?;
+                continue;
+            }
+            if published {
+                return Err(self
+                    .curated_failure(
+                        index,
+                        SetupNodeError::Damaged(CURATED_DAMAGE_MESSAGE.into()),
+                    )
+                    .await);
+            }
+            ctx.log(format!(
+                "Preparing {} at commit {}.",
+                spec.name,
+                short(&spec.commit)
+            ));
+            let review = match nodes.prepare(&self.run.id, &spec, ctx, lease).await {
+                Ok(review) => review,
+                Err(error) => {
+                    return Err(self.curated_failure(index, error).await);
+                }
+            };
+            let entry = &mut self.run.curated[index];
+            entry.status = CuratedStatus::Prepared;
+            entry.plan = Some(review.id);
+            entry.message = review
+                .hook_digest
+                .is_some()
+                .then(|| format!("{}: {SETUP_HOOK_WARNING}", review.name));
+            // The plan is also the journal operation, so it is on record before the next node.
+            self.save_curated().await?;
+        }
+        Ok(())
+    }
+
+    /// Final activation requires every published curated node to still match its install and to
+    /// have successful dependency outcomes for this candidate, with no unresolved failure.
+    async fn verify_curated(
+        &mut self,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<(), ProvisionError> {
+        let installed: Vec<usize> = self
+            .run
+            .curated
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                matches!(
+                    entry.status,
+                    CuratedStatus::Installed | CuratedStatus::Failed
+                )
+            })
+            .map(|(index, _)| index)
+            .collect();
+        if installed.is_empty() {
+            return Ok(());
+        }
+        let catalog = self.deps.curated.list();
+        let nodes = self.nodes.clone();
+        for index in installed {
+            let entry = &self.run.curated[index];
+            if entry.status == CuratedStatus::Failed {
+                return Err(self
+                    .curated_failure(
+                        index,
+                        SetupNodeError::Damaged(CURATED_DAMAGE_MESSAGE.into()),
+                    )
+                    .await);
+            }
+            let spec = catalog
+                .iter()
+                .find(|spec| spec.id == entry.id)
+                .ok_or_else(|| failed("A selected curated node is no longer in the catalog."))?;
+            let intact = match nodes.installed(&self.run.id, spec, lease).await {
+                Ok(intact) => intact,
+                Err(error) => {
+                    return Err(self
+                        .curated_failure(index, SetupNodeError::Damaged(error.to_string()))
+                        .await);
+                }
+            };
+            if !intact {
+                return Err(self
+                    .curated_failure(
+                        index,
+                        SetupNodeError::Damaged(CURATED_DAMAGE_MESSAGE.into()),
+                    )
+                    .await);
+            }
+        }
+        Ok(())
+    }
+
+    async fn save_curated(&mut self) -> Result<(), ProvisionError> {
+        self.save_run()
+            .await
+            .map_err(|_| failed("the curated node progress could not be saved"))
+    }
+
+    async fn curated_failure(&mut self, index: usize, error: SetupNodeError) -> ProvisionError {
+        let entry = &mut self.run.curated[index];
+        if matches!(
+            error,
+            SetupNodeError::Damaged(_) | SetupNodeError::PinDrift(_)
+        ) {
+            self.damaged = true;
+            entry.status = CuratedStatus::Failed;
+            entry.operation = entry.operation.take().or_else(|| entry.plan.take());
+            entry.plan = None;
+            entry.message = Some(match curated_hook_note(entry.message.as_deref()) {
+                Some(note) => format!("{CURATED_DAMAGE_MESSAGE}\n{note}"),
+                None => CURATED_DAMAGE_MESSAGE.into(),
+            });
+        } else {
+            entry.message = Some(match curated_hook_note(entry.message.as_deref()) {
+                Some(note) => format!("{error}\n{note}"),
+                None => error.to_string(),
+            });
+        }
+        if let Err(error) = self.save_curated().await {
+            return error;
+        }
+        self.node_failure(error)
+    }
+
+    /// Maps a node-service stop to the setup failure. Damage to the candidate cannot be skipped.
+    fn node_failure(&mut self, error: SetupNodeError) -> ProvisionError {
+        match error {
+            SetupNodeError::Cancelled => ProvisionError::Cancelled,
+            SetupNodeError::PinDrift(message) => ProvisionError::PinDrift(message),
+            SetupNodeError::ConsentRequired => curated_review_pause(),
+            SetupNodeError::Damaged(message) => {
+                self.damaged = true;
+                failed(message)
+            }
+            SetupNodeError::NotApplied(message) => failed(message),
+            SetupNodeError::PlanStale => failed("The reviewed plan changed. Retry to review it."),
+        }
+    }
+
+    async fn final_verify(
+        &mut self,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<StepOutcome, ProvisionError> {
         let deps = self.deps.clone();
         let root = self.root();
         let ctx = self.ctx(StepId::FinalVerify);
-        let pins = self.installed_pins().await?;
-        self.record_pins(pins.clone()).await?;
+        if self.run.request.mode == SetupMode::Rebuild {
+            deps.relocation_runtime
+                .ensure_stopped(&root)
+                .await
+                .map_err(|error| failed(error.to_string()))?;
+            if let super::ManifestState::Valid(manifest) = deps
+                .manifests
+                .read(&root)
+                .await
+                .map_err(|error| failed(error.to_string()))?
+            {
+                deps.relocation_runtime
+                    .ensure_stopped(&manifest.install_root)
+                    .await
+                    .map_err(|error| failed(error.to_string()))?;
+            }
+        }
+        self.verify_curated(lease).await?;
+        let pins = self
+            .installed_pins()
+            .await
+            .map_err(|error| ProvisionError::PinDrift(describe(&error)))?;
+        let expected = &self
+            .env
+            .as_ref()
+            .ok_or_else(|| failed("the target environment was not prepared"))?
+            .pins;
+        if expected.is_empty() || !expected.diff(&pins).is_empty() {
+            return Err(ProvisionError::PinDrift(
+                "final verification differs from the recorded protected pins".into(),
+            ));
+        }
+        let warnings = self.accelerator_imports(&ctx).await?;
         let report = deps
             .verifier
             .verify_final(&root, &self.env_path(), &self.run.profile.verify, &ctx)
             .await?;
-        for (name, present) in &report.accelerators {
-            ctx.log(format!(
-                "{name}: {}",
-                if *present { "present" } else { "not installed" }
+        let after = self
+            .installed_pins()
+            .await
+            .map_err(|error| ProvisionError::PinDrift(describe(&error)))?;
+        if !pins.diff(&after).is_empty() {
+            return Err(ProvisionError::PinDrift(
+                "protected versions changed during final verification".into(),
             ));
         }
         let now = deps.clock.now();
@@ -858,7 +1477,8 @@ impl Execution {
             .clone()
             .ok_or_else(|| failed("the target environment was not prepared"))?;
         match activation::activate(&deps, &mut self.run, &candidate).await {
-            Ok(()) => Ok(StepOutcome::Done),
+            Ok(()) if warnings.is_empty() => Ok(StepOutcome::Done),
+            Ok(()) => Ok(StepOutcome::Warning(warnings.join("; "))),
             Err(EnvironmentAppError::RecoveryRequired) => Err(failed(
                 "install.json is unreadable or newer than this app; setup did not replace it.",
             )),
@@ -880,6 +1500,25 @@ impl Execution {
     }
 }
 
+/// Whether the decision answers exactly this review: its plan and binding, the acknowledgement
+/// that node code runs, every warning acknowledged and no protected package change.
+fn covers(decision: &CommitDecision, review: &PlanReview) -> bool {
+    let consent = &decision.consent;
+    consent.plan_id == review.id
+        && consent.binding == review.binding
+        && consent.execute_node_code
+        && (review.warnings.is_empty() || consent.acknowledge_warnings)
+        && decision.protected_changes.is_empty()
+}
+
+/// The run waits for the user to answer the curated node reviews.
+fn curated_review_pause() -> ProvisionError {
+    ProvisionError::ConsentRequired(ConsentRequest {
+        source: String::new(),
+        commit: String::new(),
+    })
+}
+
 fn pins_of(installed: &[super::model::InstalledPackage], protected: &[DistName]) -> PinSet {
     let named: Vec<(DistName, String)> = installed
         .iter()
@@ -899,13 +1538,6 @@ fn short(commit: &str) -> &str {
     commit.get(..10).unwrap_or(commit)
 }
 
-fn node_label(requirements: &Path) -> String {
-    requirements.parent().and_then(Path::file_name).map_or_else(
-        || "custom node".to_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    )
-}
-
 pub(crate) fn describe(error: &ProvisionError) -> String {
     match error {
         ProvisionError::Cancelled => "The operation was cancelled.".into(),
@@ -913,6 +1545,7 @@ pub(crate) fn describe(error: &ProvisionError) -> String {
             Some(code) => format!("A command failed with exit code {code}."),
             None => "A command failed.".into(),
         },
+        ProvisionError::PinDrift(message) => format!("Protected package pin drift: {message}"),
         ProvisionError::Retryable(message) | ProvisionError::Failed(message) => message.clone(),
         ProvisionError::ConsentRequired(_) => "Explicit consent is required.".into(),
     }
@@ -928,6 +1561,8 @@ fn to_failure(step: StepId, error: ProvisionError) -> StepFailure {
         exit_code: None,
         tail: Vec::new(),
         consent: None,
+        can_skip: step.policy() == StepPolicy::Optional
+            && !matches!(error, ProvisionError::PinDrift(_)),
     };
     match error {
         ProvisionError::CommandFailed(command) => {
@@ -937,6 +1572,11 @@ fn to_failure(step: StepId, error: ProvisionError) -> StepFailure {
             failure.tail = command.tail;
         }
         ProvisionError::Retryable(_) => failure.kind = FailureKind::Retryable,
+        ProvisionError::ConsentRequired(_) if step == StepId::CuratedNodes => {
+            failure.kind = FailureKind::ConsentRequired;
+            failure.message =
+                "Review the curated custom nodes and confirm each one to continue.".into();
+        }
         ProvisionError::ConsentRequired(consent) => {
             failure.kind = FailureKind::ConsentRequired;
             failure.message = format!(
@@ -947,7 +1587,7 @@ fn to_failure(step: StepId, error: ProvisionError) -> StepFailure {
             );
             failure.consent = Some(consent);
         }
-        ProvisionError::Failed(_) | ProvisionError::Cancelled => {}
+        ProvisionError::Failed(_) | ProvisionError::Cancelled | ProvisionError::PinDrift(_) => {}
     }
     failure
 }

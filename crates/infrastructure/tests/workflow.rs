@@ -10,6 +10,7 @@ use std::{
 
 use application::{
     comfy_runtime::{RuntimeBlock, RuntimeMaintenance},
+    custom_nodes::{NodeRequirements, NodeService},
     environment::*,
     settings::SettingsRepository,
 };
@@ -23,9 +24,11 @@ use domain::{
     settings::{CloseBehavior, HfEngine, Settings, Theme},
 };
 use infrastructure::{
+    custom_nodes::stack::{NodeAdapters, NodeOptions},
     environment::{
-        manifest::FsManifestStore, profiles::BundledProfiles, python::PythonAdapter,
-        sinks::run_sink, sqlite::SqliteEnvironmentStore, switcher::FsRootSwitcher,
+        curated::BundledCuratedNodes, manifest::FsManifestStore, profiles::BundledProfiles,
+        python::PythonAdapter, sinks::run_sink, sqlite::SqliteEnvironmentStore,
+        switcher::FsRootSwitcher,
     },
     settings::sqlite::SqliteSettingsRepository,
     shared::{
@@ -286,6 +289,16 @@ impl PackageInstaller for Sim {
 
 #[async_trait]
 impl EnvVerifier for Sim {
+    async fn verify_accelerator(
+        &self,
+        _root: &Path,
+        _env_path: &Path,
+        _module: &str,
+        _ctx: &StepContext,
+    ) -> Result<(), ProvisionError> {
+        self.step("verify_accelerator")
+    }
+
     async fn verify_torch(
         &self,
         _: &Path,
@@ -351,11 +364,14 @@ impl ComfySource for Sim {
 
     async fn clone_comfyui(
         &self,
-        _: &Path,
+        root: &Path,
         resolved: &ResolvedGit,
         _: &StepContext,
     ) -> Result<(), ProvisionError> {
         self.step("clone_comfyui")?;
+        std::fs::create_dir_all(root.join("ComfyUI")).map_err(|_| {
+            ProvisionError::Failed("The fixture checkout could not be created.".into())
+        })?;
         *self.checkout.lock().unwrap() = Some(resolved.commit.clone());
         Ok(())
     }
@@ -363,7 +379,6 @@ impl ComfySource for Sim {
     async fn requirement_files(&self, root: &Path) -> Result<RequirementFiles, ProvisionError> {
         Ok(RequirementFiles {
             comfyui: root.join("ComfyUI/requirements.txt"),
-            nodes: Vec::new(),
         })
     }
 
@@ -444,6 +459,7 @@ impl ActivationStore for FlakyActivation {
 struct Machine {
     root: PathBuf,
     deps: EnvironmentDeps,
+    nodes: Arc<dyn SetupNodes>,
     settings: Arc<SqliteSettingsRepository>,
 }
 
@@ -459,19 +475,31 @@ async fn start(root: &Path, sim: Arc<Sim>, faults: Faults) -> Machine {
     paths.ensure_dirs().unwrap();
     let db = Db::open(&paths.db_path).await.unwrap();
     let store = Arc::new(SqliteEnvironmentStore::new(db.clone()));
-    let settings = Arc::new(SqliteSettingsRepository::new(db));
+    let node_adapters = NodeAdapters::open(root, db.clone(), NodeOptions::default());
+    let settings = Arc::new(SqliteSettingsRepository::new(db.clone()));
     let current = RootInfo {
         root: root.to_owned(),
         source: RootSource::Default,
     };
     let deps = EnvironmentDeps {
+        installation: sim.clone(),
+        relocation: Arc::new(
+            infrastructure::environment::relocation::persistence::SqliteRelocationStore::new(db),
+        ),
+        relocation_runtime: Arc::new(Stopped),
         hardware: sim.clone(),
         catalog: Arc::new(BundledProfiles::load().unwrap()),
+        curated: Arc::new(BundledCuratedNodes::load().unwrap()),
         tools: sim.clone(),
         python: sim.clone(),
         packages: sim.clone(),
+        wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
         verifier: sim.clone(),
         source: sim.clone(),
+        node_requirements: Arc::new(NodeRequirements::new(
+            node_adapters.store.clone(),
+            node_adapters.files.clone(),
+        )),
         envs: store.clone(),
         runs: store.clone(),
         activation: Arc::new(FlakyActivation {
@@ -495,10 +523,26 @@ async fn start(root: &Path, sim: Arc<Sim>, faults: Faults) -> Machine {
         active_runs: Arc::new(ActiveRuns::default()),
         plans: Arc::new(PlanStore::default()),
     };
+    let nodes = Arc::new(NodeService::new(
+        node_adapters.bind(deps.clone(), "test".into()).deps,
+    ));
     Machine {
         root: root.to_owned(),
         deps,
+        nodes,
         settings,
+    }
+}
+
+#[async_trait]
+impl InstallationProbe for Sim {
+    async fn inspect(
+        &self,
+        _: &Path,
+        _: &InstallManifest,
+        _: &PythonEnvironment,
+    ) -> Result<InstallationHealth, ProvisionError> {
+        Ok(InstallationHealth::Healthy)
     }
 }
 
@@ -515,6 +559,8 @@ impl Machine {
             },
             comfyui_ref: ComfyRef::Latest,
             install_manager: false,
+            accelerators: Vec::new(),
+            curated_nodes: Vec::new(),
             clean_cache: false,
             confirm_adopted_changes: false,
             allow_source_builds: false,
@@ -534,7 +580,7 @@ impl Machine {
             run_id.as_str(),
             Arc::new(NullSink),
         );
-        ExecuteSetup::new(self.deps.clone())
+        ExecuteSetup::new(self.deps.clone(), self.nodes.clone())
             .execute(run_id, sink)
             .await
             .unwrap()
@@ -545,6 +591,7 @@ impl Machine {
             .execute(SetupAction::Retry {
                 run_id: run_id.clone(),
                 manager_consent: None,
+                curated_decisions: Vec::new(),
             })
             .await
             .unwrap();
@@ -859,3 +906,6 @@ async fn the_environment_can_only_be_changed_by_a_second_run_after_the_first_fin
         Some(status.run.unwrap().target_env.as_str())
     );
 }
+
+#[path = "workflow/relocation.rs"]
+mod relocation;

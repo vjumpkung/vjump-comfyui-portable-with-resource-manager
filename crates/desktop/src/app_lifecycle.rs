@@ -5,14 +5,25 @@
 //! Job Object/process-group ownership and the log readers stay alive. Reopening the app
 //! (a second launch) recreates the manager window.
 
-use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+use std::{
+    future::Future,
+    path::Path,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 
-use application::comfy_runtime::{CloseAction, RuntimeEvent, close_action};
+use application::{
+    comfy_runtime::{
+        CloseAction, InventoryState, RuntimeError, RuntimeEvent, RuntimeStatus, RuntimeSupervisor,
+        close_action,
+    },
+    shared::{MaintenanceGate, MaintenanceLease},
+};
 use domain::comfy_runtime::Lifecycle;
 use tauri::{AppHandle, Manager, Runtime, WebviewWindowBuilder};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tokio::sync::watch;
 
 use crate::{MANAGER_WINDOW, comfy_window::COMFYUI_WINDOW, ipc::error::IpcError, state::AppState};
@@ -23,6 +34,7 @@ pub trait ShellActions: Send + Sync {
     fn open_comfy_window(&self, url: tauri::Url) -> Result<(), IpcError>;
     fn open_browser(&self, url: tauri::Url);
     fn perform(&self, action: CloseAction);
+    fn request_restart(&self);
 }
 
 pub struct TauriShell<R: Runtime>(pub AppHandle<R>);
@@ -46,10 +58,25 @@ impl<R: Runtime> ShellActions for TauriShell<R> {
     fn perform(&self, action: CloseAction) {
         tauri::async_runtime::spawn(perform(self.0.clone(), action));
     }
+
+    fn request_restart(&self) {
+        let app = self.0.clone();
+        tauri::async_runtime::spawn(async move {
+            // Quiesce only once the restart is certain: a failed rebuild or refused switch keeps
+            // the session's workers running. `AppHandle::restart` skips the `RunEvent::Exit`
+            // handler that would otherwise stop them.
+            let state = app.state::<AppState>();
+            state.shutdown_downloads().await;
+            state.shutdown_library().await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            app.restart();
+        });
+    }
 }
 
 /// Tracks the pending manager close request and whether the app runs without windows.
 pub struct CloseCoordinator {
+    exit_lease: Mutex<Option<Box<dyn MaintenanceLease>>>,
     pending: Mutex<Option<String>>,
     counter: AtomicU64,
     headless: AtomicBool,
@@ -59,6 +86,7 @@ pub struct CloseCoordinator {
 impl Default for CloseCoordinator {
     fn default() -> Self {
         Self {
+            exit_lease: Mutex::new(None),
             pending: Mutex::new(None),
             counter: AtomicU64::new(0),
             headless: AtomicBool::new(false),
@@ -68,6 +96,96 @@ impl Default for CloseCoordinator {
 }
 
 impl CloseCoordinator {
+    pub(crate) async fn prepare_recovery(
+        &self,
+        gate: &dyn MaintenanceGate,
+    ) -> Result<CloseAction, RuntimeError> {
+        if self
+            .exit_lease
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+        {
+            return Ok(CloseAction::Exit);
+        }
+        let lease = gate.try_acquire().await.map_err(|_| RuntimeError::Busy)?;
+        *self.exit_lease.lock().unwrap_or_else(|p| p.into_inner()) = Some(lease);
+        Ok(CloseAction::Exit)
+    }
+    async fn guard_exit(
+        &self,
+        gate: &dyn MaintenanceGate,
+        supervisor: &dyn RuntimeSupervisor,
+        root: &Path,
+    ) -> Result<CloseAction, RuntimeError> {
+        let lease = gate.try_acquire().await.map_err(|_| RuntimeError::Busy)?;
+        // Inventory detects surviving/unowned processes even when the hub says Crashed.
+        if !matches!(supervisor.inventory(root).await?, InventoryState::Stopped)
+            || !matches!(
+                supervisor.status().await.lifecycle,
+                Lifecycle::Stopped | Lifecycle::Crashed
+            )
+        {
+            return Err(RuntimeError::NeedsStop);
+        }
+        *self.exit_lease.lock().unwrap_or_else(|p| p.into_inner()) = Some(lease);
+        Ok(CloseAction::Exit)
+    }
+
+    async fn prepare(
+        &self,
+        action: CloseAction,
+        gate: &dyn MaintenanceGate,
+        supervisor: &dyn RuntimeSupervisor,
+        root: &Path,
+        stop: impl Future<Output = Result<RuntimeStatus, RuntimeError>>,
+    ) -> Result<CloseAction, RuntimeError> {
+        if self
+            .exit_lease
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+        {
+            return Ok(CloseAction::Exit);
+        }
+        if matches!(
+            supervisor.status().await.lifecycle,
+            Lifecycle::Stopped | Lifecycle::Crashed
+        ) {
+            return self.guard_exit(gate, supervisor, root).await;
+        }
+        match action {
+            CloseAction::StopThenExit => {
+                match stop.await {
+                    Ok(_) => {}
+                    Err(RuntimeError::NodeRescanFailed) => {
+                        tracing::warn!(
+                            "ComfyUI stopped, but custom nodes could not be rescanned before exit"
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
+                self.guard_exit(gate, supervisor, root).await
+            }
+            CloseAction::KeepRunningHeadless => {
+                if matches!(
+                    supervisor.inventory(root).await?,
+                    InventoryState::OwnedRunning
+                ) && !matches!(
+                    supervisor.status().await.lifecycle,
+                    Lifecycle::Stopped | Lifecycle::Crashed
+                ) {
+                    Ok(action)
+                } else {
+                    // A stale keep-running response must use the same guarded stop check.
+                    self.guard_exit(gate, supervisor, root).await
+                }
+            }
+            CloseAction::Exit => self.guard_exit(gate, supervisor, root).await,
+            CloseAction::Ask => Ok(action),
+        }
+    }
+
     pub fn pending(&self) -> Option<String> {
         self.pending
             .lock()
@@ -117,6 +235,9 @@ impl CloseCoordinator {
     }
 }
 
+const MAINTENANCE_MESSAGE: &str =
+    "Maintenance is in progress. Wait for it to finish or cancel it before closing.";
+
 fn lifecycle_of<R: Runtime>(app: &AppHandle<R>) -> Option<Lifecycle> {
     let state = app.state::<AppState>();
     state
@@ -163,19 +284,37 @@ async fn decide<R: Runtime>(app: &AppHandle<R>) -> CloseAction {
 
 pub async fn perform<R: Runtime>(app: AppHandle<R>, action: CloseAction) {
     let state = app.state::<AppState>();
+    let prepared = if let Ok(services) = state.services() {
+        state
+            .close
+            .prepare(
+                action,
+                services.gate.as_ref(),
+                services.comfy.supervisor.as_ref(),
+                &services.root.root,
+                services.comfy.stop.execute(),
+            )
+            .await
+    } else {
+        state.close.prepare_recovery(state.gate.as_ref()).await
+    };
+    let action = match prepared {
+        Ok(action) => action,
+        Err(error) => {
+            tracing::warn!(%error, "close refused; staying open");
+            restore_manager(&app);
+            if matches!(error, RuntimeError::Busy) {
+                app.dialog()
+                    .message(MAINTENANCE_MESSAGE)
+                    .kind(MessageDialogKind::Info)
+                    .show(|_| {});
+            }
+            return;
+        }
+    };
     match action {
         CloseAction::Exit => app.exit(0),
-        CloseAction::StopThenExit => {
-            let Ok(services) = state.services() else {
-                app.exit(0);
-                return;
-            };
-            // Exit only after termination, output draining, log flushing and node rescan.
-            match services.comfy.stop.execute().await {
-                Ok(_) => app.exit(0),
-                Err(error) => tracing::error!(%error, "ComfyUI could not be stopped; staying open"),
-            }
-        }
+        CloseAction::StopThenExit => unreachable!("prepare resolves stop before exit"),
         CloseAction::KeepRunningHeadless => {
             state.close.set_headless(true);
             for label in [COMFYUI_WINDOW, MANAGER_WINDOW] {
@@ -198,6 +337,7 @@ pub async fn perform<R: Runtime>(app: AppHandle<R>, action: CloseAction) {
 /// Second launch: restores the manager window, which is absent in background mode.
 pub fn restore_manager<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window(MANAGER_WINDOW) {
+        app.state::<AppState>().close.set_headless(false);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -274,8 +414,356 @@ fn reconcile<R: Runtime>(app: &AppHandle<R>, status: &application::comfy_runtime
             if matches!(status.lifecycle, Lifecycle::Stopped | Lifecycle::Crashed)
                 && app.state::<AppState>().close.headless()
             {
-                app.exit(0);
+                let app = app.clone();
+                tauri::async_runtime::spawn(perform(app, CloseAction::Exit));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use application::{
+        comfy_runtime::{RuntimeBlock, RuntimeMaintenance, RuntimeSession},
+        shared::GateError,
+    };
+    use infrastructure::shared::gate::TokioMaintenanceGate;
+    use std::sync::{Arc, atomic::AtomicUsize};
+
+    struct Supervisor {
+        gate: TokioMaintenanceGate,
+        lifecycle: Mutex<Lifecycle>,
+        inventory: Mutex<Result<InventoryState, RuntimeError>>,
+        inspections: AtomicUsize,
+        require_gate: AtomicBool,
+    }
+
+    impl Supervisor {
+        fn new(gate: &TokioMaintenanceGate, lifecycle: Lifecycle) -> Self {
+            Self {
+                gate: gate.clone(),
+                lifecycle: Mutex::new(lifecycle),
+                inventory: Mutex::new(Ok(InventoryState::Stopped)),
+                inspections: AtomicUsize::new(0),
+                require_gate: AtomicBool::new(true),
+            }
+        }
+        async fn stopped(
+            &self,
+            result: Result<(), RuntimeError>,
+        ) -> Result<RuntimeStatus, RuntimeError> {
+            *self.lifecycle.lock().unwrap() = Lifecycle::Stopped;
+            result?;
+            Ok(self.status().await)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RuntimeMaintenance for Supervisor {
+        async fn ensure_stopped(&self, _: &Path) -> Result<(), RuntimeBlock> {
+            unreachable!()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RuntimeSupervisor for Supervisor {
+        async fn status(&self) -> RuntimeStatus {
+            RuntimeStatus {
+                lifecycle: *self.lifecycle.lock().unwrap(),
+                ..Default::default()
+            }
+        }
+        async fn inventory(&self, _: &Path) -> Result<InventoryState, RuntimeError> {
+            if self.require_gate.load(Ordering::SeqCst) {
+                assert_eq!(
+                    self.gate.try_acquire().await.err(),
+                    Some(GateError::Busy),
+                    "exit inspection must hold the shared gate"
+                );
+            }
+            self.inspections.fetch_add(1, Ordering::SeqCst);
+            self.inventory.lock().unwrap().clone()
+        }
+        async fn start(
+            &self,
+            _: RuntimeSession,
+            _: Vec<String>,
+            _: Box<dyn MaintenanceLease>,
+        ) -> Result<RuntimeStatus, RuntimeError> {
+            unreachable!()
+        }
+        async fn stop(&self) -> Result<RuntimeStatus, RuntimeError> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_then_exit_accepts_only_rescan_failure_after_verified_stop() {
+        for result in [
+            Ok(()),
+            Err(RuntimeError::NodeRescanFailed),
+            Err(RuntimeError::Failed("termination failed".into())),
+            Err(RuntimeError::RecoveryRequired("ownership unknown".into())),
+            Err(RuntimeError::Storage),
+            Err(RuntimeError::Busy),
+        ] {
+            let gate = TokioMaintenanceGate::new();
+            let supervisor = Supervisor::new(&gate, Lifecycle::Running);
+            let close = CloseCoordinator::default();
+            let allowed = matches!(result, Ok(()) | Err(RuntimeError::NodeRescanFailed));
+            let action = close
+                .prepare(
+                    CloseAction::StopThenExit,
+                    &gate,
+                    &supervisor,
+                    Path::new("root"),
+                    supervisor.stopped(result),
+                )
+                .await;
+            assert_eq!(action.is_ok(), allowed);
+            assert_eq!(
+                supervisor.inspections.load(Ordering::SeqCst),
+                usize::from(allowed)
+            );
+            assert_eq!(close.exit_lease.lock().unwrap().is_some(), allowed);
+        }
+        for inventory in [
+            Ok(InventoryState::OwnedRunning),
+            Ok(InventoryState::Unknown("ownership unknown".into())),
+            Ok(InventoryState::VerifiedSurvivor(
+                application::comfy_runtime::ProcessIdentity {
+                    pid: 1,
+                    created: "t".into(),
+                    scope: "scope".into(),
+                },
+            )),
+            Err(RuntimeError::Storage),
+        ] {
+            let gate = TokioMaintenanceGate::new();
+            let supervisor = Supervisor::new(&gate, Lifecycle::Running);
+            *supervisor.inventory.lock().unwrap() = inventory;
+            let close = CloseCoordinator::default();
+            assert!(
+                close
+                    .prepare(
+                        CloseAction::StopThenExit,
+                        &gate,
+                        &supervisor,
+                        Path::new("root"),
+                        supervisor.stopped(Err(RuntimeError::NodeRescanFailed))
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(close.exit_lease.lock().unwrap().is_none());
+            assert!(gate.try_acquire().await.is_ok());
+        }
+        // A successful Stop response alone cannot authorize exit while still running.
+        let gate = TokioMaintenanceGate::new();
+        let supervisor = Supervisor::new(&gate, Lifecycle::Running);
+        assert!(
+            CloseCoordinator::default()
+                .prepare(
+                    CloseAction::StopThenExit,
+                    &gate,
+                    &supervisor,
+                    Path::new("root"),
+                    async { Ok(RuntimeStatus::default()) }
+                )
+                .await
+                .is_err()
+        );
+        // Maintenance can win the interval between Stop/rescan and the final check.
+        let close = CloseCoordinator::default();
+        let maintenance = Mutex::new(None);
+        let action = close
+            .prepare(
+                CloseAction::StopThenExit,
+                &gate,
+                &supervisor,
+                Path::new("root"),
+                async {
+                    let lease = gate.acquire().await.unwrap();
+                    *maintenance.lock().unwrap() = Some(lease);
+                    supervisor
+                        .stopped(Err(RuntimeError::NodeRescanFailed))
+                        .await
+                },
+            )
+            .await;
+        assert_eq!(action, Err(RuntimeError::Busy));
+        assert!(close.exit_lease.lock().unwrap().is_none());
+        assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
+    }
+
+    #[tokio::test]
+    async fn close_during_maintenance_keeps_the_manager_open() {
+        for work in [
+            "node preparation",
+            "hook",
+            "environment work",
+            "retained cleanup failure",
+        ] {
+            let gate = TokioMaintenanceGate::new();
+            let lease = gate.acquire().await.unwrap();
+            let retained = lease.retained();
+            let lease = if work == "retained cleanup failure" {
+                drop(lease);
+                None
+            } else {
+                Some(lease)
+            };
+            let close = CloseCoordinator::default();
+            let supervisor = Supervisor::new(&gate, Lifecycle::Stopped);
+            let action = close
+                .prepare(
+                    CloseAction::Exit,
+                    &gate,
+                    &supervisor,
+                    Path::new("root"),
+                    async { panic!("close must not stop/cancel {work}") },
+                )
+                .await;
+            assert!(matches!(action, Err(RuntimeError::Busy)), "{work}");
+            assert_eq!(
+                MAINTENANCE_MESSAGE,
+                "Maintenance is in progress. Wait for it to finish or cancel it before closing."
+            );
+            assert!(!close.headless(), "no window destruction for {work}");
+            assert!(
+                close.exit_lease.lock().unwrap().is_none(),
+                "no exit for {work}"
+            );
+            assert_eq!(supervisor.inspections.load(Ordering::SeqCst), 0);
+            drop(retained);
+            drop(lease);
+            assert!(
+                gate.try_acquire().await.is_ok(),
+                "refused close must not queue an exit"
+            );
+            assert!(close.exit_lease.lock().unwrap().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn exit_lease_prevents_new_maintenance_before_process_exit() {
+        let gate = TokioMaintenanceGate::new();
+        let supervisor = Supervisor::new(&gate, Lifecycle::Stopped);
+        let close = Arc::new(CloseCoordinator::default());
+        assert_eq!(
+            close
+                .prepare(
+                    CloseAction::Exit,
+                    &gate,
+                    &supervisor,
+                    Path::new("root"),
+                    async { unreachable!() }
+                )
+                .await
+                .unwrap(),
+            CloseAction::Exit
+        );
+        assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), gate.acquire())
+                .await
+                .is_err()
+        );
+        // Repeated exit events keep the original lease through actual process teardown.
+        assert_eq!(
+            close
+                .prepare(
+                    CloseAction::Exit,
+                    &gate,
+                    &supervisor,
+                    Path::new("root"),
+                    async { unreachable!() }
+                )
+                .await
+                .unwrap(),
+            CloseAction::Exit
+        );
+        assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
+        drop(close);
+        assert!(gate.try_acquire().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stale_close_choice_cannot_bypass_maintenance() {
+        for action in [CloseAction::StopThenExit, CloseAction::KeepRunningHeadless] {
+            let gate = TokioMaintenanceGate::new();
+            let supervisor = Supervisor::new(&gate, Lifecycle::Running);
+            let close = CloseCoordinator::default();
+            let request = close.open_request();
+            // The runtime stopped and maintenance began while the dialog was open.
+            *supervisor.lifecycle.lock().unwrap() = Lifecycle::Stopped;
+            let lease = gate.acquire().await.unwrap();
+            assert!(close.resolve(&request));
+            assert!(matches!(
+                close
+                    .prepare(action, &gate, &supervisor, Path::new("root"), async {
+                        panic!("stale response must not stop maintenance")
+                    })
+                    .await,
+                Err(RuntimeError::Busy)
+            ));
+            assert!(!close.headless());
+            assert!(close.exit_lease.lock().unwrap().is_none());
+            drop(lease);
+        }
+        // The headless-stop exit uses the same guard and restores the manager on refusal.
+        let gate = TokioMaintenanceGate::new();
+        let supervisor = Supervisor::new(&gate, Lifecycle::Stopped);
+        let close = CloseCoordinator::default();
+        close.set_headless(true);
+        let _lease = gate.acquire().await.unwrap();
+        assert!(matches!(
+            close
+                .prepare(
+                    CloseAction::Exit,
+                    &gate,
+                    &supervisor,
+                    Path::new("root"),
+                    async { unreachable!() }
+                )
+                .await,
+            Err(RuntimeError::Busy)
+        ));
+        assert!(close.exit_lease.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_supervised_running_runtime_keeps_the_headless_behavior() {
+        let gate = TokioMaintenanceGate::new();
+        let supervisor = Supervisor::new(&gate, Lifecycle::Running);
+        *supervisor.inventory.lock().unwrap() = Ok(InventoryState::OwnedRunning);
+        supervisor.require_gate.store(false, Ordering::SeqCst);
+        assert_eq!(
+            CloseCoordinator::default()
+                .prepare(
+                    CloseAction::KeepRunningHeadless,
+                    &gate,
+                    &supervisor,
+                    Path::new("root"),
+                    async { unreachable!() }
+                )
+                .await
+                .unwrap(),
+            CloseAction::KeepRunningHeadless
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_close_holds_the_same_gate_through_exit() {
+        let gate = TokioMaintenanceGate::new();
+        let close = CloseCoordinator::default();
+        let lease = gate.acquire().await.unwrap();
+        assert_eq!(close.prepare_recovery(&gate).await, Err(RuntimeError::Busy));
+        assert!(close.exit_lease.lock().unwrap().is_none());
+        drop(lease);
+        assert_eq!(close.prepare_recovery(&gate).await, Ok(CloseAction::Exit));
+        assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
+        assert_eq!(close.prepare_recovery(&gate).await, Ok(CloseAction::Exit));
     }
 }

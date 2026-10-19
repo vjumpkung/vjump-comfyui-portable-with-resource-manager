@@ -14,7 +14,8 @@ use thiserror::Error;
 use crate::{
     comfy_runtime::{GetComfyStatus, RuntimeDeps, RuntimeLogReader, RuntimeStatus},
     environment::{
-        DetectHardware, EnvironmentAppError, EnvironmentInfo, GetEnvironmentInfo, ManifestState,
+        AcceleratorResult, ComponentStatus, DetectHardware, EnvironmentAppError, EnvironmentInfo,
+        GetEnvironmentInfo, InstalledComponents, ManifestState,
     },
 };
 
@@ -55,8 +56,8 @@ pub struct EnvironmentSection {
     pub torch: Option<String>,
     pub triton: Option<String>,
     pub protected_pins: Vec<(String, String)>,
-    /// Accelerator outcomes as reported by the environment query; empty when the build does not
-    /// report any.
+    /// The stored outcome of every accelerator component, one line each; empty when the profile
+    /// has none or none were recorded.
     pub accelerators: Vec<String>,
 }
 
@@ -80,9 +81,41 @@ impl From<&EnvironmentInfo> for EnvironmentSection {
                 .iter()
                 .map(|(name, version)| (name.to_string(), version.to_owned()))
                 .collect(),
-            accelerators: info.accelerators.clone(),
+            accelerators: info
+                .components
+                .accelerators
+                .iter()
+                .map(describe_accelerator)
+                .collect(),
         }
     }
+}
+
+/// Installation and import outcomes stay separate; an untested import is not a success.
+fn describe_accelerator(result: &AcceleratorResult) -> String {
+    let mut text = format!(
+        "{}: {}, {}, import {}",
+        result.id,
+        if result.selected {
+            "selected"
+        } else {
+            "not selected"
+        },
+        match result.status {
+            ComponentStatus::Installed => "installed",
+            ComponentStatus::Failed => "failed",
+            ComponentStatus::Skipped => "skipped",
+        },
+        match result.importable {
+            Some(true) => "ok",
+            Some(false) => "failed",
+            None => "untested",
+        }
+    );
+    if let Some(message) = &result.message {
+        let _ = write!(text, " - {message}");
+    }
+    text
 }
 
 /// The profile recorded in `install.json`.
@@ -155,11 +188,10 @@ impl CollectDiagnostics {
         let env_path = info.as_ref().ok().map(|info| info.env.path.clone());
         match info {
             Ok(info) => {
-                if info.accelerators.is_empty() {
-                    snapshot.warnings.push(
-                        "Accelerator outcomes are not available: this build does not report them."
-                            .into(),
-                    );
+                if info.components == InstalledComponents::default() {
+                    snapshot
+                        .warnings
+                        .push("Accelerator outcomes are not recorded for this environment.".into());
                 }
                 snapshot.environment = Some(EnvironmentSection::from(&info));
             }
@@ -325,7 +357,7 @@ impl DiagnosticsSnapshot {
                 }
                 let _ = writeln!(out, "Accelerators:");
                 if env.accelerators.is_empty() {
-                    let _ = writeln!(out, "  {UNAVAILABLE} (not reported by this build)");
+                    let _ = writeln!(out, "  none recorded");
                 }
                 for accelerator in &env.accelerators {
                     let _ = writeln!(out, "  {accelerator}");

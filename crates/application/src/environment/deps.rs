@@ -8,23 +8,30 @@ use super::{
     model::RunId,
     packages::{PackagePlan, PlanId},
     ports::{
-        ActivationStore, ComfySource, EnvVerifier, EnvironmentRepository, HardwareProbe,
-        InstallManifestStore, PackageInstaller, ProfileCatalog, ProvisioningRunRepository,
-        PythonProvisioner, RootSwitcher, ToolProvisioner, WizardDraftStore,
+        ActivationStore, ComfySource, CuratedNodeCatalog, EnvVerifier, EnvironmentRepository,
+        HardwareProbe, InstallManifestStore, NodeRequirementSource, PackageInstaller,
+        ProfileCatalog, ProvisioningRunRepository, PythonProvisioner, RootSwitcher,
+        ToolProvisioner, WheelFetcher, WizardDraftStore,
     },
 };
 use crate::{
     comfy_runtime::RuntimeMaintenance,
+    custom_nodes::CommitDecision,
     shared::{CancelToken, Clock, IdGenerator, MaintenanceGate},
 };
 
-/// The in-process cancellation tokens of runs that are registered or executing.
+/// The in-process cancellation tokens of runs that are registered or executing, and the curated
+/// node decisions a retry carries to the executor. Decisions are never persisted, so a restart
+/// drops them together with the reviews they answer.
 #[derive(Default)]
-pub struct ActiveRuns(Mutex<HashMap<RunId, CancelToken>>);
+pub struct ActiveRuns {
+    tokens: Mutex<HashMap<RunId, CancelToken>>,
+    decisions: Mutex<HashMap<RunId, Vec<CommitDecision>>>,
+}
 
 impl ActiveRuns {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<RunId, CancelToken>> {
-        self.0
+        self.tokens
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -42,6 +49,32 @@ impl ActiveRuns {
 
     pub fn remove(&self, id: &RunId) {
         self.lock().remove(id);
+        self.decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(id);
+    }
+
+    /// Replaces the curated decisions the next execution of `id` consumes.
+    pub fn set_decisions(&self, id: &RunId, decisions: Vec<CommitDecision>) {
+        let mut all = self
+            .decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if decisions.is_empty() {
+            all.remove(id);
+        } else {
+            all.insert(id.clone(), decisions);
+        }
+    }
+
+    /// Hands the decisions to the executor exactly once.
+    pub fn take_decisions(&self, id: &RunId) -> Vec<CommitDecision> {
+        self.decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(id)
+            .unwrap_or_default()
     }
 }
 
@@ -83,11 +116,14 @@ impl PlanStore {
 pub struct EnvironmentDeps {
     pub hardware: Arc<dyn HardwareProbe>,
     pub catalog: Arc<dyn ProfileCatalog>,
+    pub curated: Arc<dyn CuratedNodeCatalog>,
     pub tools: Arc<dyn ToolProvisioner>,
     pub python: Arc<dyn PythonProvisioner>,
     pub packages: Arc<dyn PackageInstaller>,
+    pub wheels: Arc<dyn WheelFetcher>,
     pub verifier: Arc<dyn EnvVerifier>,
     pub source: Arc<dyn ComfySource>,
+    pub node_requirements: Arc<dyn NodeRequirementSource>,
     pub envs: Arc<dyn EnvironmentRepository>,
     pub runs: Arc<dyn ProvisioningRunRepository>,
     pub activation: Arc<dyn ActivationStore>,
@@ -100,6 +136,9 @@ pub struct EnvironmentDeps {
     pub ids: Arc<dyn IdGenerator>,
     pub active_runs: Arc<ActiveRuns>,
     pub plans: Arc<PlanStore>,
+    pub installation: Arc<dyn super::InstallationProbe>,
+    pub relocation: Arc<dyn super::RelocationStore>,
+    pub relocation_runtime: Arc<dyn RuntimeMaintenance>,
 }
 
 impl EnvironmentDeps {
@@ -110,16 +149,5 @@ impl EnvironmentDeps {
 
 /// True when two locations name the same place (case-insensitive on Windows).
 pub fn same_location(left: &Path, right: &Path) -> bool {
-    fn normalize(path: &Path) -> String {
-        let text = path.to_string_lossy();
-        let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
-        let text = text.replace('\\', "/");
-        let text = text.trim_end_matches('/').to_owned();
-        if cfg!(windows) {
-            text.to_lowercase()
-        } else {
-            text
-        }
-    }
-    normalize(left) == normalize(right)
+    super::normalized_path(left) == super::normalized_path(right)
 }

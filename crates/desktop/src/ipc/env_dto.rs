@@ -4,10 +4,11 @@
 use std::path::PathBuf;
 
 use application::environment::{
-    ApplyOutcome, BlockedFeature, CheckId, ComfyRef, EnvironmentInfo, EnvironmentSummary,
-    FailureKind, InstalledPackage, PackageOperation, PackagePlan, PlanResolution, ProfileOffer,
-    ProvisioningRun, PythonSourceInput, PythonValidationReport, RecoveryReason, RunId, RunOutcome,
-    RunStatus, SetupAction, SetupEvent, SetupPhase, SetupRequest, SetupStatus, StepFailure, StepId,
+    ApplyOutcome, BlockedFeature, CheckId, ComfyRef, CuratedNodeSpec, CuratedProgress,
+    CuratedStatus, EnvironmentInfo, EnvironmentSummary, FailureKind, InstalledPackage,
+    PackageOperation, PackagePlan, PlanResolution, ProfileOffer, ProvisioningRun,
+    PythonSourceInput, PythonValidationReport, RecoveryReason, RunId, RunOutcome, RunStatus,
+    SetupAction, SetupEvent, SetupPhase, SetupRequest, SetupStatus, StepFailure, StepId,
     StepStatus, ValidationTarget,
 };
 use domain::environment::{
@@ -17,7 +18,11 @@ use domain::environment::{
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use super::error::IpcError;
+use super::{
+    error::IpcError,
+    node_commands,
+    node_dto::{CommitInput, PlanReviewDto},
+};
 
 // ---------------------------------------------------------------------------- small enums
 
@@ -29,6 +34,7 @@ pub enum SetupModeDto {
     ChangeTorch,
     ChangePython,
     SwitchVenv,
+    Rebuild,
 }
 
 impl From<SetupModeDto> for SetupMode {
@@ -39,6 +45,7 @@ impl From<SetupModeDto> for SetupMode {
             SetupModeDto::ChangeTorch => Self::ChangeTorch,
             SetupModeDto::ChangePython => Self::ChangePython,
             SetupModeDto::SwitchVenv => Self::SwitchVenv,
+            SetupModeDto::Rebuild => Self::Rebuild,
         }
     }
 }
@@ -51,6 +58,7 @@ impl From<SetupMode> for SetupModeDto {
             SetupMode::ChangeTorch => Self::ChangeTorch,
             SetupMode::ChangePython => Self::ChangePython,
             SetupMode::SwitchVenv => Self::SwitchVenv,
+            SetupMode::Rebuild => Self::Rebuild,
         }
     }
 }
@@ -221,6 +229,7 @@ pub enum SetupPhaseDto {
     NeedsSetup,
     Ready,
     RepairRequired,
+    RebuildRequired,
     RunInProgress,
     RunFailed,
     RecoveryRequired,
@@ -263,6 +272,8 @@ pub struct StepFailureDto {
     pub exit_code: Option<i32>,
     pub tail: Vec<String>,
     pub consent: Option<ConsentDto>,
+    /// Decided by the backend: false when the failure damaged the candidate environment.
+    pub can_skip: bool,
 }
 
 impl From<&StepFailure> for StepFailureDto {
@@ -278,6 +289,73 @@ impl From<&StepFailure> for StepFailureDto {
                 source: consent.source.clone(),
                 commit: consent.commit.clone(),
             }),
+            can_skip: value.can_skip,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CuratedStatusDto {
+    Pending,
+    Prepared,
+    Failed,
+    Installed,
+    Skipped,
+}
+
+impl From<CuratedStatus> for CuratedStatusDto {
+    fn from(value: CuratedStatus) -> Self {
+        match value {
+            CuratedStatus::Pending => Self::Pending,
+            CuratedStatus::Prepared => Self::Prepared,
+            CuratedStatus::Failed => Self::Failed,
+            CuratedStatus::Installed => Self::Installed,
+            CuratedStatus::Skipped => Self::Skipped,
+        }
+    }
+}
+
+/// The progress of one selected curated node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CuratedProgressDto {
+    pub id: String,
+    pub status: CuratedStatusDto,
+    pub message: Option<String>,
+}
+
+impl From<&CuratedProgress> for CuratedProgressDto {
+    fn from(value: &CuratedProgress) -> Self {
+        Self {
+            id: value.id.clone(),
+            status: value.status.into(),
+            message: value.message.clone(),
+        }
+    }
+}
+
+/// An entry of the curated node catalog: an exact commit of a repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CuratedNodeDto {
+    pub id: String,
+    pub name: String,
+    pub repository: String,
+    pub branch: String,
+    pub commit: String,
+    pub provenance: String,
+}
+
+impl From<&CuratedNodeSpec> for CuratedNodeDto {
+    fn from(value: &CuratedNodeSpec) -> Self {
+        Self {
+            id: value.id.clone(),
+            name: value.name.clone(),
+            repository: value.repository.clone(),
+            branch: value.branch.clone(),
+            commit: value.commit.clone(),
+            provenance: value.provenance.clone(),
         }
     }
 }
@@ -306,6 +384,11 @@ pub struct RunSnapshotDto {
     pub failure: Option<StepFailureDto>,
     pub cancel_requested: bool,
     pub activation_phase: String,
+    /// The selected curated nodes, in catalog order.
+    pub curated: Vec<CuratedProgressDto>,
+    /// The pending reviews of the curated nodes, one batch in catalog order. They exist only in
+    /// this process, so a backend restart empties them and the nodes are reviewed again.
+    pub curated_reviews: Vec<PlanReviewDto>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -334,9 +417,33 @@ impl From<&ProvisioningRun> for RunSnapshotDto {
             failure: run.failure.as_ref().map(StepFailureDto::from),
             cancel_requested: run.cancel_requested,
             activation_phase: run.activation.as_str().to_owned(),
+            curated: run.curated.iter().map(CuratedProgressDto::from).collect(),
+            curated_reviews: Vec::new(),
             created_at: run.created_at.clone(),
             updated_at: run.updated_at.clone(),
         }
+    }
+}
+
+impl RunSnapshotDto {
+    /// Adds the live reviews of the run's prepared curated nodes, in catalog order.
+    pub fn with_reviews(
+        mut self,
+        run: &ProvisioningRun,
+        reviews: &[application::custom_nodes::PlanReview],
+    ) -> Self {
+        self.curated_reviews = run
+            .curated
+            .iter()
+            .filter(|entry| entry.status == CuratedStatus::Prepared)
+            .filter_map(|entry| {
+                reviews
+                    .iter()
+                    .find(|review| Some(&review.id) == entry.plan.as_ref())
+            })
+            .map(PlanReviewDto::from)
+            .collect();
+        self
     }
 }
 
@@ -428,6 +535,20 @@ impl From<&SetupStatus> for SetupStatusDto {
             SetupPhase::NeedsSetup => (SetupPhaseDto::NeedsSetup, None),
             SetupPhase::Ready => (SetupPhaseDto::Ready, None),
             SetupPhase::RepairRequired => (SetupPhaseDto::RepairRequired, None),
+            SetupPhase::RebuildRequired(reason) => (
+                SetupPhaseDto::RebuildRequired,
+                Some(RecoveryDto {
+                    code: match reason {
+                        application::environment::RebuildReason::Moved => "moved",
+                        application::environment::RebuildReason::InterpreterBroken => {
+                            "interpreter_broken"
+                        }
+                    }
+                    .into(),
+                    message: "Rebuild the environment using its recorded profile and components."
+                        .into(),
+                }),
+            ),
             SetupPhase::RunInProgress => (SetupPhaseDto::RunInProgress, None),
             SetupPhase::RunFailed => (SetupPhaseDto::RunFailed, None),
             SetupPhase::Recovery(reason) => (
@@ -459,8 +580,16 @@ impl SetupStatusDto {
                 code: info.code.clone(),
                 message: info.message.clone(),
             }),
-            install_root: String::new(),
-            root_source: RootSourceDto::Default,
+            install_root: info
+                .root
+                .as_ref()
+                .map(|root| root.root.display().to_string())
+                .unwrap_or_default(),
+            root_source: info
+                .root
+                .as_ref()
+                .map(|root| root.source.into())
+                .unwrap_or(RootSourceDto::Default),
             active_env: None,
             run: None,
             draft: None,
@@ -765,6 +894,8 @@ pub struct SetupRequestDto {
     pub profile_id: String,
     pub comfyui_ref: ComfyRefDto,
     pub install_manager: bool,
+    /// Catalog ids of the curated nodes. Choosing them is not consent: each is reviewed first.
+    pub curated_nodes: Vec<String>,
     pub clean_cache: bool,
     pub confirm_adopted_changes: bool,
     pub allow_source_builds: bool,
@@ -780,6 +911,7 @@ pub enum SetupActionDto {
     Retry {
         run_id: String,
         manager_consent: Option<String>,
+        curated_decisions: Vec<CommitInput>,
     },
     #[serde(rename_all = "camelCase")]
     SkipStep {
@@ -799,6 +931,8 @@ impl SetupActionDto {
                 profile_id: request.profile_id,
                 comfyui_ref: request.comfyui_ref.into(),
                 install_manager: request.install_manager,
+                accelerators: Vec::new(),
+                curated_nodes: request.curated_nodes,
                 clean_cache: request.clean_cache,
                 confirm_adopted_changes: request.confirm_adopted_changes,
                 allow_source_builds: request.allow_source_builds,
@@ -806,9 +940,14 @@ impl SetupActionDto {
             Self::Retry {
                 run_id,
                 manager_consent,
+                curated_decisions,
             } => SetupAction::Retry {
                 run_id: RunId::new(run_id).map_err(|_| invalid())?,
                 manager_consent,
+                curated_decisions: curated_decisions
+                    .into_iter()
+                    .map(|input| node_commands::decision(input).map(|(_, decision)| decision))
+                    .collect::<Result<_, _>>()?,
             },
             Self::SkipStep { run_id, step } => SetupAction::SkipStep {
                 run_id: RunId::new(run_id).map_err(|_| invalid())?,
@@ -1128,5 +1267,205 @@ impl From<&ApplyOutcome> for PipApplyResultDto {
                 .map(PinChangeDto::from)
                 .collect(),
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use application::{
+        custom_nodes::{OperationKind, PlanReview},
+        environment::{ActivationPhase, ProfileCatalog, ResolvedSources},
+    };
+    use domain::{
+        custom_nodes::NodeSource,
+        environment::{EnvId, PinSet},
+    };
+    use infrastructure::environment::profiles::BundledProfiles;
+
+    use super::*;
+
+    fn run(curated: Vec<CuratedProgress>) -> ProvisioningRun {
+        let profile = BundledProfiles::load()
+            .unwrap()
+            .get("win-py313-torch2141-cu130")
+            .unwrap();
+        ProvisioningRun {
+            id: RunId::new("run-1").unwrap(),
+            request: SetupRequest {
+                mode: SetupMode::FirstRun,
+                install_root: PathBuf::from("root"),
+                python_source: PythonSourceInput::Managed,
+                profile_id: profile.id.clone(),
+                comfyui_ref: ComfyRef::Latest,
+                install_manager: false,
+                accelerators: Vec::new(),
+                curated_nodes: Vec::new(),
+                clean_cache: false,
+                confirm_adopted_changes: false,
+                allow_source_builds: false,
+            },
+            profile,
+            target_env: EnvId::new("env-1").unwrap(),
+            previous_env: None,
+            python_target: application::environment::PythonTarget {
+                ownership: Ownership::AppOwned,
+                source: PythonSourceKind::Managed,
+                env_path: PathBuf::from("env"),
+                interpreter: None,
+                create_venv: true,
+                development_files_ok: None,
+            },
+            resolved: ResolvedSources::default(),
+            components: Default::default(),
+            steps: ProvisioningRun::fresh_steps(),
+            status: RunStatus::Failed,
+            cancel_requested: false,
+            failure: None,
+            activation: ActivationPhase::None,
+            manager_consent: None,
+            curated,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        }
+    }
+
+    fn review(id: &str) -> PlanReview {
+        PlanReview {
+            id: id.into(),
+            binding: format!("binding-{id}"),
+            kind: OperationKind::Install,
+            source: NodeSource::Manual,
+            name: id.into(),
+            prior_source: None,
+            requirements: Vec::new(),
+            artifact_digest: None,
+            tree_digest: String::new(),
+            requirements_digest: None,
+            hook_digest: None,
+            environment: EnvId::new("env-1").unwrap(),
+            pins: PinSet::new(),
+            protected_changes: Vec::new(),
+            warnings: Vec::new(),
+            trusted_source: false,
+            trusted_install_py: false,
+            has_requirements: false,
+            has_install_py: false,
+        }
+    }
+
+    #[test]
+    fn a_snapshot_lists_the_live_reviews_of_prepared_nodes_in_catalog_order() {
+        let entry = |id: &str, status, plan: Option<&str>| CuratedProgress {
+            id: id.into(),
+            status,
+            plan: plan.map(str::to_owned),
+            operation: None,
+            message: None,
+        };
+        let run = run(vec![
+            entry("alpha", CuratedStatus::Prepared, Some("plan-a")),
+            entry("beta", CuratedStatus::Installed, None),
+            entry("gamma", CuratedStatus::Prepared, Some("plan-gone")),
+            entry("delta", CuratedStatus::Prepared, Some("plan-d")),
+            entry("epsilon", CuratedStatus::Failed, None),
+        ]);
+        // The process holds the reviews in any order, and none for the obsolete plan.
+        let reviews = [review("plan-d"), review("plan-a"), review("plan-other")];
+        let snapshot = RunSnapshotDto::from(&run);
+        assert!(snapshot.curated_reviews.is_empty());
+        let ids: Vec<_> = snapshot
+            .clone()
+            .with_reviews(&run, &reviews)
+            .curated_reviews
+            .into_iter()
+            .map(|review| review.id)
+            .collect();
+        assert_eq!(ids, ["plan-a", "plan-d"]);
+        let progress: Vec<_> = snapshot
+            .curated
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.status))
+            .collect();
+        assert_eq!(
+            progress,
+            [
+                ("alpha", CuratedStatusDto::Prepared),
+                ("beta", CuratedStatusDto::Installed),
+                ("gamma", CuratedStatusDto::Prepared),
+                ("delta", CuratedStatusDto::Prepared),
+                ("epsilon", CuratedStatusDto::Failed),
+            ]
+        );
+        // After a restart no review exists, so the nodes must be reviewed again.
+        assert!(
+            RunSnapshotDto::from(&run)
+                .with_reviews(&run, &[])
+                .curated_reviews
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn setup_actions_carry_the_selection_and_the_decisions_without_trust() {
+        let request = SetupRequestDto {
+            mode: SetupModeDto::FirstRun,
+            python_source: PythonSourceDto::Managed,
+            profile_id: "profile".into(),
+            comfyui_ref: ComfyRefDto::Latest,
+            install_manager: false,
+            curated_nodes: vec!["comfyui-kjnodes".into()],
+            clean_cache: false,
+            confirm_adopted_changes: false,
+            allow_source_builds: false,
+        };
+        let Ok(SetupAction::New(new)) =
+            SetupActionDto::New { request }.into_application(std::path::Path::new("root"))
+        else {
+            panic!("a new run converts");
+        };
+        assert_eq!(new.curated_nodes, ["comfyui-kjnodes"]);
+        let input = CommitInput {
+            plan_id: "plan-a".into(),
+            binding: "binding".into(),
+            execute_node_code: true,
+            run_install_py: true,
+            acknowledge_warnings: true,
+            remember_source: true,
+            remember_install_py: true,
+            confirmed_changes: Vec::new(),
+        };
+        let retry = SetupActionDto::Retry {
+            run_id: "run-1".into(),
+            manager_consent: None,
+            curated_decisions: vec![input],
+        };
+        let Ok(SetupAction::Retry {
+            curated_decisions, ..
+        }) = retry.into_application(std::path::Path::new("root"))
+        else {
+            panic!("a retry converts");
+        };
+        assert_eq!(curated_decisions.len(), 1);
+        assert_eq!(curated_decisions[0].consent.plan_id, "plan-a");
+        assert_eq!(curated_decisions[0].consent.binding, "binding");
+        assert!(curated_decisions[0].consent.acknowledge_warnings);
+        // Source builds are never part of a decision.
+        assert!(!curated_decisions[0].consent.allow_source_builds);
+    }
+
+    #[test]
+    fn a_step_failure_reports_whether_it_can_be_skipped() {
+        let mut failure = StepFailure {
+            step: StepId::CuratedNodes,
+            kind: FailureKind::Failed,
+            message: "m".into(),
+            command: None,
+            exit_code: None,
+            tail: Vec::new(),
+            consent: None,
+            can_skip: false,
+        };
+        assert!(!StepFailureDto::from(&failure).can_skip);
+        failure.can_skip = true;
+        assert!(StepFailureDto::from(&failure).can_skip);
     }
 }

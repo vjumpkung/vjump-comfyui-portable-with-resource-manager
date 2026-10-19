@@ -13,6 +13,7 @@ export const modeLabels: Record<SetupModeDto, string> = {
   change_torch: 'Change torch / CUDA',
   change_python: 'Change Python',
   switch_venv: 'Switch to custom venv',
+  rebuild: 'Rebuild environment',
 }
 
 export function minor(version: string): string {

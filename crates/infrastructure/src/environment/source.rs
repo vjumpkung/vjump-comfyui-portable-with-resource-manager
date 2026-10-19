@@ -1,6 +1,6 @@
 //! The ComfyUI source: release resolution through the GitHub API and Git subprocesses for
-//! tags, clones and checkouts. Fresh clones are staged and published; an existing folder is
-//! never altered.
+//! tags, clones and checkouts. Fresh clones are staged and published into empty scaffolds;
+//! existing user content is never replaced.
 
 use std::{
     fs,
@@ -25,6 +25,8 @@ use crate::shared::{
     process::{CommandSpec, RunLimits},
 };
 
+mod publish;
+
 #[derive(Debug, Clone)]
 pub struct Endpoints {
     pub comfyui_url: String,
@@ -46,6 +48,8 @@ pub struct GitSource {
     downloader: Downloader,
     endpoints: Endpoints,
     git_override: Option<PathBuf>,
+    #[cfg(test)]
+    publish_fault: std::sync::Mutex<Option<publish::Fault>>,
 }
 
 impl GitSource {
@@ -62,6 +66,8 @@ impl GitSource {
             downloader,
             endpoints,
             git_override,
+            #[cfg(test)]
+            publish_fault: Default::default(),
         }
     }
 
@@ -246,32 +252,35 @@ impl GitSource {
         fs::create_dir_all(parent)
             .map_err(|_| failed("the destination folder could not be created"))?;
         let stage = parent.join(format!(".{stage_name}.cloning"));
-        let _ = fs::remove_dir_all(&stage);
+        let publication = publish::Publication::open(final_dir, stage_name)
+            .map_err(|_| failed(publish::INTERRUPTED))?;
+        if self.recover_publication(&publication, layout, ctx).await? {
+            return Ok(());
+        }
+        publication.discard_stage().map_err(|_| {
+            failed("The previous staging folder could not be removed. It was left for inspection.")
+        })?;
         let result = self
             .clone_into_stage(layout, url, resolved, &stage, ctx)
             .await;
         if let Err(error) = result {
-            let _ = fs::remove_dir_all(&stage);
+            let _ = publication.discard_stage();
             return Err(error);
         }
-        let publish = (|| {
-            if final_dir.exists() {
-                if !final_dir.is_dir() || fs::read_dir(final_dir)?.next().is_some() {
-                    return Err(std::io::Error::other(
-                        "the destination exists and is not empty",
-                    ));
+        match fs::symlink_metadata(final_dir) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if fs::rename(&stage, final_dir).is_err() {
+                    let _ = publication.discard_stage();
+                    return Err(failed(publish::CONFLICT));
                 }
-                fs::remove_dir(final_dir)?;
+                Ok(())
             }
-            fs::rename(&stage, final_dir)
-        })();
-        if publish.is_err() {
-            let _ = fs::remove_dir_all(&stage);
-            return Err(failed(
-                "The clone could not be published because the destination exists and was left unchanged.",
-            ));
+            Ok(_) => self.publish_scaffold(&publication, layout, ctx).await,
+            Err(_) => {
+                let _ = publication.discard_stage();
+                Err(failed("The ComfyUI folder could not be inspected."))
+            }
         }
-        Ok(())
     }
 
     async fn clone_into_stage(
@@ -322,17 +331,24 @@ impl GitSource {
         repository: &Path,
         ctx: &StepContext,
     ) -> Result<String, ProvisionError> {
+        self.head_commit_with_limits(layout, repository, ctx, &ctx.cancel, &RunLimits::default())
+            .await
+    }
+
+    async fn head_commit_with_limits(
+        &self,
+        layout: &Layout,
+        repository: &Path,
+        ctx: &StepContext,
+        cancel: &application::shared::CancelToken,
+        limits: &RunLimits,
+    ) -> Result<String, ProvisionError> {
         let spec = self
             .git_command(layout)?
             .arg("-C")
             .arg(repository)
             .args(["rev-parse", "HEAD"]);
-        let output = run_quiet(
-            &spec.clone().retain(ctx.retained.clone()),
-            &ctx.cancel,
-            &RunLimits::default(),
-        )
-        .await?;
+        let output = run_quiet(&spec.clone().retain(ctx.retained.clone()), cancel, limits).await?;
         output
             .stdout
             .lines()
@@ -405,11 +421,30 @@ impl ComfySource for GitSource {
     async fn inspect_checkout(&self, root: &Path) -> Result<Checkout, ProvisionError> {
         let layout = Layout::new(root);
         let dir = layout.comfyui_dir();
-        if !dir.exists() || (dir.is_dir() && is_empty_dir(&dir)) {
-            return Ok(Checkout::Absent);
-        }
-        if !dir.is_dir() || !dir.join(".git").exists() {
+        let meta = match fs::symlink_metadata(&dir) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Checkout::Absent);
+            }
+            Err(_) => return Err(failed("The ComfyUI folder could not be inspected.")),
+        };
+        if !publish::real_directory(&meta) {
             return Ok(Checkout::NotGit);
+        }
+        let pinned = crate::shared::model_paths::pin_absolute(&dir)
+            .map_err(|_| failed("The ComfyUI folder could not be inspected."))?;
+        match fs::symlink_metadata(pinned.anchored_path().join(".git")) {
+            Ok(_) => {} // Keep Git's existing checkout validation ahead of scaffold classification.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let pending = publish::Publication::open(&dir, "ComfyUI")
+                    .is_ok_and(|publication| publication.pending());
+                return Ok(if pending || publish::is_scaffold(&pinned) {
+                    Checkout::Absent
+                } else {
+                    Checkout::NotGit
+                });
+            }
+            Err(_) => return Err(failed("The ComfyUI folder could not be inspected.")),
         }
         let spec = self
             .git_command(&layout)?
@@ -467,27 +502,7 @@ impl ComfySource for GitSource {
         if !comfyui.is_file() {
             return Err(failed("ComfyUI's requirements.txt was not found."));
         }
-        let mut nodes = Vec::new();
-        // Enabled nodes, then disabled ones: a repair must keep a node usable once re-enabled.
-        // App staging and backups (`.vjump-*`) and other dot names are never nodes.
-        let custom_nodes = layout.comfyui_dir().join("custom_nodes");
-        for directory in [custom_nodes.clone(), custom_nodes.join(".disabled")] {
-            let Ok(entries) = fs::read_dir(directory) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with('.') || name == "__pycache__" {
-                    continue;
-                }
-                let requirements = entry.path().join("requirements.txt");
-                if entry.path().is_dir() && requirements.is_file() {
-                    nodes.push(requirements);
-                }
-            }
-        }
-        nodes.sort();
-        Ok(RequirementFiles { comfyui, nodes })
+        Ok(RequirementFiles { comfyui })
     }
 
     async fn resolve_manager(&self, root: &Path) -> Result<ResolvedGit, ProvisionError> {

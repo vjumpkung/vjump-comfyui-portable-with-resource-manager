@@ -68,6 +68,10 @@ pub enum RootError {
     BootstrapInaccessible,
     #[error("the local data directory is unavailable")]
     NoLocalDataDirectory,
+    #[error("the saved installation directory is missing")]
+    RootMissing(PathBuf),
+    #[error("the saved installation directory cannot be accessed")]
+    RootInaccessible(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,10 +146,19 @@ pub fn resolve_root_with(
         });
     }
     match read_bootstrap(bootstrap_file)? {
-        Some(root) => Ok(ResolvedRoot {
-            root,
-            source: RootSource::Bootstrap,
-        }),
+        Some(root) => {
+            match fs::metadata(&root) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Err(RootError::RootMissing(root));
+                }
+                _ => return Err(RootError::RootInaccessible(root)),
+            }
+            Ok(ResolvedRoot {
+                root,
+                source: RootSource::Bootstrap,
+            })
+        }
         None => Ok(ResolvedRoot {
             root: default_root,
             source: RootSource::Default,
@@ -203,6 +216,7 @@ mod tests {
         assert_eq!(resolved.root, default);
 
         let chosen = directory.path().join("chosen ราก root");
+        fs::create_dir(&chosen).unwrap();
         write_bootstrap(&pointer, &chosen).unwrap();
         let resolved = resolve(None, &pointer, default.to_str().unwrap()).unwrap();
         assert_eq!(resolved.source, RootSource::Bootstrap);
@@ -287,6 +301,55 @@ mod tests {
             names.len(),
             1,
             "no temporary file is left behind: {names:?}"
+        );
+    }
+
+    #[test]
+    fn missing_bootstrap_root_creates_no_install_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let pointer = directory.path().join("config/bootstrap.json");
+        let recorded = directory.path().join("vanished install");
+        let default = directory.path().join("default install");
+        write_bootstrap(&pointer, &recorded).unwrap();
+
+        assert_eq!(
+            resolve_root_with(None, &pointer, default.clone()),
+            Err(RootError::RootMissing(recorded.clone()))
+        );
+        assert!(!recorded.exists());
+        assert!(!default.exists());
+    }
+
+    #[test]
+    fn first_run_default_root_is_distinct_from_missing_existing_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let pointer = directory.path().join("config/bootstrap.json");
+        let root = directory.path().join("new install");
+        assert_eq!(
+            resolve_root_with(None, &pointer, root.clone()).unwrap(),
+            ResolvedRoot {
+                root: root.clone(),
+                source: RootSource::Default,
+            }
+        );
+        assert!(!root.exists());
+        write_bootstrap(&pointer, &root).unwrap();
+        assert_eq!(
+            resolve_root_with(None, &pointer, root.clone()),
+            Err(RootError::RootMissing(root))
+        );
+    }
+
+    #[test]
+    fn an_inaccessible_recorded_root_is_not_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let pointer = directory.path().join("bootstrap.json");
+        let root = directory.path().join("file instead of directory");
+        fs::write(&root, "not a directory").unwrap();
+        write_bootstrap(&pointer, &root).unwrap();
+        assert_eq!(
+            resolve_root_with(None, &pointer, directory.path().join("default")),
+            Err(RootError::RootInaccessible(root))
         );
     }
 }

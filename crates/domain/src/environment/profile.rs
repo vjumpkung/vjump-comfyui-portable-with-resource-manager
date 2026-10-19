@@ -1,11 +1,13 @@
+use crate::shared::model_values::{SafeFileName, Sha256};
+
 use super::{
     error::EnvironmentError,
     pins::DistName,
     version::{ComputeCapability, CudaVariant, CudaVersion, OsKind, PythonVersion},
 };
 
-/// The only profile schema this build understands.
-pub const PROFILE_SCHEMA_VERSION: u32 = 1;
+/// The current profile schema; schema 1 remains readable with an empty accelerator list.
+pub const PROFILE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileStatus {
@@ -72,11 +74,82 @@ impl TritonSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcceleratorSource {
+    Wheel {
+        url: String,
+        filename: SafeFileName,
+        sha256: Sha256,
+        size: Option<u64>,
+    },
+    Packages {
+        requirements: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceleratorSpec {
+    pub id: String,
     pub name: String,
-    pub requirement: String,
-    pub sha256: Option<String>,
+    pub modules: Vec<String>,
+    pub source: AcceleratorSource,
+    pub no_deps: bool,
+    pub default_selected: bool,
     pub non_fatal: bool,
+    pub provenance: String,
+}
+
+impl AcceleratorSpec {
+    pub fn validate(&self) -> Result<(), EnvironmentError> {
+        let invalid = EnvironmentError::InvalidProfile;
+        if self.id.is_empty()
+            || self.id.len() > 64
+            || !self
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            || self.id.starts_with('-')
+            || self.id.ends_with('-')
+        {
+            return Err(invalid("accelerator id"));
+        }
+        if self.name.trim().is_empty() || self.provenance.trim().is_empty() {
+            return Err(invalid("accelerator name or provenance"));
+        }
+        for module in &self.modules {
+            if module.is_empty()
+                || !module.split('.').all(|part| {
+                    let mut bytes = part.bytes();
+                    bytes
+                        .next()
+                        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                })
+            {
+                return Err(invalid("accelerator module"));
+            }
+        }
+        match &self.source {
+            AcceleratorSource::Wheel {
+                url,
+                filename,
+                size,
+                ..
+            } => {
+                if !url.starts_with("https://")
+                    || !filename.as_str().ends_with(".whl")
+                    || *size == Some(0)
+                {
+                    return Err(invalid("accelerator wheel"));
+                }
+            }
+            AcceleratorSource::Packages { requirements } => {
+                if requirements.is_empty() || requirements.iter().any(|r| r.trim().is_empty()) {
+                    return Err(invalid("accelerator requirements"));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,8 +230,11 @@ impl SetupProfile {
         if !simple_id {
             return Err(invalid("id"));
         }
-        if self.schema_version != PROFILE_SCHEMA_VERSION {
+        if self.schema_version != PROFILE_SCHEMA_VERSION && self.schema_version != 1 {
             return Err(invalid("schema version"));
+        }
+        if self.schema_version == 1 && !self.accelerators.is_empty() {
+            return Err(invalid("legacy accelerators are unsupported"));
         }
         if self.label.trim().is_empty() {
             return Err(invalid("label"));
@@ -211,14 +287,12 @@ impl SetupProfile {
         if self.provenance.is_empty() {
             return Err(invalid("provenance"));
         }
-        if self.accelerators.iter().any(|accelerator| {
-            accelerator.name.is_empty()
-                || accelerator
-                    .sha256
-                    .as_deref()
-                    .is_none_or(|hash| hash.len() != 64)
-        }) {
-            return Err(invalid("accelerators need a pinned SHA-256"));
+        let mut ids = std::collections::HashSet::new();
+        for accelerator in &self.accelerators {
+            accelerator.validate()?;
+            if !ids.insert(&accelerator.id) {
+                return Err(invalid("duplicate accelerator id"));
+            }
         }
         Ok(())
     }
@@ -299,7 +373,7 @@ mod tests {
         type Mutation = fn(&mut SetupProfile);
         let mutations: Vec<(&str, Mutation)> = vec![
             ("id", |p| p.id = "Bad Id".into()),
-            ("schema", |p| p.schema_version = 2),
+            ("schema", |p| p.schema_version = 3),
             ("python", |p| p.python = PythonVersion::new(3, 11, 9)),
             ("index", |p| {
                 p.torch.index_url = "http://example.com/cu130".into()
@@ -316,12 +390,18 @@ mod tests {
             }),
             ("disk", |p| p.disk.margin_bytes = 0),
             ("provenance", |p| p.provenance.clear()),
-            ("accelerator hash", |p| {
+            ("accelerator provenance", |p| {
                 p.accelerators.push(AcceleratorSpec {
+                    id: "x".into(),
                     name: "x".into(),
-                    requirement: "x".into(),
-                    sha256: None,
+                    modules: vec![],
+                    source: AcceleratorSource::Packages {
+                        requirements: vec!["x".into()],
+                    },
+                    no_deps: false,
+                    default_selected: false,
                     non_fatal: true,
+                    provenance: String::new(),
                 })
             }),
         ];

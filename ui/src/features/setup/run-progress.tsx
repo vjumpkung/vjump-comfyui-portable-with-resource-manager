@@ -165,6 +165,7 @@ export function RunProgress({
                     managerConsent: approved
                       ? (sourceConsent?.commit ?? null)
                       : null,
+                    curatedDecisions: [],
                   })
                 }
               >

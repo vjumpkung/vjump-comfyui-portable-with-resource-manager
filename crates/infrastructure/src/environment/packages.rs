@@ -58,6 +58,9 @@ pub fn install_args(python: &Path, spec: &InstallSpec, dry_run: bool) -> Vec<OsS
     if let Some(constraints) = &spec.constraint_file {
         args.extend(["-c".into(), constraints.as_os_str().to_owned()]);
     }
+    if spec.no_deps {
+        args.push("--no-deps".into());
+    }
     if spec.upgrade {
         args.push("--upgrade".into());
     }

@@ -27,7 +27,14 @@ impl IpcError {
 
     /// The error of every command while the app runs without a usable install root.
     pub(crate) fn recovery(info: &RecoveryInfo) -> Self {
-        Self::new("recovery_required", &info.message)
+        Self::new(
+            match info.code.as_str() {
+                "root_missing" => "root_missing",
+                "rebuild_required" => "rebuild_required",
+                _ => "recovery_required",
+            },
+            &info.message,
+        )
     }
 }
 
@@ -101,6 +108,13 @@ impl From<EnvironmentAppError> for IpcError {
                 "comfyui_state_unknown",
                 "The state of ComfyUI could not be determined, so nothing was changed.",
             ),
+            E::Provision(ProvisionError::Cancelled) => {
+                Self::new("cancelled", "The operation was cancelled.")
+            }
+            E::Provision(ProvisionError::PinDrift(_)) => Self::new(
+                "pin_drift",
+                "Protected packages could not be restored or verified.",
+            ),
             E::Provision(error) => Self::new("operation_failed", &describe(&error)),
             E::Manifest(_) => Self::new(
                 "manifest_unavailable",
@@ -117,6 +131,56 @@ impl From<EnvironmentAppError> for IpcError {
             E::RootSwitch(RootSwitchError::Failed) => Self::new(
                 "root_switch_failed",
                 "The install root could not be switched.",
+            ),
+            E::RootSwitch(RootSwitchError::Missing) => Self::new(
+                "root_missing",
+                "The selected installation folder is missing.",
+            ),
+            E::RootSwitch(RootSwitchError::ComfyUiRunning) => Self::new(
+                "comfyui_running",
+                "Stop ComfyUI before changing the installation.",
+            ),
+            E::RootSwitch(RootSwitchError::ComfyUiStateUnknown) => Self::new(
+                "comfyui_state_unknown",
+                "ComfyUI process ownership could not be established.",
+            ),
+            E::RootSwitch(RootSwitchError::MaintenanceBusy) => {
+                Self::new("maintenance_busy", "Maintenance is in progress.")
+            }
+            E::RootSwitch(RootSwitchError::RelocationRecoveryRequired)
+            | E::Relocation(application::environment::RelocationError::RecoveryRequired) => {
+                Self::new(
+                    "relocation_recovery_required",
+                    "Interrupted publication requires recovery before relocation.",
+                )
+            }
+            E::Relocation(application::environment::RelocationError::Storage) => Self::new(
+                "environment_storage_unavailable",
+                "Relocation storage is unavailable.",
+            ),
+            E::RebuildRequired => Self::new(
+                "rebuild_required",
+                "The installation requires a guided rebuild.",
+            ),
+            E::RebuildCheckoutMissing => Self::new(
+                "rebuild_checkout_missing",
+                "The existing ComfyUI checkout is missing.",
+            ),
+            E::RebuildCheckoutInvalid => Self::new(
+                "rebuild_checkout_invalid",
+                "The existing ComfyUI checkout is unsafe or is not Git.",
+            ),
+            E::AcceleratorSelectionInvalid => Self::new(
+                "accelerator_selection_invalid",
+                "Accelerator ids must be unique and belong to the selected profile.",
+            ),
+            E::CuratedSelectionInvalid => Self::new(
+                "curated_selection_invalid",
+                "Curated node ids must be unique, belong to the catalog and be chosen for a first run.",
+            ),
+            E::ProfileRevisionUnavailable => Self::new(
+                "profile_revision_unavailable",
+                "The recorded setup profile revision is unavailable.",
             ),
             E::ProfileNotFound => Self::new("profile_not_found", "Unknown setup profile."),
             E::ProfileDisabled(reasons) => {
@@ -205,9 +269,18 @@ impl From<EnvironmentAppError> for IpcError {
     }
 }
 
+impl From<RootSwitchError> for IpcError {
+    fn from(error: RootSwitchError) -> Self {
+        EnvironmentAppError::RootSwitch(error).into()
+    }
+}
+
 fn describe(error: &ProvisionError) -> String {
     match error {
         ProvisionError::Cancelled => "The operation was cancelled.".into(),
+        ProvisionError::PinDrift(_) => {
+            "Protected packages could not be restored or verified.".into()
+        }
         ProvisionError::CommandFailed(failure) => match failure.exit_code {
             Some(code) => format!("A command failed with exit code {code}."),
             None => "A command failed.".into(),
@@ -297,6 +370,14 @@ mod tests {
                 "node_rescan_failed",
                 "ComfyUI stopped, but custom nodes could not be rescanned; retry Rescan."
             )
+        );
+    }
+
+    #[test]
+    fn an_invalid_curated_selection_has_a_fixed_ipc_code() {
+        assert_eq!(
+            IpcError::from(EnvironmentAppError::CuratedSelectionInvalid).code,
+            "curated_selection_invalid"
         );
     }
 }

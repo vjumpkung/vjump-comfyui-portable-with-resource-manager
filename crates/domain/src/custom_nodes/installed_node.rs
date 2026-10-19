@@ -153,6 +153,18 @@ pub struct InstalledNode {
     pub dirty: Option<bool>,
 }
 
+impl InstalledNode {
+    pub fn dependency_identity(&self) -> String {
+        let source = self.source.identity();
+        format!(
+            "{}:{source}{}:{}",
+            source.len(),
+            self.tree_digest.len(),
+            self.tree_digest
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +199,33 @@ mod tests {
             branch: None,
         };
         assert_ne!(a.identity(), b.identity());
+    }
+
+    #[test]
+    fn dependency_identity_frames_the_exact_source_and_content() {
+        let mut node = InstalledNode {
+            id: NodeId::new("node").unwrap(),
+            name: SafeFileName::new("node").unwrap(),
+            source: registry("nodes", "1.0.0"),
+            origin: ProvenanceOrigin::App,
+            enabled: true,
+            single_file: false,
+            tree_digest: "contents".into(),
+            dependencies: DependencyState::NotRun,
+            conflict: false,
+            dirty: None,
+        };
+        let source = node.source.identity();
+        assert_eq!(
+            node.dependency_identity(),
+            format!("{}:{source}8:contents", source.len())
+        );
+        let identity = node.dependency_identity();
+        node.tree_digest = "changed".into();
+        assert_ne!(node.dependency_identity(), identity);
+        node.tree_digest = "contents".into();
+        node.source = registry("nodes", "1.1.0");
+        assert_ne!(node.dependency_identity(), identity);
     }
 
     #[test]

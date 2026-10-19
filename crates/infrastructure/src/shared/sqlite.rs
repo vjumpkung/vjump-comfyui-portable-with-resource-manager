@@ -24,6 +24,10 @@ pub fn migrations() -> Migrations<'static> {
         M::up(include_str!("../../migrations/004_downloads.sql")),
         M::up(include_str!("../../migrations/005_library.sql")),
         M::up(include_str!("../../migrations/006_custom_nodes.sql")),
+        M::up(include_str!(
+            "../../migrations/007_environment_components.sql"
+        )),
+        M::up(include_str!("../../migrations/008_install_relocation.sql")),
     ])
 }
 
@@ -34,6 +38,27 @@ pub struct Db {
 }
 
 impl Db {
+    /// Reads an existing database without creating it, migrating it or changing its settings.
+    pub async fn open_existing(path: impl AsRef<Path>) -> Result<Self, DbError> {
+        let path = path.as_ref().to_owned();
+        tokio::task::spawn_blocking(move || {
+            let connection =
+                Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .map_err(|_| DbError::Unavailable)?;
+            connection
+                .busy_timeout(Duration::from_secs(5))
+                .map_err(|_| DbError::Unavailable)?;
+            let _: u32 = connection
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .map_err(|_| DbError::Unavailable)?;
+            Ok(Self {
+                connection: Arc::new(Mutex::new(connection)),
+            })
+        })
+        .await
+        .map_err(|_| DbError::Unavailable)?
+    }
+
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, DbError> {
         let path = path.as_ref().to_owned();
         tokio::task::spawn_blocking(move || {
@@ -102,7 +127,7 @@ mod tests {
             let version: u32 = connection
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 6);
+            assert_eq!(version, 8);
             let theme: String = connection
                 .query_row(
                     "SELECT value FROM settings WHERE key = 'theme'",

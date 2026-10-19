@@ -56,7 +56,7 @@ fn components(path: &Path) -> Vec<String> {
         .collect()
 }
 
-fn nested(inner: &Path, outer: &Path) -> bool {
+pub(crate) fn nested(inner: &Path, outer: &Path) -> bool {
     let (inner, outer) = (components(inner), components(outer));
     inner.len() >= outer.len() && inner[..outer.len()] == outer[..]
 }

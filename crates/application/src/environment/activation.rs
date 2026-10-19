@@ -45,6 +45,7 @@ pub(crate) async fn build_manifest(
             .map(|resolved| resolved.commit.clone()),
         run_id: run.id.clone(),
         activated_at: deps.clock.now(),
+        components: run.components.clone(),
     })
 }
 
@@ -76,6 +77,9 @@ pub(crate) async fn activate(
     run: &mut ProvisioningRun,
     candidate: &PythonEnvironment,
 ) -> Result<(), EnvironmentAppError> {
+    if !super::same_location(&run.request.install_root, &deps.root.current().root) {
+        return Err(EnvironmentAppError::RebuildRequired);
+    }
     if run.activation == ActivationPhase::Committed {
         return Ok(());
     }
@@ -94,6 +98,9 @@ pub(crate) async fn complete_activation(
     run: &mut ProvisioningRun,
     candidate: &PythonEnvironment,
 ) -> Result<(), EnvironmentAppError> {
+    if !super::same_location(&run.request.install_root, &deps.root.current().root) {
+        return Err(EnvironmentAppError::RebuildRequired);
+    }
     if run.activation == ActivationPhase::Intent {
         let manifest = build_manifest(deps, run, candidate).await?;
         deps.manifests.publish(&manifest).await?;
@@ -130,9 +137,14 @@ impl ReconcileStartup {
 
     pub async fn execute(&self) -> Result<ReconcileReport, EnvironmentAppError> {
         let deps = &self.deps;
+        // Runs bound to another root are skipped below, so a moved installation reconciles only
+        // what belongs to the current root.
         let _lease = deps.gate.acquire().await?;
         let mut report = ReconcileReport::default();
         for mut run in deps.runs.unfinished().await? {
+            if !super::same_location(&run.request.install_root, &deps.root.current().root) {
+                continue;
+            }
             let now = deps.clock.now();
             if run.status.is_active() {
                 run.status = RunStatus::Interrupted;
@@ -154,6 +166,7 @@ impl ReconcileStartup {
                     exit_code: None,
                     tail: Vec::new(),
                     consent: None,
+                    can_skip: false,
                 });
                 run.updated_at = now.clone();
                 report.interrupted_runs += 1;

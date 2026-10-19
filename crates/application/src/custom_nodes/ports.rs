@@ -26,7 +26,14 @@ pub trait NodeRepository: Send + Sync {
     async fn save_node(&self, node: &InstalledNode) -> Result<(), NodeAppError>;
     async fn remove_node(&self, id: &NodeId) -> Result<(), NodeAppError>;
     async fn save_operation(&self, operation: &NodeOperation) -> Result<(), NodeAppError>;
+    /// Oldest creation first; equal timestamps retain insertion order.
     async fn operations(&self) -> Result<Vec<NodeOperation>, NodeAppError>;
+    async fn dependency(
+        &self,
+        node: &NodeId,
+        environment: &domain::environment::EnvId,
+        source_identity: &str,
+    ) -> Result<Option<DependencyState>, NodeAppError>;
     async fn save_dependency(&self, outcome: &DependencyOutcome) -> Result<(), NodeAppError>;
     async fn trust(&self, namespace: &str) -> Result<Option<Trust>, NodeAppError>;
     async fn save_trust(&self, trust: &Trust) -> Result<(), NodeAppError>;
@@ -79,6 +86,7 @@ pub trait NodeFiles: Send + Sync {
     /// Pins the node directory (live, or staged for `staged`) with its full parent chain and
     /// reads its root requirements and install script through non-following handles. Acquire a
     /// live guard after publication, because Windows pins obstruct renaming the directory.
+    /// Only absent requirements produce `None`; oversized or non-UTF-8 input is `UnsafeSource`.
     async fn pin_location(
         &self,
         root: &Path,
@@ -119,7 +127,8 @@ pub trait NodeFiles: Send + Sync {
 pub trait NodeLocationGuard: Send + Sync {
     /// The working directory for execution, anchored to the pinned directory.
     fn directory(&self) -> &Path;
-    /// Root `requirements.txt` as read once from the guarded handle, when it is valid text.
+    /// Root `requirements.txt` as read once from the guarded handle. `None` means absent;
+    /// unsupported input prevents guard acquisition with an error. Empty UTF-8 is valid.
     fn requirements(&self) -> Option<Arc<[u8]>>;
     /// Root `install.py` as read once from the guarded handle.
     fn install_script(&self) -> Option<Arc<[u8]>>;

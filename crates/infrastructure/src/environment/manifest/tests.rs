@@ -15,6 +15,7 @@ fn manifest(root: &Path, generation: u64) -> InstallManifest {
         comfyui_commit: Some("a".repeat(40)),
         run_id: RunId::new("run-1").unwrap(),
         activated_at: "2026-10-16T00:00:00Z".into(),
+        components: Default::default(),
     }
 }
 
@@ -100,7 +101,7 @@ async fn unreadable_invalid_and_newer_manifests_are_reported_not_replaced() {
             ManifestState::Corrupt,
         ),
         (
-            with(&|v| v["schema_version"] = 2.into()),
+            with(&|v| v["schema_version"] = 3.into()),
             ManifestState::Newer,
         ),
         (
@@ -123,4 +124,18 @@ async fn unreadable_invalid_and_newer_manifests_are_reported_not_replaced() {
     fs::remove_dir(root.join("install.json")).unwrap();
     fs::write(root.join("install.json"), [0xff, 0xfe, 0x00]).unwrap();
     assert_eq!(store.read(&root).await.unwrap(), ManifestState::Corrupt);
+}
+
+#[test]
+fn schema_one_manifests_have_unknown_components() {
+    let mut value =
+        serde_json::to_value(ManifestDoc::from(&manifest(Path::new("/install"), 1))).unwrap();
+    value["schema_version"] = 1.into();
+    value.as_object_mut().unwrap().remove("components");
+    let ManifestState::Valid(parsed) = parse_manifest(&value.to_string()) else {
+        panic!("legacy manifest must remain readable")
+    };
+    assert_eq!(parsed.components, Default::default());
+    value["schema_version"] = 2.into();
+    assert_eq!(parse_manifest(&value.to_string()), ManifestState::Corrupt);
 }

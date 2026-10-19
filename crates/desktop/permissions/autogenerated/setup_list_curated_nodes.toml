@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-setup-list-curated-nodes"
+description = "Enables the setup_list_curated_nodes command without any pre-configured scope."
+commands.allow = ["setup_list_curated_nodes"]
+
+[[permission]]
+identifier = "deny-setup-list-curated-nodes"
+description = "Denies the setup_list_curated_nodes command without any pre-configured scope."
+commands.deny = ["setup_list_curated_nodes"]

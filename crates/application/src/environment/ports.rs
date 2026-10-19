@@ -8,10 +8,14 @@ use domain::environment::{
 use thiserror::Error;
 
 use super::model::{
-    ComfyRef, ConsentRequest, InstallManifest, InstalledPackage, ManifestState, ProvisioningRun,
-    PythonSourceInput, ResolvedGit, RunId, RunStatus, StepFailure, StepId, StepStatus,
+    ComfyRef, ConsentRequest, CuratedNodeSpec, InstallManifest, InstalledPackage, ManifestState,
+    ProvisioningRun, PythonSourceInput, ResolvedGit, RunId, RunStatus, StepFailure, StepId,
+    StepStatus,
 };
-use crate::shared::CancelToken;
+use crate::{
+    custom_nodes::{CommitDecision, NodeOutcome, PlanReview},
+    shared::{CancelToken, MaintenanceLease},
+};
 
 // ---------------------------------------------------------------------------------------
 // Progress
@@ -110,6 +114,8 @@ pub enum ProvisionError {
     /// Cancellation was honoured and the whole process tree is gone.
     #[error("the operation was cancelled")]
     Cancelled,
+    #[error("protected packages could not be restored or verified: {0}")]
+    PinDrift(String),
     #[error("a command failed")]
     CommandFailed(CommandFailure),
     /// A transient condition such as rate limiting or a dropped connection.
@@ -148,6 +154,55 @@ pub enum RootSwitchError {
     InvalidDestination(String),
     #[error("the install root could not be switched")]
     Failed,
+    #[error("the selected installation is missing")]
+    Missing,
+    #[error("ComfyUI is running")]
+    ComfyUiRunning,
+    #[error("ComfyUI process ownership could not be established")]
+    ComfyUiStateUnknown,
+    #[error("maintenance is in progress")]
+    MaintenanceBusy,
+    #[error("relocation journals require recovery")]
+    RelocationRecoveryRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum RelocationError {
+    #[error("relocation journals require recovery")]
+    RecoveryRequired,
+    #[error("relocation storage is unavailable")]
+    Storage,
+}
+
+#[async_trait]
+pub trait InstallationProbe: Send + Sync {
+    async fn inspect(
+        &self,
+        current_root: &Path,
+        manifest: &InstallManifest,
+        active: &PythonEnvironment,
+    ) -> Result<super::InstallationHealth, ProvisionError>;
+
+    fn invalidate(&self) {}
+
+    async fn validate_rebuild_checkout(&self, _root: &Path) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+pub trait RelocationStore: Send + Sync {
+    async fn check(&self, _old_root: &Path, _new_root: &Path) -> Result<(), RelocationError> {
+        Ok(())
+    }
+    /// The caller holds the maintenance lease and has proved both roots stopped.
+    async fn accept(&self, old_root: &Path, new_root: &Path) -> Result<(), RelocationError>;
+}
+
+#[async_trait]
+pub trait ExistingInstallOpener: Send + Sync {
+    async fn open_existing(&self, path: &Path) -> Result<(), RootSwitchError>;
+    async fn select_new(&self, path: &Path) -> Result<(), RootSwitchError>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -163,6 +218,9 @@ pub trait HardwareProbe: Send + Sync {
 pub trait ProfileCatalog: Send + Sync {
     fn list(&self) -> Vec<SetupProfile>;
     fn get(&self, id: &str) -> Option<SetupProfile>;
+    fn get_revision(&self, id: &str, revision: u32) -> Option<SetupProfile> {
+        self.get(id).filter(|profile| profile.revision == revision)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,6 +325,14 @@ pub trait ToolProvisioner: Send + Sync {
         root: &Path,
         ctx: &StepContext,
     ) -> Result<ToolInfo, ProvisionError>;
+
+    async fn recreate_hf_tool(
+        &self,
+        root: &Path,
+        ctx: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError> {
+        self.ensure_hf_tool(root, ctx).await
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,6 +393,108 @@ pub struct GuardedRequirements {
     pub retained: Retained,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRequirementSet {
+    pub node_id: domain::custom_nodes::NodeId,
+    pub name: domain::shared::model_values::SafeFileName,
+    /// The exact source and current content, from `InstalledNode::dependency_identity`.
+    pub source_identity: String,
+    pub file: Option<GuardedRequirements>,
+    pub extra: Vec<String>,
+}
+
+#[async_trait]
+pub trait NodeRequirementSource: Send + Sync {
+    /// Retains the execution lease during scans and in every returned guarded input.
+    async fn requirement_sets(
+        &self,
+        root: &Path,
+        retained: Retained,
+    ) -> Result<Vec<NodeRequirementSet>, ProvisionError>;
+    async fn record_outcome(
+        &self,
+        environment: &EnvId,
+        set: &NodeRequirementSet,
+        state: domain::custom_nodes::DependencyState,
+    ) -> Result<(), ProvisionError>;
+    async fn needs_repair(
+        &self,
+        environment: &EnvId,
+        root: &Path,
+        retained: Retained,
+    ) -> Result<bool, ProvisionError>;
+}
+
+/// The curated custom nodes offered by first-run setup (FR-SETUP-9), in installer order.
+pub trait CuratedNodeCatalog: Send + Sync {
+    fn list(&self) -> Vec<CuratedNodeSpec>;
+}
+
+/// Why a setup-node operation stopped. The class decides whether setup pauses for the user,
+/// prepares again, or must refuse to continue because the candidate environment was changed.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SetupNodeError {
+    /// Nothing of the candidate changed; the step can be retried or skipped.
+    #[error("{0}")]
+    NotApplied(String),
+    /// The reviewed plan is missing or no longer matches; prepare again.
+    #[error("the reviewed plan is no longer valid")]
+    PlanStale,
+    /// The decision does not cover the exact review.
+    #[error("explicit consent does not cover this review")]
+    ConsentRequired,
+    /// Files or dependencies of the candidate were changed and failed. Skip cannot hide this.
+    #[error("{0}")]
+    Damaged(String),
+    #[error("protected packages could not be restored or verified: {0}")]
+    PinDrift(String),
+    #[error("the operation was cancelled")]
+    Cancelled,
+}
+
+/// Custom-node installation against the setup candidate, implemented by the node service. It is
+/// injected next to the environment dependencies so the two contexts stay free of a construction
+/// cycle. Every call runs under the lease the setup run already holds and resolves the target
+/// environment from the persisted run, never from caller-supplied paths.
+#[async_trait]
+pub trait SetupNodes: Send + Sync {
+    /// Prepares a reviewable plan for the exact catalog commit and requires the resolved source
+    /// to equal the entry.
+    async fn prepare(
+        &self,
+        run: &RunId,
+        entry: &CuratedNodeSpec,
+        ctx: &StepContext,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<PlanReview, SetupNodeError>;
+
+    /// Commits one reviewed plan. Setup never runs `install.py`, never builds from source and
+    /// never remembers trust, whatever the decision says.
+    async fn commit(
+        &self,
+        run: &RunId,
+        plan: &str,
+        decision: CommitDecision,
+        ctx: &StepContext,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<NodeOutcome, SetupNodeError>;
+
+    /// The reviewed plans of this run that exist in this process.
+    fn pending(&self, run: &RunId) -> Result<Vec<PlanReview>, SetupNodeError>;
+
+    /// True if publication started for the journal operation, including uncertain storage reads.
+    async fn publication_started(&self, plan: &str) -> bool;
+
+    /// True when the entry's exact source is installed and its files still match the record, with
+    /// a successful dependency outcome for the run's candidate environment.
+    async fn installed(
+        &self,
+        run: &RunId,
+        entry: &CuratedNodeSpec,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<bool, SetupNodeError>;
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InstallSpec {
     pub requirements: Vec<String>,
@@ -337,6 +505,17 @@ pub struct InstallSpec {
     pub allow_source_builds: bool,
     /// Replaces the on-disk content of one requirement file with a protected snapshot.
     pub guarded: Option<GuardedRequirements>,
+    pub no_deps: bool,
+}
+
+#[async_trait]
+pub trait WheelFetcher: Send + Sync {
+    async fn fetch(
+        &self,
+        root: &Path,
+        spec: &domain::environment::AcceleratorSpec,
+        ctx: &StepContext,
+    ) -> Result<PathBuf, ProvisionError>;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -422,6 +601,14 @@ impl VerificationReport {
 
 #[async_trait]
 pub trait EnvVerifier: Send + Sync {
+    /// Imports one optional module in a separate bounded subprocess.
+    async fn verify_accelerator(
+        &self,
+        root: &Path,
+        env_path: &Path,
+        module: &str,
+        ctx: &StepContext,
+    ) -> Result<(), ProvisionError>;
     async fn verify_torch(
         &self,
         root: &Path,
@@ -460,8 +647,6 @@ pub enum Checkout {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequirementFiles {
     pub comfyui: PathBuf,
-    /// `requirements.txt` files of installed custom nodes.
-    pub nodes: Vec<PathBuf>,
 }
 
 #[async_trait]
@@ -503,6 +688,15 @@ pub trait EnvironmentRepository: Send + Sync {
     async fn active(&self) -> Result<Option<PythonEnvironment>, EnvRepoError>;
     /// Inserts or updates the environment record. It never changes the active selection.
     async fn save(&self, env: &PythonEnvironment) -> Result<(), EnvRepoError>;
+    async fn load_components(
+        &self,
+        id: &EnvId,
+    ) -> Result<super::model::InstalledComponents, EnvRepoError>;
+    async fn save_components(
+        &self,
+        id: &EnvId,
+        components: &super::model::InstalledComponents,
+    ) -> Result<(), EnvRepoError>;
     async fn delete(&self, id: &EnvId) -> Result<(), EnvRepoError>;
 }
 

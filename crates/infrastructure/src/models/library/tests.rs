@@ -490,6 +490,82 @@ async fn permanent_delete_removes_the_file_and_row_only_after_success() {
     assert!(fx.list().await.is_empty() || fx.list().await == ["models:vae/v.json"]);
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn model_trash_moves_a_canonical_root_file_to_the_recycle_bin() {
+    let fx = Fx::new().await;
+    fx.write("vae/recycle.pt", b"recycle model");
+    fx.scan().await;
+    let root = fx.stack.roots.spec("models").unwrap().path;
+    assert_eq!(root, fx.models.canonicalize().unwrap());
+    assert!(root.to_str().unwrap().starts_with(r"\\?\"));
+    let path = root.join("vae").join("recycle.pt");
+    let deps = &fx.stack.deps;
+    let plan = deps
+        .plan_delete(vec![loc("vae/recycle.pt")], DeleteKind::Trash)
+        .await
+        .unwrap();
+    let report = deps
+        .execute_delete(&plan.id, DeleteKind::Trash)
+        .await
+        .unwrap();
+    assert_eq!(report.results.len(), 1);
+    assert_eq!(report.results[0].outcome, DeleteOutcome::Deleted);
+    assert!(report.permanent_plan.is_none());
+    assert_eq!(
+        fs::symlink_metadata(path).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(fx.list().await.is_empty());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn model_recycle_refusal_preserves_catalog_and_requires_separate_permanent_plan() {
+    let fx = Fx::new().await;
+    fx.write("vae/refused.pt", b"keep model");
+    fx.scan().await;
+    let path = fx.models.join("vae/refused.pt");
+    let refusal = crate::shared::trash::tests::refuse(&path);
+    let deps = &fx.stack.deps;
+    let plan = deps
+        .plan_delete(vec![loc("vae/refused.pt")], DeleteKind::Trash)
+        .await
+        .unwrap();
+    let report = deps
+        .execute_delete(&plan.id, DeleteKind::Trash)
+        .await
+        .unwrap();
+    assert_eq!(report.results.len(), 1);
+    assert_eq!(report.results[0].outcome, DeleteOutcome::TrashFailed);
+    assert!(
+        refusal.was_refused(),
+        "the real model operation must reach PreDeleteItem"
+    );
+    assert_eq!(fx.list().await, ["models:vae/refused.pt"]);
+    assert_eq!(fs::read(&path).unwrap(), b"keep model");
+    let permanent = report.permanent_plan.unwrap();
+    assert_eq!(permanent.kind, DeleteKind::Permanent);
+    assert_ne!(permanent.id, plan.id);
+    assert_eq!(permanent.items.len(), 1);
+    assert_eq!(
+        deps.execute_delete(&permanent.id, DeleteKind::Trash)
+            .await
+            .unwrap_err()
+            .0,
+        LibraryErrorCode::StaleDecision
+    );
+    assert_eq!(
+        deps.execute_delete(&plan.id, DeleteKind::Permanent)
+            .await
+            .unwrap_err()
+            .0,
+        LibraryErrorCode::StaleDecision
+    );
+    assert_eq!(fx.list().await, ["models:vae/refused.pt"]);
+    assert_eq!(fs::read(path).unwrap(), b"keep model");
+}
+
 #[tokio::test]
 async fn extra_roots_get_a_fixed_category_overlaps_collapse_and_missing_roots_warn() {
     let outside = tempfile::tempdir().unwrap();

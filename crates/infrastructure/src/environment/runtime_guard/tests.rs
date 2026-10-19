@@ -8,6 +8,7 @@ use application::shared::CancelToken;
 use super::*;
 use crate::shared::{
     process::{CommandSpec, DiscardSink, RunError, RunLimits, run, system_baseline},
+    procscan::test_snapshot,
     test_http::{Route, TestServer},
 };
 
@@ -161,7 +162,10 @@ async fn a_comfyui_answering_on_the_configured_port_blocks_maintenance() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("install");
     let server = TestServer::start().await;
-    let guard = ProcessRuntimeGuard::with_port(port_of(&server));
+    let mut guard = ProcessRuntimeGuard::with_port(port_of(&server));
+    // An open port is only trusted when the process list is assessable; a python caught starting
+    // or exiting by another parallel test is not, and would turn "not ComfyUI" into a refusal.
+    guard.snapshot = test_snapshot;
 
     server.route(
         "/system_stats",

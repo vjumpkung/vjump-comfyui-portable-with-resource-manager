@@ -55,6 +55,8 @@ fn run(id: &str, target: &str, created: &str) -> ProvisioningRun {
             profile_id: profile.id.clone(),
             comfyui_ref: ComfyRef::Tag("v0.40.0".into()),
             install_manager: true,
+            accelerators: Vec::new(),
+            curated_nodes: vec!["comfyui-kjnodes".into(), "rgthree-comfy".into()],
             clean_cache: true,
             confirm_adopted_changes: true,
             allow_source_builds: false,
@@ -70,6 +72,7 @@ fn run(id: &str, target: &str, created: &str) -> ProvisioningRun {
             create_venv: false,
             development_files_ok: Some(false),
         },
+        components: Default::default(),
         resolved: ResolvedSources {
             comfyui: Some(ResolvedGit {
                 url: "https://github.com/Comfy-Org/ComfyUI.git".into(),
@@ -105,9 +108,26 @@ fn run(id: &str, target: &str, created: &str) -> ProvisioningRun {
                 source: "https://example.test/repo.git".into(),
                 commit: "c".repeat(40),
             }),
+            can_skip: false,
         }),
         activation: ActivationPhase::Intent,
         manager_consent: Some("d".repeat(40)),
+        curated: vec![
+            CuratedProgress {
+                id: "comfyui-kjnodes".into(),
+                status: CuratedStatus::Installed,
+                plan: None,
+                operation: Some("node-0123".into()),
+                message: None,
+            },
+            CuratedProgress {
+                id: "rgthree-comfy".into(),
+                status: CuratedStatus::Prepared,
+                plan: Some("node-4567".into()),
+                operation: None,
+                message: Some("waiting".into()),
+            },
+        ],
         created_at: created.into(),
         updated_at: created.into(),
     }
@@ -323,6 +343,10 @@ async fn runs_round_trip_with_every_field() {
     updated.status = RunStatus::Succeeded;
     updated.activation = ActivationPhase::Committed;
     updated.failure = None;
+    updated.curated[1].status = CuratedStatus::Failed;
+    updated.curated[1].plan = None;
+    updated.curated[1].operation = Some("node-4567".into());
+    updated.curated[1].message = Some("Published dependencies failed.".into());
     updated.updated_at = "2026-10-16T00:05:00Z".into();
     ProvisioningRunRepository::save(&store, &updated)
         .await
@@ -509,5 +533,154 @@ async fn the_wizard_draft_is_a_single_overwritten_row() {
     assert_eq!(
         WizardDraftStore::load(&store).await.unwrap().unwrap(),
         "ไทย".repeat(10_000)
+    );
+}
+
+#[tokio::test]
+async fn components_survive_manifest_and_database_round_trip() {
+    use crate::environment::manifest::FsManifestStore;
+    use application::environment::{
+        InstallManifest, InstallManifestStore, MANIFEST_SCHEMA_VERSION, ManifestState,
+    };
+    let (store, directory) = store().await;
+    let first = environment("env-first", Ownership::AppOwned);
+    let second = environment("env-second", Ownership::AppOwned);
+    EnvironmentRepository::save(&store, &first).await.unwrap();
+    EnvironmentRepository::save(&store, &second).await.unwrap();
+    assert_eq!(
+        store.load_components(&first.id).await.unwrap(),
+        InstalledComponents::default()
+    );
+    let components = InstalledComponents {
+        manager: Some(ManagerResult {
+            selected: true,
+            status: ComponentStatus::Installed,
+            source_commit: Some("a".repeat(40)),
+            message: None,
+        }),
+        accelerators: vec![
+            AcceleratorResult {
+                id: "sageattention".into(),
+                selected: true,
+                status: ComponentStatus::Installed,
+                importable: Some(false),
+                message: Some("DLL import failed".into()),
+            },
+            AcceleratorResult {
+                id: "flashattention-3".into(),
+                selected: true,
+                status: ComponentStatus::Installed,
+                importable: None,
+                message: Some("Module unverified".into()),
+            },
+            AcceleratorResult {
+                id: "onnxruntime-gpu".into(),
+                selected: false,
+                status: ComponentStatus::Skipped,
+                importable: None,
+                message: None,
+            },
+        ],
+    };
+    store.save_components(&first.id, &components).await.unwrap();
+    EnvironmentRepository::save(&store, &first).await.unwrap();
+    assert_eq!(store.load_components(&first.id).await.unwrap(), components);
+    assert_eq!(
+        store.load_components(&second.id).await.unwrap(),
+        InstalledComponents::default()
+    );
+    let mut recorded = run("component-run", first.id.as_str(), "now");
+    recorded.components = components.clone();
+    ProvisioningRunRepository::insert(&store, &recorded)
+        .await
+        .unwrap();
+    assert_eq!(
+        ProvisioningRunRepository::get(&store, &recorded.id)
+            .await
+            .unwrap(),
+        Some(recorded.clone())
+    );
+    let manifest = InstallManifest {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        install_root: directory.path().to_owned(),
+        generation: 1,
+        env_id: first.id.clone(),
+        env_path: first.path.clone(),
+        ownership: first.ownership,
+        python_version: first.python_version,
+        profile_id: first.profile_id.clone(),
+        profile_revision: first.profile_revision,
+        comfyui_reference: None,
+        comfyui_commit: None,
+        run_id: recorded.id.clone(),
+        activated_at: "now".into(),
+        components: components.clone(),
+    };
+    FsManifestStore::new().publish(&manifest).await.unwrap();
+    assert_eq!(
+        FsManifestStore::new().read(directory.path()).await.unwrap(),
+        ManifestState::Valid(manifest)
+    );
+    drop(store);
+    let reopened =
+        SqliteEnvironmentStore::new(Db::open(directory.path().join("app.db")).await.unwrap());
+    assert_eq!(
+        reopened.load_components(&first.id).await.unwrap(),
+        components
+    );
+    assert_eq!(
+        reopened.load_components(&second.id).await.unwrap(),
+        InstalledComponents::default()
+    );
+}
+
+#[tokio::test]
+async fn legacy_runs_recover_known_manager_selection_and_commit() {
+    let (store, _directory) = store().await;
+    let mut legacy = run("legacy-run", "env-a", "now");
+    legacy.step_mut(StepId::Manager).status = StepStatus::Succeeded;
+    let mut doc: serde_json::Value = serde_json::from_str(&encode_run(&legacy).unwrap()).unwrap();
+    doc.as_object_mut().unwrap().remove("components");
+    doc.as_object_mut().unwrap().remove("curated");
+    doc["request"]
+        .as_object_mut()
+        .unwrap()
+        .remove("accelerators");
+    doc["request"]
+        .as_object_mut()
+        .unwrap()
+        .remove("curated_nodes");
+    doc["failure"].as_object_mut().unwrap().remove("can_skip");
+    let json = doc.to_string();
+    ProvisioningRunRepository::insert(&store, &legacy)
+        .await
+        .unwrap();
+    store
+        .db
+        .run(move |connection| {
+            connection
+                .execute(
+                    "UPDATE provisioning_runs SET doc_json = ?1 WHERE id = 'legacy-run'",
+                    [json],
+                )
+                .map_err(sql)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let restored = ProvisioningRunRepository::get(&store, &legacy.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(restored.request.accelerators.is_empty());
+    assert!(restored.request.curated_nodes.is_empty() && restored.curated.is_empty());
+    // A failure saved before the backend decided it can be skipped when its step is optional.
+    assert!(restored.failure.unwrap().can_skip);
+    let manager = restored.components.manager.unwrap();
+    assert!(manager.selected);
+    assert_eq!(manager.status, ComponentStatus::Installed);
+    assert_eq!(
+        manager.source_commit,
+        legacy.resolved.manager.map(|git| git.commit)
     );
 }

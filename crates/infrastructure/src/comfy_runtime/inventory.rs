@@ -1,23 +1,24 @@
 //! OS identity and listening socket ownership checks.
 use crate::{
     environment::runtime_guard::{Verdict, assess},
-    shared::procscan,
+    shared::procscan::SnapshotFn,
 };
 use application::comfy_runtime::{InventoryState, RuntimeError, RuntimeSession, RuntimeStore};
 use domain::comfy_runtime::Port;
 use std::path::Path;
 
 /// No PID discovered here is termination authority. Only a live runner-owned scope can kill.
+/// `snapshot` is the process-list source: the real one in production, a fixed one in tests.
 pub async fn inspect(
     root: &Path,
     store: &dyn RuntimeStore,
+    snapshot: SnapshotFn,
 ) -> Result<InventoryState, RuntimeError> {
     let root = root.to_path_buf();
-    let verdict = tokio::task::spawn_blocking(move || {
-        assess(&procscan::snapshot(), &root, std::process::id())
-    })
-    .await
-    .map_err(|_| RuntimeError::Failed("process inventory failed".into()))?;
+    let verdict =
+        tokio::task::spawn_blocking(move || assess(&snapshot(), &root, std::process::id()))
+            .await
+            .map_err(|_| RuntimeError::Failed("process inventory failed".into()))?;
     let sessions = store.unfinished_sessions().await?;
     match verdict {
         Verdict::Stopped => {

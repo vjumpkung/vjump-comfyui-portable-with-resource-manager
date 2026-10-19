@@ -179,6 +179,7 @@ describe('setup wizard', () => {
             profileId: 'default',
             comfyuiRef: { kind: 'tag', value: 'v0.9.0' },
             installManager: false,
+            curatedNodes: [],
             cleanCache: false,
             confirmAdoptedChanges: false,
             allowSourceBuilds: false,

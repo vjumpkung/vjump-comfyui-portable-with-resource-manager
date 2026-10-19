@@ -11,15 +11,17 @@ use std::{
 };
 
 use async_trait::async_trait;
+use domain::custom_nodes::{DependencyState, NodeId};
 use domain::environment::{
-    AcceleratorSpec, ComputeCapability, CudaVariant, CudaVersion, DiskBudget, DistName, EnvId,
-    GpuObservation, GpuProbe, HardwareObservation, OsKind, PROFILE_SCHEMA_VERSION, PinSet,
-    ProfileStatus, PythonEnvironment, PythonVersion, SetupProfile, TorchBuild, TritonSpec,
+    AcceleratorSource, AcceleratorSpec, ComputeCapability, CudaVariant, CudaVersion, DiskBudget,
+    DistName, EnvId, GpuObservation, GpuProbe, HardwareObservation, OsKind, PROFILE_SCHEMA_VERSION,
+    PinSet, ProfileStatus, PythonEnvironment, PythonVersion, SetupProfile, TorchBuild, TritonSpec,
     VerifyExpectations,
 };
 
 use crate::{
     comfy_runtime::{RuntimeBlock, RuntimeMaintenance},
+    custom_nodes::{CommitDecision, NodeOutcome, OperationKind, PlanReview},
     environment::*,
     shared::{Clock, GateError, IdGenerator, MaintenanceGate, MaintenanceLease},
 };
@@ -71,6 +73,17 @@ pub fn profile() -> SetupProfile {
             calibrated: false,
         },
         provenance: vec!["fixture".into()],
+    }
+}
+
+pub fn curated_spec(id: &str, commit: char) -> CuratedNodeSpec {
+    CuratedNodeSpec {
+        id: id.into(),
+        name: format!("Node-{id}"),
+        repository: format!("https://github.com/example/{id}.git"),
+        branch: "main".into(),
+        commit: commit.to_string().repeat(40),
+        provenance: "fixture".into(),
     }
 }
 
@@ -173,6 +186,12 @@ pub struct World {
     skips: Mutex<HashMap<String, usize>>,
     pub installed: Mutex<Vec<InstalledPackage>>,
     pub envs: Mutex<BTreeMap<String, PythonEnvironment>>,
+    pub components: Mutex<BTreeMap<String, InstalledComponents>>,
+    pub drift_on_accelerator: AtomicBool,
+    pub drift_on_node: AtomicBool,
+    pub drift_on_final_verify: AtomicBool,
+    pub drift_before_final_verify: AtomicBool,
+    pub refuse_pin_restore: AtomicBool,
     pub active: Mutex<Option<EnvId>>,
     pub runs: Mutex<BTreeMap<String, ProvisioningRun>>,
     pub manifest: Mutex<ManifestState>,
@@ -181,12 +200,21 @@ pub struct World {
     pub venv_version: Mutex<PythonVersion>,
     pub checkout: Mutex<Checkout>,
     pub node_requirements: Mutex<Vec<PathBuf>>,
+    pub node_outcomes: Mutex<BTreeMap<(String, String, String), DependencyState>>,
+    pub node_scan_retained: Mutex<Vec<bool>>,
+    pub node_install_retained: Mutex<Vec<(bool, bool)>>,
     pub previews: Mutex<VecDeque<Result<ResolutionPreview, ProvisionError>>>,
+    node_failures: Mutex<HashMap<String, VecDeque<SetupNodeError>>>,
+    pub node_reviews: Mutex<BTreeMap<String, PlanReview>>,
+    pub node_installed: Mutex<Vec<String>>,
     pub runtime_block: Mutex<Option<RuntimeBlock>>,
     pub gate: Arc<FakeGate>,
     pub drift_on_requirements: AtomicBool,
+    pub drift_on_node_requirements: AtomicBool,
     pub gate_busy_at_cancel_cleanup: Mutex<Option<bool>>,
     pub installs: Mutex<Vec<InstallSpec>>,
+    /// The environment path of every package installation, in order.
+    pub install_envs: Mutex<Vec<PathBuf>>,
     pub constraint_writes: Mutex<Vec<PinSet>>,
     pub draft: Mutex<Option<String>>,
     pub resolve_calls: AtomicUsize,
@@ -195,6 +223,7 @@ pub struct World {
     pub install_overrides: Mutex<Vec<(String, String)>>,
     counter: AtomicU64,
     pub profiles: Mutex<Vec<SetupProfile>>,
+    pub curated: Mutex<Vec<CuratedNodeSpec>>,
 }
 
 impl World {
@@ -206,6 +235,12 @@ impl World {
             skips: Mutex::default(),
             installed: Mutex::default(),
             envs: Mutex::default(),
+            components: Mutex::default(),
+            drift_on_accelerator: AtomicBool::new(false),
+            drift_on_node: AtomicBool::new(false),
+            drift_on_final_verify: AtomicBool::new(false),
+            drift_before_final_verify: AtomicBool::new(false),
+            refuse_pin_restore: AtomicBool::new(false),
             active: Mutex::default(),
             runs: Mutex::default(),
             manifest: Mutex::new(ManifestState::Absent),
@@ -214,12 +249,20 @@ impl World {
             venv_version: Mutex::new(PythonVersion::new(3, 13, 16)),
             checkout: Mutex::new(Checkout::Absent),
             node_requirements: Mutex::default(),
+            node_outcomes: Mutex::default(),
+            node_scan_retained: Mutex::default(),
+            node_install_retained: Mutex::default(),
             previews: Mutex::default(),
+            node_failures: Mutex::default(),
+            node_reviews: Mutex::default(),
+            node_installed: Mutex::default(),
             runtime_block: Mutex::default(),
             gate: Arc::new(FakeGate::default()),
             drift_on_requirements: AtomicBool::new(false),
+            drift_on_node_requirements: AtomicBool::new(false),
             gate_busy_at_cancel_cleanup: Mutex::default(),
             installs: Mutex::default(),
+            install_envs: Mutex::default(),
             constraint_writes: Mutex::default(),
             draft: Mutex::default(),
             resolve_calls: AtomicUsize::new(0),
@@ -227,18 +270,26 @@ impl World {
             install_overrides: Mutex::default(),
             counter: AtomicU64::new(0),
             profiles: Mutex::new(vec![profile(), other_minor_profile()]),
+            curated: Mutex::new(vec![curated_spec("alpha", 'a'), curated_spec("beta", 'b')]),
         })
+    }
+
+    pub fn nodes(self: &Arc<Self>) -> Arc<dyn SetupNodes> {
+        self.clone()
     }
 
     pub fn deps(self: &Arc<Self>) -> EnvironmentDeps {
         EnvironmentDeps {
             hardware: self.clone(),
             catalog: self.clone(),
+            curated: self.clone(),
             tools: self.clone(),
             python: self.clone(),
             packages: self.clone(),
+            wheels: self.clone(),
             verifier: self.clone(),
             source: self.clone(),
+            node_requirements: self.clone(),
             envs: self.clone(),
             runs: self.clone(),
             activation: self.clone(),
@@ -251,6 +302,9 @@ impl World {
             ids: self.clone(),
             active_runs: Arc::new(ActiveRuns::default()),
             plans: Arc::new(PlanStore::default()),
+            installation: self.clone(),
+            relocation: self.clone(),
+            relocation_runtime: self.clone(),
         }
     }
 
@@ -369,6 +423,29 @@ impl World {
         self.runs.lock().unwrap().get(id.as_str()).unwrap().clone()
     }
 
+    pub fn node_outcome(&self, environment: &EnvId, node: &str) -> Option<DependencyState> {
+        self.node_outcomes
+            .lock()
+            .unwrap()
+            .get(&(
+                environment.as_str().to_owned(),
+                node.to_owned(),
+                format!("current:{node}"),
+            ))
+            .copied()
+    }
+
+    pub fn seed_node_outcome(&self, environment: &EnvId, node: &str, state: DependencyState) {
+        self.node_outcomes.lock().unwrap().insert(
+            (
+                environment.as_str().to_owned(),
+                node.to_owned(),
+                format!("current:{node}"),
+            ),
+            state,
+        );
+    }
+
     pub fn seed_active_env(&self, id: &str, version: PythonVersion) -> PythonEnvironment {
         use domain::environment::{NewEnvironment, Ownership, PythonSourceKind};
         let mut env = PythonEnvironment::provisioning(NewEnvironment {
@@ -398,6 +475,30 @@ impl World {
             ("numpy", "2.2.0"),
         ]);
         env
+    }
+}
+
+#[async_trait]
+impl InstallationProbe for World {
+    async fn inspect(
+        &self,
+        root: &Path,
+        manifest: &InstallManifest,
+        _: &PythonEnvironment,
+    ) -> Result<InstallationHealth, ProvisionError> {
+        Ok(if same_location(root, &manifest.install_root) {
+            InstallationHealth::Healthy
+        } else {
+            InstallationHealth::RebuildRequired(RebuildReason::Moved)
+        })
+    }
+}
+
+#[async_trait]
+impl RelocationStore for World {
+    async fn accept(&self, _: &Path, _: &Path) -> Result<(), RelocationError> {
+        self.call("relocation.accept");
+        Ok(())
     }
 }
 
@@ -443,6 +544,147 @@ impl ProfileCatalog for World {
             .iter()
             .find(|profile| profile.id == id)
             .cloned()
+    }
+}
+
+impl CuratedNodeCatalog for World {
+    fn list(&self) -> Vec<CuratedNodeSpec> {
+        self.curated.lock().unwrap().clone()
+    }
+}
+
+impl World {
+    /// Scripts the next failure of a `SetupNodes` method (`prepare`, `commit` or `installed`).
+    pub fn fail_nodes(&self, method: &str, error: SetupNodeError) {
+        self.node_failures
+            .lock()
+            .unwrap()
+            .entry(method.to_owned())
+            .or_default()
+            .push_back(error);
+    }
+
+    fn node_injected(&self, method: &str) -> Result<(), SetupNodeError> {
+        match self
+            .node_failures
+            .lock()
+            .unwrap()
+            .get_mut(method)
+            .and_then(VecDeque::pop_front)
+        {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A scripted node service for runs that must not depend on the real node workflow.
+#[async_trait]
+impl SetupNodes for World {
+    async fn prepare(
+        &self,
+        _run: &RunId,
+        entry: &CuratedNodeSpec,
+        _ctx: &StepContext,
+        _lease: &mut dyn MaintenanceLease,
+    ) -> Result<PlanReview, SetupNodeError> {
+        self.call(&format!("setup_nodes:prepare:{}", entry.id));
+        self.node_injected("prepare")?;
+        let id = format!("node-{}-{}", entry.id, self.new_id());
+        let review = PlanReview {
+            id: id.clone(),
+            binding: format!("binding-{}", self.new_id()),
+            kind: OperationKind::Install,
+            source: domain::custom_nodes::NodeSource::Git {
+                repository: entry.repository.trim_end_matches(".git").to_owned(),
+                commit: entry.commit.clone(),
+                branch: None,
+            },
+            name: entry.name.clone(),
+            prior_source: None,
+            requirements: Vec::new(),
+            artifact_digest: None,
+            tree_digest: "tree".into(),
+            requirements_digest: None,
+            hook_digest: None,
+            environment: EnvId::new("env-fixture").unwrap(),
+            pins: PinSet::new(),
+            protected_changes: Vec::new(),
+            warnings: Vec::new(),
+            trusted_source: false,
+            trusted_install_py: false,
+            has_requirements: false,
+            has_install_py: false,
+        };
+        self.node_reviews.lock().unwrap().insert(id, review.clone());
+        Ok(review)
+    }
+
+    async fn commit(
+        &self,
+        _run: &RunId,
+        plan: &str,
+        decision: CommitDecision,
+        _ctx: &StepContext,
+        _lease: &mut dyn MaintenanceLease,
+    ) -> Result<NodeOutcome, SetupNodeError> {
+        self.call(&format!("setup_nodes:commit:{plan}"));
+        self.node_injected("commit")?;
+        let review = self
+            .node_reviews
+            .lock()
+            .unwrap()
+            .get(plan)
+            .cloned()
+            .ok_or(SetupNodeError::PlanStale)?;
+        if decision.consent.binding != review.binding {
+            return Err(SetupNodeError::ConsentRequired);
+        }
+        self.node_reviews.lock().unwrap().remove(plan);
+        let node = domain::custom_nodes::InstalledNode {
+            id: domain::custom_nodes::NodeId::new(plan).unwrap(),
+            name: domain::shared::model_values::SafeFileName::new(review.name.as_str()).unwrap(),
+            source: review.source,
+            origin: domain::custom_nodes::ProvenanceOrigin::App,
+            enabled: true,
+            single_file: false,
+            tree_digest: review.tree_digest,
+            dependencies: DependencyState::Ok,
+            conflict: false,
+            dirty: None,
+        };
+        self.node_installed.lock().unwrap().push(review.name);
+        Ok(NodeOutcome {
+            operation: node.id.clone(),
+            node,
+            cleanup_pending: false,
+        })
+    }
+
+    fn pending(&self, _run: &RunId) -> Result<Vec<PlanReview>, SetupNodeError> {
+        Ok(self
+            .node_reviews
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    async fn publication_started(&self, _plan: &str) -> bool {
+        // This fake commits atomically; published entries are always recorded as Installed.
+        false
+    }
+
+    async fn installed(
+        &self,
+        _run: &RunId,
+        entry: &CuratedNodeSpec,
+        _lease: &mut dyn MaintenanceLease,
+    ) -> Result<bool, SetupNodeError> {
+        self.call(&format!("setup_nodes:installed:{}", entry.id));
+        self.node_injected("installed")?;
+        Ok(self.node_installed.lock().unwrap().contains(&entry.name))
     }
 }
 
@@ -499,6 +741,15 @@ impl ToolProvisioner for World {
             version: "2.2.0".into(),
         })
     }
+
+    async fn recreate_hf_tool(
+        &self,
+        root: &Path,
+        ctx: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError> {
+        self.call("recreate_hf_tool");
+        self.ensure_hf_tool(root, ctx).await
+    }
 }
 
 #[async_trait]
@@ -506,10 +757,11 @@ impl PythonProvisioner for World {
     async fn install_managed_python(
         &self,
         _root: &Path,
-        _version: PythonVersion,
+        version: PythonVersion,
         _ctx: &StepContext,
     ) -> Result<PathBuf, ProvisionError> {
         self.call("install_managed_python");
+        self.call(&format!("install_managed_python_version:{version}"));
         self.injected("install_managed_python")?;
         Ok(PathBuf::from("/managed/python"))
     }
@@ -626,13 +878,51 @@ impl PackageInstaller for World {
     async fn install(
         &self,
         _root: &Path,
-        _env_path: &Path,
+        env_path: &Path,
         spec: &InstallSpec,
         ctx: &StepContext,
     ) -> Result<(), ProvisionError> {
         let key = Self::install_key(spec);
         self.call(key);
-        self.installs.lock().unwrap().push(spec.clone());
+        self.install_envs
+            .lock()
+            .unwrap()
+            .push(env_path.to_path_buf());
+        if key == "install:node" {
+            self.node_install_retained.lock().unwrap().push((
+                !ctx.retained.is_empty(),
+                spec.guarded
+                    .as_ref()
+                    .is_some_and(|file| !file.retained.is_empty()),
+            ));
+        }
+        let mut recorded = spec.clone();
+        if let Some(file) = recorded.guarded.as_mut() {
+            file.retained = Retained::default();
+        }
+        self.installs.lock().unwrap().push(recorded);
+        if spec.no_deps && spec.requirements.iter().any(|r| r.contains("==")) {
+            self.call("restore_pins");
+            assert!(!ctx.cancel.is_cancelled(), "cleanup uses a fresh token");
+            assert!(
+                self.gate.busy.load(Ordering::SeqCst),
+                "cleanup retains the lease"
+            );
+            if self.refuse_pin_restore.load(Ordering::SeqCst) {
+                return Err(ProvisionError::Failed("restore refused".into()));
+            }
+            for requirement in &spec.requirements {
+                if let Some((name, version)) = requirement.split_once("==") {
+                    self.put_installed(name, version);
+                }
+            }
+            return Ok(());
+        }
+        if (key == "install:other" && self.drift_on_accelerator.load(Ordering::SeqCst))
+            || (key == "install:node" && self.drift_on_node.load(Ordering::SeqCst))
+        {
+            self.put_installed("torch", "99.0.0");
+        }
         if let Err(error) = self.injected(key) {
             if error == ProvisionError::Cancelled {
                 ctx.cancel.cancel();
@@ -642,6 +932,9 @@ impl PackageInstaller for World {
             return Err(error);
         }
         self.install_effects(spec);
+        if key == "install:node" && self.drift_on_node_requirements.load(Ordering::SeqCst) {
+            self.put_installed("torch", "2.15.0");
+        }
         Ok(())
     }
 
@@ -684,9 +977,13 @@ impl PackageInstaller for World {
         &self,
         _root: &Path,
         _env_path: &Path,
-        _ctx: Option<&StepContext>,
+        ctx: Option<&StepContext>,
     ) -> Result<Vec<InstalledPackage>, ProvisionError> {
         self.call("list");
+        // Like the real adapter, a cancelled step cannot run `uv pip list`.
+        if ctx.is_some_and(|ctx| ctx.cancel.is_cancelled()) {
+            return Err(ProvisionError::Cancelled);
+        }
         self.injected("list")?;
         Ok(self.installed.lock().unwrap().clone())
     }
@@ -713,6 +1010,17 @@ impl PackageInstaller for World {
 
 #[async_trait]
 impl EnvVerifier for World {
+    async fn verify_accelerator(
+        &self,
+        _root: &Path,
+        _env_path: &Path,
+        module: &str,
+        _ctx: &StepContext,
+    ) -> Result<(), ProvisionError> {
+        self.call(&format!("import:{module}"));
+        self.injected("verify_accelerator")
+    }
+
     async fn verify_torch(
         &self,
         _root: &Path,
@@ -747,6 +1055,9 @@ impl EnvVerifier for World {
         _ctx: &StepContext,
     ) -> Result<VerificationReport, ProvisionError> {
         self.call("verify_final");
+        if self.drift_on_final_verify.load(Ordering::SeqCst) {
+            self.put_installed("torch", "99.0.0");
+        }
         self.injected("verify_final")?;
         if self.verify_final_fails.load(Ordering::SeqCst) {
             return Err(ProvisionError::Failed("verification failed".into()));
@@ -760,6 +1071,81 @@ impl EnvVerifier for World {
             comfy_path: Some("ComfyUI/comfy".into()),
             accelerators: vec![("sageattention".into(), false)],
         })
+    }
+}
+
+#[async_trait]
+impl NodeRequirementSource for World {
+    async fn requirement_sets(
+        &self,
+        _root: &Path,
+        retained: Retained,
+    ) -> Result<Vec<NodeRequirementSet>, ProvisionError> {
+        self.call("node_requirement_sets");
+        self.node_scan_retained
+            .lock()
+            .unwrap()
+            .push(!retained.is_empty());
+        self.injected("node_requirement_sets")?;
+        Ok(self
+            .node_requirements
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|path| {
+                let directory = path.parent().unwrap().to_path_buf();
+                let name = directory.file_name().unwrap().to_str().unwrap();
+                NodeRequirementSet {
+                    node_id: NodeId::new(name).unwrap(),
+                    name: domain::shared::model_values::SafeFileName::new(name).unwrap(),
+                    source_identity: format!("current:{name}"),
+                    file: Some(GuardedRequirements {
+                        path: path.clone(),
+                        directory,
+                        text: Arc::from(b"fixture-dependency==1.0.0\n".as_slice()),
+                        retained: retained.clone().merge(Retained::new(Arc::new(()))),
+                    }),
+                    extra: Vec::new(),
+                }
+            })
+            .collect())
+    }
+
+    async fn record_outcome(
+        &self,
+        environment: &EnvId,
+        set: &NodeRequirementSet,
+        state: DependencyState,
+    ) -> Result<(), ProvisionError> {
+        self.call(&format!("node_outcome:{}:{state:?}", set.node_id.as_str()));
+        self.injected("record_node_outcome")?;
+        self.node_outcomes.lock().unwrap().insert(
+            (
+                environment.as_str().to_owned(),
+                set.node_id.as_str().to_owned(),
+                set.source_identity.clone(),
+            ),
+            state,
+        );
+        Ok(())
+    }
+
+    async fn needs_repair(
+        &self,
+        environment: &EnvId,
+        root: &Path,
+        retained: Retained,
+    ) -> Result<bool, ProvisionError> {
+        self.call("node_needs_repair");
+        let sets = self.requirement_sets(root, retained).await?;
+        let outcomes = self.node_outcomes.lock().unwrap();
+        Ok(sets.iter().any(|set| {
+            outcomes.get(&(
+                environment.as_str().to_owned(),
+                set.node_id.as_str().to_owned(),
+                set.source_identity.clone(),
+            )) != Some(&DependencyState::Ok)
+        }))
     }
 }
 
@@ -811,7 +1197,6 @@ impl ComfySource for World {
     async fn requirement_files(&self, _root: &Path) -> Result<RequirementFiles, ProvisionError> {
         Ok(RequirementFiles {
             comfyui: PathBuf::from("/install/ComfyUI/requirements.txt"),
-            nodes: self.node_requirements.lock().unwrap().clone(),
         })
     }
 
@@ -865,6 +1250,26 @@ impl EnvironmentRepository for World {
         Ok(())
     }
 
+    async fn load_components(&self, id: &EnvId) -> Result<InstalledComponents, EnvRepoError> {
+        Ok(self
+            .components
+            .lock()
+            .unwrap()
+            .get(id.as_str())
+            .cloned()
+            .unwrap_or_default())
+    }
+    async fn save_components(
+        &self,
+        id: &EnvId,
+        components: &InstalledComponents,
+    ) -> Result<(), EnvRepoError> {
+        self.components
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), components.clone());
+        Ok(())
+    }
     async fn delete(&self, id: &EnvId) -> Result<(), EnvRepoError> {
         self.call(&format!("delete_env:{id}"));
         self.envs.lock().unwrap().remove(id.as_str());
@@ -883,6 +1288,11 @@ impl ProvisioningRunRepository for World {
     }
 
     async fn save(&self, run: &ProvisioningRun) -> Result<(), EnvRepoError> {
+        if run.step(StepId::FinalVerify).status == StepStatus::Running
+            && self.drift_before_final_verify.swap(false, Ordering::SeqCst)
+        {
+            self.put_installed("torch", "99.0.0");
+        }
         let operation = format!("run_save:{}", run.activation.as_str());
         self.repo_injected(&operation)?;
         self.runs
@@ -997,11 +1407,34 @@ impl SetupProgressSink for RecordingSink {
     }
 }
 
+#[async_trait]
+impl WheelFetcher for World {
+    async fn fetch(
+        &self,
+        _root: &Path,
+        spec: &AcceleratorSpec,
+        _ctx: &StepContext,
+    ) -> Result<PathBuf, ProvisionError> {
+        self.call("fetch_wheel");
+        self.injected("fetch_wheel")?;
+        let AcceleratorSource::Wheel { filename, .. } = &spec.source else {
+            panic!("expected wheel")
+        };
+        Ok(PathBuf::from("/install/data/cache/wheels").join(filename.as_str()))
+    }
+}
+
 pub fn accelerator(name: &str) -> AcceleratorSpec {
     AcceleratorSpec {
+        id: name.into(),
         name: name.into(),
-        requirement: format!("{name}==1.0"),
-        sha256: Some("0".repeat(64)),
+        modules: vec![name.replace('-', "_")],
+        source: AcceleratorSource::Packages {
+            requirements: vec![format!("{name}==1.0")],
+        },
+        no_deps: false,
+        default_selected: false,
         non_fatal: true,
+        provenance: "fixture; import unvalidated".into(),
     }
 }

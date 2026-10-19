@@ -20,8 +20,22 @@ pub enum EnvironmentAppError {
     Manifest(#[from] ManifestError),
     #[error(transparent)]
     RootSwitch(#[from] RootSwitchError),
+    #[error(transparent)]
+    Relocation(#[from] super::RelocationError),
+    #[error("the installation requires a guided rebuild")]
+    RebuildRequired,
+    #[error("the existing ComfyUI checkout is missing")]
+    RebuildCheckoutMissing,
+    #[error("the existing ComfyUI checkout is unsafe or is not a Git checkout")]
+    RebuildCheckoutInvalid,
     #[error("unknown setup profile")]
     ProfileNotFound,
+    #[error("accelerator ids must be unique and belong to the selected profile")]
+    AcceleratorSelectionInvalid,
+    #[error("curated node ids must be unique, belong to the catalog and be used for a first run")]
+    CuratedSelectionInvalid,
+    #[error("the recorded setup profile revision is unavailable")]
+    ProfileRevisionUnavailable,
     #[error("the selected profile is not available on this machine")]
     ProfileDisabled(Vec<IneligibleReason>),
     #[error("a setup run is already in progress")]

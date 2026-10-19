@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "provenance": "reference installer order; commits resolved at 2026-10-16T17:11Z",
+  "nodes": [
+    {
+      "repository": "pollockjj/ComfyUI-MultiGPU",
+      "branch": "main",
+      "commit": "37a73feda5804045e4f39d8c640905d62a2169d1"
+    },
+    {
+      "repository": "molbal/ComfyUI-GGUF",
+      "branch": "main",
+      "commit": "f1d050fac00b0505cba519e44ad7fb18c34318b0"
+    },
+    {
+      "repository": "kijai/ComfyUI-KJNodes",
+      "branch": "main",
+      "commit": "17195fcfa8a05f601b766a0f09c9733284f47416"
+    },
+    {
+      "repository": "seitanism/ComfyUI-H3-Motion-Context-MultiRef",
+      "branch": "main",
+      "commit": "361624fb406b63eb6694442eac6c895fc1533a70"
+    },
+    {
+      "repository": "Kosinkadink/ComfyUI-VideoHelperSuite",
+      "branch": "main",
+      "commit": "4d907bee61e92c2e65af3bd6383a4e4d356126d1"
+    },
+    {
+      "repository": "rgthree/rgthree-comfy",
+      "branch": "dev",
+      "commit": "5f940ddfbb83ff9c667f32ae7d0c3ad0bb8cc9ee"
+    },
+    {
+      "repository": "crystian/ComfyUI-Crystools",
+      "branch": "main",
+      "commit": "2f18256c5b5063937106f29a8e0a7db3ae3869b7"
+    },
+    {
+      "repository": "kijai/ComfyUI-WanVideoWrapper",
+      "branch": "main",
+      "commit": "088128b224242e110d3906c6750e9a3a348a659b"
+    },
+    {
+      "repository": "pythongosssss/ComfyUI-Custom-Scripts",
+      "branch": "main",
+      "commit": "609f3afaa74b2f88ef9ce8d939626065e3247469"
+    },
+    {
+      "repository": "WASasquatch/was-node-suite-comfyui",
+      "branch": "main",
+      "commit": "49a1098630dedff9e0ef85e8e6c4d9a4ac85f8a1"
+    },
+    {
+      "repository": "1038lab/ComfyUI-QwenVL",
+      "branch": "main",
+      "commit": "1b67b443918801f571714bab636edc1845b7002a"
+    },
+    {
+      "repository": "kijai/ComfyUI-MelBandRoFormer",
+      "branch": "main",
+      "commit": "92c86854e6654f4aacc97484471af95c98ea16d4"
+    },
+    {
+      "repository": "ClownsharkBatwing/RES4LYF",
+      "branch": "main",
+      "commit": "56e44755d866c87ff9cb4b6608c8e42155db6ecc"
+    },
+    {
+      "repository": "kijai/ComfyUI-SolAttn_triton",
+      "branch": "main",
+      "commit": "26d816ebd4f1e43a2c6e4d4759be3137f10a7a73"
+    },
+    {
+      "repository": "vjumpkung/comfyui-infinitetalk-native-sampler",
+      "branch": "main",
+      "commit": "2bcb9e7e75348044b960d7759438c97e6b4ab289"
+    },
+    {
+      "repository": "vjumpkung/comfyui-mosaic-blur",
+      "branch": "master",
+      "commit": "ea6e4d21b81e74d1f7fbc2c18d037d23afdaf6d3"
+    },
+    {
+      "repository": "kijai/ComfyUI-WanAnimatePreprocess",
+      "branch": "main",
+      "commit": "0e0b6a2a555625acf4d4aefb780e27d06937132f"
+    },
+    {
+      "repository": "vjumpkung/comfyui-wan-animate-2-loop-sampler",
+      "branch": "main",
+      "commit": "64f9b89c1c478000de8ec2db464d16ef4ab2954e"
+    },
+    {
+      "repository": "vjumpkung/comfyui-scail-2-loop-sampler",
+      "branch": "main",
+      "commit": "569fa4a3c19e78a20a7dfa239955efd64fe77881"
+    },
+    {
+      "repository": "PlagueKind/ComfyUI-PlagueKind-Nodes",
+      "branch": "main",
+      "commit": "d58d006a4ea32c25c06499f2ff104f0852a045a6"
+    },
+    {
+      "repository": "Smirnov75/ComfyUI-mxToolkit",
+      "branch": "main",
+      "commit": "7f7a0e584f12078a1c589645d866ae96bad0cc35"
+    },
+    {
+      "repository": "matlowai/ComfyUI-MAINodes",
+      "branch": "main",
+      "commit": "f4868b4a08e8a504ce86db54a17961d399ffa2bc"
+    }
+  ]
+}

@@ -322,6 +322,11 @@ pub struct SetupRequest {
     pub profile_id: String,
     pub comfyui_ref: ComfyRef,
     pub install_manager: bool,
+    /// Explicit profile component ids. An empty list selects no accelerators.
+    pub accelerators: Vec<String>,
+    /// Catalog ids of the curated custom nodes to install (first run only). A selection is not
+    /// consent: every node is reviewed and confirmed before it is installed.
+    pub curated_nodes: Vec<String>,
     pub clean_cache: bool,
     /// Explicit confirmation that setup may install packages into an existing (adopted) venv.
     pub confirm_adopted_changes: bool,
@@ -412,6 +417,9 @@ pub struct StepFailure {
     pub exit_code: Option<i32>,
     pub tail: Vec<String>,
     pub consent: Option<ConsentRequest>,
+    /// Decided by the backend: false once the failure damaged the candidate environment (a
+    /// published dependency failure or protected-package drift), so Skip cannot hide it.
+    pub can_skip: bool,
 }
 
 /// A run record. It is persisted after every state change, so the UI can reconstruct it.
@@ -424,6 +432,7 @@ pub struct ProvisioningRun {
     pub previous_env: Option<EnvId>,
     pub python_target: PythonTarget,
     pub resolved: ResolvedSources,
+    pub components: InstalledComponents,
     pub steps: Vec<StepRecord>,
     pub status: RunStatus,
     pub cancel_requested: bool,
@@ -431,6 +440,8 @@ pub struct ProvisioningRun {
     pub activation: ActivationPhase,
     /// The Manager commit whose code execution the user approved.
     pub manager_consent: Option<String>,
+    /// One entry per selected curated node, in catalog order.
+    pub curated: Vec<CuratedProgress>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -457,6 +468,85 @@ impl ProvisioningRun {
     }
 }
 
+/// One curated custom node of the catalog (FR-SETUP-9): an exact commit of a repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CuratedNodeSpec {
+    /// Derived from the repository name; unique within the catalog.
+    pub id: String,
+    pub name: String,
+    pub repository: String,
+    pub branch: String,
+    pub commit: String,
+    pub provenance: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CuratedStatus {
+    /// Nothing is prepared yet.
+    Pending,
+    /// A reviewed plan waits for the user's decision. Plans live only in this process.
+    Prepared,
+    /// Publication started, but the reviewed install or candidate dependencies failed.
+    Failed,
+    /// Installed at the exact commit with successful dependency outcomes for the candidate.
+    Installed,
+    /// The user skipped the step before this node was installed.
+    Skipped,
+}
+
+impl CuratedStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Prepared => "prepared",
+            Self::Failed => "failed",
+            Self::Installed => "installed",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+impl FromStr for CuratedStatus {
+    type Err = EnvironmentAppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        [
+            Self::Pending,
+            Self::Prepared,
+            Self::Failed,
+            Self::Installed,
+            Self::Skipped,
+        ]
+        .into_iter()
+        .find(|status| status.as_str() == value)
+        .ok_or(EnvironmentAppError::InvalidStep)
+    }
+}
+
+/// The persisted progress of one curated node. The plan and journal operation share one id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CuratedProgress {
+    pub id: String,
+    pub status: CuratedStatus,
+    /// The reviewed plan of the latest preparation; obsolete after a backend restart.
+    pub plan: Option<String>,
+    /// The journal operation that installed the node, saved before the next node starts.
+    pub operation: Option<String>,
+    pub message: Option<String>,
+}
+
+impl CuratedProgress {
+    pub fn pending(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            status: CuratedStatus::Pending,
+            plan: None,
+            operation: None,
+            message: None,
+        }
+    }
+}
+
 /// The `install.json` marker. It identifies the active environment so the database can be
 /// validated and reconciled against it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,9 +564,66 @@ pub struct InstallManifest {
     pub comfyui_commit: Option<String>,
     pub run_id: RunId,
     pub activated_at: String,
+    pub components: InstalledComponents,
 }
 
-pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentStatus {
+    Installed,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceleratorResult {
+    pub id: String,
+    pub selected: bool,
+    pub status: ComponentStatus,
+    /// None means no import test ran.
+    pub importable: Option<bool>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagerResult {
+    pub selected: bool,
+    pub status: ComponentStatus,
+    pub source_commit: Option<String>,
+    pub message: Option<String>,
+}
+
+/// None for Manager and an empty accelerator list represent unknown legacy metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstalledComponents {
+    pub manager: Option<ManagerResult>,
+    pub accelerators: Vec<AcceleratorResult>,
+}
+
+impl InstalledComponents {
+    pub fn selected(request: &SetupRequest, profile: &domain::environment::SetupProfile) -> Self {
+        Self {
+            manager: Some(ManagerResult {
+                selected: request.install_manager,
+                status: ComponentStatus::Skipped,
+                source_commit: None,
+                message: None,
+            }),
+            accelerators: profile
+                .accelerators
+                .iter()
+                .map(|spec| AcceleratorResult {
+                    id: spec.id.clone(),
+                    selected: request.accelerators.contains(&spec.id),
+                    status: ComponentStatus::Skipped,
+                    importable: None,
+                    message: None,
+                })
+                .collect(),
+        }
+    }
+}
 
 /// What reading `install.json` found. A short-lived value, so the size difference between
 /// the variants does not matter.

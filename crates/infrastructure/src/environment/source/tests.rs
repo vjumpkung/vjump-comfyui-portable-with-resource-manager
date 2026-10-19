@@ -63,6 +63,10 @@ impl Remote {
             fs::write(path.join("requirements.txt"), "numpy\n").unwrap();
         }
         fs::write(path.join("README.md"), "one").unwrap();
+        fs::create_dir_all(path.join("models/checkpoints")).unwrap();
+        fs::write(path.join("models/checkpoints/README.md"), "models\n").unwrap();
+        fs::create_dir_all(path.join("custom_nodes")).unwrap();
+        fs::write(path.join("custom_nodes/example.py"), "# example\n").unwrap();
         git(&path, &["add", "-A"]);
         git(&path, &["commit", "-m", "first"]);
         let first = git(&path, &["rev-parse", "HEAD"]);
@@ -125,6 +129,422 @@ fn ctx() -> StepContext {
         allow_source_builds: false,
         retained: Default::default(),
     }
+}
+
+fn directory_id(path: &Path) -> String {
+    crate::shared::model_paths::identity(
+        &crate::shared::model_paths::pin_absolute(path).unwrap().file,
+    )
+    .unwrap()
+    .platform_id
+}
+
+fn scaffold(root: &Path) -> Vec<(PathBuf, String)> {
+    let comfy = root.join("ComfyUI");
+    [
+        "",
+        "models",
+        "custom_nodes",
+        "custom_nodes/.disabled",
+        "custom_nodes/.disabled/.vjump-no-hooks",
+    ]
+    .into_iter()
+    .map(|relative| {
+        let path = comfy.join(relative);
+        fs::create_dir_all(&path).unwrap();
+        let id = directory_id(&path);
+        (path, id)
+    })
+    .collect()
+}
+
+fn assert_scaffold(original: &[(PathBuf, String)]) {
+    fn directories(path: &Path, found: &mut Vec<PathBuf>) {
+        found.push(path.to_owned());
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            assert!(
+                entry.file_type().unwrap().is_dir(),
+                "{}",
+                entry.path().display()
+            );
+            directories(&entry.path(), found);
+        }
+    }
+    let mut actual = Vec::new();
+    directories(&original[0].0, &mut actual);
+    let mut expected: Vec<_> = original.iter().map(|(path, _)| path.clone()).collect();
+    actual.sort();
+    expected.sort();
+    assert_eq!(
+        actual, expected,
+        "only the original scaffold directories remain"
+    );
+    for (path, id) in original {
+        assert_eq!(&directory_id(path), id, "{}", path.display());
+    }
+    assert!(
+        fs::read_dir(&original.last().unwrap().0)
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    assert!(!original[0].0.join(".git").try_exists().unwrap());
+}
+
+fn assert_no_publication(root: &Path) {
+    assert!(!root.join(".ComfyUI.cloning").try_exists().unwrap());
+    assert!(!root.join(".ComfyUI.publish.json").try_exists().unwrap());
+}
+
+async fn first_release(fixture: &Fixture) -> ResolvedGit {
+    fixture
+        .source()
+        .resolve(&fixture.root, &ComfyRef::Tag("v1.0.0".into()))
+        .await
+        .unwrap()
+}
+
+#[cfg(windows)]
+fn directory_link(target: &Path, link: &Path) {
+    let output = Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+fn directory_link(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[tokio::test]
+async fn scaffold_classification_is_conservative() {
+    let fixture = Fixture::new().await;
+    let source = fixture.source();
+    let comfy = fixture.root.join("ComfyUI");
+    fs::create_dir_all(&comfy).unwrap();
+    for relative in ["user.txt", "models/checkpoints/user.safetensors"] {
+        let file = comfy.join(relative);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "user data").unwrap();
+        assert_eq!(
+            source.inspect_checkout(&fixture.root).await.unwrap(),
+            Checkout::NotGit
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), "user data");
+        fs::remove_file(file).unwrap();
+    }
+    fs::create_dir(comfy.join(".git")).unwrap();
+    assert_eq!(
+        source.inspect_checkout(&fixture.root).await.unwrap(),
+        Checkout::NotGit
+    );
+    fs::remove_dir(comfy.join(".git")).unwrap();
+    fs::write(comfy.join(".git"), "gitdir: missing\n").unwrap();
+    assert_eq!(
+        source.inspect_checkout(&fixture.root).await.unwrap(),
+        Checkout::NotGit
+    );
+    fs::remove_file(comfy.join(".git")).unwrap();
+    fs::create_dir_all(comfy.join("models/.GiT")).unwrap();
+    assert_eq!(
+        source.inspect_checkout(&fixture.root).await.unwrap(),
+        Checkout::NotGit
+    );
+    fs::remove_dir(comfy.join("models/.GiT")).unwrap();
+
+    let external = fixture._directory.path().join("external");
+    fs::create_dir(&external).unwrap();
+    fs::write(external.join("sentinel"), "outside").unwrap();
+    directory_link(&external, &comfy.join("nested-link"));
+    assert_eq!(
+        source.inspect_checkout(&fixture.root).await.unwrap(),
+        Checkout::NotGit
+    );
+    #[cfg(windows)]
+    fs::remove_dir(comfy.join("nested-link")).unwrap();
+    #[cfg(unix)]
+    fs::remove_file(comfy.join("nested-link")).unwrap();
+    fs::remove_dir_all(&comfy).unwrap();
+    directory_link(&external, &comfy);
+    assert_eq!(
+        source.inspect_checkout(&fixture.root).await.unwrap(),
+        Checkout::NotGit
+    );
+    #[cfg(windows)]
+    fs::remove_dir(&comfy).unwrap();
+    #[cfg(unix)]
+    fs::remove_file(&comfy).unwrap();
+    fs::write(&comfy, "not a directory").unwrap();
+    assert_eq!(
+        source.inspect_checkout(&fixture.root).await.unwrap(),
+        Checkout::NotGit
+    );
+    fs::remove_file(&comfy).unwrap();
+
+    let mut deep = comfy.clone();
+    for _ in 0..65 {
+        deep.push("d");
+    }
+    fs::create_dir_all(&deep).unwrap();
+    assert_eq!(
+        source.inspect_checkout(&fixture.root).await.unwrap(),
+        Checkout::NotGit
+    );
+    fs::remove_dir_all(&comfy).unwrap();
+    fs::create_dir(&comfy).unwrap();
+    for i in 0..4097 {
+        fs::create_dir(comfy.join(format!("d{i}"))).unwrap();
+    }
+    assert_eq!(
+        source.inspect_checkout(&fixture.root).await.unwrap(),
+        Checkout::NotGit
+    );
+    assert_eq!(
+        fs::read_to_string(external.join("sentinel")).unwrap(),
+        "outside"
+    );
+}
+
+#[tokio::test]
+async fn scaffold_merge_conflicts_refuse_before_any_move() {
+    for hooks in [false, true] {
+        let fixture = Fixture::new().await;
+        let source = fixture.source();
+        let mut original = scaffold(&fixture.root);
+        let resolved = if hooks {
+            let hook = fixture
+                .remote
+                .path
+                .join("custom_nodes/.disabled/.vjump-no-hooks/pre-commit");
+            fs::create_dir_all(hook.parent().unwrap()).unwrap();
+            fs::write(hook, "must never be published").unwrap();
+            git(&fixture.remote.path, &["add", "-A"]);
+            git(
+                &fixture.remote.path,
+                &["commit", "-m", "unsafe hook placement"],
+            );
+            source.resolve_manager(&fixture.root).await.unwrap()
+        } else {
+            let path = fixture.root.join("ComfyUI/README.md");
+            fs::create_dir(&path).unwrap();
+            original.push((path.clone(), directory_id(&path)));
+            first_release(&fixture).await
+        };
+        assert_eq!(
+            source
+                .clone_comfyui(&fixture.root, &resolved, &ctx())
+                .await
+                .unwrap_err(),
+            failed(publish::CONFLICT)
+        );
+        assert_scaffold(&original);
+        assert_no_publication(&fixture.root);
+    }
+}
+
+#[tokio::test]
+async fn an_empty_destination_is_published_in_place() {
+    let fixture = Fixture::new().await;
+    let source = fixture.source();
+    let resolved = first_release(&fixture).await;
+    let comfy = fixture.root.join("ComfyUI");
+    fs::create_dir_all(&comfy).unwrap();
+    let pin = crate::shared::model_paths::pin_absolute(&comfy).unwrap();
+    let original = directory_id(&comfy);
+    source
+        .clone_comfyui(&fixture.root, &resolved, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(directory_id(&comfy), original);
+    assert_eq!(git(&comfy, &["rev-parse", "HEAD"]), resolved.commit);
+    assert_eq!(git(&comfy, &["status", "--porcelain"]), "");
+    assert_no_publication(&fixture.root);
+    drop(pin);
+}
+
+#[tokio::test]
+async fn cancelled_scaffold_publication_rolls_back_and_reports_cancelled() {
+    let fixture = Fixture::new().await;
+    let source = fixture.source();
+    let resolved = first_release(&fixture).await;
+    let original = scaffold(&fixture.root);
+    let cancelled = ctx();
+    *source.publish_fault.lock().unwrap() = Some(publish::Fault::CancelAfter(2));
+    assert_eq!(
+        source
+            .clone_comfyui(&fixture.root, &resolved, &cancelled)
+            .await
+            .unwrap_err(),
+        ProvisionError::Cancelled
+    );
+    assert!(cancelled.cancel.is_cancelled());
+    assert_scaffold(&original);
+    assert_no_publication(&fixture.root);
+    source
+        .clone_comfyui(&fixture.root, &resolved, &ctx())
+        .await
+        .unwrap();
+    let comfy = fixture.root.join("ComfyUI");
+    assert_eq!(git(&comfy, &["rev-parse", "HEAD"]), resolved.commit);
+    assert_eq!(git(&comfy, &["status", "--porcelain"]), "");
+    assert_no_publication(&fixture.root);
+}
+
+#[tokio::test]
+async fn interrupted_scaffold_publication_is_recovered_on_retry() {
+    // A handled error rolls back in process before deleting the pristine stage and record.
+    let fixture = Fixture::new().await;
+    let source = fixture.source();
+    let resolved = first_release(&fixture).await;
+    let original = scaffold(&fixture.root);
+    *source.publish_fault.lock().unwrap() = Some(publish::Fault::FailAfter(2));
+    assert_eq!(
+        source
+            .clone_comfyui(&fixture.root, &resolved, &ctx())
+            .await
+            .unwrap_err(),
+        failed("Injected publication failure.")
+    );
+    assert_scaffold(&original);
+    assert_no_publication(&fixture.root);
+    source
+        .clone_comfyui(&fixture.root, &resolved, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        git(&fixture.root.join("ComfyUI"), &["rev-parse", "HEAD"]),
+        resolved.commit
+    );
+
+    // A process interruption leaves a record that inspection recognizes without changing it.
+    let fixture = Fixture::new().await;
+    let source = fixture.source();
+    let resolved = first_release(&fixture).await;
+    scaffold(&fixture.root);
+    *source.publish_fault.lock().unwrap() = Some(publish::Fault::KillAfter(2));
+    assert!(
+        source
+            .clone_comfyui(&fixture.root, &resolved, &ctx())
+            .await
+            .is_err()
+    );
+    let record = fixture.root.join(".ComfyUI.publish.json");
+    let bytes = fs::read(&record).unwrap();
+    assert!(fixture.root.join("ComfyUI/README.md").is_file());
+    assert_eq!(
+        source.inspect_checkout(&fixture.root).await.unwrap(),
+        Checkout::Absent
+    );
+    assert_eq!(fs::read(&record).unwrap(), bytes);
+    source
+        .clone_comfyui(&fixture.root, &resolved, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        git(&fixture.root.join("ComfyUI"), &["status", "--porcelain"]),
+        ""
+    );
+    assert_no_publication(&fixture.root);
+
+    // A replaced entry is ambiguous: no rollback, deletion, or further retry may touch it.
+    let fixture = Fixture::new().await;
+    let source = fixture.source();
+    let resolved = first_release(&fixture).await;
+    scaffold(&fixture.root);
+    *source.publish_fault.lock().unwrap() = Some(publish::Fault::KillAfter(2));
+    assert!(
+        source
+            .clone_comfyui(&fixture.root, &resolved, &ctx())
+            .await
+            .is_err()
+    );
+    let moved = fixture.root.join("ComfyUI/README.md");
+    fs::remove_file(&moved).unwrap();
+    fs::write(&moved, "replacement user data").unwrap();
+    let record = fixture.root.join(".ComfyUI.publish.json");
+    let bytes = fs::read(&record).unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            source
+                .clone_comfyui(&fixture.root, &resolved, &ctx())
+                .await
+                .unwrap_err(),
+            failed(publish::INTERRUPTED)
+        );
+        assert_eq!(fs::read_to_string(&moved).unwrap(), "replacement user data");
+        assert!(fixture.root.join(".ComfyUI.cloning").is_dir());
+        assert_eq!(fs::read(&record).unwrap(), bytes);
+    }
+
+    // Corrupt and unknown records must be rejected before a leftover stage is removed.
+    for unknown in [false, true] {
+        let fixture = Fixture::new().await;
+        let source = fixture.source();
+        let resolved = first_release(&fixture).await;
+        scaffold(&fixture.root);
+        *source.publish_fault.lock().unwrap() = Some(publish::Fault::KillAfter(2));
+        assert!(
+            source
+                .clone_comfyui(&fixture.root, &resolved, &ctx())
+                .await
+                .is_err()
+        );
+        let record = fixture.root.join(".ComfyUI.publish.json");
+        let bytes = if unknown {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+            value["version"] = 99.into();
+            serde_json::to_vec(&value).unwrap()
+        } else {
+            b"interrupted record write".to_vec()
+        };
+        fs::write(&record, &bytes).unwrap();
+        assert_eq!(
+            source
+                .clone_comfyui(&fixture.root, &resolved, &ctx())
+                .await
+                .unwrap_err(),
+            failed(publish::INTERRUPTED)
+        );
+        assert_eq!(fs::read(&record).unwrap(), bytes);
+        assert!(fixture.root.join(".ComfyUI.cloning/.git").is_dir());
+        assert!(fixture.root.join("ComfyUI/README.md").is_file());
+    }
+
+    // The .git move commits the checkout; recovery must not even attempt another clone.
+    let fixture = Fixture::new().await;
+    let source = fixture.source();
+    let resolved = first_release(&fixture).await;
+    scaffold(&fixture.root);
+    *source.publish_fault.lock().unwrap() = Some(publish::Fault::AfterCommit);
+    source
+        .clone_comfyui(&fixture.root, &resolved, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        source.inspect_checkout(&fixture.root).await.unwrap(),
+        Checkout::Repo {
+            commit: resolved.commit.clone()
+        }
+    );
+    let offline = ResolvedGit {
+        url: "does-not-exist".into(),
+        ..resolved
+    };
+    source
+        .clone_comfyui(&fixture.root, &offline, &ctx())
+        .await
+        .unwrap();
+    assert_no_publication(&fixture.root);
 }
 
 #[test]
@@ -383,7 +803,6 @@ async fn a_tag_is_cloned_staged_checked_out_and_published() {
     assert_eq!(leftovers, ["ComfyUI"], "no staging directory remains");
     let files = source.requirement_files(&fixture.root).await.unwrap();
     assert_eq!(files.comfyui, dir.join("requirements.txt"));
-    assert!(files.nodes.is_empty());
 }
 
 #[tokio::test]
@@ -489,7 +908,7 @@ async fn failed_and_cancelled_clones_leave_nothing_and_an_existing_folder_is_nev
 }
 
 #[tokio::test]
-async fn requirement_files_cover_enabled_and_disabled_custom_nodes_only() {
+async fn requirement_files_contains_only_comfyui_requirements() {
     let fixture = Fixture::new().await;
     let source = fixture.source();
     let comfy = fixture.root.join("ComfyUI");
@@ -522,19 +941,7 @@ async fn requirement_files_cover_enabled_and_disabled_custom_nodes_only() {
     );
     fs::write(comfy.join("requirements.txt"), "numpy").unwrap();
     let files = source.requirement_files(&fixture.root).await.unwrap();
-    let names: Vec<_> = files
-        .nodes
-        .iter()
-        .map(|path| {
-            path.parent()
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    assert_eq!(names, ["off", "another", "good node ไทย"]);
+    assert_eq!(files.comfyui, comfy.join("requirements.txt"));
 }
 
 #[tokio::test]

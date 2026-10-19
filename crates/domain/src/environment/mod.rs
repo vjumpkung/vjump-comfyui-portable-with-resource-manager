@@ -18,7 +18,7 @@ pub use error::EnvironmentError;
 pub use hardware::{GpuObservation, GpuProbe, HardwareObservation};
 pub use pins::{DistName, PinChange, PinSet};
 pub use profile::{
-    AcceleratorSpec, DiskBudget, PROFILE_SCHEMA_VERSION, ProfileStatus, SetupProfile, TorchBuild,
-    TritonSpec, VerifyExpectations,
+    AcceleratorSource, AcceleratorSpec, DiskBudget, PROFILE_SCHEMA_VERSION, ProfileStatus,
+    SetupProfile, TorchBuild, TritonSpec, VerifyExpectations,
 };
 pub use version::{ComputeCapability, CudaVariant, CudaVersion, OsKind, PythonVersion};

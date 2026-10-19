@@ -46,6 +46,6 @@ fn results_are_parsed_from_the_marker_line_amid_noise() {
     assert!(parse::<TorchInfo>("VJ-VERIFY:{\"version\":1}").is_err());
     let final_line = "VJ-VERIFY:{\"python\":\"3.13.16\",\"torch\":\"2.14.1+cu130\",\"cuda\":true,\"triton\":\"3.8.0\",\"comfy\":\"C:/ComfyUI/comfy\",\"device\":\"RTX 3060\",\"cuda_ok\":true,\"accelerators\":{\"sageattention\":false,\"flash_attn\":false,\"llama_cpp\":true}}";
     let info: FinalInfo = parse(final_line).unwrap();
-    assert_eq!(info.accelerators.len(), 3);
+    assert!(!FINAL_SCRIPT.contains("find_spec"));
     assert_eq!(info.cuda_ok, Some(true));
 }

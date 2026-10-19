@@ -10,10 +10,10 @@ use tauri::{State, ipc::Channel};
 
 use super::{
     env_dto::{
-        EnvironmentInfoDto, HardwareDto, PackageDto, PipApplyInput, PipApplyResultDto,
-        PipOperationDto, PipPlanDto, ProfileDto, PythonSourceDto, PythonValidationDto,
-        RootSelectionDto, RunOutcomeDto, SetupActionDto, SetupEventDto, SetupStartedDto,
-        SetupStatusDto,
+        CuratedNodeDto, EnvironmentInfoDto, HardwareDto, PackageDto, PipApplyInput,
+        PipApplyResultDto, PipOperationDto, PipPlanDto, ProfileDto, PythonSourceDto,
+        PythonValidationDto, RootSelectionDto, RunOutcomeDto, SetupActionDto, SetupEventDto,
+        SetupStartedDto, SetupStatusDto,
     },
     error::IpcError,
 };
@@ -49,11 +49,42 @@ impl SetupProgressSink for ChannelSink {
 #[tauri::command]
 #[specta::specta]
 pub async fn setup_status(state: State<'_, AppState>) -> Result<SetupStatusDto, IpcError> {
-    if let Some(info) = state.recovery() {
+    if state.setup_services().is_err()
+        && let Some(info) = state.recovery()
+    {
         return Ok(SetupStatusDto::recovery(info));
     }
-    let status = state.services()?.setup_status.execute().await?;
-    Ok(SetupStatusDto::from(&status))
+    let services = state.setup_services()?;
+    let status = services.setup_status.execute().await?;
+    let mut dto = SetupStatusDto::from(&status);
+    // The reviews of the curated nodes live in the node service of this process.
+    if let (Some(run), Some(snapshot)) = (&status.run, dto.run.take()) {
+        let reviews = if let Ok(services) = state.services() {
+            services
+                .nodes
+                .service
+                .setup_reviews(&run.id)
+                .map_err(IpcError::from)?
+        } else {
+            Vec::new()
+        };
+        dto.run = Some(snapshot.with_reviews(run, &reviews));
+    }
+    Ok(dto)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn setup_list_curated_nodes(
+    state: State<'_, AppState>,
+) -> Result<Vec<CuratedNodeDto>, IpcError> {
+    Ok(state
+        .services()?
+        .curated
+        .list()
+        .iter()
+        .map(CuratedNodeDto::from)
+        .collect())
 }
 
 #[tauri::command]
@@ -137,17 +168,34 @@ pub async fn setup_run(
     action: SetupActionDto,
     on_event: Channel<SetupEventDto>,
 ) -> Result<SetupStartedDto, IpcError> {
-    let services = state.services()?;
+    let services = state.setup_services()?;
     let action = action.into_application(&services.root.root)?;
     // The run is durably registered before the task starts, so a closed channel or a reloaded
     // UI never loses required work.
     let run_id = services.start_setup.execute(action).await?;
+    let restart = services
+        .deps
+        .runs
+        .get(&run_id)
+        .await
+        .map_err(application::environment::EnvironmentAppError::from)?
+        .is_some_and(|run| run.request.mode == domain::environment::SetupMode::Rebuild);
+    let shell = if restart {
+        Some(state.shell()?.clone())
+    } else {
+        None
+    };
     let channel_sink = Arc::new(ChannelSink { channel: on_event });
     let (sink, _log_path) = run_sink(&services.logs_dir, run_id.as_str(), channel_sink.clone());
     let executor = services.execute_setup.clone();
     let task_id = run_id.clone();
     tauri::async_runtime::spawn(async move {
-        let outcome = match executor.execute(&task_id, sink).await {
+        let result = if restart {
+            executor.execute_for_restart(&task_id, sink).await
+        } else {
+            executor.execute(&task_id, sink).await
+        };
+        let outcome = match result {
             Ok(outcome) => RunOutcomeDto::from(&outcome),
             Err(error) => {
                 tracing::error!(%error, "setup run could not execute");
@@ -155,6 +203,11 @@ pub async fn setup_run(
             }
         };
         channel_sink.finished(&task_id, outcome);
+        if matches!(outcome, RunOutcomeDto::Succeeded)
+            && let Some(shell) = shell
+        {
+            shell.request_restart();
+        }
     });
     Ok(SetupStartedDto {
         run_id: run_id.to_string(),
@@ -165,8 +218,40 @@ pub async fn setup_run(
 #[specta::specta]
 pub async fn setup_cancel(state: State<'_, AppState>, run_id: String) -> Result<(), IpcError> {
     let run_id = RunId::new(run_id).map_err(|_| invalid_identifier())?;
-    state.services()?.cancel_setup.execute(&run_id).await?;
+    state
+        .setup_services()?
+        .cancel_setup
+        .execute(&run_id)
+        .await?;
     Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn setup_open_install(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<RootSelectionDto, IpcError> {
+    let shell = state.shell()?.clone();
+    state.opener()?.open_existing(&PathBuf::from(path)).await?;
+    shell.request_restart();
+    Ok(RootSelectionDto {
+        restart_required: true,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn setup_new_install(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<RootSelectionDto, IpcError> {
+    let shell = state.shell()?.clone();
+    state.opener()?.select_new(&PathBuf::from(path)).await?;
+    shell.request_restart();
+    Ok(RootSelectionDto {
+        restart_required: true,
+    })
 }
 
 #[tauri::command]

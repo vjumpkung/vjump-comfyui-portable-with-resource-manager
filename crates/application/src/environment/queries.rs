@@ -122,6 +122,7 @@ pub enum SetupPhase {
     Ready,
     /// The selected environment needs repair before ComfyUI may start.
     RepairRequired,
+    RebuildRequired(super::RebuildReason),
     RunInProgress,
     RunFailed,
     /// `install.json` and the database disagree or are unusable; nothing is changed silently.
@@ -155,6 +156,14 @@ impl GetSetupStatus {
         let run = deps.runs.latest().await?;
         let draft = deps.drafts.load().await?;
 
+        let health = match (&manifest, &active) {
+            (ManifestState::Valid(manifest), Some(active)) if manifest.env_id == active.id => {
+                deps.installation
+                    .inspect(&root.root, manifest, active)
+                    .await?
+            }
+            _ => super::InstallationHealth::Healthy,
+        };
         let phase = match (&manifest, &active) {
             (ManifestState::Corrupt, _) => SetupPhase::Recovery(RecoveryReason::ManifestCorrupt),
             (ManifestState::Newer, _) => SetupPhase::Recovery(RecoveryReason::ManifestNewer),
@@ -166,6 +175,20 @@ impl GetSetupStatus {
             }
             (ManifestState::Valid(manifest), Some(active)) if manifest.env_id != active.id => {
                 SetupPhase::Recovery(RecoveryReason::ManifestMismatch)
+            }
+            // The rebuild itself runs while the copied installation still reads as moved.
+            _ if run.as_ref().is_some_and(|run| {
+                run.status.is_active()
+                    && super::same_location(&run.request.install_root, &root.root)
+            }) =>
+            {
+                SetupPhase::RunInProgress
+            }
+            _ if matches!(health, super::InstallationHealth::RebuildRequired(_)) => {
+                let super::InstallationHealth::RebuildRequired(reason) = health else {
+                    unreachable!()
+                };
+                SetupPhase::RebuildRequired(reason)
             }
             _ => match (&run, &active) {
                 (Some(run), _) if run.status.is_active() => SetupPhase::RunInProgress,
@@ -198,6 +221,7 @@ pub struct EnvironmentInfo {
     /// The commit currently checked out, when it can be read.
     pub comfyui_commit: Option<String>,
     pub accelerators: Vec<String>,
+    pub components: super::model::InstalledComponents,
 }
 
 /// FR-ENV-1: the selected environment.
@@ -219,8 +243,29 @@ impl GetEnvironmentInfo {
             .ok_or(EnvironmentAppError::NoActiveEnvironment)?;
         let root = deps.root.current().root;
         let profile = deps.catalog.get(&env.profile_id);
-        let manifest_reference = match deps.manifests.read(&root).await? {
-            ManifestState::Valid(manifest) => manifest.comfyui_reference,
+        let manifest = deps.manifests.read(&root).await?;
+        let mut components = deps.envs.load_components(&env.id).await?;
+        let manifest_reference = match manifest {
+            ManifestState::Valid(manifest) if manifest.env_id == env.id => {
+                if components == super::model::InstalledComponents::default() {
+                    components = manifest.components;
+                    if components == super::model::InstalledComponents::default()
+                        && let Some(run) = deps.runs.get(&manifest.run_id).await?
+                        && run.target_env == env.id
+                        && run.profile.id == env.profile_id
+                        && run.profile.revision == env.profile_revision
+                    {
+                        components = run.components;
+                        if components == super::model::InstalledComponents::default() {
+                            components = super::model::InstalledComponents::selected(
+                                &run.request,
+                                &run.profile,
+                            );
+                        }
+                    }
+                }
+                manifest.comfyui_reference
+            }
             _ => None,
         };
         let comfyui_commit = match deps.source.inspect_checkout(&root).await {
@@ -242,7 +287,13 @@ impl GetEnvironmentInfo {
             triton_version,
             comfyui_reference: manifest_reference,
             comfyui_commit,
-            accelerators: Vec::new(),
+            accelerators: components
+                .accelerators
+                .iter()
+                .filter(|r| r.status == super::model::ComponentStatus::Installed)
+                .map(|r| r.id.clone())
+                .collect(),
+            components,
             env: summarize(&env),
         })
     }

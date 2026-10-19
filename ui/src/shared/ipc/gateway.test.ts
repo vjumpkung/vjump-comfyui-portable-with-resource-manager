@@ -178,7 +178,12 @@ describe('gateway', () => {
     const receive = vi.fn()
     await expect(
       gateway.setupRun(
-        { kind: 'retry', runId: 'run-1', managerConsent: null },
+        {
+          kind: 'retry',
+          runId: 'run-1',
+          managerConsent: null,
+          curatedDecisions: [],
+        },
         receive,
       ),
     ).resolves.toEqual({ runId: 'run-1' })

@@ -3,10 +3,11 @@
 
 use application::environment::ProfileCatalog;
 use domain::environment::{
-    AcceleratorSpec, ComputeCapability, CudaVariant, CudaVersion, DiskBudget, DistName,
-    EnvironmentError, OsKind, ProfileStatus, PythonVersion, SetupProfile, TorchBuild, TritonSpec,
-    VerifyExpectations,
+    AcceleratorSource, AcceleratorSpec, ComputeCapability, CudaVariant, CudaVersion, DiskBudget,
+    DistName, EnvironmentError, OsKind, ProfileStatus, PythonVersion, SetupProfile, TorchBuild,
+    TritonSpec, VerifyExpectations,
 };
+use domain::shared::model_values::{SafeFileName, Sha256};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -28,12 +29,140 @@ pub struct TritonDoc {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AcceleratorSourceDoc {
+    Wheel {
+        url: String,
+        filename: String,
+        sha256: String,
+        size: Option<u64>,
+    },
+    Packages {
+        requirements: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcceleratorDoc {
+    pub id: String,
     pub name: String,
-    pub requirement: String,
-    pub sha256: Option<String>,
+    pub modules: Vec<String>,
+    pub source: AcceleratorSourceDoc,
+    pub no_deps: bool,
+    pub default_selected: bool,
     pub non_fatal: bool,
+    pub provenance: String,
+}
+
+pub(crate) fn validate_wheel_url(value: &str) -> Result<(), ProfileError> {
+    let invalid = || ProfileError::Invalid(EnvironmentError::InvalidProfile("accelerator URL"));
+    let url = reqwest::Url::parse(value).map_err(|_| invalid())?;
+    if url.scheme() != "https"
+        || url.host_str().is_none_or(str::is_empty)
+        || value.split_once("://").is_some_and(|(_, rest)| {
+            rest.split(['/', '?', '#'])
+                .next()
+                .is_some_and(|authority| authority.contains('@'))
+        })
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query_pairs().any(|(key, _)| {
+            let key = key.to_ascii_lowercase();
+            key.contains("token")
+                || key.contains("secret")
+                || key.contains("password")
+                || key.contains("signature")
+                || key.contains("credential")
+                || key.starts_with("x-amz-")
+                || key.starts_with("x-goog-")
+                || matches!(
+                    key.as_str(),
+                    "sig"
+                        | "key"
+                        | "api_key"
+                        | "api-key"
+                        | "apikey"
+                        | "access_key"
+                        | "auth"
+                        | "authorization"
+                        | "code"
+                )
+        })
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+impl TryFrom<AcceleratorDoc> for AcceleratorSpec {
+    type Error = ProfileError;
+
+    fn try_from(doc: AcceleratorDoc) -> Result<Self, Self::Error> {
+        let source = match doc.source {
+            AcceleratorSourceDoc::Wheel {
+                url,
+                filename,
+                sha256,
+                size,
+            } => {
+                validate_wheel_url(&url)?;
+                AcceleratorSource::Wheel {
+                    url,
+                    filename: SafeFileName::new(filename)
+                        .map_err(|_| EnvironmentError::InvalidProfile("wheel filename"))?,
+                    sha256: Sha256::new(&sha256)
+                        .map_err(|_| EnvironmentError::InvalidProfile("wheel hash"))?,
+                    size,
+                }
+            }
+            AcceleratorSourceDoc::Packages { requirements } => {
+                AcceleratorSource::Packages { requirements }
+            }
+        };
+        let spec = Self {
+            id: doc.id,
+            name: doc.name,
+            modules: doc.modules,
+            source,
+            no_deps: doc.no_deps,
+            default_selected: doc.default_selected,
+            non_fatal: doc.non_fatal,
+            provenance: doc.provenance,
+        };
+        spec.validate()?;
+        Ok(spec)
+    }
+}
+
+impl From<&AcceleratorSpec> for AcceleratorDoc {
+    fn from(spec: &AcceleratorSpec) -> Self {
+        Self {
+            id: spec.id.clone(),
+            name: spec.name.clone(),
+            modules: spec.modules.clone(),
+            source: match &spec.source {
+                AcceleratorSource::Wheel {
+                    url,
+                    filename,
+                    sha256,
+                    size,
+                } => AcceleratorSourceDoc::Wheel {
+                    url: url.clone(),
+                    filename: filename.as_str().to_owned(),
+                    sha256: sha256.as_str().to_owned(),
+                    size: *size,
+                },
+                AcceleratorSource::Packages { requirements } => AcceleratorSourceDoc::Packages {
+                    requirements: requirements.clone(),
+                },
+            },
+            no_deps: spec.no_deps,
+            default_selected: spec.default_selected,
+            non_fatal: spec.non_fatal,
+            provenance: spec.provenance.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,13 +254,8 @@ impl TryFrom<ProfileDoc> for SetupProfile {
             accelerators: doc
                 .accelerators
                 .into_iter()
-                .map(|accelerator| AcceleratorSpec {
-                    name: accelerator.name,
-                    requirement: accelerator.requirement,
-                    sha256: accelerator.sha256,
-                    non_fatal: accelerator.non_fatal,
-                })
-                .collect(),
+                .map(AcceleratorSpec::try_from)
+                .collect::<Result<_, _>>()?,
             constraints: doc.constraints,
             verify: VerifyExpectations {
                 torch_version_prefix: doc.verify.torch_version_prefix,
@@ -183,12 +307,7 @@ impl From<&SetupProfile> for ProfileDoc {
             accelerators: profile
                 .accelerators
                 .iter()
-                .map(|accelerator| AcceleratorDoc {
-                    name: accelerator.name.clone(),
-                    requirement: accelerator.requirement.clone(),
-                    sha256: accelerator.sha256.clone(),
-                    non_fatal: accelerator.non_fatal,
-                })
+                .map(AcceleratorDoc::from)
                 .collect(),
             constraints: profile.constraints.clone(),
             verify: VerifyDoc {
@@ -251,6 +370,15 @@ impl ProfileCatalog for BundledProfiles {
             .iter()
             .find(|profile| profile.id == id)
             .cloned()
+    }
+    fn get_revision(&self, id: &str, revision: u32) -> Option<SetupProfile> {
+        self.get(id).filter(|p| p.revision == revision).or_else(|| {
+            let archived = parse_profile(include_str!(
+                "data/profiles/archive/win-py312-torch2100-cu130-r1.json"
+            ))
+            .ok()?;
+            (archived.id == id && archived.revision == revision).then_some(archived)
+        })
     }
 }
 

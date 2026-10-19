@@ -51,7 +51,12 @@ it('reconstructs failure details and requires exact-source consent before retry'
   fireEvent.click(screen.getByRole('button', { name: 'Retry same run' }))
   await waitFor(() =>
     expect(gateway.setupRun).toHaveBeenCalledWith(
-      { kind: 'retry', runId: run.id, managerConsent: 'a'.repeat(40) },
+      {
+        kind: 'retry',
+        runId: run.id,
+        managerConsent: 'a'.repeat(40),
+        curatedDecisions: [],
+      },
       expect.any(Function),
     ),
   )

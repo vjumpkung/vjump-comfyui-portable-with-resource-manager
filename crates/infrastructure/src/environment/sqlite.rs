@@ -5,10 +5,11 @@
 use std::path::{Path, PathBuf};
 
 use application::environment::{
-    ActivationPhase, ActivationStore, ComfyRef, ConsentRequest, EnvRepoError,
-    EnvironmentRepository, FailureKind, ProvisioningRun, ProvisioningRunRepository,
+    AcceleratorResult, ActivationPhase, ActivationStore, ComfyRef, ComponentStatus, ConsentRequest,
+    CuratedProgress, CuratedStatus, EnvRepoError, EnvironmentRepository, FailureKind,
+    InstalledComponents, ManagerResult, ProvisioningRun, ProvisioningRunRepository,
     PythonSourceInput, PythonTarget, ResolvedGit, ResolvedSources, RunId, RunStatus, SetupRequest,
-    StepFailure, StepId, StepRecord, StepStatus, WizardDraftStore,
+    StepFailure, StepId, StepPolicy, StepRecord, StepStatus, WizardDraftStore,
 };
 use async_trait::async_trait;
 use domain::environment::{
@@ -44,6 +45,108 @@ fn text(path: &Path) -> Result<String, EnvRepoError> {
     path.to_str()
         .map(str::to_owned)
         .ok_or(EnvRepoError::Corrupt)
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StatusDoc {
+    Installed,
+    Failed,
+    Skipped,
+}
+
+impl From<ComponentStatus> for StatusDoc {
+    fn from(status: ComponentStatus) -> Self {
+        match status {
+            ComponentStatus::Installed => Self::Installed,
+            ComponentStatus::Failed => Self::Failed,
+            ComponentStatus::Skipped => Self::Skipped,
+        }
+    }
+}
+
+impl From<StatusDoc> for ComponentStatus {
+    fn from(status: StatusDoc) -> Self {
+        match status {
+            StatusDoc::Installed => Self::Installed,
+            StatusDoc::Failed => Self::Failed,
+            StatusDoc::Skipped => Self::Skipped,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcceleratorResultDoc {
+    id: String,
+    selected: bool,
+    status: StatusDoc,
+    importable: Option<bool>,
+    message: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagerResultDoc {
+    selected: bool,
+    status: StatusDoc,
+    source_commit: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ComponentsDoc {
+    manager: Option<ManagerResultDoc>,
+    accelerators: Vec<AcceleratorResultDoc>,
+}
+
+impl From<&InstalledComponents> for ComponentsDoc {
+    fn from(components: &InstalledComponents) -> Self {
+        Self {
+            manager: components.manager.as_ref().map(|r| ManagerResultDoc {
+                selected: r.selected,
+                status: r.status.into(),
+                source_commit: r.source_commit.clone(),
+                message: r.message.clone(),
+            }),
+            accelerators: components
+                .accelerators
+                .iter()
+                .map(|r| AcceleratorResultDoc {
+                    id: r.id.clone(),
+                    selected: r.selected,
+                    status: r.status.into(),
+                    importable: r.importable,
+                    message: r.message.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<ComponentsDoc> for InstalledComponents {
+    fn from(doc: ComponentsDoc) -> Self {
+        Self {
+            manager: doc.manager.map(|r| ManagerResult {
+                selected: r.selected,
+                status: r.status.into(),
+                source_commit: r.source_commit,
+                message: r.message,
+            }),
+            accelerators: doc
+                .accelerators
+                .into_iter()
+                .map(|r| AcceleratorResult {
+                    id: r.id,
+                    selected: r.selected,
+                    status: r.status.into(),
+                    importable: r.importable,
+                    message: r.message,
+                })
+                .collect(),
+        }
+    }
 }
 
 // ------------------------------------------------------------------------ environments
@@ -267,6 +370,59 @@ impl EnvironmentRepository for SqliteEnvironmentStore {
             .map_err(unavailable)
     }
 
+    async fn load_components(&self, id: &EnvId) -> Result<InstalledComponents, EnvRepoError> {
+        let id = id.to_string();
+        let json: Option<String> = self
+            .db
+            .run(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT components_json FROM envs WHERE id = ?1",
+                        [id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map(|row: Option<Option<String>>| row.flatten())
+                    .map_err(sql)
+            })
+            .await
+            .map_err(unavailable)?;
+        json.map(|json| {
+            serde_json::from_str::<ComponentsDoc>(&json)
+                .map(InstalledComponents::from)
+                .map_err(|_| EnvRepoError::Corrupt)
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+    }
+
+    async fn save_components(
+        &self,
+        id: &EnvId,
+        components: &InstalledComponents,
+    ) -> Result<(), EnvRepoError> {
+        let id = id.to_string();
+        let json = serde_json::to_string(&ComponentsDoc::from(components))
+            .map_err(|_| EnvRepoError::Corrupt)?;
+        let updated = self
+            .db
+            .run(move |connection| {
+                connection
+                    .execute(
+                        "UPDATE envs SET components_json = ?2 WHERE id = ?1",
+                        params![id, json],
+                    )
+                    .map_err(sql)
+            })
+            .await
+            .map_err(unavailable)?;
+        if updated == 1 {
+            Ok(())
+        } else {
+            Err(EnvRepoError::Conflict)
+        }
+    }
+
     async fn delete(&self, id: &EnvId) -> Result<(), EnvRepoError> {
         let id = id.to_string();
         self.db
@@ -319,6 +475,10 @@ struct RequestDoc {
     profile_id: String,
     comfyui_ref: RefDoc,
     install_manager: bool,
+    #[serde(default)]
+    accelerators: Vec<String>,
+    #[serde(default)]
+    curated_nodes: Vec<String>,
     clean_cache: bool,
     confirm_adopted_changes: bool,
     allow_source_builds: bool,
@@ -371,6 +531,18 @@ struct FailureDoc {
     exit_code: Option<i32>,
     tail: Vec<String>,
     consent: Option<ConsentDoc>,
+    /// Absent in runs saved before the backend decided it: derived from the step's policy.
+    #[serde(default)]
+    can_skip: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CuratedDoc {
+    id: String,
+    status: String,
+    plan: Option<String>,
+    operation: Option<String>,
+    message: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -382,6 +554,10 @@ struct RunDoc {
     steps: Vec<StepDoc>,
     failure: Option<FailureDoc>,
     manager_consent: Option<String>,
+    #[serde(default)]
+    components: Option<ComponentsDoc>,
+    #[serde(default)]
+    curated: Vec<CuratedDoc>,
 }
 
 fn git_doc(git: &ResolvedGit) -> GitDoc {
@@ -428,6 +604,8 @@ fn encode_run(run: &ProvisioningRun) -> Result<String, EnvRepoError> {
                 value: ref_value,
             },
             install_manager: run.request.install_manager,
+            accelerators: run.request.accelerators.clone(),
+            curated_nodes: run.request.curated_nodes.clone(),
             clean_cache: run.request.clean_cache,
             confirm_adopted_changes: run.request.confirm_adopted_changes,
             allow_source_builds: run.request.allow_source_builds,
@@ -471,8 +649,21 @@ fn encode_run(run: &ProvisioningRun) -> Result<String, EnvRepoError> {
                 source: consent.source.clone(),
                 commit: consent.commit.clone(),
             }),
+            can_skip: Some(failure.can_skip),
         }),
         manager_consent: run.manager_consent.clone(),
+        components: Some(ComponentsDoc::from(&run.components)),
+        curated: run
+            .curated
+            .iter()
+            .map(|entry| CuratedDoc {
+                id: entry.id.clone(),
+                status: entry.status.as_str().to_owned(),
+                plan: entry.plan.clone(),
+                operation: entry.operation.clone(),
+                message: entry.message.clone(),
+            })
+            .collect(),
     };
     serde_json::to_string(&doc).map_err(|_| EnvRepoError::Corrupt)
 }
@@ -554,11 +745,15 @@ fn run_from_row(row: RunRow) -> Result<ProvisioningRun, EnvRepoError> {
     let failure = doc
         .failure
         .map(|failure| {
+            let step = failure
+                .step
+                .parse::<StepId>()
+                .map_err(|_| EnvRepoError::Corrupt)?;
             Ok(StepFailure {
-                step: failure
-                    .step
-                    .parse::<StepId>()
-                    .map_err(|_| EnvRepoError::Corrupt)?,
+                step,
+                can_skip: failure
+                    .can_skip
+                    .unwrap_or(step.policy() == StepPolicy::Optional),
                 kind: failure
                     .kind
                     .parse::<FailureKind>()
@@ -575,7 +770,8 @@ fn run_from_row(row: RunRow) -> Result<ProvisioningRun, EnvRepoError> {
         })
         .transpose()?;
     let profile = SetupProfile::try_from(doc.profile).map_err(|_| EnvRepoError::Corrupt)?;
-    Ok(ProvisioningRun {
+    let legacy_components = doc.components.is_none();
+    let mut run = ProvisioningRun {
         id: RunId::new(row.id).map_err(|_| EnvRepoError::Corrupt)?,
         request: SetupRequest {
             mode: doc.request.mode.parse::<SetupMode>().map_err(corrupt)?,
@@ -584,6 +780,8 @@ fn run_from_row(row: RunRow) -> Result<ProvisioningRun, EnvRepoError> {
             profile_id: doc.request.profile_id,
             comfyui_ref,
             install_manager: doc.request.install_manager,
+            accelerators: doc.request.accelerators,
+            curated_nodes: doc.request.curated_nodes,
             clean_cache: doc.request.clean_cache,
             confirm_adopted_changes: doc.request.confirm_adopted_changes,
             allow_source_builds: doc.request.allow_source_builds,
@@ -626,9 +824,44 @@ fn run_from_row(row: RunRow) -> Result<ProvisioningRun, EnvRepoError> {
             .parse::<ActivationPhase>()
             .map_err(|_| EnvRepoError::Corrupt)?,
         manager_consent: doc.manager_consent,
+        curated: doc
+            .curated
+            .into_iter()
+            .map(|entry| {
+                Ok(CuratedProgress {
+                    id: entry.id,
+                    status: entry
+                        .status
+                        .parse::<CuratedStatus>()
+                        .map_err(|_| EnvRepoError::Corrupt)?,
+                    plan: entry.plan,
+                    operation: entry.operation,
+                    message: entry.message,
+                })
+            })
+            .collect::<Result<Vec<_>, EnvRepoError>>()?,
+        components: doc
+            .components
+            .map(InstalledComponents::from)
+            .unwrap_or_default(),
         created_at: row.created_at,
         updated_at: row.updated_at,
-    })
+    };
+    if legacy_components {
+        run.components = InstalledComponents::selected(&run.request, &run.profile);
+        let manager_status = run.step(StepId::Manager).status;
+        if let Some(manager) = &mut run.components.manager {
+            manager.source_commit = run.resolved.manager.as_ref().map(|git| git.commit.clone());
+            manager.status = match manager_status {
+                StepStatus::Succeeded => ComponentStatus::Installed,
+                StepStatus::Failed | StepStatus::Warning | StepStatus::Interrupted => {
+                    ComponentStatus::Failed
+                }
+                _ => ComponentStatus::Skipped,
+            };
+        }
+    }
+    Ok(run)
 }
 
 struct RunValues {

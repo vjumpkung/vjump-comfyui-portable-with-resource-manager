@@ -6,7 +6,10 @@ use super::{
 };
 use crate::{
     environment::layout::{Layout, Tool, command, venv_python},
-    shared::process::{self, CommandSpec, RunLimits},
+    shared::{
+        process::{self, CommandSpec, RunLimits},
+        procscan::{self, SnapshotFn},
+    },
 };
 use application::{
     comfy_runtime::*,
@@ -207,6 +210,8 @@ struct Inner {
     active: Mutex<Option<Active>>,
     quarantine: Mutex<Option<Box<dyn MaintenanceLease>>>,
     readiness_timeout: Duration,
+    /// The process-list source for `inventory`; always the real one outside tests.
+    snapshot: SnapshotFn,
 }
 #[derive(Clone)]
 pub struct ComfyRuntimeSupervisor {
@@ -237,6 +242,7 @@ impl ComfyRuntimeSupervisor {
                 active: Mutex::new(None),
                 quarantine: Mutex::new(None),
                 readiness_timeout,
+                snapshot: procscan::snapshot,
             }),
         }
     }
@@ -686,7 +692,7 @@ impl RuntimeSupervisor for ComfyRuntimeSupervisor {
                 "runtime termination is unverified".into(),
             ));
         }
-        super::inventory::inspect(root, self.inner.store.as_ref()).await
+        super::inventory::inspect(root, self.inner.store.as_ref(), self.inner.snapshot).await
     }
     async fn start(
         &self,

@@ -56,6 +56,7 @@ fn failure_before_the_intent_is_recorded_changes_nothing_and_retry_activates() {
     block_on(StartSetup::new(world.deps()).execute(SetupAction::Retry {
         run_id: run_id.clone(),
         manager_consent: None,
+        curated_decisions: Vec::new(),
     }))
     .unwrap();
     let (outcome, _) = execute(&world, &run_id);
@@ -124,6 +125,7 @@ fn a_retry_instead_of_a_restart_also_resumes_from_the_persisted_phase() {
     block_on(StartSetup::new(world.deps()).execute(SetupAction::Retry {
         run_id: run_id.clone(),
         manager_consent: None,
+        curated_decisions: Vec::new(),
     }))
     .unwrap();
     let (outcome, _) = execute(&world, &run_id);
@@ -196,6 +198,7 @@ fn stale_active_runs_become_retryable_after_a_restart() {
     block_on(StartSetup::new(world.deps()).execute(SetupAction::Retry {
         run_id: run_id.clone(),
         manager_consent: None,
+        curated_decisions: Vec::new(),
     }))
     .unwrap();
     let (outcome, _) = execute(&world, &run_id);

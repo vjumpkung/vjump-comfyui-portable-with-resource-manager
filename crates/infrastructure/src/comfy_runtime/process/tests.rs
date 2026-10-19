@@ -2,7 +2,7 @@ use super::*;
 use crate::shared::gate::TokioMaintenanceGate;
 use application::shared::MaintenanceGate;
 use domain::environment::EnvId;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -139,6 +139,27 @@ impl RuntimeProcessRunner for Runner {
         }
     }
 }
+/// A free loopback port that the OS cannot hand to another test of this process. `bind(:0)` and
+/// release would race every other test that binds port 0: the supervisor's own availability
+/// probe then reports a conflict, the start fails before the runner spawns, and the lease is
+/// dropped instead of held. The OS dynamic range starts at 49152 (Windows) or 32768 (Linux), so
+/// ports from a counter below it are unique per fixture and still probed for outside owners.
+fn reserve_port() -> Port {
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let base = 20_000 + (std::process::id() % 300) as u16 * 32;
+    for _ in 0..32 {
+        let candidate = base + NEXT.fetch_add(1, Ordering::SeqCst) % 32;
+        if std::net::TcpListener::bind(("127.0.0.1", candidate)).is_ok() {
+            return Port::new(candidate).unwrap();
+        }
+    }
+    panic!("no free test port in {base}..{}", base + 32)
+}
+/// The readiness timeout of tests that assert the timeout itself (they wait for it to elapse).
+const TIMEOUT_UNDER_TEST: Duration = Duration::from_millis(700);
+/// For every other test the timeout is never the thing under test, so it must not elapse by
+/// accident when a loaded machine stalls the test for a while.
+const TIMEOUT_NOT_UNDER_TEST: Duration = Duration::from_secs(60);
 struct Fixture {
     _directory: tempfile::TempDir,
     session: RuntimeSession,
@@ -148,12 +169,13 @@ struct Fixture {
     store: Arc<Store>,
 }
 fn fixture(mode: Mode, cleanup: bool) -> Fixture {
+    fixture_with_timeout(mode, cleanup, TIMEOUT_NOT_UNDER_TEST)
+}
+fn fixture_with_timeout(mode: Mode, cleanup: bool, readiness_timeout: Duration) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     std::fs::create_dir(root.join("ComfyUI")).unwrap();
-    let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = Port::new(socket.local_addr().unwrap().port()).unwrap();
-    drop(socket);
+    let port = reserve_port();
     let gate = Arc::new(TokioMaintenanceGate::new());
     let store = Arc::new(Store::default());
     let runner = Arc::new(Runner {
@@ -163,13 +185,19 @@ fn fixture(mode: Mode, cleanup: bool) -> Fixture {
         gate_held_during_cleanup: AtomicBool::new(false),
         spawned: AtomicBool::new(false),
     });
-    let supervisor = ComfyRuntimeSupervisor::with_readiness_timeout(
+    let mut supervisor = ComfyRuntimeSupervisor::with_readiness_timeout(
         root.clone(),
         runner.clone(),
         store.clone(),
         RuntimeLogHub::default(),
-        Duration::from_millis(700),
+        readiness_timeout,
     );
+    // The inventory is asserted against the processes these tests own, not against whatever else
+    // the machine is running: a python caught starting or exiting by another parallel test has
+    // an unreadable location, which production rightly treats as "cannot assess".
+    Arc::get_mut(&mut supervisor.inner)
+        .expect("a new supervisor is unshared")
+        .snapshot = procscan::test_snapshot;
     let session = RuntimeSession {
         id: SessionId::new("session-a").unwrap(),
         env_id: EnvId::new("env-a").unwrap(),
@@ -197,6 +225,18 @@ fn fixture(mode: Mode, cleanup: bool) -> Fixture {
     }
 }
 impl Fixture {
+    /// Waits until the runner has spawned its process. Bounded, so a start that failed before
+    /// spawning fails the test instead of spinning forever.
+    async fn spawned(&self) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while !self.runner.spawned.load(Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the runner was never spawned"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
     async fn start(&self) -> Result<RuntimeStatus, RuntimeError> {
         self.supervisor
             .start(
@@ -283,7 +323,7 @@ async fn shared_runner_bridge_preserves_raw_output_and_owns_child_and_grandchild
             .run(spec, task_observer, task_cancel)
             .await
     });
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let grandchild = loop {
         let bytes = observer.bytes.lock().unwrap().clone();
         let text = String::from_utf8_lossy(&bytes);
@@ -352,7 +392,7 @@ async fn ready_owns_listener_releases_gate_and_stop_is_idempotent() {
 #[tokio::test]
 async fn timeout_and_foreign_listener_cleanup_hold_the_start_lease() {
     for mode in [Mode::NeverReady, Mode::Foreign] {
-        let f = fixture(mode, true);
+        let f = fixture_with_timeout(mode, true, TIMEOUT_UNDER_TEST);
         assert!(f.start().await.is_err());
         assert_eq!(
             f.supervisor.status().await.failure.unwrap().kind,
@@ -374,9 +414,7 @@ async fn stop_cancels_start_without_recursively_acquiring_its_lease() {
             .start(session, vec!["--port".into(), port], lease)
             .await
     });
-    while !f.runner.spawned.load(Ordering::SeqCst) {
-        tokio::task::yield_now().await;
-    }
+    f.spawned().await;
     let stopped = f.supervisor.stop().await.unwrap();
     assert_eq!(stopped.lifecycle, Lifecycle::Stopped);
     assert_eq!(start.await.unwrap().unwrap().lifecycle, Lifecycle::Stopped);
@@ -384,7 +422,7 @@ async fn stop_cancels_start_without_recursively_acquiring_its_lease() {
 }
 #[tokio::test]
 async fn failed_cleanup_quarantines_the_gate_and_m1_maintenance() {
-    let f = fixture(Mode::NeverReady, false);
+    let f = fixture_with_timeout(Mode::NeverReady, false, TIMEOUT_UNDER_TEST);
     assert!(f.start().await.is_err());
     assert!(f.gate.try_acquire().await.is_err());
     assert_eq!(
@@ -419,9 +457,7 @@ async fn disconnected_start_caller_does_not_abandon_core_cleanup() {
             .start(session, vec!["--port".into(), port], lease)
             .await
     });
-    while !f.runner.spawned.load(Ordering::SeqCst) {
-        tokio::task::yield_now().await;
-    }
+    f.spawned().await;
     caller.abort();
     let _ = caller.await;
     assert_eq!(

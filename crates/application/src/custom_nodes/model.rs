@@ -1,6 +1,6 @@
 use super::ports::*;
 use crate::{
-    environment::{EnvironmentDeps, PackagePlan},
+    environment::{EnvironmentDeps, PackagePlan, RunId},
     shared::CancelToken,
 };
 use domain::{
@@ -216,6 +216,10 @@ pub struct NodeOperation {
 impl NodeOperation {
     pub fn blocks_start(&self) -> bool {
         self.phase.blocks_start()
+            || (!matches!(
+                self.phase,
+                OperationPhase::Completed | OperationPhase::Failed
+            ) && self.failure.is_some())
     }
 }
 
@@ -292,7 +296,7 @@ pub struct DependencyOutcome {
     pub source_identity: String,
     pub state: DependencyState,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitDecision {
     pub consent: InstallConsent,
     pub protected_changes: Vec<PinChange>,
@@ -309,12 +313,22 @@ pub struct BatchOutcome {
     pub stopped_for_repair: bool,
 }
 
+/// Where a prepared operation runs. It is bound into the plan when it is prepared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeTarget {
+    /// The active, verified environment.
+    Active,
+    /// The candidate environment of the named running first-run setup.
+    Setup(RunId),
+}
+
 #[derive(Clone)]
 pub(crate) struct PreparedPlan {
     pub review: PlanReview,
     pub operation: NodeOperation,
     pub root: PathBuf,
     pub package: Option<PackagePlan>,
+    pub target: NodeTarget,
 }
 #[derive(Default)]
 pub struct NodePlans(pub(crate) Mutex<HashMap<String, PreparedPlan>>);

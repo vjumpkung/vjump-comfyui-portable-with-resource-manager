@@ -19,7 +19,7 @@ use super::{
         HF_TOOL_PYTHON, HF_VERSION, MIN_SYSTEM_GIT, MINGIT_GIT_VERSION, MINGIT_SHA256, MINGIT_URL,
         UV_VERSION, hf_requirements, uv_artifact,
     },
-    python::ensure_managed_python,
+    python::{ensure_managed_python, normalize_path},
 };
 use crate::shared::{
     archive::{ArchiveError, ArchiveKind, ExtractLimits, extract},
@@ -122,6 +122,44 @@ fn download_error(error: DownloadError) -> ProvisionError {
 
 fn archive_error(error: ArchiveError) -> ProvisionError {
     failed(format!("The downloaded archive was rejected: {error}."))
+}
+
+fn hf_marker_text(layout: &Layout, interpreter: &Path) -> Result<String, ProvisionError> {
+    let interpreter_hash = sha256_file(interpreter)
+        .map_err(|_| failed("The hf tool's base interpreter could not be identified."))?;
+    let root = normalize_path(&layout.root);
+    let interpreter = normalize_path(interpreter);
+    let identity = format!(
+        "{}\n{}\n{interpreter_hash}",
+        root.to_string_lossy(),
+        interpreter.to_string_lossy()
+    );
+    Ok(format!(
+        "hf={HF_VERSION}\npython={HF_TOOL_PYTHON}\nlock={}\nidentity={}\n",
+        sha256_hex(hf_requirements().as_bytes()),
+        sha256_hex(identity.as_bytes())
+    ))
+}
+
+async fn verify_hf_launch(layout: &Layout, ctx: &StepContext) -> Result<(), ProvisionError> {
+    let spec = command(layout, Tool::Python, layout.hf_exe()).arg("version");
+    let limits = RunLimits {
+        timeout: Some(Duration::from_secs(10)),
+        ..RunLimits::default()
+    };
+    let output = run_step(&spec, ctx, &limits).await?;
+    if output.stdout.contains(HF_VERSION) {
+        Ok(())
+    } else {
+        Err(failed("The hf tool reports an unexpected version."))
+    }
+}
+
+async fn reusable_hf_tool(layout: &Layout, marker_text: &str, ctx: &StepContext) -> bool {
+    layout.hf_exe().is_file()
+        && fs::read_to_string(layout.hf_dir().join(".vj-lock"))
+            .is_ok_and(|text| text == marker_text)
+        && verify_hf_launch(layout, ctx).await.is_ok()
 }
 
 /// Runs `<executable> <version args>` and returns the first output line when it contains the
@@ -352,13 +390,10 @@ impl Tools {
             .map_err(|_| failed("the hf tool Python pin is invalid"))?;
         let interpreter = ensure_managed_python(layout, version, ctx).await?;
         let requirements = hf_requirements();
-        let marker_text = format!(
-            "hf={HF_VERSION}\npython={HF_TOOL_PYTHON}\nlock={}\n",
-            sha256_hex(requirements.as_bytes())
-        );
+        let marker_text = hf_marker_text(layout, &interpreter)?;
         let marker = layout.hf_dir().join(".vj-lock");
         let hf = layout.hf_exe();
-        if hf.is_file() && fs::read_to_string(&marker).is_ok_and(|text| text == marker_text) {
+        if reusable_hf_tool(layout, &marker_text, ctx).await {
             return Ok(ToolInfo {
                 name: "hf".into(),
                 version: HF_VERSION.into(),
@@ -398,6 +433,7 @@ impl Tools {
                 "The hf tool was installed but its executable was not found.",
             ));
         }
+        verify_hf_launch(layout, ctx).await?;
         atomic_write(&marker, marker_text.as_bytes())
             .map_err(|_| failed("the hf tool marker could not be written"))?;
         Ok(ToolInfo {
@@ -512,6 +548,21 @@ impl ToolProvisioner for Tools {
         ctx: &StepContext,
     ) -> Result<ToolInfo, ProvisionError> {
         self.ensure_hf(&Layout::new(root), ctx).await
+    }
+
+    async fn recreate_hf_tool(
+        &self,
+        root: &Path,
+        ctx: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError> {
+        self.check_cancel(ctx)?;
+        let layout = Layout::new(root);
+        match fs::remove_file(layout.hf_dir().join(".vj-lock")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(failed("The previous hf tool marker could not be removed.")),
+        }
+        self.ensure_hf(&layout, ctx).await
     }
 }
 

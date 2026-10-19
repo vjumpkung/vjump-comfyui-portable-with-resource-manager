@@ -308,6 +308,7 @@ pub enum SetupMode {
     ChangeTorch,
     ChangePython,
     SwitchVenv,
+    Rebuild,
 }
 
 impl SetupMode {
@@ -318,6 +319,7 @@ impl SetupMode {
             Self::ChangeTorch => "change_torch",
             Self::ChangePython => "change_python",
             Self::SwitchVenv => "switch_venv",
+            Self::Rebuild => "rebuild",
         }
     }
 
@@ -345,7 +347,7 @@ impl SetupMode {
                     Ok(())
                 }
             }
-            (Self::SwitchVenv, Some(_)) => Ok(()),
+            (Self::SwitchVenv | Self::Rebuild, Some(_)) => Ok(()),
         }
     }
 }
@@ -360,6 +362,7 @@ impl FromStr for SetupMode {
             "change_torch" => Ok(Self::ChangeTorch),
             "change_python" => Ok(Self::ChangePython),
             "switch_venv" => Ok(Self::SwitchVenv),
+            "rebuild" => Ok(Self::Rebuild),
             _ => Err(EnvironmentError::InvalidSetupMode),
         }
     }

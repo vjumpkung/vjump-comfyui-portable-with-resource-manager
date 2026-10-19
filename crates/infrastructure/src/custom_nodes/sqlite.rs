@@ -367,7 +367,7 @@ impl NodeRepository for SqliteNodes {
                     .prepare(
                         "SELECT id, kind, phase, node_json, prior_json, environment_id, pins_json, binding, \
                          artifact_digest, requirements_digest, hook_digest, consent_identity, failure, \
-                         staging, backup, requirements_json FROM node_operations ORDER BY created_at, id",
+                         staging, backup, requirements_json FROM node_operations ORDER BY created_at, rowid",
                     )
                     .map_err(|_| crate::shared::sqlite::DbError::Unavailable)?;
                 let rows = statement
@@ -427,6 +427,34 @@ impl NodeRepository for SqliteNodes {
             })
             .await
             .map_err(storage)
+    }
+
+    async fn dependency(
+        &self,
+        node: &NodeId,
+        environment: &EnvId,
+        source_identity: &str,
+    ) -> Result<Option<DependencyState>, NodeAppError> {
+        let node = node.as_str().to_owned();
+        let environment = environment.as_str().to_owned();
+        let source_identity = source_identity.to_owned();
+        let state = self
+            .db
+            .run(move |c| {
+                c.query_row(
+                    "SELECT state FROM node_env_deps WHERE node_id = ?1 AND environment_id = ?2 \
+                     AND source_identity = ?3",
+                    params![node, environment, source_identity],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|_| crate::shared::sqlite::DbError::Unavailable)
+            })
+            .await
+            .map_err(storage)?;
+        state
+            .map(|state| dependency_from(&state).ok_or(NodeAppError::Storage))
+            .transpose()
     }
 
     async fn trust(&self, namespace: &str) -> Result<Option<Trust>, NodeAppError> {

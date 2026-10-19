@@ -52,6 +52,10 @@ impl Layout {
         self.data_dir().join("cache")
     }
 
+    pub fn managed_python_dir(&self) -> PathBuf {
+        self.cache_dir().join("uv-python")
+    }
+
     pub fn logs_dir(&self) -> PathBuf {
         self.data_dir().join("logs")
     }
@@ -193,7 +197,10 @@ pub fn tool_environment(layout: &Layout, tool: Tool) -> Vec<(OsString, OsString)
     let cache = layout.cache_dir();
     let path_var = |name: &str, path: PathBuf| (OsString::from(name), path.into_os_string());
     env.push(path_var("UV_CACHE_DIR", cache.join("uv")));
-    env.push(path_var("UV_PYTHON_INSTALL_DIR", cache.join("uv-python")));
+    env.push(path_var(
+        "UV_PYTHON_INSTALL_DIR",
+        layout.managed_python_dir(),
+    ));
     env.push(path_var("PIP_CACHE_DIR", cache.join("pip")));
     env.push(path_var("HF_HOME", cache.join("hf")));
     env.push(path_var("TORCH_HOME", cache.join("torch")));

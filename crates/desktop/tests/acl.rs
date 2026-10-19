@@ -51,6 +51,7 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
         ("setup_status", json!({}), Success),
         ("setup_detect_hardware", json!({}), Success),
         ("setup_list_profiles", json!({}), Success),
+        ("setup_list_curated_nodes", json!({}), Success),
         (
             "setup_validate_python",
             json!({ "source": { "kind": "managed" } }),
@@ -72,6 +73,7 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
                         "profileId": host_profile(),
                         "comfyuiRef": { "kind": "latest" },
                         "installManager": false,
+                        "curatedNodes": [],
                         "cleanCache": false,
                         "confirmAdoptedChanges": false,
                         "allowSourceBuilds": false
@@ -395,6 +397,17 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
         (
             "pick_file",
             json!({ "title": null, "extensions": ["exe"] }),
+            Success,
+        ),
+        // These quiesce the workers before requesting a restart, so exercise them last.
+        (
+            "setup_open_install",
+            json!({ "path": app.root.display().to_string() }),
+            Success,
+        ),
+        (
+            "setup_new_install",
+            json!({ "path": new_root.display().to_string() }),
             Success,
         ),
     ]
@@ -731,5 +744,70 @@ fn body_bytes(body: &tauri::ipc::InvokeResponseBody) -> Vec<u8> {
     match body {
         tauri::ipc::InvokeResponseBody::Json(text) => text.clone().into_bytes(),
         tauri::ipc::InvokeResponseBody::Raw(bytes) => bytes.clone(),
+    }
+}
+
+#[test]
+fn recovery_handlers_keep_root_selection_diagnostics_and_pickers_available() {
+    use application::environment::{RootInfo, RootSource};
+    use desktop::RecoveryInfo;
+    for code in ["root_missing", "rebuild_required"] {
+        let recorded = std::env::temp_dir().join("recorded-missing-install");
+        let app = build_app_with(Options {
+            recovery: Some(RecoveryInfo {
+                code: code.into(),
+                message: "Open or rebuild the installation.".into(),
+                root: Some(RootInfo {
+                    root: recorded.clone(),
+                    source: RootSource::Bootstrap,
+                }),
+            }),
+            ..Default::default()
+        });
+        let window = manager_window(&app);
+        for (cmd, body) in [
+            (
+                "setup_open_install",
+                json!({ "path": app.root.display().to_string() }),
+            ),
+            (
+                "setup_new_install",
+                json!({ "path": app.root.join("new").display().to_string() }),
+            ),
+            ("app_diagnostics", json!({})),
+            ("app_copy_diagnostics", json!({})),
+            ("pick_folder", json!({ "title": null })),
+        ] {
+            let before = app.calls.count();
+            let response = get_ipc_response(&window, request(cmd, local_url(), body));
+            assert!(response.is_ok(), "{code}/{cmd}: {response:?}");
+            if cmd.starts_with("setup_") {
+                assert!(
+                    app.calls.count() >= before + 2,
+                    "opener and controlled restart both ran"
+                );
+            }
+        }
+        let status =
+            get_ipc_response(&window, request("setup_status", local_url(), json!({}))).unwrap();
+        let status: Value = serde_json::from_slice(&body_bytes(&status)).unwrap();
+        assert_eq!(status["recovery"]["code"], code);
+        assert_eq!(status["installRoot"], recorded.display().to_string());
+        let error =
+            get_ipc_response(&window, request("settings_get", local_url(), json!({}))).unwrap_err();
+        assert_eq!(error["code"], code);
+        for label in [COMFYUI_WINDOW, "untrusted"] {
+            let other =
+                tauri::WebviewWindowBuilder::new(&app.app, label, tauri::WebviewUrl::default())
+                    .build()
+                    .unwrap();
+            assert_denied(&app, &other, local_url(), label);
+        }
+        assert_denied(
+            &app,
+            &window,
+            "https://example.invalid".parse().unwrap(),
+            "recovery remote origin",
+        );
     }
 }

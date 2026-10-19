@@ -29,6 +29,7 @@ fn clean_failure(failure: &StepFailure) -> StepFailure {
             source: clean(&consent.source),
             commit: consent.commit.clone(),
         }),
+        can_skip: failure.can_skip,
     }
 }
 

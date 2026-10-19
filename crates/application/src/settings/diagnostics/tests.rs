@@ -16,7 +16,10 @@ use crate::{
         NodeLifecycle, PortProbe, RuntimeBlock, RuntimeError, RuntimeMaintenance, RuntimeSession,
         RuntimeStore, RuntimeSupervisor, UpdateRun, VersionList,
     },
-    environment::{InstallManifest, ManifestState, RunId, StepContext},
+    environment::{
+        AcceleratorResult, ComponentStatus, InstallManifest, InstalledComponents, ManagerResult,
+        ManifestState, RunId, StepContext,
+    },
     shared::{CancelToken, MaintenanceLease},
     test_support::block_on,
 };
@@ -234,6 +237,7 @@ fn seed_environment_and_manifest(machine: &Machine) {
         comfyui_commit: Some("a".repeat(40)),
         run_id: RunId::new("setup-1").unwrap(),
         activated_at: "t".into(),
+        components: InstalledComponents::default(),
     });
 }
 
@@ -287,12 +291,64 @@ fn diagnostics_handles_first_run_and_missing_sections() {
     assert!(warned(&snapshot, "ComfyUI checkout"));
     assert!(warned(&snapshot, "application log"));
     assert!(!warned(&snapshot, "first run"));
+    // A legacy environment has no stored component outcomes: said, not invented.
+    assert!(warned(&snapshot, "Accelerator outcomes are not recorded"));
+    assert!(snapshot.environment.unwrap().accelerators.is_empty());
 }
 
 #[test]
 fn complete_installation_fills_every_section() {
     let machine = Machine::new();
     seed_environment_and_manifest(&machine);
+    let result =
+        |id: &str, selected, status, importable, message: Option<&str>| AcceleratorResult {
+            id: id.into(),
+            selected,
+            status,
+            importable,
+            message: message.map(Into::into),
+        };
+    machine.env.components.lock().unwrap().insert(
+        "selected".into(),
+        InstalledComponents {
+            manager: Some(ManagerResult {
+                selected: false,
+                status: ComponentStatus::Skipped,
+                source_commit: None,
+                message: None,
+            }),
+            accelerators: vec![
+                result(
+                    "sageattention",
+                    true,
+                    ComponentStatus::Installed,
+                    Some(false),
+                    Some("sageattention: DLL import failed"),
+                ),
+                result(
+                    "flashattention-3",
+                    true,
+                    ComponentStatus::Installed,
+                    None,
+                    Some("Import untested: module unverified"),
+                ),
+                result(
+                    "onnxruntime-gpu",
+                    false,
+                    ComponentStatus::Skipped,
+                    None,
+                    None,
+                ),
+                result(
+                    "llama-cpp-python",
+                    true,
+                    ComponentStatus::Failed,
+                    None,
+                    Some("pinned SHA-256 mismatch"),
+                ),
+            ],
+        },
+    );
     *machine.revision.lock().unwrap() = Ok(Revision {
         commit: "b".repeat(40),
         tag: Some("v1.2".into()),
@@ -319,12 +375,27 @@ fn complete_installation_fills_every_section() {
         snapshot.comfyui.revision,
         Some(format!("{} (tag v1.2)", "b".repeat(40)))
     );
-    // The baseline environment query reports no accelerator outcomes: said, not invented.
-    assert_eq!(snapshot.warnings.len(), 1, "{:?}", snapshot.warnings);
-    assert!(warned(&snapshot, "Accelerator outcomes are not available"));
+    assert!(snapshot.warnings.is_empty(), "{:?}", snapshot.warnings);
+    assert_eq!(
+        environment.accelerators,
+        [
+            "sageattention: selected, installed, import failed - sageattention: DLL import failed",
+            "flashattention-3: selected, installed, import untested - Import untested: module unverified",
+            "onnxruntime-gpu: not selected, skipped, import untested",
+            "llama-cpp-python: selected, failed, import untested - pinned SHA-256 mismatch",
+        ]
+    );
 
     let text = snapshot.render();
     assert!(text.contains("  torch==2.14.1+cu130"), "{text}");
+    assert!(
+        text.contains("Accelerators:\n  sageattention: selected, installed, import failed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  onnxruntime-gpu: not selected, skipped, import untested\n"),
+        "{text}"
+    );
     assert!(text.contains("Ownership: app_owned"), "{text}");
     assert!(text.contains("Profile: win-py313-torch2141-cu130 revision 1"));
     assert!(text.contains("== Application log (last 200 lines) ==\napp line\n"));

@@ -123,7 +123,217 @@ pub fn recycle(path: &Path) -> io::Result<()> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
+        windows_recycle::recycle(path)
+    }
+}
+
+#[cfg(all(test, windows))]
+pub(crate) mod tests;
+
+#[cfg(windows)]
+mod windows_recycle {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use windows::Win32::{Foundation::E_ABORT, UI::Shell::*};
+    use windows_core::{HRESULT, PCWSTR, Ref, implement};
+
+    #[derive(Default, Clone)]
+    pub(super) struct Completion {
+        pub refused: bool,
+        pub pre_delete: usize,
+        pub post_delete: usize,
+        pub failed: bool,
+        pub recycled_destination: bool,
+    }
+
+    impl Completion {
+        pub(super) fn check(
+            &self,
+            operation: windows_core::Result<()>,
+            aborted: windows_core::Result<bool>,
+            source: io::Result<std::fs::Metadata>,
+        ) -> io::Result<()> {
+            if operation.is_ok()
+                && matches!(aborted, Ok(false))
+                && !self.refused
+                && self.pre_delete > 0
+                && self.pre_delete == self.post_delete
+                && !self.failed
+                && self.recycled_destination
+                && source.is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            {
+                Ok(())
+            } else {
+                Err(io::Error::other("Recycle Bin did not confirm recycling"))
+            }
+        }
+    }
+
+    #[implement(IFileOperationProgressSink)]
+    pub(super) struct RecycleSink {
+        pub completion: Arc<Mutex<Completion>>,
+        #[cfg(test)]
+        pub refusal: Option<Arc<std::sync::atomic::AtomicBool>>,
+    }
+
+    #[allow(non_snake_case)]
+    impl IFileOperationProgressSink_Impl for RecycleSink_Impl {
+        fn PreDeleteItem(&self, flags: u32, _: Ref<IShellItem>) -> windows_core::Result<()> {
+            let mut state = self.completion.lock().unwrap_or_else(|p| p.into_inner());
+            state.pre_delete += 1;
+            let refuse = flags & TSF_DELETE_RECYCLE_IF_POSSIBLE.0 as u32 == 0;
+            #[cfg(test)]
+            let refuse = {
+                let injected = self.refusal.as_ref().is_some_and(|seen| {
+                    seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                    true
+                });
+                refuse || injected
+            };
+            if refuse {
+                state.refused = true;
+                return Err(E_ABORT.into());
+            }
+            Ok(())
+        }
+
+        fn PostDeleteItem(
+            &self,
+            _: u32,
+            _: Ref<IShellItem>,
+            result: HRESULT,
+            destination: Ref<IShellItem>,
+        ) -> windows_core::Result<()> {
+            let mut state = self.completion.lock().unwrap_or_else(|p| p.into_inner());
+            state.post_delete += 1;
+            state.failed |= result.is_err() || destination.is_none();
+            state.recycled_destination |= destination.is_some();
+            Ok(())
+        }
+
+        fn StartOperations(&self) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn FinishOperations(&self, result: HRESULT) -> windows_core::Result<()> {
+            self.completion
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .failed |= result.is_err();
+            Ok(())
+        }
+        fn PreRenameItem(
+            &self,
+            _: u32,
+            _: Ref<IShellItem>,
+            _: &PCWSTR,
+        ) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn PostRenameItem(
+            &self,
+            _: u32,
+            _: Ref<IShellItem>,
+            _: &PCWSTR,
+            _: HRESULT,
+            _: Ref<IShellItem>,
+        ) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn PreMoveItem(
+            &self,
+            _: u32,
+            _: Ref<IShellItem>,
+            _: Ref<IShellItem>,
+            _: &PCWSTR,
+        ) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn PostMoveItem(
+            &self,
+            _: u32,
+            _: Ref<IShellItem>,
+            _: Ref<IShellItem>,
+            _: &PCWSTR,
+            _: HRESULT,
+            _: Ref<IShellItem>,
+        ) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn PreCopyItem(
+            &self,
+            _: u32,
+            _: Ref<IShellItem>,
+            _: Ref<IShellItem>,
+            _: &PCWSTR,
+        ) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn PostCopyItem(
+            &self,
+            _: u32,
+            _: Ref<IShellItem>,
+            _: Ref<IShellItem>,
+            _: &PCWSTR,
+            _: HRESULT,
+            _: Ref<IShellItem>,
+        ) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn PreNewItem(&self, _: u32, _: Ref<IShellItem>, _: &PCWSTR) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn PostNewItem(
+            &self,
+            _: u32,
+            _: Ref<IShellItem>,
+            _: &PCWSTR,
+            _: &PCWSTR,
+            _: u32,
+            _: HRESULT,
+            _: Ref<IShellItem>,
+        ) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn UpdateProgress(&self, _: u32, _: u32) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn ResetTimer(&self) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn PauseTimer(&self) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn ResumeTimer(&self) -> windows_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    pub(super) fn shell_name(path: &Path) -> io::Result<Vec<u16>> {
+        use std::{
+            os::windows::ffi::OsStrExt,
+            path::{Component, Prefix},
+        };
+        let mut name: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if let Some(Component::Prefix(prefix)) = path.components().next() {
+            // The Shell accepts plain drive and UNC paths, not verbatim namespaces.
+            match prefix.kind() {
+                Prefix::VerbatimDisk(_) => {
+                    name.drain(..4);
+                }
+                Prefix::VerbatimUNC(_, _) => {
+                    name.drain(2..8);
+                }
+                Prefix::Verbatim(_) | Prefix::DeviceNS(_) => {
+                    return Err(io::ErrorKind::Unsupported.into());
+                }
+                _ => {}
+            }
+        }
+        name.push(0);
+        Ok(name)
+    }
+
+    pub(super) fn recycle(path: &Path) -> io::Result<()> {
         use windows::{
             Win32::{System::Com::*, UI::Shell::*},
             core::PCWSTR,
@@ -136,6 +346,7 @@ pub fn recycle(path: &Path) -> io::Result<()> {
                 }
             }
         }
+        let name = shell_name(path)?;
         unsafe {
             CoInitializeEx(None, COINIT_APARTMENTTHREADED)
                 .ok()
@@ -153,24 +364,27 @@ pub fn recycle(path: &Path) -> io::Result<()> {
                         | FOF_SILENT,
                 )
                 .map_err(|_| io::Error::other("Recycle Bin flags rejected"))?;
-            let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
             let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(name.as_ptr()), None)
                 .map_err(|_| io::Error::other("Recycle Bin item unavailable"))?;
-            operation
-                .DeleteItem(&item, None)
-                .map_err(|_| io::Error::other("Recycle Bin refused item"))?;
-            operation
-                .PerformOperations()
-                .map_err(|_| io::Error::other("Recycle Bin operation failed"))?;
-            if operation
-                .GetAnyOperationsAborted()
-                .map_err(|_| io::Error::other("Recycle Bin status unavailable"))?
-                .as_bool()
-                || path.exists()
-            {
-                return Err(io::Error::other("Recycle Bin did not recycle file"));
+            let completion = Arc::new(Mutex::new(Completion::default()));
+            let sink: IFileOperationProgressSink = RecycleSink {
+                completion: completion.clone(),
+                #[cfg(test)]
+                refusal: super::tests::refusal(path),
             }
+            .into();
+            operation
+                .DeleteItem(&item, &sink)
+                .map_err(|_| io::Error::other("Recycle Bin refused item"))?;
+            let result = operation.PerformOperations();
+            let aborted = operation
+                .GetAnyOperationsAborted()
+                .map(|value| value.as_bool());
+            completion.lock().unwrap_or_else(|p| p.into_inner()).check(
+                result,
+                aborted,
+                std::fs::symlink_metadata(path),
+            )
         }
-        Ok(())
     }
 }

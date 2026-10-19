@@ -30,6 +30,7 @@ fn manifest_for(world: &std::sync::Arc<World>, env_id: &str) -> InstallManifest 
         comfyui_commit: Some("abc".into()),
         run_id: RunId::new("run-1").unwrap(),
         activated_at: world.deps().clock.now(),
+        components: Default::default(),
     }
 }
 
@@ -52,6 +53,7 @@ fn status_follows_the_install_lifecycle() {
     block_on(StartSetup::new(world.deps()).execute(SetupAction::Retry {
         run_id: run_id.clone(),
         manager_consent: None,
+        curated_decisions: Vec::new(),
     }))
     .unwrap();
     execute(&world, &run_id);
@@ -269,4 +271,28 @@ fn environment_info_and_packages_describe_the_selected_environment() {
         block_on(GetEnvironmentInfo::new(empty.deps()).execute()),
         Err(EnvironmentAppError::NoActiveEnvironment)
     ));
+}
+
+#[test]
+fn environment_info_reports_recorded_components_and_recovers_legacy_selections() {
+    let world = World::new();
+    world.profiles.lock().unwrap()[0].accelerators = vec![accelerator("sageattention")];
+    let mut req = request();
+    req.accelerators = vec!["sageattention".into()];
+    let id = register(&world, req).unwrap();
+    execute(&world, &id);
+    let recorded = world.run(&id).components;
+    world.profiles.lock().unwrap()[0].accelerators.clear();
+    let info = block_on(GetEnvironmentInfo::new(world.deps()).execute()).unwrap();
+    assert_eq!(info.components, recorded);
+    world.components.lock().unwrap().clear();
+    if let ManifestState::Valid(manifest) = &mut *world.manifest.lock().unwrap() {
+        manifest.schema_version = 1;
+        manifest.components = Default::default();
+    }
+    let info = block_on(GetEnvironmentInfo::new(world.deps()).execute()).unwrap();
+    assert_eq!(
+        info.components, recorded,
+        "legacy manifest recovers only its associated run"
+    );
 }

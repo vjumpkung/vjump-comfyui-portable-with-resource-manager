@@ -15,8 +15,11 @@ export const commands = {
 	setupStatus: () => typedError<SetupStatusDto, IpcError>(__TAURI_INVOKE("setup_status")),
 	setupDetectHardware: (candidateRoot: string | null, envPath: string | null) => typedError<HardwareDto, IpcError>(__TAURI_INVOKE("setup_detect_hardware", { candidateRoot, envPath })),
 	setupListProfiles: (candidateRoot: string | null, envPath: string | null) => typedError<ProfileDto[], IpcError>(__TAURI_INVOKE("setup_list_profiles", { candidateRoot, envPath })),
+	setupListCuratedNodes: () => typedError<CuratedNodeDto[], IpcError>(__TAURI_INVOKE("setup_list_curated_nodes")),
 	setupValidatePython: (source: PythonSourceDto) => typedError<PythonValidationDto, IpcError>(__TAURI_INVOKE("setup_validate_python", { source })),
 	setupSelectRoot: (path: string, draft: string | null) => typedError<RootSelectionDto, IpcError>(__TAURI_INVOKE("setup_select_root", { path, draft })),
+	setupOpenInstall: (path: string) => typedError<RootSelectionDto, IpcError>(__TAURI_INVOKE("setup_open_install", { path })),
+	setupNewInstall: (path: string) => typedError<RootSelectionDto, IpcError>(__TAURI_INVOKE("setup_new_install", { path })),
 	setupRun: (action: SetupActionDto, onEvent: Channel<SetupEventDto>) => typedError<SetupStartedDto, IpcError>(__TAURI_INVOKE("setup_run", { action, onEvent })),
 	setupCancel: (runId: string) => typedError<null, IpcError>(__TAURI_INVOKE("setup_cancel", { runId })),
 	envInfo: () => typedError<EnvironmentInfoDto, IpcError>(__TAURI_INVOKE("env_info")),
@@ -260,6 +263,25 @@ export type CredentialTestDto = {
 };
 
 export type CredentialTestResultDto = "valid" | "invalid" | "absent" | "backend_unavailable" | "backend_locked" | "network_failure";
+
+/**  An entry of the curated node catalog: an exact commit of a repository. */
+export type CuratedNodeDto = {
+	id: string,
+	name: string,
+	repository: string,
+	branch: string,
+	commit: string,
+	provenance: string,
+};
+
+/**  The progress of one selected curated node. */
+export type CuratedProgressDto = {
+	id: string,
+	status: CuratedStatusDto,
+	message: string | null,
+};
+
+export type CuratedStatusDto = "pending" | "prepared" | "failed" | "installed" | "skipped";
 
 export type DeleteItemDto = {
 	location: ModelLocationDto,
@@ -925,6 +947,13 @@ export type RunSnapshotDto = {
 	failure: StepFailureDto | null,
 	cancelRequested: boolean,
 	activationPhase: string,
+	/**  The selected curated nodes, in catalog order. */
+	curated: CuratedProgressDto[],
+	/**
+	 *  The pending reviews of the curated nodes, one batch in catalog order. They exist only in
+	 *  this process, so a backend restart empties them and the nodes are reviewed again.
+	 */
+	curatedReviews: PlanReviewDto[],
 	createdAt: string,
 	updatedAt: string,
 };
@@ -977,15 +1006,15 @@ export type SettingsDto = {
 	bandwidthCapKibS: number | null,
 };
 
-export type SetupActionDto = { kind: "new"; request: SetupRequestDto } | { kind: "retry"; runId: string; managerConsent: string | null } | { kind: "skipStep"; runId: string; step: string };
+export type SetupActionDto = { kind: "new"; request: SetupRequestDto } | { kind: "retry"; runId: string; managerConsent: string | null; curatedDecisions: CommitInput[] } | { kind: "skipStep"; runId: string; step: string };
 
 export type SetupEventDto = { kind: "runStatus"; runId: string; status: RunStatusDto } | { kind: "step"; runId: string; step: string; status: StepStatusDto; attempt: number; message: string | null } | { kind: "log"; runId: string; step: string; line: string } | { kind: "progress"; runId: string; step: string; doneBytes: number | null; totalBytes: number | null } | { kind: "failure"; runId: string; failure: StepFailureDto } | 
 /**  Always the last event of a run's channel. */
 { kind: "finished"; runId: string; outcome: RunOutcomeDto };
 
-export type SetupModeDto = "first_run" | "repair" | "change_torch" | "change_python" | "switch_venv";
+export type SetupModeDto = "first_run" | "repair" | "change_torch" | "change_python" | "switch_venv" | "rebuild";
 
-export type SetupPhaseDto = "needs_setup" | "ready" | "repair_required" | "run_in_progress" | "run_failed" | "recovery_required";
+export type SetupPhaseDto = "needs_setup" | "ready" | "repair_required" | "rebuild_required" | "run_in_progress" | "run_failed" | "recovery_required";
 
 /**  The install root is never taken from the UI: it is always the app's current root. */
 export type SetupRequestDto = {
@@ -994,6 +1023,8 @@ export type SetupRequestDto = {
 	profileId: string,
 	comfyuiRef: ComfyRefDto,
 	installManager: boolean,
+	/**  Catalog ids of the curated nodes. Choosing them is not consent: each is reviewed first. */
+	curatedNodes: string[],
 	cleanCache: boolean,
 	confirmAdoptedChanges: boolean,
 	allowSourceBuilds: boolean,
@@ -1048,6 +1079,8 @@ export type StepFailureDto = {
 	exitCode: number | null,
 	tail: string[],
 	consent: ConsentDto | null,
+	/**  Decided by the backend: false when the failure damaged the candidate environment. */
+	canSkip: boolean,
 };
 
 export type StepPolicyDto = "required" | "optional" | "best_effort";

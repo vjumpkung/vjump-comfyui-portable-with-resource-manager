@@ -36,6 +36,7 @@ fn secret_failure() -> StepFailure {
             source: format!("https://x:{SECRET}@example.test/repo.git"),
             commit: "a".repeat(40),
         }),
+        can_skip: false,
     }
 }
 

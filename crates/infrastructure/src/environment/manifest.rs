@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use domain::environment::{EnvId, Ownership, PythonVersion};
 use serde::{Deserialize, Serialize};
 
-use super::layout::Layout;
+use super::{layout::Layout, sqlite::ComponentsDoc};
 use crate::shared::fs::atomic_write;
 
 #[derive(Serialize, Deserialize)]
@@ -33,6 +33,8 @@ struct ManifestDoc {
     comfyui_commit: Option<String>,
     run_id: String,
     activated_at: String,
+    #[serde(default)]
+    components: Option<ComponentsDoc>,
 }
 
 impl From<&InstallManifest> for ManifestDoc {
@@ -51,12 +53,16 @@ impl From<&InstallManifest> for ManifestDoc {
             comfyui_commit: manifest.comfyui_commit.clone(),
             run_id: manifest.run_id.to_string(),
             activated_at: manifest.activated_at.clone(),
+            components: Some(ComponentsDoc::from(&manifest.components)),
         }
     }
 }
 
 impl ManifestDoc {
     fn into_manifest(self) -> Option<InstallManifest> {
+        if self.schema_version == 2 && self.components.is_none() {
+            return None;
+        }
         Some(InstallManifest {
             schema_version: self.schema_version,
             install_root: self.install_root,
@@ -71,6 +77,11 @@ impl ManifestDoc {
             comfyui_commit: self.comfyui_commit,
             run_id: RunId::new(self.run_id).ok()?,
             activated_at: self.activated_at,
+            components: if self.schema_version == 1 {
+                Default::default()
+            } else {
+                self.components.map(Into::into).unwrap_or_default()
+            },
         })
     }
 }
@@ -85,7 +96,7 @@ pub fn parse_manifest(text: &str) -> ManifestState {
         .and_then(|version| version.as_u64())
     {
         Some(version) if version > u64::from(MANIFEST_SCHEMA_VERSION) => ManifestState::Newer,
-        Some(version) if version == u64::from(MANIFEST_SCHEMA_VERSION) => {
+        Some(1 | 2) => {
             match serde_json::from_value::<ManifestDoc>(value)
                 .ok()
                 .and_then(ManifestDoc::into_manifest)

@@ -288,3 +288,26 @@ fn preview_preflight_accepts_binary_requirements_and_refuses_source_syntax() {
         assert!(check(refused).is_err(), "{refused:?}");
     }
 }
+
+#[test]
+fn no_deps_is_explicit_and_keeps_binary_only_constraints() {
+    let spec = InstallSpec {
+        requirements: vec!["/cache/verified.whl".into()],
+        constraint_file: Some("/cache/pins.txt".into()),
+        no_deps: true,
+        ..InstallSpec::default()
+    };
+    let args = strings(install_args(Path::new("/env/python"), &spec, false));
+    assert!(args.windows(2).any(|p| p == ["--only-binary", ":all:"]));
+    assert!(args.windows(2).any(|p| p == ["-c", "/cache/pins.txt"]));
+    assert!(args.iter().any(|arg| arg == "--no-deps"));
+    assert!(
+        !strings(install_args(
+            Path::new("/env/python"),
+            &InstallSpec::default(),
+            false
+        ))
+        .iter()
+        .any(|arg| arg == "--no-deps")
+    );
+}

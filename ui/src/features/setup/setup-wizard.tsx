@@ -840,6 +840,7 @@ export function SetupWizard({
                             ? { kind: 'tag', value: tag.trim() }
                             : { kind: 'latest' },
                       installManager,
+                      curatedNodes: [],
                       cleanCache,
                       confirmAdoptedChanges: adoptedConfirmed,
                       allowSourceBuilds: false,

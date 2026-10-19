@@ -14,6 +14,7 @@ use std::{
 
 use application::{
     comfy_runtime::{RuntimeBlock, RuntimeMaintenance},
+    custom_nodes::NodeRequirements,
     environment::*,
     settings::{
         CredentialBackend, CredentialPresence, CredentialStore, CredentialStoreError,
@@ -41,7 +42,7 @@ use infrastructure::{
         process::{ComfyRuntimeSupervisor, PythonLaunchPreflight, SharedRuntimeRunner},
         sqlite::SqliteRuntimeStore,
     },
-    custom_nodes::stack::{NodeOptions, NodeStack},
+    custom_nodes::stack::{NodeAdapters, NodeOptions},
     environment::{
         manifest::FsManifestStore, profiles::BundledProfiles, sqlite::SqliteEnvironmentStore,
     },
@@ -169,6 +170,9 @@ impl ShellActions for FakeShell {
     fn perform(&self, _: application::comfy_runtime::CloseAction) {
         self.calls.hit();
     }
+    fn request_restart(&self) {
+        self.calls.hit();
+    }
 }
 
 #[async_trait]
@@ -213,6 +217,18 @@ impl EnvironmentRepository for Counted {
         EnvironmentRepository::save(&*self.inner, env).await
     }
 
+    async fn load_components(&self, id: &EnvId) -> Result<InstalledComponents, EnvRepoError> {
+        self.calls.hit();
+        self.inner.load_components(id).await
+    }
+    async fn save_components(
+        &self,
+        id: &EnvId,
+        components: &InstalledComponents,
+    ) -> Result<(), EnvRepoError> {
+        self.calls.hit();
+        self.inner.save_components(id, components).await
+    }
     async fn delete(&self, id: &EnvId) -> Result<(), EnvRepoError> {
         self.calls.hit();
         EnvironmentRepository::delete(&*self.inner, id).await
@@ -272,11 +288,49 @@ impl WizardDraftStore for Counted {
     }
 }
 
+/// Counts the reads of the curated node catalog.
+pub struct CountedCatalog {
+    inner: infrastructure::environment::curated::BundledCuratedNodes,
+    calls: HandlerCalls,
+}
+
+impl CuratedNodeCatalog for CountedCatalog {
+    fn list(&self) -> Vec<CuratedNodeSpec> {
+        self.calls.hit();
+        self.inner.list()
+    }
+}
+
 /// The machine, the network and the subprocesses: every step fails cleanly.
 pub struct Stubs {
     pub calls: HandlerCalls,
     pub root: PathBuf,
     pub switches: Mutex<Vec<PathBuf>>,
+}
+
+#[async_trait]
+impl InstallationProbe for Stubs {
+    async fn inspect(
+        &self,
+        _: &Path,
+        _: &InstallManifest,
+        _: &PythonEnvironment,
+    ) -> Result<InstallationHealth, ProvisionError> {
+        self.calls.hit();
+        Ok(InstallationHealth::Healthy)
+    }
+}
+
+#[async_trait]
+impl ExistingInstallOpener for Stubs {
+    async fn open_existing(&self, _: &Path) -> Result<(), RootSwitchError> {
+        self.calls.hit();
+        Ok(())
+    }
+    async fn select_new(&self, _: &Path) -> Result<(), RootSwitchError> {
+        self.calls.hit();
+        Ok(())
+    }
 }
 
 pub fn healthy_hardware() -> HardwareObservation {
@@ -445,6 +499,16 @@ impl PackageInstaller for Stubs {
 
 #[async_trait]
 impl EnvVerifier for Stubs {
+    async fn verify_accelerator(
+        &self,
+        _root: &Path,
+        _env_path: &Path,
+        _module: &str,
+        _ctx: &StepContext,
+    ) -> Result<(), ProvisionError> {
+        Ok(())
+    }
+
     async fn verify_torch(
         &self,
         _: &Path,
@@ -636,14 +700,37 @@ pub fn build_app_with(options: Options) -> TestApp {
                 calls: calls.clone(),
                 stored: Mutex::new(None),
             });
+            let node_adapters = NodeAdapters::open(
+                &root,
+                db.clone(),
+                NodeOptions {
+                    // No test reaches the network: any registry request fails to connect.
+                    registry_base: "http://127.0.0.1:9".into(),
+                    downloader: infrastructure::shared::download::Downloader::with_loopback_http(),
+                    ..Default::default()
+                },
+            );
             let deps = EnvironmentDeps {
+                installation: stubs.clone(),
+                relocation: Arc::new(infrastructure::environment::relocation::persistence::SqliteRelocationStore::new(db.clone())),
+                relocation_runtime: stubs.clone(),
                 hardware: stubs.clone(),
                 catalog: Arc::new(BundledProfiles::load().unwrap()),
+                curated: Arc::new(CountedCatalog {
+                    inner: infrastructure::environment::curated::BundledCuratedNodes::load()
+                        .unwrap(),
+                    calls: calls.clone(),
+                }),
                 tools: stubs.clone(),
                 python: stubs.clone(),
                 packages: stubs.clone(),
+                wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
                 verifier: stubs.clone(),
                 source: stubs.clone(),
+                node_requirements: Arc::new(NodeRequirements::new(
+                    node_adapters.store.clone(),
+                    node_adapters.files.clone(),
+                )),
                 envs: Arc::new(store.clone()),
                 runs: Arc::new(store.clone()),
                 activation: Arc::new(store.clone()),
@@ -660,18 +747,7 @@ pub fn build_app_with(options: Options) -> TestApp {
                 active_runs: Arc::new(ActiveRuns::default()),
                 plans: Arc::new(PlanStore::default()),
             };
-            let nodes = NodeStack::open_with(
-                &root,
-                db.clone(),
-                deps.clone(),
-                "test-epoch".into(),
-                NodeOptions {
-                    // No test reaches the network: any registry request fails to connect.
-                    registry_base: "http://127.0.0.1:9".into(),
-                    downloader: infrastructure::shared::download::Downloader::with_loopback_http(),
-                    ..Default::default()
-                },
-            );
+            let nodes = node_adapters.bind(deps.clone(), "test-epoch".into());
             let services = Services::new(
                 deps,
                 settings,
@@ -686,13 +762,14 @@ pub fn build_app_with(options: Options) -> TestApp {
             Ok(services)
         }
     };
-    let state = AppState::new(
+    let mut state = AppState::new(
         services,
         credentials,
         SecretIngress::default(),
         picker,
         root.join("data"),
     );
+    state.install_opener(stubs.clone());
 
     // The production context keeps the compiled app manifest and the `manager` capability.
     // Only the configured windows are cleared so the tests create each window explicitly.

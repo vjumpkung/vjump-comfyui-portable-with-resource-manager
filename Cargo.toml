@@ -52,6 +52,7 @@ scraper = { version = "=0.25.0", default-features = false }
 time = { version = "=0.3.55", default-features = false, features = ["std", "parsing"] }
 trash = { version = "=5.2.9", default-features = false }
 windows = { version = "=0.62.2", default-features = false, features = ["std", "Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows-core = { version = "=0.62.2", default-features = false, features = ["std"] }
 notify = { version = "=8.2.0", default-features = false }
 walkdir = "=2.5.0"
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }

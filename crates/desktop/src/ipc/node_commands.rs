@@ -38,7 +38,7 @@ fn optional(value: &Option<String>, max: usize) -> Result<Option<String>, IpcErr
     }
 }
 
-fn decision(input: CommitInput) -> Result<(String, CommitDecision), IpcError> {
+pub(super) fn decision(input: CommitInput) -> Result<(String, CommitDecision), IpcError> {
     let protected_changes = input
         .confirmed_changes
         .into_iter()

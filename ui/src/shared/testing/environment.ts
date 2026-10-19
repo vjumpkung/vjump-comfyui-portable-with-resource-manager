@@ -70,9 +70,12 @@ export const run: RunSnapshotDto = {
       source: 'https://github.com/Comfy-Org/ComfyUI-Manager.git',
       commit: 'a'.repeat(40),
     },
+    canSkip: true,
   },
   cancelRequested: false,
   activationPhase: 'none',
+  curated: [],
+  curatedReviews: [],
   createdAt: 'now',
   updatedAt: 'now',
 }

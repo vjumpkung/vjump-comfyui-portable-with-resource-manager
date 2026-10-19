@@ -199,6 +199,9 @@ impl From<crate::environment::ProvisionError> for RuntimeError {
         use crate::environment::ProvisionError;
         match error {
             ProvisionError::Cancelled => Self::Cancelled,
+            ProvisionError::PinDrift(_) => Self::RecoveryRequired(
+                "protected packages could not be restored or verified".into(),
+            ),
             ProvisionError::Failed(s) | ProvisionError::Retryable(s) => Self::Failed(s),
             ProvisionError::CommandFailed(_) => {
                 Self::Failed("a runtime maintenance command failed; inspect diagnostics".into())

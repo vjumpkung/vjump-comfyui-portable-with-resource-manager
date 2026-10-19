@@ -68,11 +68,13 @@ export function LogView({ lines }: { lines: string[] }) {
     term.write(lines.map(plainLog).join('\r\n'))
   }, [lines])
   return (
-    <div
-      ref={host}
-      aria-label="Sanitized setup log"
-      className="setup-log h-72 min-w-0 rounded-lg border border-secondary p-3"
-    />
+    <div className="setup-log h-72 min-w-0 overflow-hidden rounded-lg border border-secondary p-3">
+      <div
+        ref={host}
+        aria-label="Sanitized setup log"
+        className="h-full min-w-0"
+      />
+    </div>
   )
 }
 
@@ -118,10 +120,8 @@ export function StreamLogView({
     written.current = text
   }, [text])
   return (
-    <div
-      ref={host}
-      aria-label={label}
-      className="setup-log h-80 min-w-0 rounded-lg border border-secondary p-3"
-    />
+    <div className="setup-log h-80 min-w-0 overflow-hidden rounded-lg border border-secondary p-3">
+      <div ref={host} aria-label={label} className="h-full min-w-0" />
+    </div>
   )
 }

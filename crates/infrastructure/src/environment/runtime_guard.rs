@@ -12,13 +12,15 @@ use application::comfy_runtime::{RuntimeBlock, RuntimeMaintenance};
 use async_trait::async_trait;
 
 use super::layout::Layout;
-use crate::shared::procscan::{ProcessInfo, snapshot};
+use crate::shared::procscan::{ProcessInfo, SnapshotFn, snapshot};
 
 /// The default ComfyUI port.
 pub const DEFAULT_PORT: u16 = 8188;
 
 pub struct ProcessRuntimeGuard {
     port: u16,
+    /// The process-list source; always the real one outside tests.
+    snapshot: SnapshotFn,
 }
 
 impl ProcessRuntimeGuard {
@@ -27,7 +29,7 @@ impl ProcessRuntimeGuard {
     }
 
     pub fn with_port(port: u16) -> Self {
-        Self { port }
+        Self { port, snapshot }
     }
 }
 
@@ -131,6 +133,7 @@ impl RuntimeMaintenance for ProcessRuntimeGuard {
     async fn ensure_stopped(&self, install_root: &Path) -> Result<(), RuntimeBlock> {
         let root: PathBuf = install_root.to_owned();
         let own_pid = std::process::id();
+        let snapshot = self.snapshot;
         let verdict = tokio::task::spawn_blocking(move || assess(&snapshot(), &root, own_pid))
             .await
             .unwrap_or(Verdict::SnapshotFailed);

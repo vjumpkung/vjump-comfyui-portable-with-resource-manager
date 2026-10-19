@@ -55,6 +55,7 @@ impl Machine {
             comfyui_commit: Some("a".repeat(40)),
             run_id: RunId::new("setup-1").unwrap(),
             activated_at: "t".into(),
+            components: Default::default(),
         });
         Arc::new(Self {
             env,

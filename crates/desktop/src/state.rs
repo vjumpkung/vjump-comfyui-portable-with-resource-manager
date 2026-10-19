@@ -16,12 +16,13 @@ use application::{
         RestartComfy, RuntimeDeps, RuntimeError, RuntimeEvents, RuntimeStore, RuntimeSupervisor,
         SetLaunchOptions, StartComfy, StopComfy, UpdateComfy,
     },
-    custom_nodes::{NodeContext, NodeService, PrepareRequest},
+    custom_nodes::{NodeContext, NodeRequirements, NodeService, PrepareRequest},
     environment::{
-        ActiveRuns, ApplyPackageChange, CancelSetup, DeleteEnvironment, DetectHardware,
-        EnvironmentDeps, ExecuteSetup, GetEnvironmentInfo, GetSetupStatus, ListPackages,
-        ListProfiles, PlanStore, PreviewPackageChange, ReconcileStartup, RootInfo,
-        SelectInstallRoot, StartSetup, ValidatePython,
+        ActiveRuns, ApplyPackageChange, CancelSetup, CuratedNodeCatalog, DeleteEnvironment,
+        DetectHardware, EnvironmentDeps, ExecuteSetup, ExistingInstallOpener, GetEnvironmentInfo,
+        GetSetupStatus, InstallManifestStore, ListPackages, ListProfiles, ManifestState, PlanStore,
+        PreviewPackageChange, ReconcileStartup, RootInfo, RootSource, SelectInstallRoot,
+        SetupNodes, StartSetup, ValidatePython,
     },
     models::{
         acquisition::{
@@ -42,7 +43,7 @@ use application::{
         diagnostics::{CollectDiagnostics, PinnedTool},
         updates::{AppUpdater, InstallAppUpdate},
     },
-    shared::{CancelToken, IdGenerator, MaintenanceLease},
+    shared::{CancelToken, IdGenerator, MaintenanceGate, MaintenanceLease},
 };
 use domain::settings::Settings;
 use infrastructure::{
@@ -54,11 +55,24 @@ use infrastructure::{
         process::{ComfyRuntimeSupervisor, PythonLaunchPreflight, SharedRuntimeRunner},
         sqlite::SqliteRuntimeStore,
     },
-    custom_nodes::stack::{HubSink, NodeEvent, NodeHub, NodeStack},
+    custom_nodes::stack::{HubSink, NodeAdapters, NodeEvent, NodeHub, NodeOptions, NodeStack},
     environment::{
-        hardware::SystemHardware, manifest::FsManifestStore, packages::UvPackages, pins,
-        profiles::BundledProfiles, python::PythonAdapter, source::GitSource,
-        sqlite::SqliteEnvironmentStore, switcher::FsRootSwitcher, tools::Tools,
+        curated::BundledCuratedNodes,
+        hardware::SystemHardware,
+        manifest::FsManifestStore,
+        packages::UvPackages,
+        pins,
+        profiles::BundledProfiles,
+        python::PythonAdapter,
+        relocation::{
+            opener::{FsExistingInstallOpener, RelocationRuntimeGuard},
+            persistence::SqliteRelocationStore,
+            probe::{FsInstallationProbe, root_moved},
+        },
+        source::GitSource,
+        sqlite::SqliteEnvironmentStore,
+        switcher::FsRootSwitcher,
+        tools::Tools,
         verify::PythonVerifier,
     },
     models::{
@@ -93,6 +107,7 @@ use crate::{
 pub struct RecoveryInfo {
     pub code: String,
     pub message: String,
+    pub root: Option<RootInfo>,
 }
 
 impl RecoveryInfo {
@@ -114,10 +129,27 @@ impl RecoveryInfo {
                 "no_data_directory",
                 "The operating system did not provide a local data folder for the app.",
             ),
+            RootError::RootMissing(_) => (
+                "root_missing",
+                "The saved installation folder is missing. Open an existing installation or select a new folder.",
+            ),
+            RootError::RootInaccessible(_) => (
+                "root_inaccessible",
+                "The saved installation folder cannot be accessed. Check its permissions.",
+            ),
         };
         Self {
             code: code.to_owned(),
             message: message.to_owned(),
+            root: match error {
+                RootError::RootMissing(path) | RootError::RootInaccessible(path) => {
+                    Some(RootInfo {
+                        root: path.clone(),
+                        source: RootSource::Bootstrap,
+                    })
+                }
+                _ => None,
+            },
         }
     }
 
@@ -127,6 +159,42 @@ impl RecoveryInfo {
             message:
                 "The app could not open its database or logs. Check the install folder and restart."
                     .to_owned(),
+            root: None,
+        }
+    }
+
+    pub fn startup_failed_for(resolved: &ResolvedRoot) -> Self {
+        let mut info = Self::startup_failed();
+        info.root = Some(services_root(resolved));
+        info
+    }
+}
+
+pub struct SetupServices {
+    pub(crate) deps: EnvironmentDeps,
+    pub(crate) setup_status: GetSetupStatus,
+    pub(crate) start_setup: StartSetup,
+    pub(crate) execute_setup: Arc<ExecuteSetup>,
+    pub(crate) cancel_setup: CancelSetup,
+    pub(crate) root: RootInfo,
+    pub(crate) logs_dir: PathBuf,
+}
+
+impl SetupServices {
+    fn new(
+        deps: EnvironmentDeps,
+        nodes: Arc<dyn SetupNodes>,
+        root: RootInfo,
+        logs_dir: PathBuf,
+    ) -> Self {
+        Self {
+            deps: deps.clone(),
+            setup_status: GetSetupStatus::new(deps.clone()),
+            start_setup: StartSetup::new(deps.clone()),
+            execute_setup: Arc::new(ExecuteSetup::new(deps.clone(), nodes)),
+            cancel_setup: CancelSetup::new(deps),
+            root,
+            logs_dir,
         }
     }
 }
@@ -144,6 +212,7 @@ pub struct RuntimeAdapters {
 
 /// ComfyUI runtime use cases and the live subscription registry.
 pub struct ComfyServices {
+    pub(crate) supervisor: Arc<dyn RuntimeSupervisor>,
     pub(crate) hub: RuntimeLogHub,
     pub(crate) events: Arc<dyn RuntimeEvents>,
     pub(crate) store: Arc<dyn RuntimeStore>,
@@ -178,6 +247,7 @@ impl ComfyServices {
             extra_paths: adapters.extra_paths,
         };
         Self {
+            supervisor: adapters.supervisor,
             events: Arc::new(hub.clone()),
             store: adapters.store.clone(),
             status: GetComfyStatus::new(deps.clone()),
@@ -530,16 +600,15 @@ impl NodeServices {
 
 /// Use cases that depend on the install root's database.
 pub struct Services {
+    pub(crate) gate: Arc<dyn MaintenanceGate>,
+    pub(crate) curated: Arc<dyn CuratedNodeCatalog>,
     pub(crate) get_settings: GetSettings,
     pub(crate) update_settings: UpdateSettings,
-    pub(crate) setup_status: GetSetupStatus,
+    pub(crate) setup: SetupServices,
     pub(crate) detect_hardware: DetectHardware,
     pub(crate) list_profiles: ListProfiles,
     pub(crate) validate_python: ValidatePython,
     pub(crate) select_root: SelectInstallRoot,
-    pub(crate) start_setup: StartSetup,
-    pub(crate) execute_setup: Arc<ExecuteSetup>,
-    pub(crate) cancel_setup: CancelSetup,
     pub(crate) env_info: GetEnvironmentInfo,
     pub(crate) list_packages: ListPackages,
     pub(crate) preview_pip: PreviewPackageChange,
@@ -604,7 +673,11 @@ impl Services {
             ],
         );
         let install_update = InstallAppUpdate::new(&deps);
+        // First-run setup installs its curated nodes through the same node service.
+        let setup_nodes: Arc<dyn SetupNodes> = Arc::new(nodes.service.clone());
         Self {
+            gate: deps.gate.clone(),
+            curated: deps.curated.clone(),
             diagnostics,
             install_update,
             comfy: ComfyServices::new(deps.clone(), runtime, node_lifecycle),
@@ -613,14 +686,11 @@ impl Services {
             nodes,
             get_settings: GetSettings::new(settings.clone()),
             update_settings: UpdateSettings::new(settings),
-            setup_status: GetSetupStatus::new(deps.clone()),
+            setup: SetupServices::new(deps.clone(), setup_nodes, root.clone(), logs_dir.clone()),
             detect_hardware: DetectHardware::new(deps.clone()),
             list_profiles: ListProfiles::new(deps.clone()),
             validate_python: ValidatePython::new(deps.clone()),
             select_root: SelectInstallRoot::new(deps.clone()),
-            start_setup: StartSetup::new(deps.clone()),
-            execute_setup: Arc::new(ExecuteSetup::new(deps.clone())),
-            cancel_setup: CancelSetup::new(deps.clone()),
             env_info: GetEnvironmentInfo::new(deps.clone()),
             list_packages: ListPackages::new(deps.clone()),
             preview_pip: PreviewPackageChange::new(deps.clone()),
@@ -635,6 +705,9 @@ impl Services {
 /// The state every command receives.
 pub struct AppState {
     services: Result<Services, RecoveryInfo>,
+    recovery_setup: Option<SetupServices>,
+    pub(crate) gate: Arc<dyn MaintenanceGate>,
+    opener: Option<Arc<dyn ExistingInstallOpener>>,
     pub(crate) set_credential: SetCredential,
     pub(crate) clear_credential: ClearCredential,
     pub(crate) get_credential_status: GetCredentialStatus,
@@ -656,8 +729,15 @@ impl AppState {
         picker: Arc<dyn FilePicker>,
         data_dir: PathBuf,
     ) -> Self {
+        let gate = services
+            .as_ref()
+            .map(|services| services.gate.clone())
+            .unwrap_or_else(|_| Arc::new(TokioMaintenanceGate::new()));
         Self {
             services,
+            recovery_setup: None,
+            gate,
+            opener: None,
             set_credential: SetCredential::new(credentials.clone()),
             clear_credential: ClearCredential::new(credentials.clone()),
             get_credential_status: GetCredentialStatus::new(credentials.clone()),
@@ -676,6 +756,40 @@ impl AppState {
     /// app started without a usable install root.
     pub(crate) fn services(&self) -> Result<&Services, IpcError> {
         self.services.as_ref().map_err(IpcError::recovery)
+    }
+
+    pub(crate) fn setup_services(&self) -> Result<&SetupServices, IpcError> {
+        match &self.services {
+            Ok(services) => Ok(&services.setup),
+            Err(info) => self
+                .recovery_setup
+                .as_ref()
+                .ok_or_else(|| IpcError::recovery(info)),
+        }
+    }
+
+    pub fn install_opener(&mut self, opener: Arc<dyn ExistingInstallOpener>) {
+        self.opener = Some(opener);
+    }
+
+    pub(crate) fn opener(&self) -> Result<&Arc<dyn ExistingInstallOpener>, IpcError> {
+        self.opener
+            .as_ref()
+            .ok_or_else(|| IpcError::new("root_switch_failed", "Root recovery is unavailable."))
+    }
+
+    fn configure_opener(
+        &mut self,
+        root: Option<RootInfo>,
+        old_root: Option<PathBuf>,
+    ) -> Result<(), RootError> {
+        self.install_opener(Arc::new(FsExistingInstallOpener::new(
+            root,
+            old_root,
+            bootstrap_path()?,
+            self.gate.clone(),
+        )));
+        Ok(())
     }
 
     /// Installs the window actions once the application handle exists.
@@ -745,8 +859,22 @@ impl AppState {
         resolved: &ResolvedRoot,
         picker: Arc<dyn FilePicker>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        if let Some(error) = bootstrap_root_error(resolved) {
+            return Self::compose_recovery(RecoveryInfo::from_root_error(&error), picker).await;
+        }
         let paths = AppPaths::from_root(&resolved.root);
-        paths.ensure_dirs()?;
+        let installation = Arc::new(FsInstallationProbe::new());
+        let mut manifest = FsManifestStore::new().read(&resolved.root).await?;
+        // Only a moved root restricts the app, decided by comparing roots alone: an interrupted
+        // activation is rolled forward and a broken interpreter is offered a rebuild by the
+        // normal start, so neither may lock the app out.
+        let mut restricted = matches!(
+            &manifest,
+            ManifestState::Valid(manifest) if root_moved(&resolved.root, &manifest.install_root)
+        );
+        if !restricted {
+            paths.ensure_dirs()?;
+        }
         let db = Db::open(&paths.db_path).await?;
         let ingress = SecretIngress::default();
         let credentials = Arc::new(KeyringCredentialStore::new(ingress.clone()).await?);
@@ -754,7 +882,12 @@ impl AppState {
             Arc::new(SqliteSettingsRepository::new(db.clone()));
         let store = Arc::new(SqliteEnvironmentStore::new(db.clone()));
         let download_db = db.clone();
-        let node_db = db.clone();
+        let node_adapters = NodeAdapters::open(&resolved.root, db.clone(), NodeOptions::default());
+        let node_requirements = Arc::new(NodeRequirements::new(
+            node_adapters.store.clone(),
+            node_adapters.files.clone(),
+        ));
+        let relocation = Arc::new(SqliteRelocationStore::new(db.clone()));
         let runtime_store = Arc::new(SqliteRuntimeStore::new(db));
         let hub = RuntimeLogHub::default();
         let supervisor = Arc::new(ComfyRuntimeSupervisor::new(
@@ -770,13 +903,19 @@ impl AppState {
             source: resolved.source,
         };
         let deps = EnvironmentDeps {
+            installation,
+            relocation,
+            relocation_runtime: Arc::new(RelocationRuntimeGuard),
             hardware: Arc::new(SystemHardware::new()),
             catalog: Arc::new(BundledProfiles::load()?),
+            curated: Arc::new(BundledCuratedNodes::load()?),
             tools: Arc::new(Tools::new()),
             python: Arc::new(PythonAdapter::new()),
             packages: Arc::new(UvPackages::new()),
+            wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
             verifier: verifier.clone(),
             source: source.clone(),
+            node_requirements,
             envs: store.clone(),
             runs: store.clone(),
             activation: store.clone(),
@@ -795,10 +934,47 @@ impl AppState {
             plans: Arc::new(PlanStore::default()),
         };
         // Interrupted runs become retryable and half-finished activations roll forward before
-        // any maintenance command can run.
+        // any maintenance command can run. After a move only the runs bound to the current root
+        // are reconciled; the copied ones stay as history.
         match ReconcileStartup::new(deps.clone()).execute().await {
             Ok(report) => tracing::info!(?report, "startup reconciliation finished"),
             Err(error) => tracing::error!(%error, "startup reconciliation failed"),
+        }
+        if restricted {
+            // A reconciled activation may have published this root's manifest.
+            manifest = FsManifestStore::new().read(&resolved.root).await?;
+            restricted = matches!(
+                &manifest,
+                ManifestState::Valid(manifest)
+                    if root_moved(&resolved.root, &manifest.install_root)
+            );
+            if !restricted {
+                paths.ensure_dirs()?;
+            }
+        }
+        if restricted {
+            let nodes =
+                node_adapters.bind(deps.clone(), IdGenerator::new_id(&RandomIds::default()));
+            let setup_nodes: Arc<dyn SetupNodes> = Arc::new(NodeService::new(nodes.deps));
+            let info = RecoveryInfo {
+                code: "rebuild_required".into(),
+                message: "The installation moved or its interpreter is broken. Rebuild the environment to continue.".into(),
+                root: Some(root.clone()),
+            };
+            let mut state = Self::new(Err(info), credentials, ingress, picker, paths.data_dir);
+            state.gate = deps.gate.clone();
+            state.recovery_setup = Some(SetupServices::new(
+                deps,
+                setup_nodes,
+                root.clone(),
+                paths.logs_dir,
+            ));
+            let old_root = match manifest {
+                ManifestState::Valid(manifest) => Some(manifest.install_root),
+                _ => None,
+            };
+            state.configure_opener(Some(root), old_root)?;
+            return Ok(state);
         }
         let runtime = RuntimeAdapters {
             supervisor,
@@ -832,12 +1008,7 @@ impl AppState {
             downloads.repository.clone(),
         )
         .map_err(|error| format!("the model library could not be opened: {error}"))?;
-        let nodes = NodeStack::open(
-            &resolved.root,
-            node_db,
-            deps.clone(),
-            IdGenerator::new_id(&RandomIds::default()),
-        );
+        let nodes = node_adapters.bind(deps.clone(), IdGenerator::new_id(&RandomIds::default()));
         let services = Services::new(
             deps,
             settings,
@@ -854,13 +1025,9 @@ impl AppState {
         services.nodes.reconcile().await;
         services.library.start();
         services.downloads.start();
-        Ok(Self::new(
-            Ok(services),
-            credentials,
-            ingress,
-            picker,
-            paths.data_dir,
-        ))
+        let mut state = Self::new(Ok(services), credentials, ingress, picker, paths.data_dir);
+        state.configure_opener(Some(services_root(resolved)), None)?;
+        Ok(state)
     }
 
     /// The state for a start without a usable root: credentials still work, everything that
@@ -871,13 +1038,43 @@ impl AppState {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let ingress = SecretIngress::default();
         let credentials = Arc::new(KeyringCredentialStore::new(ingress.clone()).await?);
-        Ok(Self::new(
-            Err(info),
-            credentials,
-            ingress,
-            picker,
-            PathBuf::new(),
-        ))
+        let root = info.root.clone();
+        let mut state = Self::new(Err(info), credentials, ingress, picker, PathBuf::new());
+        // Without a configuration folder the opener stays unset and root recovery reports
+        // `root_switch_failed`; the rest of recovery must still start.
+        if let Err(error) = state.configure_opener(root.clone(), root.map(|root| root.root)) {
+            tracing::warn!(%error, "root recovery is unavailable");
+        }
+        Ok(state)
+    }
+}
+
+/// Why a bootstrap-selected install root cannot be composed; `None` when it is a directory.
+fn bootstrap_root_error(resolved: &ResolvedRoot) -> Option<RootError> {
+    if resolved.source != RootSource::Bootstrap {
+        return None;
+    }
+    match std::fs::metadata(&resolved.root) {
+        Ok(metadata) if metadata.is_dir() => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Some(RootError::RootMissing(resolved.root.clone()))
+        }
+        _ => Some(RootError::RootInaccessible(resolved.root.clone())),
+    }
+}
+
+/// The log folder to open before composing, so reconciliation reports and open failures are
+/// logged. A missing or inaccessible bootstrap-selected root gets none: nothing is created there.
+pub fn startup_logs_dir(resolved: &ResolvedRoot) -> Option<PathBuf> {
+    bootstrap_root_error(resolved)
+        .is_none()
+        .then(|| AppPaths::from_root(&resolved.root).logs_dir)
+}
+
+fn services_root(resolved: &ResolvedRoot) -> RootInfo {
+    RootInfo {
+        root: resolved.root.clone(),
+        source: resolved.source,
     }
 }
 
@@ -917,3 +1114,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "state/recovery_tests.rs"]
+mod recovery_tests;

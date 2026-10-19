@@ -10,6 +10,7 @@ mod model;
 mod packages;
 mod ports;
 mod queries;
+mod relocation;
 mod setup;
 
 pub use activation::{ReconcileReport, ReconcileStartup};
@@ -27,6 +28,7 @@ pub use queries::{
     ListPackages, ListProfiles, ProfileOffer, RecoveryReason, SelectInstallRoot, SetupPhase,
     SetupStatus, ValidatePython, summarize,
 };
+pub use relocation::*;
 pub use setup::{CancelSetup, SetupAction, StartSetup};
 
 #[cfg(test)]
