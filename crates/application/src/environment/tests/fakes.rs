@@ -551,6 +551,15 @@ impl ProfileCatalog for World {
             .find(|profile| profile.id == id)
             .cloned()
     }
+
+    fn get_revision(&self, id: &str, revision: u32) -> Option<SetupProfile> {
+        self.profiles
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|profile| profile.id == id && profile.revision == revision)
+            .cloned()
+    }
 }
 
 impl CuratedNodeCatalog for World {

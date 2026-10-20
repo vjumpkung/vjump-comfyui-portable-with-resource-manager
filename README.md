@@ -125,6 +125,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -j 4 -- -D warnings
 cargo test --workspace --locked -j 4 --no-fail-fast
 node --test scripts/check-arch-deps.test.mjs && node scripts/check-arch-deps.mjs
+node --test scripts/dev-reset.test.mjs
 cargo test -p desktop --test bindings --locked
 cargo build -p desktop --locked --features tauri/custom-protocol
 pnpm -C ui tauri build                   # Windows NSIS + MSI bundles (MSVC only; release build, about 12 minutes)
@@ -144,6 +145,17 @@ Notes:
 
 The [developer guide](docs/DOCUMENTATION.md#part-2-developer-guide) covers architecture, adding IPC commands, migrations, setup profiles, download providers, opt-in real-system tests and packaging.
 
+### Resetting local app state
+
+Developer-only, Windows-only reset to a true first run. Close the app and any processes running from its install root(s) first, then run:
+
+```cmd
+scripts\dev-reset.cmd
+scripts\dev-reset.cmd /build
+```
+
+After showing the plan and requiring a typed `YES`, the reset permanently deletes all discovered install roots, including in-root models, custom nodes, inputs, outputs and workflows, environments, tools, database, logs, caches and downloads. It also deletes `bootstrap.json`, WebView2 data and the two stored CivitAI/Hugging Face tokens. External venvs/model folders and tracked repository files are kept; an adopted venv inside a deletion target blocks the reset. `/build` also removes `target/`, `target-gnu/`, `ui/node_modules/`, `ui/dist/` and `crates/desktop/gen/`.
+
 ## Repository layout
 
 ```text
@@ -157,7 +169,7 @@ ui/src/
   features/         one folder per feature (setup, environment, comfy-runtime, downloads, library, custom-nodes, settings, overview)
   shared/           shared UI components and the typed IPC gateway
 docs/               requirements, design, ADRs, status and acceptance ledgers, handoff records
-scripts/            Tauri CLI wrapper and the architecture dependency check
+scripts/            Tauri CLI wrapper, architecture dependency check and developer reset
 ```
 
 Dependencies point inward: `domain` <- `application` <- `infrastructure` <- `desktop`. `node scripts/check-arch-deps.mjs` enforces the allowed edges.

@@ -1338,6 +1338,48 @@ fn node_previews_refuse_protected_package_changes() {
 }
 
 #[test]
+fn node_preview_and_commit_keep_the_recorded_profile_revision_constraints() {
+    let h = Harness::new();
+    let extras = vec!["transformers==5.5.0".to_owned()];
+    {
+        let mut profiles = h.world.profiles.lock().unwrap();
+        assert_eq!(h.env().profile_revision, profiles[0].revision);
+        profiles[0].constraints = extras.clone();
+        let mut current = profiles[0].clone();
+        current.revision += 1;
+        current.constraints = vec!["transformers==5.20.2".into()];
+        profiles.insert(0, current);
+    }
+    let review = h.prepare();
+    assert_eq!(
+        h.world.constraint_extras.lock().unwrap().as_slice(),
+        std::slice::from_ref(&extras)
+    );
+    block_on(
+        h.service
+            .commit(&review.id, Harness::decision(&review), &h.ctx()),
+    )
+    .unwrap();
+    assert_eq!(
+        *h.world.constraint_extras.lock().unwrap(),
+        [extras.clone(), extras]
+    );
+}
+
+#[test]
+fn node_preview_errors_when_the_recorded_profile_revision_is_missing() {
+    let h = Harness::new();
+    h.world.profiles.lock().unwrap()[0].revision += 1;
+    assert_eq!(
+        block_on(h.service.prepare(Harness::registry_request(), &h.ctx())).unwrap_err(),
+        NodeAppError::EnvironmentUnavailable
+    );
+    assert!(h.world.constraint_extras.lock().unwrap().is_empty());
+    assert_eq!(h.world.count("preview:constrained"), 0);
+    assert_eq!(h.world.count("install:node"), 0);
+}
+
+#[test]
 fn node_preview_never_retries_without_constraints() {
     let h = Harness::new();
     {

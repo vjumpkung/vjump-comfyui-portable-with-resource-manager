@@ -29,7 +29,7 @@ fn every_bundled_profile_parses_validates_and_has_a_unique_id() {
             profile.id
         );
         if profile.id == "win-py312-torch2100-cu130" {
-            assert_eq!(profile.revision, 2);
+            assert_eq!(profile.revision, 3);
             assert_eq!(profile.accelerators.len(), 6);
             assert!(
                 profile
@@ -395,8 +395,12 @@ fn profile_v1_empty_and_v2_components_round_trip() {
     let legacy = parse_profile(old).unwrap();
     assert_eq!(legacy.schema_version, 1);
     assert!(legacy.accelerators.is_empty());
+    let archived = parse_profile(include_str!(
+        "../data/profiles/archive/win-py312-torch2100-cu130-r2.json"
+    ))
+    .unwrap();
     let current = catalog().get("win-py312-torch2100-cu130").unwrap();
-    for profile in [legacy, current] {
+    for profile in [legacy, archived, current] {
         let doc = serde_json::to_string(&ProfileDoc::from(&profile)).unwrap();
         assert_eq!(parse_profile(&doc).unwrap(), profile);
     }
@@ -410,4 +414,30 @@ fn profile_v1_empty_and_v2_components_round_trip() {
             .revision,
         1
     );
+    let archived = catalog()
+        .get_revision("win-py312-torch2100-cu130", 2)
+        .unwrap();
+    assert_eq!(archived.revision, 2);
+    assert!(archived.constraints.contains(&"transformers==5.5.0".into()));
+    let compatibility = archived
+        .accelerators
+        .iter()
+        .find(|accelerator| accelerator.id == "compatibility-packages")
+        .unwrap();
+    let AcceleratorSource::Packages { requirements } = &compatibility.source else {
+        panic!("compatibility packages must have package requirements")
+    };
+    assert!(requirements.contains(&"transformers==5.5.0".into()));
+    let current = catalog()
+        .get_revision("win-py312-torch2100-cu130", 3)
+        .unwrap();
+    assert_eq!(current.revision, 3);
+    assert!(current.constraints.contains(&"transformers==5.20.2".into()));
+    assert!(
+        catalog()
+            .get_revision("win-py312-torch2100-cu130", 99)
+            .is_none()
+    );
+    assert!(catalog().get_revision("unknown-id", 1).is_none());
+    assert_eq!(catalog().list().len(), 7);
 }

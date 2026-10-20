@@ -106,7 +106,7 @@ impl NodeService {
         Ok(env)
     }
     /// The profile of the environment: the run's snapshot for a setup candidate, otherwise the
-    /// catalog entry of the recorded profile.
+    /// catalog entry of the recorded profile revision.
     fn profile_of(
         &self,
         env: &PythonEnvironment,
@@ -118,7 +118,7 @@ impl NodeService {
                 .deps
                 .environment
                 .catalog
-                .get(&env.profile_id)
+                .get_revision(&env.profile_id, env.profile_revision)
                 .ok_or(NodeAppError::EnvironmentUnavailable),
         }
     }

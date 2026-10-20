@@ -341,6 +341,11 @@ const BUNDLED: [&str; 7] = [
     include_str!("data/profiles/linux-py314-torch2141-cu130.json"),
 ];
 
+const ARCHIVED: [&str; 2] = [
+    include_str!("data/profiles/archive/win-py312-torch2100-cu130-r1.json"),
+    include_str!("data/profiles/archive/win-py312-torch2100-cu130-r2.json"),
+];
+
 #[derive(Debug, Clone)]
 pub struct BundledProfiles {
     profiles: Vec<SetupProfile>,
@@ -373,11 +378,10 @@ impl ProfileCatalog for BundledProfiles {
     }
     fn get_revision(&self, id: &str, revision: u32) -> Option<SetupProfile> {
         self.get(id).filter(|p| p.revision == revision).or_else(|| {
-            let archived = parse_profile(include_str!(
-                "data/profiles/archive/win-py312-torch2100-cu130-r1.json"
-            ))
-            .ok()?;
-            (archived.id == id && archived.revision == revision).then_some(archived)
+            ARCHIVED
+                .iter()
+                .filter_map(|json| parse_profile(json).ok())
+                .find(|profile| profile.id == id && profile.revision == revision)
         })
     }
 }

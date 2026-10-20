@@ -160,7 +160,7 @@ impl UpdateComfy {
         let profile = deps
             .environment
             .catalog
-            .get(&env.profile_id)
+            .get_revision(&env.profile_id, env.profile_revision)
             .ok_or(RuntimeError::EnvironmentNotUsable)?;
         let constraints = deps
             .environment

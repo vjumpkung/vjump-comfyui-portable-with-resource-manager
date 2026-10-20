@@ -58,6 +58,64 @@ fn torch_upgrade_preview() -> ResolutionPreview {
 }
 
 #[test]
+fn package_preview_and_apply_keep_the_recorded_profile_revision_constraints() {
+    let fixture = fixture();
+    let extras = vec!["transformers==5.5.0".to_owned()];
+    {
+        let mut profiles = fixture.world.profiles.lock().unwrap();
+        assert_eq!(
+            fixture.world.env("env-old").profile_revision,
+            profiles[0].revision
+        );
+        profiles[0].constraints = extras.clone();
+        let mut current = profiles[0].clone();
+        current.revision += 1;
+        current.constraints = vec!["transformers==5.20.2".into()];
+        profiles.insert(0, current);
+    }
+    let plan = fixture
+        .preview(PackageOperation::Install(vec!["requests".into()]))
+        .unwrap();
+    assert_eq!(
+        fixture.world.constraint_extras.lock().unwrap().as_slice(),
+        std::slice::from_ref(&extras)
+    );
+    fixture.apply(&plan, Vec::new()).unwrap();
+    assert_eq!(
+        *fixture.world.constraint_extras.lock().unwrap(),
+        [extras.clone(), extras.clone(), extras]
+    );
+}
+
+#[test]
+fn package_preview_errors_when_the_recorded_profile_revision_is_missing() {
+    let fixture = fixture();
+    fixture.world.profiles.lock().unwrap()[0].revision += 1;
+    assert!(matches!(
+        fixture.preview(PackageOperation::Install(vec!["requests".into()])),
+        Err(EnvironmentAppError::ProfileRevisionUnavailable)
+    ));
+    assert!(fixture.world.constraint_extras.lock().unwrap().is_empty());
+    assert_eq!(fixture.world.count("preview:constrained"), 0);
+}
+
+#[test]
+fn package_apply_errors_when_the_recorded_profile_revision_is_missing() {
+    let fixture = fixture();
+    let plan = fixture
+        .preview(PackageOperation::Install(vec!["requests".into()]))
+        .unwrap();
+    fixture.world.profiles.lock().unwrap()[0].revision += 1;
+    assert!(matches!(
+        fixture.apply(&plan, Vec::new()),
+        Err(EnvironmentAppError::ProfileRevisionUnavailable)
+    ));
+    assert_eq!(fixture.world.constraint_extras.lock().unwrap().len(), 1);
+    assert!(fixture.world.installs.lock().unwrap().is_empty());
+    assert_eq!(fixture.world.env("env-old").state(), EnvState::Verified);
+}
+
+#[test]
 fn a_constrained_change_needs_no_confirmation_and_runs_under_the_guard() {
     let fixture = fixture();
     fixture.queue_preview(Ok(installs(&[("requests", "2.34.2")])));

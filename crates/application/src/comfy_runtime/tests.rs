@@ -582,6 +582,38 @@ fn restart_acquires_once_and_saves_options_apply_only_on_next_start() {
     assert_eq!(status.session.unwrap().options.port.get(), 9001);
 }
 #[test]
+fn update_keeps_the_recorded_profile_revision_constraints() {
+    let m = Machine::new();
+    let extras = vec!["transformers==5.5.0".to_owned()];
+    {
+        let mut profiles = m.env.profiles.lock().unwrap();
+        assert_eq!(m.env.env("selected").profile_revision, profiles[0].revision);
+        profiles[0].constraints = extras.clone();
+        let mut current = profiles[0].clone();
+        current.revision += 1;
+        current.constraints = vec!["transformers==5.20.2".into()];
+        profiles.insert(0, current);
+    }
+    let run = block_on(UpdateComfy::new(m.deps()).execute(Machine::request(), CancelToken::new()))
+        .unwrap();
+    assert_eq!(run.phase, UpdatePhase::Complete);
+    assert_eq!(*m.env.constraint_extras.lock().unwrap(), [extras]);
+}
+
+#[test]
+fn update_errors_when_the_recorded_profile_revision_is_missing() {
+    let m = Machine::new();
+    m.env.profiles.lock().unwrap()[0].revision += 1;
+    assert!(matches!(
+        block_on(UpdateComfy::new(m.deps()).execute(Machine::request(), CancelToken::new())),
+        Err(RuntimeError::EnvironmentNotUsable)
+    ));
+    assert!(m.env.constraint_extras.lock().unwrap().is_empty());
+    assert!(m.env.installs.lock().unwrap().is_empty());
+    assert_eq!(m.env.env("selected").state(), EnvState::Verified);
+}
+
+#[test]
 fn dirty_or_diverged_updates_change_neither_source_nor_packages() {
     for state in [
         RepoState {

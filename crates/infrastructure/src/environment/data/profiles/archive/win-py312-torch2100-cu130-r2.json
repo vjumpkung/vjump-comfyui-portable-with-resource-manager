@@ -1,0 +1,169 @@
+{
+  "schema_version": 2,
+  "id": "win-py312-torch2100-cu130",
+  "revision": 2,
+  "label": "Python 3.12, PyTorch 2.10.0, CUDA 13.0",
+  "status": "stable",
+  "recommended": true,
+  "os": "windows",
+  "python": "3.12.15",
+  "torch": {
+    "torch": "2.10.0",
+    "torchvision": "0.25.0",
+    "torchaudio": "2.10.0",
+    "cuda": "cu130",
+    "index_url": "https://download.pytorch.org/whl/cu130"
+  },
+  "min_driver_cuda": "13.0",
+  "min_cc": "8.0",
+  "torch_archs": [
+    "7.5",
+    "8.0",
+    "8.6",
+    "9.0",
+    "10.0",
+    "12.0"
+  ],
+  "triton": {
+    "package": "triton-windows",
+    "specifier": ">=3.6,<3.7"
+  },
+  "accelerators": [
+    {
+      "id": "sageattention",
+      "name": "SageAttention 2.2.0 post4 (experimental)",
+      "modules": [
+        "sageattention"
+      ],
+      "source": {
+        "kind": "wheel",
+        "url": "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0%2Bcu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl",
+        "filename": "sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl",
+        "sha256": "f7261c53a1d46202059daff6b8feac5ee806274d47e3e7fb7abf8c5f6d410c92",
+        "size": 12321863
+      },
+      "no_deps": false,
+      "default_selected": false,
+      "non_fatal": true,
+      "provenance": "Experimental; publisher SHA-256 from GitHub release asset digest; observed 2026-10-16. No app import validation performed."
+    },
+    {
+      "id": "llama-cpp-python",
+      "name": "llama-cpp-python 0.3.34 cu130 (experimental)",
+      "modules": [
+        "llama_cpp"
+      ],
+      "source": {
+        "kind": "wheel",
+        "url": "https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.34-cu130-Basic-win-20260331/llama_cpp_python-0.3.34%2Bcu130.basic-cp312-cp312-win_amd64.whl",
+        "filename": "llama_cpp_python-0.3.34+cu130.basic-cp312-cp312-win_amd64.whl",
+        "sha256": "f418f3fe281c1d6c9e8d996e730e955a7d8b7ad447e7d09a6a1c383e64684f40",
+        "size": 311186533
+      },
+      "no_deps": false,
+      "default_selected": false,
+      "non_fatal": true,
+      "provenance": "Experimental; publisher SHA-256 from GitHub release asset digest; observed 2026-10-16. No app import validation performed."
+    },
+    {
+      "id": "flashattention-2",
+      "name": "FlashAttention 2.8.3 (experimental)",
+      "modules": [
+        "flash_attn"
+      ],
+      "source": {
+        "kind": "wheel",
+        "url": "https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.8.3%2Bcu130torch2.10.0cxx11abiTRUE-cp312-cp312-win_amd64.whl",
+        "filename": "flash_attn-2.8.3+cu130torch2.10.0cxx11abiTRUE-cp312-cp312-win_amd64.whl",
+        "sha256": "d1e76adda81f57d9a300b9e8d71b9c467e07923e0d8e5baa5d90e2007815ec93",
+        "size": 367193483
+      },
+      "no_deps": false,
+      "default_selected": false,
+      "non_fatal": true,
+      "provenance": "Experimental; publisher SHA-256 from HF X-Linked-ETag (LFS sha256); observed 2026-10-16. No app import validation performed."
+    },
+    {
+      "id": "flashattention-3",
+      "name": "FlashAttention 3 (20260318) (experimental)",
+      "modules": [],
+      "source": {
+        "kind": "wheel",
+        "url": "https://github.com/windreamer/flash-attention3-wheels/releases/download/2026.03.19-850211f/flash_attn_3-3.0.0%2B20260318.cu130torch2100cxx11abitrue.8afc61-cp39-abi3-win_amd64.whl",
+        "filename": "flash_attn_3-3.0.0+20260318.cu130torch2100cxx11abitrue.8afc61-cp39-abi3-win_amd64.whl",
+        "sha256": "36642bbbaea59e035b3c57b3fa1dded0e40598949321917cc218c71bd79b184b",
+        "size": 384220928
+      },
+      "no_deps": false,
+      "default_selected": false,
+      "non_fatal": true,
+      "provenance": "Experimental; publisher SHA-256 from GitHub release asset digest (reference used --find-links https://windreamer.github.io/flash-attention3-wheels/cu130_torch2100); observed 2026-10-16. No app import validation performed. Installed module unverified; candidate flash_attn_interface; import test not configured."
+    },
+    {
+      "id": "onnxruntime-gpu",
+      "name": "onnxruntime-gpu 1.26.0 (CUDA 13 feed) (experimental)",
+      "modules": [
+        "onnxruntime"
+      ],
+      "source": {
+        "kind": "wheel",
+        "url": "https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/22685817-9e91-4967-bafe-94c9843c26a9/pypi/download/onnxruntime-gpu/1.26/onnxruntime_gpu-1.26.0-cp312-cp312-win_amd64.whl",
+        "filename": "onnxruntime_gpu-1.26.0-cp312-cp312-win_amd64.whl",
+        "sha256": "7388afa11b005eea389e06d60c4a290494a4dd71e507a24ea21890dd9c39b547",
+        "size": null
+      },
+      "no_deps": true,
+      "default_selected": false,
+      "non_fatal": true,
+      "provenance": "Experimental; publisher SHA-256 from index #sha256 fragment; reference installed with --no-deps from the ort-cuda-13-nightly feed; observed 2026-10-16. No app import validation performed."
+    },
+    {
+      "id": "compatibility-packages",
+      "name": "Compatibility packages (experimental)",
+      "modules": [
+        "transformers",
+        "onnx",
+        "numpy",
+        "PIL"
+      ],
+      "source": {
+        "kind": "packages",
+        "requirements": [
+          "transformers==5.5.0",
+          "onnx",
+          "numpy<2.3",
+          "pillow<12"
+        ]
+      },
+      "no_deps": false,
+      "default_selected": false,
+      "non_fatal": true,
+      "provenance": "Experimental; reference installer extra packages. No app import validation performed."
+    }
+  ],
+  "constraints": [
+    "numpy<2.3",
+    "pillow<12",
+    "transformers==5.5.0"
+  ],
+  "verify": {
+    "torch_version_prefix": "2.10.0+cu130",
+    "require_cuda": true,
+    "require_triton": true
+  },
+  "disk": {
+    "env_bytes": 6442450944,
+    "other_bytes": 7516192768,
+    "margin_bytes": 4294967296,
+    "calibrated": false
+  },
+  "provenance": [
+    "download.pytorch.org/whl/cu130: torch 2.10.0, torchvision 0.25.0, torchaudio 2.10.0 cp312 wheels for win_amd64 and manylinux_2_28_x86_64 exist, and a uv pip compile of the pinned set resolved from that index alone with --only-binary (observed 2026-10-16)",
+    "PyTorch v2.10.0 .ci/pytorch/windows/cuda130.bat TORCH_CUDA_ARCH_LIST (observed 2026-10-16)",
+    "Triton 3.6 and 3.8 README: NVIDIA GPUs with compute capability 8.0 or newer; triton-windows dropped Turing after Triton 3.2 (woct0rdho/triton-windows README, section GPU)",
+    "triton-windows 3.6.0.post26 cp312 win_amd64 (PyPI, observed 2026-10-16) matches PyTorch 2.10.0 .ci/docker/triton_version.txt 3.6.0 and the reference installer range >=3.6,<3.7",
+    "ComfyUI v0.40.0 requirements.txt resolves with --only-binary on Python 3.12 for this platform with torch pinned (uv pip compile, observed 2026-10-16)",
+    "Python 3.12.15: uv 0.13.1 embedded python-build-standalone 20261013 metadata (SHA-256 pinned in python-downloads.json); the reference installer's 3.12.7 embeddable build is not offered by uv",
+    "Reference stack: install_comfyui_3_12_uv_nvidia_torch_2100_portable.bat pins torch 2.10.0, torchvision 0.25.0, torchaudio 2.10.0 and triton-windows >=3.6,<3.7"
+  ]
+}

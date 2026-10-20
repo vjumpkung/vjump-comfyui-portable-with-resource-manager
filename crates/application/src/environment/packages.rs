@@ -172,11 +172,14 @@ async fn selected_environment(
     }
 }
 
-fn extra_constraints(deps: &EnvironmentDeps, env: &PythonEnvironment) -> Vec<String> {
+fn extra_constraints(
+    deps: &EnvironmentDeps,
+    env: &PythonEnvironment,
+) -> Result<Vec<String>, EnvironmentAppError> {
     deps.catalog
-        .get(&env.profile_id)
+        .get_revision(&env.profile_id, env.profile_revision)
         .map(|profile| profile.constraints)
-        .unwrap_or_default()
+        .ok_or(EnvironmentAppError::ProfileRevisionUnavailable)
 }
 
 /// Resolves a package change without mutating the environment (FR-ENV-3).
@@ -246,7 +249,7 @@ impl PreviewPackageChange {
         let ctx = silent_context();
         let constraint_file = deps
             .packages
-            .write_constraints(&root, &env.id, &env.pins, &extra_constraints(deps, env))
+            .write_constraints(&root, &env.id, &env.pins, &extra_constraints(deps, env)?)
             .await?;
         let base = InstallSpec {
             requirements: specs.iter().map(|spec| spec.trim().to_owned()).collect(),
@@ -362,7 +365,7 @@ impl ApplyPackageChange {
                 run_pins.insert(change.name.clone(), to.clone());
             }
         }
-        let extra = extra_constraints(deps, &env);
+        let extra = extra_constraints(deps, &env)?;
         let constraint_file = deps
             .packages
             .write_constraints(&root, &env.id, &run_pins, &extra)
