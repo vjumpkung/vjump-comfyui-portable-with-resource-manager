@@ -31,7 +31,7 @@ export function CloseRequestDialog() {
         if (!next && open) decide.mutate('cancel')
       }}
     >
-      <DialogContent>
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>ComfyUI is still active</DialogTitle>
           <DialogDescription>
