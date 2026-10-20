@@ -80,6 +80,7 @@ pub fn open_comfyui_window<R: Runtime, M: Manager<R>>(
     WebviewWindowBuilder::new(app, COMFYUI_WINDOW, WebviewUrl::External(url))
         .title("ComfyUI")
         .data_directory(data_directory)
+        .disable_drag_drop_handler()
         .on_navigation(move |target| {
             let origin = origin
                 .read()
