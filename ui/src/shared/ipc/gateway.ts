@@ -161,7 +161,6 @@ export const gateway = {
     unwrap(() => commands.comfyUpdate(input)),
   comfyOpenWindow: () => unwrap(() => commands.comfyOpenWindow()),
   comfyOpenBrowser: () => unwrap(() => commands.comfyOpenBrowser()),
-  comfyDiagnostics: () => unwrap(() => commands.comfyDiagnostics()),
   comfyReadExtraModelPaths: () =>
     unwrap(() => commands.comfyReadExtraModelPaths()),
   comfyGenerateExtraModelPaths: (basePath: string) =>
@@ -180,8 +179,6 @@ export const gateway = {
     jobId: string,
     decision: { decisionId: string; choice: ConflictChoiceDto } | null = null,
   ) => unwrap(() => commands.dlResume(jobId, decision)),
-  dlList: (before: number | null, limit: number) =>
-    unwrap(() => commands.dlList(before, limit)),
   /** Resolves to the subscription id. The first event is an authoritative snapshot. */
   dlSubscribe: (
     afterCursor: { epoch: string; sequence: number | null } | null,
@@ -270,8 +267,6 @@ export const gateway = {
       channel.onmessage = onEvent
       return commands.appUpdateInstall(updateId, channel)
     }),
-  /** The redacted diagnostics report. */
-  appDiagnostics: () => unwrap(() => commands.appDiagnostics()),
   /** Copies the redacted report; `copied` is false when the clipboard was unavailable. */
   appCopyDiagnostics: () => unwrap(() => commands.appCopyDiagnostics()),
   pickFolder: (title: string) => unwrap(() => commands.pickFolder(title)),

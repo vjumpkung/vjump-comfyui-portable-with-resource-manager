@@ -18,7 +18,6 @@ const commands = vi.hoisted(() => ({
   appUpdateStatus: vi.fn(),
   appUpdateCheck: vi.fn(),
   appUpdateInstall: vi.fn(),
-  appDiagnostics: vi.fn(),
   appCopyDiagnostics: vi.fn(),
 }))
 
@@ -174,10 +173,6 @@ describe('gateway', () => {
   })
 
   it('app_diagnostics_commands_take_no_arguments', async () => {
-    commands.appDiagnostics.mockResolvedValue({ status: 'ok', data: 'report' })
-    await expect(gateway.appDiagnostics()).resolves.toBe('report')
-    expect(commands.appDiagnostics).toHaveBeenCalledWith()
-
     commands.appCopyDiagnostics.mockResolvedValue({
       status: 'ok',
       data: { text: 'report', copied: false },

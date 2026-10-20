@@ -237,64 +237,6 @@ pub struct ReadExtraModelPaths {
     deps: RuntimeDeps,
 }
 
-pub struct GetComfyDiagnostics {
-    deps: RuntimeDeps,
-    logs: std::sync::Arc<dyn RuntimeLogReader>,
-}
-impl GetComfyDiagnostics {
-    pub fn new(deps: RuntimeDeps, logs: std::sync::Arc<dyn RuntimeLogReader>) -> Self {
-        Self { deps, logs }
-    }
-    pub async fn execute(&self) -> Result<RuntimeDiagnostics, RuntimeError> {
-        let root = self.deps.environment.root.current().root;
-        let env = self
-            .deps
-            .environment
-            .envs
-            .active()
-            .await
-            .map_err(|_| RuntimeError::Storage)?;
-        let hardware = self
-            .deps
-            .environment
-            .hardware
-            .probe(&root, env.as_ref().map(|e| e.path.as_path()))
-            .await;
-        let gpus = match hardware.gpus {
-            domain::environment::GpuProbe::Detected(gpus) => gpus
-                .into_iter()
-                .map(|g| {
-                    format!(
-                        "{} ({} MiB)",
-                        g.name,
-                        g.vram_mib
-                            .map_or_else(|| "unknown".into(), |n| n.to_string())
-                    )
-                })
-                .collect(),
-            domain::environment::GpuProbe::NoNvidiaGpu => vec!["No NVIDIA GPU detected".into()],
-            domain::environment::GpuProbe::Unavailable => {
-                vec!["GPU observation unavailable".into()]
-            }
-        };
-        Ok(RuntimeDiagnostics {
-            os: hardware.os_version,
-            gpus,
-            driver_version: hardware.driver_version,
-            env_id: env.as_ref().map(|e| e.id.clone()),
-            python_version: env.as_ref().map(|e| e.python_version.to_string()),
-            protected_packages: env.map_or_else(Vec::new, |e| {
-                e.pins
-                    .iter()
-                    .map(|(n, v)| (n.to_string(), v.to_owned()))
-                    .collect()
-            }),
-            revision: self.deps.repository.revision(&root).await?,
-            status: GetComfyStatus::new(self.deps.clone()).execute().await?,
-            log_tail: self.logs.last_lines(200),
-        })
-    }
-}
 impl ReadExtraModelPaths {
     pub fn new(deps: RuntimeDeps) -> Self {
         Self { deps }

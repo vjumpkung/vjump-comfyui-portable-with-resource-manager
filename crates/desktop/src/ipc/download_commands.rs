@@ -233,25 +233,6 @@ pub async fn dl_retry(
     Ok(DownloadJobDto::from(&job))
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn dl_list(
-    state: State<'_, AppState>,
-    before: Option<f64>,
-    limit: u32,
-) -> Result<Vec<DownloadJobDto>, IpcError> {
-    let before = before
-        .filter(|b| b.is_finite() && *b >= 0.0)
-        .map(|b| b as u64);
-    let jobs = state
-        .services()?
-        .downloads
-        .list
-        .execute(before, limit)
-        .await?;
-    Ok(jobs.iter().map(DownloadJobDto::from).collect())
-}
-
 /// Registers a per-subscription channel. The first event is an authoritative snapshot; closing
 /// the channel or reloading the UI never stops a download.
 #[tauri::command]

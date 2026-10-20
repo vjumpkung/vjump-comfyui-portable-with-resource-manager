@@ -4,8 +4,8 @@
 use application::environment::ProfileCatalog;
 use domain::environment::{
     AcceleratorSource, AcceleratorSpec, ComputeCapability, CudaVariant, CudaVersion, DiskBudget,
-    DistName, EnvironmentError, OsKind, ProfileStatus, PythonVersion, SetupProfile, TorchBuild,
-    TritonSpec, VerifyExpectations,
+    DistName, EnvironmentError, ProfileStatus, PythonVersion, SetupProfile, TorchBuild, TritonSpec,
+    VerifyExpectations,
 };
 use domain::shared::model_values::{SafeFileName, Sha256};
 use serde::{Deserialize, Serialize};
@@ -379,15 +379,6 @@ impl ProfileCatalog for BundledProfiles {
             .ok()?;
             (archived.id == id && archived.revision == revision).then_some(archived)
         })
-    }
-}
-
-/// The host OS this build runs on.
-pub fn host_os() -> OsKind {
-    if cfg!(windows) {
-        OsKind::Windows
-    } else {
-        OsKind::Linux
     }
 }
 

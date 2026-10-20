@@ -927,7 +927,7 @@ The ACL integration tests run against a test app using the real compiled manifes
 
 The existing opener plugin is used only for repository links, and its registration is not to be duplicated. `node_open_repository` validates the URL (HTTPS, a non-empty authority, no user information) before opening.
 
-The M6 commands `setup_list_curated_nodes`, `setup_open_install`, `setup_new_install`, `app_update_status`, `app_update_check`, `app_update_install`, `app_diagnostics` and `app_copy_diagnostics` follow the same rules: each has an `allow-…` entry in `manager.json` and an ACL case. The updater and clipboard plugins are used from Rust only; `manager.json` grants no updater or clipboard plugin permission, so no webview can call them. `setup_open_install` and `setup_new_install` work in the recovery state, when the normal services are unavailable.
+The M6 commands `setup_list_curated_nodes`, `setup_open_install`, `setup_new_install`, `app_update_status`, `app_update_check`, `app_update_install` and `app_copy_diagnostics` follow the same rules: each has an `allow-…` entry in `manager.json` and an ACL case. The updater and clipboard plugins are used from Rust only; `manager.json` grants no updater or clipboard plugin permission, so no webview can call them. `setup_open_install` and `setup_new_install` work in the recovery state, when the normal services are unavailable.
 
 ## 19. Database migrations
 

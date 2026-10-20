@@ -3,9 +3,10 @@
 This is the working completion ledger. `REQUIREMENTS.md` remains the release scope;
 passing a subset of checks does not establish release completion.
 
-Last updated: **2026-10-20, ~16:50 (+07:00)**, end of session 6. Branch `feat/m0-skeleton`, HEAD
-`e384d43` (owner commit = all session-5 work) + uncommitted, verified session-6 work. Final cumulative
-checkpoint: `docs/handoff/patches/s6-14-final-code-verified.patch` (code identical to `s6-13`).
+Last updated: **2026-10-20, ~16:50 (+07:00)**, end of session 6. Branch `feat/m0-skeleton`; the
+verified session-6 work is committed as `8dc99b1` (its code is the final checkpoint
+`s6-14-final-code-verified` plus the Linux test-fixture fix in
+`crates/infrastructure/src/environment/tools/tests.rs`).
 Native evidence: `docs/handoff/evidence/s6-native-register.md` (N1–N29, Windows 11, NVIDIA GeForce
 RTX 3060 12 GiB, driver 610.88 / CUDA 13.3). Packaging and final snapshot:
 `docs/handoff/evidence/s6-packaging.md`. Acceptance ledger: [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md).
@@ -28,7 +29,7 @@ Release verdict: **NO-GO** (see "Release gates" below).
 ## Verification recorded on 2026-10-20 (session 6, Windows, MSVC, RTX 3060)
 
 - Each package was implemented by a coder (Claude Sonnet xhigh while Codex was rate-limited,
-  then Codex gpt-6.1-sol xhigh) from an advisor-reviewed prompt (`docs/handoff/prompts/session6/`),
+  then Codex gpt-6.1-sol xhigh) from an advisor-reviewed prompt,
   then re-verified by the orchestrator: `cargo fmt --check`, `cargo clippy --workspace
   --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, UI lint, typecheck,
   Vitest, bindings drift, ACL, architecture check; native checks per the register.
@@ -46,7 +47,9 @@ Release verdict: **NO-GO** (see "Release gates" below).
   explicitly in session 6: the start-up smoke test and the live Hugging Face download (N23); four
   are helper subprocesses run by their parent tests; the exporter regenerates bindings; the other
   five were not run (see RELEASE_ACCEPTANCE.md).
-- Checkpoints: `s6-01-q-verified` … `s6-14-final-code-verified` in `docs/handoff/patches/`.
+- Checkpoints: `s6-01-q-verified` … `s6-14-final-code-verified`. Checkpoint patches, coder
+  prompts/reports and superseded plans/evidence were removed from the tree after `8dc99b1`; read
+  them with `git show 8dc99b1:docs/handoff/<path>`.
 - Advisor rulings: `docs/handoff/evidence/s6-advisor-rulings.md`, `s6-advisor-u.md`,
   `s6-advisor-n.md`.
 - Linux x64: compiles, clippy-clean, 778 automated tests pass in a Debian container (`docs/handoff/evidence/s6-linux.md`).
@@ -81,7 +84,7 @@ build (unsigned bundles built, `s6-packaging.md`), acceptance ledger (`RELEASE_A
 ## Verification recorded on 2026-10-19, evening
 
 - Working copy = HEAD `a879fc0` + session-4 work through E3 and its review corrections
-  (checkpoint `docs/handoff/patches/s4-11-through-e3-final-verified.patch`).
+  (checkpoint `s4-11-through-e3-final-verified.patch`, kept in history at `8dc99b1`).
 - `cargo test --workspace --locked --no-fail-fast`: 709 passed, 0 failed, 9 ignored; UI 28 files /
   160 tests; bindings drift and 11 ACL tests pass. Migrations 001–008.
 - Test-count progress during that session: 561 → 567 → 582 → 593 → 615 → 633 → 652 → 657 → 697 → 709.

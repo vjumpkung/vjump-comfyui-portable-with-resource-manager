@@ -126,5 +126,4 @@ export function createDownloadsStore(api: Api = gateway) {
   }
 }
 
-export type DownloadsStore = ReturnType<typeof createDownloadsStore>
 export const downloadsStore = createDownloadsStore()

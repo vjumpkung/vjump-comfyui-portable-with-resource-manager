@@ -50,6 +50,4 @@ pub enum EnvironmentError {
     ModeNeedsDifferentPythonMinor,
     #[error("the setup target resolves to the active environment")]
     TargetIsActiveEnvironment,
-    #[error("this setup mode needs a custom virtual environment path")]
-    ModeNeedsCustomVenv,
 }

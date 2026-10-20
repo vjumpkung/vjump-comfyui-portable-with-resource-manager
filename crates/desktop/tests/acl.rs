@@ -151,7 +151,6 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
         ),
         ("comfy_open_window", json!({}), HandlerError),
         ("comfy_open_browser", json!({}), HandlerError),
-        ("comfy_diagnostics", json!({}), HandlerError),
         ("comfy_read_extra_model_paths", json!({}), HandlerError),
         // A relative path is refused by validation before anything is written.
         (
@@ -194,11 +193,6 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
         ),
         ("dl_cancel", json!({ "jobId": "job-unknown" }), HandlerError),
         ("dl_retry", json!({ "jobId": "job-unknown" }), HandlerError),
-        (
-            "dl_list",
-            json!({ "before": null, "limit": 50 }),
-            HandlerError,
-        ),
         (
             "dl_subscribe",
             json!({ "afterCursor": null, "onEvent": "__CHANNEL__:3" }),
@@ -400,7 +394,6 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
             json!({ "updateId": "update-unknown", "onEvent": "__CHANNEL__:6" }),
             HandlerError,
         ),
-        ("app_diagnostics", json!({}), Success),
         ("app_copy_diagnostics", json!({}), Success),
         ("pick_folder", json!({ "title": null }), Success),
         (
@@ -742,11 +735,6 @@ fn update_and_diagnostics_commands_answer_without_configuration() {
     let text = copied["text"].as_str().unwrap();
     assert!(text.contains("== Availability warnings =="));
     assert!(!text.contains(&app.root.display().to_string()));
-    let report = call("app_diagnostics", json!({})).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&body_bytes(&report)).unwrap(),
-        copied["text"]
-    );
 }
 
 fn body_bytes(body: &tauri::ipc::InvokeResponseBody) -> Vec<u8> {
@@ -790,7 +778,6 @@ fn recovery_handlers_keep_root_selection_diagnostics_and_pickers_available() {
                 "setup_new_install",
                 json!({ "path": app.root.join("new").display().to_string() }),
             ),
-            ("app_diagnostics", json!({})),
             ("app_copy_diagnostics", json!({})),
             ("pick_folder", json!({ "title": null })),
             ("pick_file", json!({ "title": null, "extensions": [] })),

@@ -65,13 +65,7 @@ pub async fn app_update_install(
     Ok(())
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn app_diagnostics(state: State<'_, AppState>) -> Result<String, IpcError> {
-    Ok(collect_report(&state).await)
-}
-
-/// Collects the same redacted report, puts it on the clipboard and returns it, so the UI can
+/// Collects the redacted report, puts it on the clipboard and returns it, so the UI can
 /// offer it for manual selection when the clipboard is unavailable.
 #[tauri::command]
 #[specta::specta]

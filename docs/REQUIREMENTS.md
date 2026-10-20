@@ -403,7 +403,7 @@ Commands (invoke):
 - `setup_detect_hardware`, `setup_validate_python`, `setup_list_profiles`, `setup_run`, `setup_cancel`
 - `env_info`, `env_packages`, `env_pip`
 - `comfy_start`, `comfy_stop`, `comfy_status`, `comfy_update`, `comfy_list_versions`
-- `dl_resolve`, `dl_enqueue`, `dl_pause`, `dl_resume`, `dl_cancel`, `dl_list`, `dl_import_pack`, `dl_export`
+- `dl_resolve`, `dl_enqueue`, `dl_pause`, `dl_resume`, `dl_cancel`, `dl_import_pack`, `dl_export`
 - `model_list`, `model_rename`, `model_delete`, `model_move`, `model_identify`
 - `node_registry_search`, `node_install_registry`, `node_install_git`, `node_list`, `node_update`, `node_set_enabled`, `node_uninstall`
 - `secret_set`, `secret_clear`, `secret_test`
@@ -422,7 +422,7 @@ Mapping from the reference API:
 | `POST /api/download_custom_model` | `dl_resolve` + `dl_enqueue` |
 | `POST /api/import_models` | `dl_import_pack` |
 | `POST /api/download_selected` | `dl_import_pack` (pack index) |
-| `GET /api/download_history` | `dl_list` |
+| `GET /api/download_history` | `dl_subscribe` (its first event is a snapshot of the persisted queue and history) |
 | `PUT /api/update_env/*` | `secret_set` |
 | `POST /api/install_custom_node` | `node_install_git` / `node_install_registry` |
 | `POST /api/restart` | `comfy_stop` + `comfy_start` |

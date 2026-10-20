@@ -2,8 +2,7 @@
 //! IEEE doubles and the generated bindings must not use `bigint`.
 
 use application::comfy_runtime::{
-    LogChunk, ModelRoot, RuntimeDiagnostics, RuntimeEvent, RuntimeSession, RuntimeStatus,
-    UpdateRun, VersionList,
+    LogChunk, ModelRoot, RuntimeEvent, RuntimeSession, RuntimeStatus, UpdateRun, VersionList,
 };
 use domain::comfy_runtime::{
     Attention, FailureKind, LaunchOptions, Lifecycle, Port, PreviewMethod, Revision, Tag,
@@ -478,50 +477,6 @@ impl From<&ModelRoot> for ModelRootDto {
             category: value.category.clone(),
             path: value.path.display().to_string(),
             is_default: value.is_default,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct PackagePinDto {
-    pub name: String,
-    pub version: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct DiagnosticsDto {
-    pub os: String,
-    pub gpus: Vec<String>,
-    pub driver_version: Option<String>,
-    pub env_id: Option<String>,
-    pub python_version: Option<String>,
-    pub protected_packages: Vec<PackagePinDto>,
-    pub revision: RevisionDto,
-    pub status: ComfyStatusDto,
-    pub log_tail: Vec<String>,
-}
-
-impl DiagnosticsDto {
-    pub fn new(value: &RuntimeDiagnostics, pending_close_request: Option<String>) -> Self {
-        Self {
-            os: value.os.clone(),
-            gpus: value.gpus.clone(),
-            driver_version: value.driver_version.clone(),
-            env_id: value.env_id.as_ref().map(ToString::to_string),
-            python_version: value.python_version.clone(),
-            protected_packages: value
-                .protected_packages
-                .iter()
-                .map(|(name, version)| PackagePinDto {
-                    name: name.clone(),
-                    version: version.clone(),
-                })
-                .collect(),
-            revision: (&value.revision).into(),
-            status: ComfyStatusDto::new(&value.status, pending_close_request),
-            log_tail: value.log_tail.clone(),
         }
     }
 }

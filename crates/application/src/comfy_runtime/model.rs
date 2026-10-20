@@ -162,19 +162,6 @@ pub struct VersionList {
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeDiagnostics {
-    pub os: String,
-    pub gpus: Vec<String>,
-    pub driver_version: Option<String>,
-    pub env_id: Option<EnvId>,
-    pub python_version: Option<String>,
-    pub protected_packages: Vec<(String, String)>,
-    pub revision: Revision,
-    pub status: RuntimeStatus,
-    pub log_tail: Vec<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RuntimeError {
     #[error("another maintenance operation is running")]

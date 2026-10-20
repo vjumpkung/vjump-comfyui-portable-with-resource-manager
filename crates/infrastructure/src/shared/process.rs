@@ -818,14 +818,5 @@ pub fn system_baseline() -> Vec<(OsString, OsString)> {
     Vec::new()
 }
 
-/// The checked-in default for locating a program inside a directory.
-pub fn join_program(directory: &Path, name: &str) -> PathBuf {
-    if cfg!(windows) {
-        directory.join(format!("{name}.exe"))
-    } else {
-        directory.join(name)
-    }
-}
-
 #[cfg(test)]
 mod tests;

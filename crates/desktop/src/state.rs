@@ -11,11 +11,10 @@ use std::{
 
 use application::{
     comfy_runtime::{
-        ComfyRepository, ExtraModelPaths, ExtraModelPathsWriter, GetComfyDiagnostics,
-        GetComfyStatus, GetLaunchOptions, LaunchPreflight, ListComfyVersions,
-        ManageExtraModelPaths, NodeLifecycle, PortProbe, ReadExtraModelPaths, RestartComfy,
-        RuntimeDeps, RuntimeError, RuntimeEvents, RuntimeStore, RuntimeSupervisor,
-        SetLaunchOptions, StartComfy, StopComfy, UpdateComfy,
+        ComfyRepository, ExtraModelPaths, ExtraModelPathsWriter, GetComfyStatus, GetLaunchOptions,
+        LaunchPreflight, ListComfyVersions, ManageExtraModelPaths, NodeLifecycle, PortProbe,
+        ReadExtraModelPaths, RestartComfy, RuntimeDeps, RuntimeError, RuntimeEvents, RuntimeStore,
+        RuntimeSupervisor, SetLaunchOptions, StartComfy, StopComfy, UpdateComfy,
     },
     custom_nodes::{NodeContext, NodeRequirements, NodeService, PrepareRequest},
     environment::{
@@ -228,7 +227,6 @@ pub struct ComfyServices {
     pub(crate) update: UpdateComfy,
     pub(crate) extra_paths: ReadExtraModelPaths,
     pub(crate) manage_extra_paths: ManageExtraModelPaths,
-    pub(crate) diagnostics: GetComfyDiagnostics,
     pub(crate) subscriptions: Mutex<HashMap<u32, tauri::async_runtime::JoinHandle<()>>>,
 }
 
@@ -263,9 +261,8 @@ impl ComfyServices {
             set_options: SetLaunchOptions::new(adapters.store),
             versions: ListComfyVersions::new(deps.clone()),
             update: UpdateComfy::new(deps.clone()),
-            extra_paths: ReadExtraModelPaths::new(deps.clone()),
+            extra_paths: ReadExtraModelPaths::new(deps),
             manage_extra_paths,
-            diagnostics: GetComfyDiagnostics::new(deps, Arc::new(hub.clone())),
             hub,
             subscriptions: Mutex::default(),
         }

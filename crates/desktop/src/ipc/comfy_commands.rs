@@ -11,8 +11,8 @@ use tauri::{State, Url, ipc::Channel};
 
 use super::{
     comfy_dto::{
-        CloseChoiceDto, ComfyEventDto, ComfyStatusDto, DiagnosticsDto, LaunchOptionsDto,
-        ModelRootDto, StartResultDto, UpdateInput, UpdateResultDto, VersionListDto,
+        CloseChoiceDto, ComfyEventDto, ComfyStatusDto, LaunchOptionsDto, ModelRootDto,
+        StartResultDto, UpdateInput, UpdateResultDto, VersionListDto,
     },
     error::IpcError,
 };
@@ -241,13 +241,6 @@ pub async fn comfy_open_browser(state: State<'_, AppState>) -> Result<(), IpcErr
     let url = running_origin(&state)?;
     state.shell()?.open_browser(url);
     Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn comfy_diagnostics(state: State<'_, AppState>) -> Result<DiagnosticsDto, IpcError> {
-    let diagnostics = state.services()?.comfy.diagnostics.execute().await?;
-    Ok(DiagnosticsDto::new(&diagnostics, state.close.pending()))
 }
 
 #[tauri::command]

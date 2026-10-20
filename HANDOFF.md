@@ -1,6 +1,6 @@
 # HANDOFF — vjumpkung-rust-comfyui-desktop
 
-Last updated: **2026-10-20 ~17:10 (+07:00)**, session 6 **complete** (code + docs + first Linux compile/test run). No build, test, agent, Codex job or acceptance app of this session is running. Branch `feat/m0-skeleton`, HEAD **`e384d43`** (owner commit = all session-5 work through D2). **Nothing from session 6 is committed**; cumulative checkpoints `docs/handoff/patches/s6-NN-*.patch` (build them with a temporary `GIT_INDEX_FILE`, §5.1). **Read §0c first.**
+Last updated: **2026-10-20 ~18:00 (+07:00)**, session 6 **complete** (code + docs + first Linux compile/test run) and committed as **`8dc99b1`**, followed by a repository-cleanup commit (see §0c). No build, test, agent, Codex job or acceptance app of this session is running. Branch `feat/m0-skeleton`. **Read §0c first.**
 
 ## 0c. Session 6 summary (2026-10-20 12:05–) — read this first
 
@@ -34,7 +34,10 @@ Checkpoints: `s6-01-q-verified` … **`s6-14-final-code-verified`** (final: 802 
 - **Root-level `.dll` node refusal on the Custom Nodes page:** no public repository fixture was available for an in-app run; evidence = the Windows real-git adapter tests `git_install_refuses_root_native_image_before_checkout` / `git_update_refuses_root_native_image_in_frozen_target_before_checkout` (in the final suite).
 - Docs updated for the Linux result (README, RELEASE_ACCEPTANCE R04/G01/NFR rows + evidence `S6-NATIVE-LINUX-N31`, IMPLEMENTATION_STATUS, REQUIREMENTS §9). Final checkpoint: **`docs/handoff/patches/s6-16-final-linux.patch`** (supersedes s6-15).
 
-**Next steps for a new session:** (1) owner: commit the working copy (it equals `s6-14-final-code-verified.patch` + docs); (2) Linux x64 NVIDIA desktop: run the app and S1 on Linux, build/run AppImage and .deb (compile + automated tests already pass in Docker); (3) disposable VM: run the NSIS/MSI installers; (4) provider tokens: S5/S6-gated/S7/S12; (5) optional owner follow-ups below.
+**Repository cleanup (after `8dc99b1`).** Removed `docs/handoff/patches/` (41 checkpoints), `docs/handoff/prompts/` (71), 13 superseded plans, 33 coder/advisor/exploration evidence files, `docs/handoff/tooling/coder-env.md` and `ui/M1-UI-HANDOFF.md`. Kept: the evidence cited by README/docs (`s3-residuals`, `s5-advisor-r`, `s5-exp-r6`, `s5-native-register`, `s6-advisor-n`, `s6-advisor-rulings`, `s6-advisor-u`, `s6-docs-report`, `s6-linux`, `s6-native-register`, `s6-packaging`), `plans/m6-reference-data.md`, and the tooling (GNU fallback, `linux-check.sh`, `run-codex.sh`). Removed dead Rust items (`ModeNeedsCustomVenv`, `host_os`, `is_final`, `join_program`), two dead UI type aliases, and the IPC commands `comfy_diagnostics`, `dl_list` and `app_diagnostics` with the exclusive chain `GetComfyDiagnostics`/`RuntimeDiagnostics`/`DiagnosticsDto`/`PackagePinDto` (83 commands remain; history via `dl_subscribe`, export via `dl_export`, diagnostics via `app_copy_diagnostics`). Removed files can be read with `git show 8dc99b1:<path>`; file paths in the tables below are historical. `docs/handoff/patches/` is now git-ignored.
+Checks: fmt clean; clippy `-D warnings` clean; `cargo test --workspace --locked` 802 passed / 0 failed / 12 ignored (ACL 11, bindings 1 + 1 ignored, regenerated); Vitest 30 files / 202 tests; lint, typecheck, arch 10/10 + OK.
+
+**Next steps for a new session:** (1) done — committed as `8dc99b1`; (2) Linux x64 NVIDIA desktop: run the app and S1 on Linux, build/run AppImage and .deb (compile + automated tests already pass in Docker); (3) disposable VM: run the NSIS/MSI installers; (4) provider tokens: S5/S6-gated/S7/S12; (5) optional owner follow-ups below.
 
 **Owner follow-ups (non-blocking):** app downloads to the extra-model base folder / `is_default: true` (advisor: separate package, widens write authorization); ComfyUI-Manager shows DEPS NOT RUN/Observed after setup (setup does not record it as a node operation); WM_CLOSE right after Stop is refused while the post-stop rescan holds the gate (maybe show a toast); the owner's `D:\comfyui-test\v1` is detached — switch to v0.42.1 once in the app to attach it; stale `HKCU\Software\Python\Astral\CPython3.12.15/3.13.16` keys from pre-D5 builds point at `D:\vjc-s6\r1` — `reg delete` if unwanted.
 
@@ -121,8 +124,8 @@ A Rust desktop app (Tauri 2 + system webview, not Electron) that:
 1. `docs/REQUIREMENTS.md`: the normative spec (FR/NFR IDs, priorities, architecture §3.3, acceptance scenarios §8, open items §9).
 2. `docs/adr/0001-ui-technology.md`, `docs/adr/0002-clean-architecture-ddd.md`.
 3. `docs/DESIGN.md`: UI design system.
-4. `docs/handoff/`: approved plans (`plans/`), evidence (`evidence/`), coder prompts (**session-4 prompts as actually run: `prompts/session4/`**, each already contains `prompts/session3/common.md` and the session-4 baseline notes; next package prompt draft: `prompts/session4/i-DRAFT-needs-advisor-review.md`), saved patches (`patches/`, authoritative = `s4-11-through-e3-final-verified.patch`) and local build tooling (`tooling/`).
-5. `docs/handoff/evidence/s3-residuals.md` (residuals 1–21) and `docs/handoff/evidence/s4-reviews.md` (E2/E3 review decisions + notes for package I).
+4. `docs/handoff/`: `plans/m6-reference-data.md`, `evidence/` (rulings, native registers, residuals, Linux/packaging evidence cited by the docs), `tooling/` (GNU fallback, Linux container check, Codex runner). Older material: `git show 8dc99b1:<path>`.
+5. `docs/handoff/evidence/s3-residuals.md` (residuals 1–21).
 
 Reference material:
 
@@ -130,8 +133,6 @@ Reference material:
 |---|---|
 | Reference portable installer (setup steps, 22 curated nodes, accelerator wheels) | Owner's private GitHub repo `vjumpkung/pixellatent-happy-meals-scripts`, file `comfyui-python-3-12-happy-meals/portable_version/install_comfyui_3_12_uv_nvidia_torch_2100_portable.bat` (`gh api repos/.../contents/<path> -H "Accept: application/vnd.github.raw"`). Everything M6 needs is extracted into `docs/handoff/plans/m6-reference-data.md`. |
 | Python backend reference | `C:\Users\vjump\Documents\vjumpkung-sd-ui-manager-backend` (not needed for remaining work). |
-| Code inventory for documentation | `docs/handoff/evidence/docfacts.md` (explorer, 2026-10-17, file:line evidence of the committed app — predates session 3). |
-| UI surface for package I | `docs/handoff/evidence/exp-ui-i.md` (explorer, 2026-10-19). |
 
 ## 3. Decisions already made — do not re-litigate
 | Decision | Who | Where |
@@ -151,7 +152,7 @@ Reference material:
 | Updater key custody, Authenticode, project license, final icons = **owner decisions**; updater stays inert without build-time config; no license added | Owner | IMPLEMENTATION_STATUS |
 | **Commit only when the user asks**; checkpoints are patch files | User | working agreement |
 
-### 3.1 Advisor decisions (AI-decidable — accepted; details in `docs/handoff/plans/*`)
+### 3.1 Advisor decisions (AI-decidable — accepted; details in `git show 8dc99b1:docs/handoff/plans/<file>`)
 - **Custom-node containment:** real pinned-parent directory operations for all node mutations (NFR-SEC-5 check/use races), incl. pinned recycle with no permanent-delete fallback.
 - **WP1 gap decision (`plans/m5-wp1-gap-decision.md`):** registry archive downloads into a create-new pinned file reused for extraction; a typed **`NodeLocationGuard`** keeps pins and pinned inputs alive through preview, dependency install, hook execution and cleanup (incl. `CleanupFailed`).
 - **Git node identity = content tree digest** (not `git:<commit>`); Git updates stage a full checkout of the frozen target; post-apply validation before deps/hooks; `GitRefused { status }` keeps bounded `git status`. **Implemented (WP2).**
@@ -189,6 +190,7 @@ Reference material:
   git diff --binary HEAD $work -- . ':!docs/handoff/patches' > docs/handoff/patches/s3-NN-<name>.patch; unset GIT_INDEX_FILE
   ```
   For a package-only delta, build `base` the same way from `git read-tree HEAD && git apply --cached <previous cumulative patch>`.
+  `docs/handoff/patches/` is git-ignored: checkpoints stay local and are never committed.
 - Generated permission TOMLs under `crates/desktop/permissions/autogenerated/` (five new ones from P are untracked files — keep them). Codex on Windows sometimes writes CRLF; normalize edited files to LF (`.gitattributes` = `* text=auto`).
 - Vitest: `VITEST_MAX_WORKERS=2`.
 

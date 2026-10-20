@@ -40,7 +40,6 @@ fn main() {
             "comfy_update",
             "comfy_open_window",
             "comfy_open_browser",
-            "comfy_diagnostics",
             "comfy_read_extra_model_paths",
             "comfy_generate_extra_model_paths",
             "comfy_remove_extra_model_paths",
@@ -52,7 +51,6 @@ fn main() {
             "dl_resume",
             "dl_cancel",
             "dl_retry",
-            "dl_list",
             "dl_subscribe",
             "dl_unsubscribe",
             "dl_import_pack",
@@ -89,7 +87,6 @@ fn main() {
             "app_update_status",
             "app_update_check",
             "app_update_install",
-            "app_diagnostics",
             "app_copy_diagnostics",
         ]),
     ))

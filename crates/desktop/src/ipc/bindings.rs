@@ -46,7 +46,6 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
             comfy_commands::comfy_update,
             comfy_commands::comfy_open_window,
             comfy_commands::comfy_open_browser,
-            comfy_commands::comfy_diagnostics,
             comfy_commands::comfy_read_extra_model_paths,
             comfy_commands::comfy_generate_extra_model_paths,
             comfy_commands::comfy_remove_extra_model_paths,
@@ -57,7 +56,6 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
             download_commands::dl_resume,
             download_commands::dl_cancel,
             download_commands::dl_retry,
-            download_commands::dl_list,
             download_commands::dl_subscribe,
             download_commands::dl_unsubscribe,
             download_commands::dl_import_pack,
@@ -94,7 +92,6 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
             app_commands::app_update_status,
             app_commands::app_update_check,
             app_commands::app_update_install,
-            app_commands::app_diagnostics,
             app_commands::app_copy_diagnostics,
         ])
         .error_handling(ErrorHandlingMode::Result)

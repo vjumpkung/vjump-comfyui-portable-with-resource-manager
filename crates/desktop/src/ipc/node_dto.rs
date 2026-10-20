@@ -3,8 +3,8 @@
 //! prepared plans by opaque IDs and never supplies resolved metadata or paths.
 
 use application::custom_nodes::{
-    CachedPage, NodeAppError, NodeGitStatus, NodeOperation, NodeOutcome, OperationKind,
-    OperationPhase, PlanReview, RegistryNode,
+    CachedPage, NodeAppError, NodeGitStatus, NodeOperation, NodeOutcome, OperationKind, PlanReview,
+    RegistryNode,
 };
 use domain::custom_nodes::{
     DependencyState, InstalledNode, NodeId, NodeSource, ProvenanceOrigin, Support,
@@ -599,11 +599,6 @@ impl From<NodeAppError> for IpcError {
             message,
         }
     }
-}
-
-/// Whether a phase string means the operation is finished.
-pub fn is_final(phase: OperationPhase) -> bool {
-    matches!(phase, OperationPhase::Completed | OperationPhase::Failed)
 }
 
 #[cfg(test)]

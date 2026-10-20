@@ -46,7 +46,6 @@ export const commands = {
 	/**  Opens the one ComfyUI window. The URL comes from the validated runtime state only. */
 	comfyOpenWindow: () => typedError<null, IpcError>(__TAURI_INVOKE("comfy_open_window")),
 	comfyOpenBrowser: () => typedError<null, IpcError>(__TAURI_INVOKE("comfy_open_browser")),
-	comfyDiagnostics: () => typedError<DiagnosticsDto, IpcError>(__TAURI_INVOKE("comfy_diagnostics")),
 	comfyReadExtraModelPaths: () => typedError<ModelRootDto[], IpcError>(__TAURI_INVOKE("comfy_read_extra_model_paths")),
 	/**
 	 *  Writes the app's `extra_model_paths.yaml` section for the chosen base folder, then rescans
@@ -66,7 +65,6 @@ export const commands = {
 } | null) => typedError<DownloadJobDto, IpcError>(__TAURI_INVOKE("dl_resume", { jobId, decision })),
 	dlCancel: (jobId: string) => typedError<DownloadJobDto, IpcError>(__TAURI_INVOKE("dl_cancel", { jobId })),
 	dlRetry: (jobId: string) => typedError<DownloadJobDto, IpcError>(__TAURI_INVOKE("dl_retry", { jobId })),
-	dlList: (before: number | null, limit: number) => typedError<DownloadJobDto[], IpcError>(__TAURI_INVOKE("dl_list", { before, limit })),
 	/**
 	 *  Registers a per-subscription channel. The first event is an authoritative snapshot; closing
 	 *  the channel or reloading the UI never stops a download.
@@ -151,9 +149,8 @@ export const commands = {
 	 *  the application is restarting.
 	 */
 	appUpdateInstall: (updateId: string, onEvent: Channel<UpdateProgressDto>) => typedError<null, IpcError>(__TAURI_INVOKE("app_update_install", { updateId, onEvent })),
-	appDiagnostics: () => typedError<string, IpcError>(__TAURI_INVOKE("app_diagnostics")),
 	/**
-	 *  Collects the same redacted report, puts it on the clipboard and returns it, so the UI can
+	 *  Collects the redacted report, puts it on the clipboard and returns it, so the UI can
 	 *  offer it for manual selection when the clipboard is unavailable.
 	 */
 	appCopyDiagnostics: () => typedError<CopyDiagnosticsDto, IpcError>(__TAURI_INVOKE("app_copy_diagnostics")),
@@ -342,18 +339,6 @@ export type DestinationDto = {
 	subdirectory: string,
 	filename: string,
 	relativePath: string,
-};
-
-export type DiagnosticsDto = {
-	os: string,
-	gpus: string[],
-	driverVersion: string | null,
-	envId: string | null,
-	pythonVersion: string | null,
-	protectedPackages: PackagePinDto[],
-	revision: RevisionDto,
-	status: ComfyStatusDto,
-	logTail: string[],
 };
 
 export type DownloadCursorDto = {
@@ -710,11 +695,6 @@ export type PackSourceDto =
 "url";
 
 export type PackageDto = {
-	name: string,
-	version: string,
-};
-
-export type PackagePinDto = {
 	name: string,
 	version: string,
 };

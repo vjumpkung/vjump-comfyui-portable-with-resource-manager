@@ -136,5 +136,4 @@ export function createRuntimeStore(api: Api = gateway) {
   }
 }
 
-export type RuntimeStore = ReturnType<typeof createRuntimeStore>
 export const runtimeStore = createRuntimeStore()
