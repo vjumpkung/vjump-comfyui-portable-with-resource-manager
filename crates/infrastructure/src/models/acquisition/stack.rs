@@ -4,6 +4,7 @@ use super::{
     bandwidth::BandwidthLimiter,
     credentials::ProviderCredentialTester,
     finalize::{LocalDownloadFiles, StagingArea},
+    gdown_engine::GdownDownloader,
     hf_engine::HfDownloader,
     hf_proxy::HfProxyConfig,
     http::ArtifactHttp,
@@ -83,7 +84,16 @@ impl DownloadStack {
         let repository = Arc::new(SqliteDownloads { db: db.clone() });
         let http = ArtifactHttp::new(vault.clone())?;
         let ingress = Arc::new(SourceIngress::default());
-        let resolver = Arc::new(ProviderResolver::new(http.clone(), ingress.clone()));
+        let proxy = HfProxyConfig::capture();
+        let gdown = Arc::new(GdownDownloader {
+            bandwidth: bandwidth.clone(),
+            proxy: proxy.clone(),
+            root: root.to_owned(),
+            staging: staging.clone(),
+        });
+        let resolver = Arc::new(
+            ProviderResolver::new(http.clone(), ingress.clone()).with_gdown(gdown.clone()),
+        );
         let files = Arc::new(LocalDownloadFiles {
             roots,
             staging: staging.clone(),
@@ -101,7 +111,7 @@ impl DownloadStack {
         });
         let hf = Arc::new(HfDownloader {
             bandwidth: bandwidth.clone(),
-            proxy: HfProxyConfig::capture(),
+            proxy,
             root: root.to_owned(),
             staging,
             vault: vault.clone(),
@@ -111,6 +121,7 @@ impl DownloadStack {
             files.clone(),
             native,
             hf,
+            gdown,
             hub.clone(),
             concurrency,
         );

@@ -11,7 +11,7 @@ macro_rules! string_enum {
         fn $decode(s:&str)->Result<$ty> { match s { $(stringify!($variant)=>Ok(<$ty>::$variant),)+ _=>Err(DownloadErrorCode::Storage.into()) } }
     }
 }
-string_enum!(engine, DownloadEngine, [Native, HfCli]);
+string_enum!(engine, DownloadEngine, [Native, HfCli, Gdown]);
 string_enum!(
     state,
     DownloadState,

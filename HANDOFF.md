@@ -1,6 +1,31 @@
 # HANDOFF — vjumpkung-rust-comfyui-desktop
 
-Last updated: **2026-10-20 ~18:00 (+07:00)**, session 6 **complete** (code + docs + first Linux compile/test run) and committed as **`8dc99b1`**, followed by a repository-cleanup commit (see §0c). No build, test, agent, Codex job or acceptance app of this session is running. Branch `feat/m0-skeleton`. **Read §0c first.**
+Last updated: **2026-10-20 ~19:45 (+07:00)**, session 7 **complete** (package G7 Google Drive → gdown, real Windows test, cleanup, Windows + Linux builds, first Linux GUI test). Work is **uncommitted** on branch `feat/m0-skeleton` (HEAD `7d7b8f3`). No build, test, agent, container or app of this session is running. **Read §0d first.**
+
+## 0d. Session 7 summary (2026-10-20 18:00–19:45) — read this first
+
+**Owner requests:** (1) Google Drive downloads through the `gdown` library with fuzzy URL handling, installed with uv and run with Python; (2) list and clean up the real-Windows-test leftovers (after the Windows test; watch D: space); (3) Windows build; (4) Linux build and Linux test, GUI if possible with Docker.
+
+**Orchestration:** Codex rate-limited until 19:31 → explorer = Haiku 5.5 fallback, advisor = read-only Opus stand-in (ruling GO with 9 corrections, all Q1–Q7 AI-decidable), coder = Sonnet 5.5 xhigh. Main re-ran every check.
+
+**G7 — Google Drive through gdown (verified):**
+- gdown **6.4.2** has no `fuzzy` option any more: fuzzy URL parsing is always on (`--fuzzy` is rejected). The app accepts the same forms (`/file/d/<id>/view|edit`, `/file/u/<n>/d/<id>`, `open?id=`, `uc?id=` on `drive.google.com`/`docs.google.com`, `download?id=` on `drive.usercontent.google.com`; folders → folder error; Docs editor links rejected) and passes `https://drive.google.com/uc?id=<id>` to gdown — exactly what gdown does with any URL.
+- Isolated hash-locked tool venv `tools/gdown` on the managed Python 3.13.16 (locks `crates/infrastructure/src/environment/data/gdown-requirements-{windows,linux}.txt`), provisioned in the setup tools step; Repair treats a missing download-tool marker as needing repair.
+- Engine `DownloadEngine::Gdown` (`gdown_engine.rs` + embedded `gdown_driver.py`, run as `python -I -B -X utf8 -c <driver>`): tagged JSON progress/name/error lines, private home/temp, cookies disabled, traffic through the bandwidth relay with a Google host scope, fixed staging name `data/downloads/gdrive/<job>/payload`. Pause = stop, resume restarts from 0 (new DTO field `restartsFromZero` drives the UI warning); gdown `retries=3` resumes within one run. Native Drive path kept only as the fallback when the tool cannot launch (resolve and transfer).
+- Records: plan `scratchpad` only; advisor ruling and evidence summarized in `docs/handoff/evidence/s7-native-register.md`; requirements FR-DL-4, §2.3, NFR-SEC-7, DOCUMENTATION, README, RELEASE_ACCEPTANCE updated.
+- Checks (main): fmt, clippy `-D warnings`, **813 passed / 0 failed / 13 ignored**, bindings regenerated + drift, ACL 11, UI lint/typecheck, Vitest 30 files / 202, arch OK; live ignored `real_gdown_resolves_and_downloads_through_the_relay` passed (coder run). Linux container: **789 / 0 / 11**.
+
+**Native evidence** (`docs/handoff/evidence/s7-native-register.md`): Windows W1–W10 (first run provisions `tools/gdown`; a `/file/d/<id>/view?usp=sharing` share link → `fcn8s_from_caffe.npz` 498,881,336 B through the confirmation page; pause/resume from 0; nonexistent id and folder errors; Repair reinstalls a missing tool; ComfyUI on cuda:0). Linux L1–L8 in Docker `rust:1.99.0-trixie` with `--gpus all`: `.deb` installs and runs (first Linux GUI run), first-run setup `linux-py313-torch2141-cu130` succeeds, the same Drive download, ComfyUI on cuda:0 (torch 2.14.1+cu130), xterm log + embedded ComfyUI window in WebKitGTK, AppImage launches. S07a → PASS on both; S01 Linux → PARTIAL (container, not a desktop).
+
+**Builds:** Windows NSIS 8.91 MiB `7d16c8a1…`, MSI 12.72 MiB `dc34e2f6…` (unsigned, not executed); Linux `.deb` 15.84 MiB `14a037d7…`, AppImage 115.03 MiB `0ead974d…` (in the session scratchpad / `vjc-linux-target` volume, not in the repo).
+
+**Cleanup (owner-approved list):** removed 12,802 test `.tmp*` dirs (4.6 GB) + 31 `vjump-*` entries from `%TEMP%`, the stale `HKCU\Software\Python\Astral\CPython3.12.15/3.13.16` keys, `%APPDATA%jumpkung-comfyuiootstrap.json`, `%LOCALAPPDATA%jumpkung-comfyui`, the WebView2 profile `%LOCALAPPDATA%\dev.vjump.comfyui-desktop`, the Linux test container + `vjc-gui-home` volume. **Not removed:** `D:jc-s7` (13.6 GB test root; the harness refused to delete it — owner runs `rmdir /s /q D:jc-s7`). Docker's `docker_data.vhdx` on D: grew 64.6 → 69.5 GB (does not shrink without compaction); the build caches `vjc-linux-target` (17.3 GB) / `vjc-linux-cargo` and the image `vjc-linux-gui:1` are kept for re-runs.
+
+**Tooling added:** `docs/handoff/tooling/cdp.mjs` (drive the WebView2 UI over CDP: start the app with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`; `node cdp.mjs text|click|type|js|shot|wait`), `linux-bundle.sh` (deb + AppImage in Docker), `linux-gui/` (Dockerfile + `start.sh` + `wd.py`: install the `.deb`, Xvfb, `tauri-driver`, W3C WebDriver; run with `--gpus all`). Git Bash rewrites `/paths` in `docker exec` — wrap in `bash -c '…'`.
+
+**Observations / follow-ups (not fixed):** (1) Repair on a healthy root with only a missing download tool builds a whole replacement environment (correct but heavy; a tools-only repair path would need an advisor-approved change). (2) ComfyUI-Manager logs "PyTorch is not installed" on Linux only. (3) gdown publishes Drive files with mode `0600` and Drive's modification time on Linux. (4) Linux container runs closed the app by signal, so graceful shutdown on SIGTERM is unverified. (5) Codex was unavailable the whole session — re-review G7 with Codex `gpt-6.1-sol` if desired.
+
+**Next steps:** commit when the owner asks; Linux desktop with a native NVIDIA driver (Secret Service, trash, WebKitGTK performance); installers on a disposable VM; provider tokens (S05/S06 gated/S07b quota/S12).
 
 ## 0c. Session 6 summary (2026-10-20 12:05–) — read this first
 

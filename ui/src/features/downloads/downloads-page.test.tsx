@@ -99,10 +99,10 @@ it('shows progress, speed and ETA and pauses a running job', async () => {
   await waitFor(() => expect(gateway.dlPause).toHaveBeenCalledWith('job-1'))
 })
 
-it('warns that resuming an hf CLI job restarts from 0%', async () => {
+it('warns that resuming a tool-driven job restarts from 0%', async () => {
   vi.mocked(gateway.dlResume).mockResolvedValue(job({ state: 'queued' }))
   mount()
-  await snapshot([job({ state: 'paused', estimated: true })])
+  await snapshot([job({ state: 'paused', restartsFromZero: true })])
   expect(await screen.findByText(/restarts this download from 0%/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Resume model.safetensors' }))
   await waitFor(() =>

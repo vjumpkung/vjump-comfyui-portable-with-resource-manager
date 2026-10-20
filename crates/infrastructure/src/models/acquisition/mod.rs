@@ -4,6 +4,7 @@ pub mod codec;
 pub mod credentials;
 pub mod direct;
 pub mod finalize;
+pub mod gdown_engine;
 pub mod gdrive;
 pub mod hf_engine;
 pub mod hf_proxy;

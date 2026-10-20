@@ -1,5 +1,5 @@
 //! Pinned tool acquisition: uv, MinGit (Windows), system Git detection (Linux) and the isolated,
-//! hash-locked `hf` tool environment.
+//! hash-locked `hf` and `gdown` tool environments.
 
 use std::{
     ffi::OsString,
@@ -16,8 +16,8 @@ use super::{
     exec::{run_quiet, run_step},
     layout::{Layout, Tool, command, ensure_cache_dirs},
     pins::{
-        HF_TOOL_PYTHON, HF_VERSION, MIN_SYSTEM_GIT, MINGIT_GIT_VERSION, MINGIT_SHA256, MINGIT_URL,
-        UV_VERSION, hf_requirements, uv_artifact,
+        GDOWN_VERSION, HF_TOOL_PYTHON, HF_VERSION, MIN_SYSTEM_GIT, MINGIT_GIT_VERSION,
+        MINGIT_SHA256, MINGIT_URL, UV_VERSION, gdown_requirements, hf_requirements, uv_artifact,
     },
     python::{ensure_managed_python, normalize_path},
 };
@@ -160,6 +160,49 @@ async fn reusable_hf_tool(layout: &Layout, marker_text: &str, ctx: &StepContext)
         && fs::read_to_string(layout.hf_dir().join(".vj-lock"))
             .is_ok_and(|text| text == marker_text)
         && verify_hf_launch(layout, ctx).await.is_ok()
+}
+
+fn gdown_marker_text(layout: &Layout, interpreter: &Path) -> Result<String, ProvisionError> {
+    let interpreter_hash = sha256_file(interpreter)
+        .map_err(|_| failed("The gdown tool's base interpreter could not be identified."))?;
+    let root = normalize_path(&layout.root);
+    let interpreter = normalize_path(interpreter);
+    let identity = format!(
+        "{}\n{}\n{interpreter_hash}",
+        root.to_string_lossy(),
+        interpreter.to_string_lossy()
+    );
+    Ok(format!(
+        "gdown={GDOWN_VERSION}\npython={HF_TOOL_PYTHON}\nlock={}\nidentity={}\n",
+        sha256_hex(gdown_requirements().as_bytes()),
+        sha256_hex(identity.as_bytes())
+    ))
+}
+
+async fn verify_gdown_launch(layout: &Layout, ctx: &StepContext) -> Result<(), ProvisionError> {
+    let spec = command(layout, Tool::Python, layout.gdown_python()).args([
+        "-I",
+        "-B",
+        "-c",
+        "import gdown; print(gdown.__version__)",
+    ]);
+    let limits = RunLimits {
+        timeout: Some(Duration::from_secs(30)),
+        ..RunLimits::default()
+    };
+    let output = run_step(&spec, ctx, &limits).await?;
+    if output.stdout.trim() == GDOWN_VERSION {
+        Ok(())
+    } else {
+        Err(failed("The gdown tool reports an unexpected version."))
+    }
+}
+
+async fn reusable_gdown_tool(layout: &Layout, marker_text: &str, ctx: &StepContext) -> bool {
+    layout.gdown_python().is_file()
+        && fs::read_to_string(layout.gdown_dir().join(".vj-lock"))
+            .is_ok_and(|text| text == marker_text)
+        && verify_gdown_launch(layout, ctx).await.is_ok()
 }
 
 /// Runs `<executable> <version args>` and returns the first output line when it contains the
@@ -442,6 +485,69 @@ impl Tools {
         })
     }
 
+    async fn ensure_gdown(
+        &self,
+        layout: &Layout,
+        ctx: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError> {
+        let version: PythonVersion = HF_TOOL_PYTHON
+            .parse()
+            .map_err(|_| failed("the gdown tool Python pin is invalid"))?;
+        let interpreter = ensure_managed_python(layout, version, ctx).await?;
+        let requirements = gdown_requirements();
+        let marker_text = gdown_marker_text(layout, &interpreter)?;
+        let marker = layout.gdown_dir().join(".vj-lock");
+        if reusable_gdown_tool(layout, &marker_text, ctx).await {
+            return Ok(ToolInfo {
+                name: "gdown".into(),
+                version: GDOWN_VERSION.into(),
+            });
+        }
+        self.check_cancel(ctx)?;
+        let gdown_dir = layout.gdown_dir();
+        if gdown_dir.exists() {
+            fs::remove_dir_all(&gdown_dir).map_err(|_| {
+                failed(
+                    "The previous gdown tool folder could not be replaced. Close programs that use it.",
+                )
+            })?;
+        }
+        let limits = RunLimits {
+            timeout: Some(Duration::from_secs(900)),
+            ..RunLimits::default()
+        };
+        let venv = command(layout, Tool::Uv, layout.uv_exe())
+            .arg("--no-config")
+            .arg("venv")
+            .arg("--no-project")
+            .arg("--python")
+            .arg(&interpreter)
+            .arg(&gdown_dir);
+        run_step(&venv, ctx, &limits).await?;
+        let lock = layout.cache_dir().join("gdown-requirements.txt");
+        atomic_write(&lock, requirements.as_bytes())
+            .map_err(|_| failed("the gdown lock file could not be written"))?;
+        let sync = command(layout, Tool::Uv, layout.uv_exe())
+            .arg("--no-config")
+            .args(["pip", "sync", "--require-hashes", "--only-binary", ":all:"])
+            .arg("--python")
+            .arg(layout.gdown_python())
+            .arg(&lock);
+        run_step(&sync, ctx, &limits).await?;
+        if !layout.gdown_python().is_file() {
+            return Err(failed(
+                "The gdown tool was installed but its interpreter was not found.",
+            ));
+        }
+        verify_gdown_launch(layout, ctx).await?;
+        atomic_write(&marker, marker_text.as_bytes())
+            .map_err(|_| failed("the gdown tool marker could not be written"))?;
+        Ok(ToolInfo {
+            name: "gdown".into(),
+            version: GDOWN_VERSION.into(),
+        })
+    }
+
     fn check_cancel(&self, ctx: &StepContext) -> Result<(), ProvisionError> {
         if ctx.cancel.is_cancelled() {
             Err(ProvisionError::Cancelled)
@@ -563,6 +669,38 @@ impl ToolProvisioner for Tools {
             Err(_) => return Err(failed("The previous hf tool marker could not be removed.")),
         }
         self.ensure_hf(&layout, ctx).await
+    }
+
+    async fn ensure_gdown_tool(
+        &self,
+        root: &Path,
+        ctx: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError> {
+        self.ensure_gdown(&Layout::new(root), ctx).await
+    }
+
+    async fn recreate_gdown_tool(
+        &self,
+        root: &Path,
+        ctx: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError> {
+        self.check_cancel(ctx)?;
+        let layout = Layout::new(root);
+        match fs::remove_file(layout.gdown_dir().join(".vj-lock")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                return Err(failed(
+                    "The previous gdown tool marker could not be removed.",
+                ));
+            }
+        }
+        self.ensure_gdown(&layout, ctx).await
+    }
+
+    fn download_tools_ready(&self, root: &Path) -> bool {
+        let layout = Layout::new(root);
+        layout.hf_dir().join(".vj-lock").is_file() && layout.gdown_dir().join(".vj-lock").is_file()
     }
 }
 

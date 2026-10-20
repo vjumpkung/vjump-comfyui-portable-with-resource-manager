@@ -81,6 +81,7 @@ fn first_run_executes_the_steps_in_order_and_activates() {
         "ensure_uv",
         "ensure_git",
         "ensure_hf_tool",
+        "ensure_gdown_tool",
         "install_managed_python",
         "create_venv",
         "seed",
@@ -1025,6 +1026,27 @@ fn repair_does_nothing_when_the_selected_environment_verifies() {
     );
     assert_eq!(world.count("ensure_uv"), 0);
     assert_eq!(world.run(&run_id).status, RunStatus::Succeeded);
+}
+
+#[test]
+fn repair_installs_missing_download_tools() {
+    let world = World::new();
+    let env = world.seed_active_env("env-old", PythonVersion::new(3, 13, 16));
+    world.node_requirements.lock().unwrap().push(PathBuf::from(
+        "/install/ComfyUI/custom_nodes/ready/requirements.txt",
+    ));
+    world.seed_node_outcome(&env.id, "ready", DependencyState::Ok);
+    // The replacement environment Repair builds keeps the existing ComfyUI checkout.
+    *world.checkout.lock().unwrap() = Checkout::Repo {
+        commit: "abc1230000000000000000000000000000000000".into(),
+    };
+    world
+        .download_tools_missing
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let run_id = register(&world, resetup_request(SetupMode::Repair)).unwrap();
+    let (outcome, _) = execute(&world, &run_id);
+    assert_eq!(outcome, RunOutcome::Succeeded);
+    assert_eq!(world.count("ensure_gdown_tool"), 1);
 }
 
 #[test]

@@ -63,6 +63,7 @@ pub struct ProviderIdentity(pub String);
 pub enum DownloadEngine {
     Native,
     HfCli,
+    Gdown,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadState {
@@ -278,7 +279,10 @@ impl DownloadJob {
         Ok(())
     }
     pub fn restart_from_zero(&self) -> bool {
-        self.effective_engine == DownloadEngine::HfCli
+        matches!(
+            self.effective_engine,
+            DownloadEngine::HfCli | DownloadEngine::Gdown
+        )
     }
 }
 
@@ -301,5 +305,47 @@ mod tests {
             retry_action(DownloadErrorCode::SignedUrlExpired, 0, true),
             RetryAction::Fatal
         );
+    }
+    fn job(engine: DownloadEngine) -> DownloadJob {
+        DownloadJob {
+            id: JobId::new("job").unwrap(),
+            source: SourceRef::Direct {
+                locator: "https://example.test/a.bin".into(),
+                ingress_id: None,
+                requires_source_refresh: false,
+                insecure_http_confirmed: false,
+            },
+            identity: ProviderIdentity("direct:job".into()),
+            destination: Destination {
+                root_id: "models".into(),
+                category: ModelCategory::new("checkpoints").unwrap(),
+                subdirectory: RelativeModelPath::default(),
+                filename: SafeFileName::new("a.bin").unwrap(),
+            },
+            state: DownloadState::Queued,
+            requested_engine: engine,
+            effective_engine: engine,
+            generation: 0,
+            size: DownloadSize::Unknown,
+            expected_sha256: None,
+            bytes_done: 0,
+            validator: None,
+            retry_count: 0,
+            retry_at: None,
+            stop_intent: None,
+            error: None,
+            conflict: None,
+            decision_id: None,
+            observed: None,
+            publication: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+    #[test]
+    fn tool_engines_restart_from_zero_and_native_does_not() {
+        assert!(job(DownloadEngine::HfCli).restart_from_zero());
+        assert!(job(DownloadEngine::Gdown).restart_from_zero());
+        assert!(!job(DownloadEngine::Native).restart_from_zero());
     }
 }

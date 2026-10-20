@@ -312,6 +312,29 @@ fn tool_pins_are_well_formed() {
             "each pinned line is followed by hash lines"
         );
     }
+    // The gdown lock pins gdown exactly and requires hashes everywhere.
+    for requirements in [
+        pins::GDOWN_REQUIREMENTS_WINDOWS,
+        pins::GDOWN_REQUIREMENTS_LINUX,
+    ] {
+        assert!(requirements.contains(&format!("gdown=={}", pins::GDOWN_VERSION)));
+        let packages = requirements
+            .lines()
+            .filter(|line| line.contains("==") && !line.trim_start().starts_with('#'))
+            .count();
+        let hashes = requirements.matches("--hash=sha256:").count();
+        assert!(
+            hashes >= packages,
+            "every package carries at least one hash"
+        );
+        assert!(
+            requirements
+                .lines()
+                .filter(|line| line.contains("==") && !line.trim_start().starts_with('#'))
+                .all(|line| line.trim_end().ends_with('\\')),
+            "each pinned line is followed by hash lines"
+        );
+    }
 }
 
 #[test]

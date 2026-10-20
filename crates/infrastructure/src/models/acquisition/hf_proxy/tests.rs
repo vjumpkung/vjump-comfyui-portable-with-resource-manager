@@ -138,7 +138,11 @@ fn relay_host_checks_use_dns_label_boundaries() {
         "HF.CO",
     ] {
         assert!(
-            authority(format!("CONNECT {host}:443 HTTP/1.1\r\n\r\n").as_bytes()).is_ok(),
+            authority(
+                format!("CONNECT {host}:443 HTTP/1.1\r\n\r\n").as_bytes(),
+                RelayScope::HuggingFace
+            )
+            .is_ok(),
             "{host}"
         );
     }
@@ -152,7 +156,49 @@ fn relay_host_checks_use_dns_label_boundaries() {
         "user@hf.co",
     ] {
         assert!(
-            authority(format!("CONNECT {host}:443 HTTP/1.1\r\n\r\n").as_bytes()).is_err(),
+            authority(
+                format!("CONNECT {host}:443 HTTP/1.1\r\n\r\n").as_bytes(),
+                RelayScope::HuggingFace
+            )
+            .is_err(),
+            "{host}"
+        );
+    }
+}
+
+#[test]
+fn relay_drive_scope_allows_only_google_hosts() {
+    for host in [
+        "drive.google.com",
+        "docs.google.com",
+        "drive.usercontent.google.com",
+        "accounts.google.com",
+        "doc-0s-8c-docs.googleusercontent.com",
+    ] {
+        assert!(RelayScope::GoogleDrive.allows(host), "{host}");
+        assert!(
+            authority(
+                format!("CONNECT {host}:443 HTTP/1.1\r\n\r\n").as_bytes(),
+                RelayScope::GoogleDrive
+            )
+            .is_ok(),
+            "{host}"
+        );
+        assert!(!RelayScope::HuggingFace.allows(host), "{host}");
+    }
+    for host in [
+        "huggingface.co",
+        "evilgoogle.com",
+        "google.com.evil",
+        "notgoogleusercontent.com",
+    ] {
+        assert!(!RelayScope::GoogleDrive.allows(host), "{host}");
+        assert!(
+            authority(
+                format!("CONNECT {host}:443 HTTP/1.1\r\n\r\n").as_bytes(),
+                RelayScope::GoogleDrive
+            )
+            .is_err(),
             "{host}"
         );
     }

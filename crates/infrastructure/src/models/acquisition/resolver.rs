@@ -1,4 +1,7 @@
-use super::{civitai, direct, gdrive, http::ArtifactHttp, huggingface, sources::SourceIngress};
+use super::{
+    civitai, direct, gdown_engine::GdownDownloader, gdrive, http::ArtifactHttp, huggingface,
+    sources::SourceIngress,
+};
 use application::models::acquisition::{Resolution, ResolvedFile, Result, SourceResolver};
 use async_trait::async_trait;
 use domain::{models::acquisition::*, settings::CredentialKind};
@@ -15,6 +18,7 @@ use url::Url;
 pub struct ProviderResolver {
     pub http: ArtifactHttp,
     pub ingress: Arc<SourceIngress>,
+    gdown: Option<Arc<GdownDownloader>>,
     next: AtomicU64,
     resolutions: Mutex<HashMap<u64, Resolution>>,
 }
@@ -23,9 +27,14 @@ impl ProviderResolver {
         Self {
             http,
             ingress,
+            gdown: None,
             next: AtomicU64::new(0),
             resolutions: Mutex::new(HashMap::new()),
         }
+    }
+    pub fn with_gdown(mut self, gdown: Arc<GdownDownloader>) -> Self {
+        self.gdown = Some(gdown);
+        self
     }
     pub(crate) async fn transfer_url(
         &self,
@@ -76,7 +85,15 @@ impl SourceResolver for ProviderResolver {
         let files = match source {
             SourceRef::CivitAi { .. } => civitai::resolve(&self.http, source, now).await?,
             SourceRef::HuggingFace { .. } => huggingface::resolve(&self.http, source).await?,
-            SourceRef::GoogleDrive { .. } => vec![gdrive::resolve(&self.http, source).await?],
+            SourceRef::GoogleDrive { .. } => vec![match &self.gdown {
+                Some(gdown) => match gdown.resolve(source).await {
+                    Err(error) if error.0 == DownloadErrorCode::ToolLaunch => {
+                        gdrive::resolve(&self.http, source).await?
+                    }
+                    result => result?,
+                },
+                None => gdrive::resolve(&self.http, source).await?,
+            }],
             SourceRef::Direct { .. } => {
                 vec![direct::resolve(&self.http, &self.ingress, source).await?]
             }

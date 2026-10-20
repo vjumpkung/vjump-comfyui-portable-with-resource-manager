@@ -4,7 +4,7 @@ A native desktop application that installs, runs and maintains a local [ComfyUI]
 
 The application is a Rust program built on **Tauri 2**. Its whole interface is a web frontend (Vite, React, TypeScript) rendered by the operating system webview: WebView2 on Windows, WebKitGTK on Linux. It does **not** use Electron.
 
-> **Status: not release-ready. Release verdict: NO-GO.** All Release 1 features are implemented, and the core Windows flows have been verified natively on one NVIDIA machine. Linux compiles and passes its automated tests in a container but has never run on a Linux desktop or GPU, the installers have not been executed, the provider-token scenarios are open and the builds are unsigned. The evidence and every open gate are in [docs/RELEASE_ACCEPTANCE.md](docs/RELEASE_ACCEPTANCE.md).
+> **Status: not release-ready. Release verdict: NO-GO.** All Release 1 features are implemented, and the core Windows flows have been verified natively on one NVIDIA machine. Linux compiles, passes its automated tests and has run as a GUI app in a GPU container, but never on a Linux desktop, the installers have not been executed, the provider-token scenarios are open and the builds are unsigned. The evidence and every open gate are in [docs/RELEASE_ACCEPTANCE.md](docs/RELEASE_ACCEPTANCE.md).
 
 ## Contents
 
@@ -32,7 +32,7 @@ The application is a Rust program built on **Tauri 2**. Its whole interface is a
 | ComfyUI runtime | Start, stop and restart ComfyUI as a child process owned by the app, with live redacted logs, launch options, port-conflict handling, an embedded ComfyUI window or the system browser. |
 | ComfyUI updates | ComfyUI stays on a git branch that tracks `origin` (`master`, or `release/vX.Y` for patch releases), so `git pull` works. The Version card offers **Update to latest commit (git pull)**, **Update to latest release**, **Switch to** a tag and **Fast-forward** the current branch, each followed by a pinned requirements reinstall. Dirty or diverged checkouts are refused, never reset. |
 | extra_model_paths.yaml | Generate an app-managed `vjumpkung_desktop` section from one model base folder, creating the standard model folders; other sections are kept and the previous file is backed up. |
-| Model downloads | A persistent queue for CivitAI, Hugging Face, Google Drive and direct HTTPS links with progress, pause, resume, retry, de-duplication, name-conflict handling, SHA-256 verification where the provider supplies a hash, a shared bandwidth cap, and `resource_list` import and export. Hugging Face downloads use the pinned `hf` CLI by default (Xet support), with a private home folder. |
+| Model downloads | A persistent queue for CivitAI, Hugging Face, Google Drive and direct HTTPS links with progress, pause, resume, retry, de-duplication, name-conflict handling, SHA-256 verification where the provider supplies a hash, a shared bandwidth cap, and `resource_list` import and export. Hugging Face downloads use the pinned `hf` CLI by default (Xet support), with a private home folder. Google Drive downloads use the pinned `gdown` library in its own hash-locked environment (pause restarts from 0%). |
 | Model library | Scans `ComfyUI/models` and the paths in `extra_model_paths.yaml`. Search, filter, rename, move, delete (to the Recycle Bin or Trash) and identify models on CivitAI. |
 | Custom nodes | Browse the Comfy Registry or install from any HTTPS Git URL, with an exact-source review and consent before any third-party code runs. An approved `install.py` runs before the reviewed `requirements.txt`. Update, update all, enable, disable and uninstall, with recovery after interrupted operations. |
 | Settings | Download concurrency, bandwidth cap, Hugging Face engine (`hf` CLI or native), close behaviour, theme, registry cache lifetime, CivitAI and Hugging Face tokens held in the OS keyring, app updates and redacted diagnostics. |
@@ -66,7 +66,7 @@ The authoritative ledger is [docs/RELEASE_ACCEPTANCE.md](docs/RELEASE_ACCEPTANCE
 
 **Not established:**
 
-- Linux: the workspace compiles, is clippy-clean and passes its automated tests on Linux x64 in a Debian container (778 passed, 0 failed — [docs/handoff/evidence/s6-linux.md](docs/handoff/evidence/s6-linux.md)), but the app has never run on a Linux desktop or NVIDIA GPU; Secret Service, trash on a real desktop, WebKitGTK and the AppImage and .deb bundles are unverified.
+- Linux: the workspace compiles, is clippy-clean and passes its automated tests on Linux x64 in a Debian container (789 passed, 0 failed). The `.deb` and AppImage build; in a Debian 13 container with the GPU passed through by Docker Desktop, the `.deb` installs, first-run setup succeeds, ComfyUI runs on CUDA, a Google Drive download completes and the AppImage launches ([docs/handoff/evidence/s7-native-register.md](docs/handoff/evidence/s7-native-register.md)). The app has never run on a Linux desktop with a native NVIDIA driver; Secret Service, trash on a real desktop and WebKitGTK performance are unverified.
 - The Windows installers and the release executable have never been run; there is no clean-machine acceptance.
 - Provider-token scenarios: CivitAI, gated Hugging Face repositories, Google Drive quota and the secret-redaction check.
 - Several Windows scenarios (custom venv, change torch, crash recovery, Registry node install, an edited Git node, a failed dependency install and Repair, among others), accelerator wheels on real hardware, performance and accessibility measurements, and coverage.
@@ -78,7 +78,7 @@ There is no published release yet. The Windows bundles below have been built loc
 
 1. Install the bundle for your OS.
    - Windows: run the NSIS setup (`vjumpkung-comfyui-desktop_<version>_x64-setup.exe`, a per-user install) or the MSI. The bundles are unsigned, so Windows shows an "unknown publisher" warning.
-   - Linux: run the AppImage, or install the `.deb`. Install `git` (2.40 or newer) and `libwebkit2gtk-4.1` first if they are missing. Linux bundles have not been built yet.
+   - Linux: run the AppImage, or install the `.deb`. Install `git` (2.40 or newer) and `libwebkit2gtk-4.1` first if they are missing. The Linux bundles have been built and run in a container only.
 2. Start the application. On first launch it opens the **setup wizard**: install root, hardware check, Python source, profile, options, review. Click **Start setup** on the review step. Setup downloads several GB of packages, so it needs a network connection, and the application restarts once when it finishes.
 3. Open the **ComfyUI** page and press **Start**. Use **Downloads** and **Models** to add and manage models, and **Custom Nodes** to add nodes.
 

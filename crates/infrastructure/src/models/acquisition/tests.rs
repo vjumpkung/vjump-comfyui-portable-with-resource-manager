@@ -505,10 +505,14 @@ async fn startup_preserves_paused_native_partial_and_removes_only_owned_orphans(
     for name in ["paused.part", "orphan.part", "unrelated.txt"] {
         fs::write(f.staging.root.path.join(name), b"data").unwrap();
     }
+    let orphan_drive = f.staging.root.path.join("gdrive").join("orphan");
+    fs::create_dir_all(&orphan_drive).unwrap();
+    fs::write(orphan_drive.join("payload"), b"data").unwrap();
     f.files.clean_orphans(&[job]).await.unwrap();
     assert!(f.staging.root.path.join("paused.part").exists());
     assert!(!f.staging.root.path.join("orphan.part").exists());
     assert!(f.staging.root.path.join("unrelated.txt").exists());
+    assert!(!orphan_drive.exists());
 }
 
 #[test]
@@ -677,37 +681,47 @@ async fn wait_terminal(repository: &dyn JobRepository, id: &JobId) -> DownloadJo
 #[tokio::test]
 async fn supervisor_limits_admissions_and_only_falls_back_on_spawn_failure() {
     use std::sync::atomic::Ordering::SeqCst;
-    for (error, expected_native, expected_state) in [
-        (DownloadErrorCode::ToolLaunch, 1, DownloadState::Completed),
-        (DownloadErrorCode::ToolRuntime, 0, DownloadState::Failed),
-        (
-            DownloadErrorCode::BandwidthProxyUnavailable,
-            0,
-            DownloadState::Failed,
-        ),
-    ] {
-        let f = Fixture::new();
-        let mut job = f.job("hf", "https://x/a.bin");
-        job.effective_engine = DownloadEngine::HfCli;
-        job.requested_engine = DownloadEngine::HfCli;
-        let job = f.insert(job).await;
-        let native = ScriptedEngine::new(f.staging.clone(), None);
-        let hf = ScriptedEngine::new(f.staging.clone(), Some(error));
-        let supervisor = super::supervisor::DownloadSupervisor::new(
-            f.repository.clone(),
-            f.files.clone(),
-            native.clone(),
-            hf.clone(),
-            f.hub.clone(),
-            2,
-        );
-        let run = tokio::spawn(supervisor.clone().run());
-        let terminal = wait_terminal(f.repository.as_ref(), &job.id).await;
-        assert_eq!(terminal.state, expected_state);
-        assert_eq!(native.calls.load(SeqCst), expected_native);
-        assert_eq!(hf.calls.load(SeqCst), 1);
-        supervisor.request_shutdown();
-        run.await.unwrap().unwrap();
+    for engine in [DownloadEngine::HfCli, DownloadEngine::Gdown] {
+        for (error, expected_native, expected_state) in [
+            (DownloadErrorCode::ToolLaunch, 1, DownloadState::Completed),
+            (DownloadErrorCode::ToolRuntime, 0, DownloadState::Failed),
+            (
+                DownloadErrorCode::BandwidthProxyUnavailable,
+                0,
+                DownloadState::Failed,
+            ),
+        ] {
+            let f = Fixture::new();
+            let mut job = f.job("tool", "https://x/a.bin");
+            job.effective_engine = engine;
+            job.requested_engine = engine;
+            let job = f.insert(job).await;
+            let native = ScriptedEngine::new(f.staging.clone(), None);
+            let tool = ScriptedEngine::new(f.staging.clone(), Some(error));
+            let idle = ScriptedEngine::new(f.staging.clone(), None);
+            let (hf, gdown) = if engine == DownloadEngine::HfCli {
+                (tool.clone(), idle.clone())
+            } else {
+                (idle.clone(), tool.clone())
+            };
+            let supervisor = super::supervisor::DownloadSupervisor::new(
+                f.repository.clone(),
+                f.files.clone(),
+                native.clone(),
+                hf,
+                gdown,
+                f.hub.clone(),
+                2,
+            );
+            let run = tokio::spawn(supervisor.clone().run());
+            let terminal = wait_terminal(f.repository.as_ref(), &job.id).await;
+            assert_eq!(terminal.state, expected_state, "{engine:?} {error:?}");
+            assert_eq!(native.calls.load(SeqCst), expected_native);
+            assert_eq!(tool.calls.load(SeqCst), 1);
+            assert_eq!(idle.calls.load(SeqCst), 0);
+            supervisor.request_shutdown();
+            run.await.unwrap().unwrap();
+        }
     }
     let f = Fixture::new();
     let mut ids = Vec::new();
@@ -722,6 +736,7 @@ async fn supervisor_limits_admissions_and_only_falls_back_on_spawn_failure() {
     let supervisor = super::supervisor::DownloadSupervisor::new(
         f.repository.clone(),
         f.files.clone(),
+        native.clone(),
         native.clone(),
         native.clone(),
         f.hub.clone(),

@@ -165,6 +165,25 @@ impl HfProxyConfig {
     }
 }
 
+/// The destination hosts a relay accepts for one tool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelayScope {
+    HuggingFace,
+    GoogleDrive,
+}
+impl RelayScope {
+    fn allows(self, host: &str) -> bool {
+        match self {
+            Self::HuggingFace => host_allowed(host),
+            Self::GoogleDrive => {
+                host == "google.com"
+                    || host.ends_with(".google.com")
+                    || host.ends_with(".googleusercontent.com")
+            }
+        }
+    }
+}
+
 pub struct HfRelay {
     address: SocketAddr,
     stop: Option<oneshot::Sender<()>>,
@@ -175,6 +194,14 @@ impl HfRelay {
     pub async fn start(
         limiter: Arc<BandwidthLimiter>,
         config: HfProxyConfig,
+    ) -> Result<Self, ProxyUnavailable> {
+        Self::start_scoped(limiter, config, RelayScope::HuggingFace).await
+    }
+
+    pub async fn start_scoped(
+        limiter: Arc<BandwidthLimiter>,
+        config: HfProxyConfig,
+        scope: RelayScope,
     ) -> Result<Self, ProxyUnavailable> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
@@ -198,7 +225,7 @@ impl HfRelay {
                         let config = config.clone();
                         let failures = failures.clone();
                         connections.spawn(async move {
-                            if serve(child, limiter, &config).await.is_err() {
+                            if serve(child, limiter, &config, scope).await.is_err() {
                                 failures.store(true, Ordering::SeqCst);
                             }
                         });
@@ -267,7 +294,7 @@ fn host_allowed(host: &str) -> bool {
         || host.ends_with(".hf.co")
 }
 
-fn authority(request: &[u8]) -> Result<String, ProxyUnavailable> {
+fn authority(request: &[u8], scope: RelayScope) -> Result<String, ProxyUnavailable> {
     let text = std::str::from_utf8(request).map_err(|_| ProxyUnavailable)?;
     let line = text.split("\r\n").next().ok_or(ProxyUnavailable)?;
     let parts: Vec<_> = line.split(' ').collect();
@@ -280,7 +307,7 @@ fn authority(request: &[u8]) -> Result<String, ProxyUnavailable> {
         .to_ascii_lowercase();
     if host.len() > 253
         || host.parse::<IpAddr>().is_ok()
-        || !host_allowed(&host)
+        || !scope.allows(&host)
         || host.split('.').any(|label| {
             label.is_empty()
                 || label.len() > 63
@@ -424,10 +451,11 @@ async fn serve(
     mut child: TcpStream,
     limiter: Arc<BandwidthLimiter>,
     config: &HfProxyConfig,
+    scope: RelayScope,
 ) -> Result<(), ProxyUnavailable> {
     let handshake = async {
         let header = read_header(&mut child).await?;
-        let host = authority(&header)?;
+        let host = authority(&header, scope)?;
         connect(&host, config).await
     };
     let upstream = match timeout(HANDSHAKE, handshake).await {

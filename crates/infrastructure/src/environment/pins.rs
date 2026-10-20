@@ -50,7 +50,7 @@ pub const MIN_SYSTEM_GIT: (u32, u32) = (2, 40);
 
 pub const PYTHON_DOWNLOADS_JSON: &str = include_str!("data/python-downloads.json");
 
-/// The `hf` tool always uses this managed Python, whatever Python ComfyUI uses.
+/// The `hf` and `gdown` tools always use this managed Python, whatever Python ComfyUI uses.
 pub const HF_TOOL_PYTHON: &str = "3.13.16";
 pub const HF_VERSION: &str = "2.2.0";
 
@@ -62,6 +62,19 @@ pub fn hf_requirements() -> &'static str {
         HF_REQUIREMENTS_WINDOWS
     } else {
         HF_REQUIREMENTS_LINUX
+    }
+}
+
+pub const GDOWN_VERSION: &str = "6.4.2";
+
+pub const GDOWN_REQUIREMENTS_WINDOWS: &str = include_str!("data/gdown-requirements-windows.txt");
+pub const GDOWN_REQUIREMENTS_LINUX: &str = include_str!("data/gdown-requirements-linux.txt");
+
+pub fn gdown_requirements() -> &'static str {
+    if cfg!(windows) {
+        GDOWN_REQUIREMENTS_WINDOWS
+    } else {
+        GDOWN_REQUIREMENTS_LINUX
     }
 }
 

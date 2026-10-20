@@ -170,18 +170,35 @@ impl SourceIngress {
                 path,
             });
         }
-        if host == "drive.google.com" || host == "drive.usercontent.google.com" {
-            if decoded.iter().any(|s| s == "folders") {
+        if matches!(
+            host,
+            "drive.google.com" | "docs.google.com" | "drive.usercontent.google.com"
+        ) {
+            if decoded
+                .iter()
+                .any(|s| s == "folders" || s == "embeddedfolderview")
+            {
                 return Err(DownloadErrorCode::DriveFolderUnsupported.into());
             }
-            let id = match decoded.as_slice() {
-                [a, b, id, ..] if a == "file" && b == "d" => Some(id.clone()),
-                _ => url
-                    .query_pairs()
-                    .find(|(k, _)| k == "id")
-                    .map(|(_, v)| v.into_owned()),
-            }
-            .ok_or(DownloadErrorCode::InvalidSource)?;
+            // The same forms gdown accepts; `usp`, `resourcekey` and other parameters are ignored.
+            let mut ids = url.query_pairs().filter(|(k, _)| k == "id");
+            let id = match (ids.next(), ids.next()) {
+                (Some(_), Some(_)) => return Err(DownloadErrorCode::InvalidSource.into()),
+                (Some((_, id)), None) => id.into_owned(),
+                (None, _) => match decoded.as_slice() {
+                    [a, b, id, ..] if a == "file" && b == "d" => id.clone(),
+                    [a, b, n, c, id, ..]
+                        if a == "file"
+                            && b == "u"
+                            && !n.is_empty()
+                            && n.bytes().all(|b| b.is_ascii_digit())
+                            && c == "d" =>
+                    {
+                        id.clone()
+                    }
+                    _ => return Err(DownloadErrorCode::InvalidSource.into()),
+                },
+            };
             if id.is_empty()
                 || id.len() > 200
                 || !id
@@ -274,5 +291,48 @@ mod tests {
             .stage("https://x/file.bin?signature=secret", false)
             .unwrap();
         assert!(!format!("{signed:?}").contains("secret"));
+    }
+    #[test]
+    fn drive_urls_follow_gdown_fuzzy_forms() {
+        let ingress = SourceIngress::default();
+        for url in [
+            "https://drive.google.com/file/d/AbC-123_x/view?usp=sharing",
+            "https://drive.google.com/file/u/1/d/AbC-123_x/edit",
+            "https://drive.google.com/open?id=AbC-123_x",
+            "https://drive.google.com/uc?export=download&id=AbC-123_x",
+            "https://docs.google.com/uc?id=AbC-123_x",
+            "https://drive.usercontent.google.com/download?id=AbC-123_x&export=download",
+        ] {
+            assert_eq!(
+                ingress.stage(url, false).unwrap(),
+                SourceRef::GoogleDrive {
+                    file_id: "AbC-123_x".into()
+                },
+                "{url}"
+            );
+        }
+        for url in [
+            "https://drive.google.com/drive/folders/AbC-123_x",
+            "https://drive.google.com/drive/u/0/folders/AbC-123_x",
+            "https://drive.google.com/embeddedfolderview?id=AbC-123_x",
+        ] {
+            assert_eq!(
+                ingress.stage(url, false).unwrap_err().0,
+                DownloadErrorCode::DriveFolderUnsupported,
+                "{url}"
+            );
+        }
+        for url in [
+            "https://drive.google.com/open?id=A&id=B",
+            "https://docs.google.com/document/d/AbC-123_x/edit",
+            "https://drive.google.com/open?id=bad.id",
+            "https://drive.google.com/open",
+        ] {
+            assert_eq!(
+                ingress.stage(url, false).unwrap_err().0,
+                DownloadErrorCode::InvalidSource,
+                "{url}"
+            );
+        }
     }
 }

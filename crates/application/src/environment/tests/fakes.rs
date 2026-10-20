@@ -220,6 +220,8 @@ pub struct World {
     pub draft: Mutex<Option<String>>,
     pub resolve_calls: AtomicUsize,
     pub verify_final_fails: AtomicBool,
+    /// Simulates a missing download tool venv, which Repair must notice.
+    pub download_tools_missing: AtomicBool,
     /// Versions applied after every successful install, simulating the resolver result.
     pub install_overrides: Mutex<Vec<(String, String)>>,
     counter: AtomicU64,
@@ -270,6 +272,7 @@ impl World {
             draft: Mutex::default(),
             resolve_calls: AtomicUsize::new(0),
             verify_final_fails: AtomicBool::new(false),
+            download_tools_missing: AtomicBool::new(false),
             install_overrides: Mutex::default(),
             counter: AtomicU64::new(0),
             profiles: Mutex::new(vec![profile(), other_minor_profile()]),
@@ -752,6 +755,32 @@ impl ToolProvisioner for World {
     ) -> Result<ToolInfo, ProvisionError> {
         self.call("recreate_hf_tool");
         self.ensure_hf_tool(root, ctx).await
+    }
+
+    async fn ensure_gdown_tool(
+        &self,
+        _root: &Path,
+        _ctx: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError> {
+        self.call("ensure_gdown_tool");
+        self.injected("ensure_gdown_tool")?;
+        Ok(ToolInfo {
+            name: "gdown".into(),
+            version: "6.4.2".into(),
+        })
+    }
+
+    async fn recreate_gdown_tool(
+        &self,
+        root: &Path,
+        ctx: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError> {
+        self.call("recreate_gdown_tool");
+        self.ensure_gdown_tool(root, ctx).await
+    }
+
+    fn download_tools_ready(&self, _root: &Path) -> bool {
+        !self.download_tools_missing.load(Ordering::SeqCst)
     }
 }
 

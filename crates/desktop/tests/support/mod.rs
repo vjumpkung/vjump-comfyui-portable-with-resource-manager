@@ -382,6 +382,14 @@ impl ToolProvisioner for Stubs {
     async fn ensure_hf_tool(&self, _: &Path, _: &StepContext) -> Result<ToolInfo, ProvisionError> {
         Err(stub_failure())
     }
+
+    async fn ensure_gdown_tool(
+        &self,
+        _: &Path,
+        _: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError> {
+        Err(stub_failure())
+    }
 }
 
 #[async_trait]

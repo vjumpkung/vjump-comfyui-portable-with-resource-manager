@@ -40,6 +40,10 @@ impl Layout {
         self.tools_dir().join("hf")
     }
 
+    pub fn gdown_dir(&self) -> PathBuf {
+        self.tools_dir().join("gdown")
+    }
+
     pub fn comfyui_dir(&self) -> PathBuf {
         self.root.join("ComfyUI")
     }
@@ -79,6 +83,10 @@ impl Layout {
 
     pub fn hf_exe(&self) -> PathBuf {
         venv_scripts(&self.hf_dir()).join(if cfg!(windows) { "hf.exe" } else { "hf" })
+    }
+
+    pub fn gdown_python(&self) -> PathBuf {
+        venv_python(&self.gdown_dir())
     }
 
     pub fn constraints_file(&self, env: &EnvId) -> PathBuf {
@@ -373,6 +381,8 @@ mod tests {
             layout.setup_log("abc"),
             PathBuf::from("/r/data/logs/setup-abc.log")
         );
+        assert_eq!(layout.gdown_dir(), PathBuf::from("/r/tools/gdown"));
+        assert_eq!(layout.gdown_python(), venv_python(&layout.gdown_dir()));
         let env = EnvId::new("env-1").unwrap();
         assert_eq!(
             layout.constraints_file(&env),

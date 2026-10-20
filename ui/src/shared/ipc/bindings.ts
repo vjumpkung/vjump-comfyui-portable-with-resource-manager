@@ -369,6 +369,8 @@ export type DownloadJobDto = {
 	effectiveEngine: EngineDto,
 	/**  True when progress is derived from partial files (Hugging Face CLI). */
 	estimated: boolean,
+	/**  True when pausing or restarting loses the partial file (Hugging Face CLI, gdown). */
+	restartsFromZero: boolean,
 	generation: number | null,
 	retryCount: number,
 	retryAt: number | null,
@@ -390,7 +392,7 @@ export type DownloadJobDto = {
 
 export type DownloadStateDto = "queued" | "resolving" | "downloading" | "verifying" | "paused" | "completed" | "failed" | "cancelled";
 
-export type EngineDto = "native" | "hf_cli";
+export type EngineDto = "native" | "hf_cli" | "gdown";
 
 export type EnqueueItemInput = {
 	resolutionId: number | null,

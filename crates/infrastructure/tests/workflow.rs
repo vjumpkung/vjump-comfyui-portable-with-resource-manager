@@ -143,6 +143,18 @@ impl ToolProvisioner for Sim {
             version: "2.2.0".into(),
         })
     }
+
+    async fn ensure_gdown_tool(
+        &self,
+        _: &Path,
+        _: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError> {
+        self.step("ensure_gdown_tool")?;
+        Ok(ToolInfo {
+            name: "gdown".into(),
+            version: "6.4.2".into(),
+        })
+    }
 }
 
 #[async_trait]

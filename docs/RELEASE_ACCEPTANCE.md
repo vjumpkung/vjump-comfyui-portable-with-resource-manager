@@ -2,7 +2,7 @@
 
 This ledger maps every P0 and P1 requirement, every non-functional clause and all 17 acceptance scenarios of [REQUIREMENTS.md](REQUIREMENTS.md) to evidence or to an explicit open blocker. Its structure follows the advisor ruling in [s5-advisor-r.md](handoff/evidence/s5-advisor-r.md) (Q5).
 
-**Release verdict: NO-GO.** Linux compiles and passes its automated tests in a container (S6-NATIVE-LINUX-N31) but has never run on a Linux desktop or GPU, the Windows installers have not been executed, the provider-token scenarios (CivitAI, gated Hugging Face, Google Drive quota) are open, Authenticode signing and updater key custody are unresolved, and further Windows native scenarios are open. See [Release gates](#release-gates).
+**Release verdict: NO-GO.** Linux compiles, passes its automated tests (S7-NATIVE-LINUX-L1) and ran as a GUI app in a GPU container (first-run setup, ComfyUI on CUDA, a Google Drive download, `.deb` and AppImage; [s7-native-register.md](handoff/evidence/s7-native-register.md)) but never on a real Linux desktop with a native NVIDIA driver, the Windows installers have not been executed, the provider-token scenarios (CivitAI, gated Hugging Face, Google Drive quota) are open, Authenticode signing and updater key custody are unresolved, and further Windows native scenarios are open. See [Release gates](#release-gates).
 
 ## How to read this ledger
 
@@ -64,8 +64,8 @@ Gate IDs refer to [Release gates](#release-gates).
 | ID | Pri | Clause / platform / profile | Automated evidence | Native evidence | Status | Remaining gap | Gate | Owner / next action |
 |---|---|---|---|---|---|---|---|---|
 | FR-COMFY-1 | P0 | Start/stop/restart, readiness, port conflict | `ready_owns_listener_releases_gate_and_stop_is_idempotent`, `detects_conflicts_without_wrapping`; port-conflict Vitest | N5, N13, N20, N21, N28 (`/system_stats` CUDA on cuda:0) | PARTIAL | Port conflict natively; Linux | G01, G05 | Engineering |
-| FR-COMFY-2 | P0 | Logs, rotation, xterm | `fragmented_unicode_secrets_and_carriage_returns`, `ring_is_bounded_and_oversized_records_do_not_leak` | N5 (no `pwd` traceback), S5-NATIVE-WIN-N1-003 (xterm frame fits in WebView2) | PARTIAL | Linux WebKitGTK | G01 | Engineering |
-| FR-COMFY-3 | P0 | Embedded window without IPC; system browser | `only_the_current_comfyui_origin_is_embedded`, ACL `comfyui_window_with_local_origin_is_denied` | S5-NATIVE-WIN-N1-003 (embedded window loads the frontend) | PARTIAL | Native invoke denial is policy-tested only; WebKitGTK suitability | G01 | Engineering |
+| FR-COMFY-2 | P0 | Logs, rotation, xterm | `fragmented_unicode_secrets_and_carriage_returns`, `ring_is_bounded_and_oversized_records_do_not_leak` | N5 (no `pwd` traceback), S5-NATIVE-WIN-N1-003 (xterm frame fits in WebView2), S7-NATIVE-LINUX-L7 (xterm log renders in WebKitGTK under Xvfb) | PARTIAL | Linux desktop | G01 | Engineering |
+| FR-COMFY-3 | P0 | Embedded window without IPC; system browser | `only_the_current_comfyui_origin_is_embedded`, ACL `comfyui_window_with_local_origin_is_denied` | S5-NATIVE-WIN-N1-003 (embedded window loads the frontend), S7-NATIVE-LINUX-L7 (same in WebKitGTK, container) | PARTIAL | Native invoke denial is policy-tested only; WebKitGTK canvas performance on a desktop | G01 | Engineering |
 | FR-COMFY-4 | P0 | Close policy, whole-tree termination | `shared_runner_bridge_preserves_raw_output_and_owns_child_and_grandchild`, `idle_runtime_exits_and_active_runtime_follows_the_setting` | S5-NATIVE-WIN-N1-003 (Stop frees the port, no python left), N5, N7 | PARTIAL | Headless keep-running natively; Linux process group | G01, G05 | Engineering |
 | FR-COMFY-5 | P1 | Launch options | `argv_is_controlled_and_keeps_tokens`, `restart_acquires_once_and_saves_options_apply_only_on_next_start` | Not recorded | PARTIAL | Native; Linux | G01, G05 | Engineering |
 | FR-COMFY-6 | P0 | Update: tag, latest commit, fast-forward; branch tracking; dirty/diverged refusal | `dirty_or_diverged_updates_change_neither_source_nor_packages`, `latest_commit_update_records_the_actual_reference`, `checkout_placement_attaches_only_when_nothing_local_is_lost`, `checkout_placement_derives_release_lines` | N12, N14 (finding, fixed G2c), N18, N21, N22 | PARTIAL | Dirty/diverged refusal natively; Linux | G01, G05 | Engineering |
@@ -81,7 +81,7 @@ Gate IDs refer to [Release gates](#release-gates).
 | FR-DL-3 | P0 | Hugging Face URLs, repo browser, gated errors, integrity | `never_uses_redirect_length_or_xet_hash_as_sha`; source tests | N24 (`/blob/` URL, checksum published, verified) | PARTIAL | Gated/private/missing errors, repo multi-select natively | G03, G05 | Owner: gated-repo token |
 | FR-DL-3a | P0 | `hf` CLI engine | `hf_proxy_configuration_changes_only_child_environment`; restart-from-0 Vitest | N23 (live engine test without profile variables), N24 | PARTIAL | Pause/restart-from-0 and token-in-child natively | G03, G05 | Engineering |
 | FR-DL-3b | P0 | Native HF engine and fallback | `resumes_from_actual_length_with_strong_if_range_and_restarts_on_200`, `supervisor_limits_admissions_and_only_falls_back_on_spawn_failure` | None | PARTIAL | Missing-CLI fallback natively (S06f) | G05 | Engineering |
-| FR-DL-4 | P0 | Google Drive | `confirmation_is_bounded_and_allowlisted` | None | OPEN | Live confirmation page and quota (S07) | G03 | Owner: fixture |
+| FR-DL-4 | P0 | Google Drive (gdown 6.4.2 engine; native fallback) | `drive_urls_follow_gdown_fuzzy_forms`, `gdown_command_isolates_python_and_home`, `gdown_command_requires_the_provisioned_tool`, `driver_lines_parse_and_errors_map`, `driver_never_persists_cookies`, `relay_drive_scope_allows_only_google_hosts`, `moved_gdown_marker_cannot_skip_tool_recreation`, `repair_installs_missing_download_tools`; `confirmation_is_bounded_and_allowlisted` (native fallback); ignored `real_gdown_resolves_and_downloads_through_the_relay` executed (pass) | S7-NATIVE-WIN-W2…W8, S7-NATIVE-LINUX-L5 | PARTIAL | Over-quota page (S07b) | G03 | Owner: fixture |
 | FR-DL-5 | P0 | Direct HTTPS, `http://` confirmation | `http_confirmation_happens_before_contact_and_direct_auth_is_never_forwarded`, `disposition_handles_quotes_and_encodings` | None | PARTIAL | Native | G05 | Engineering |
 | FR-DL-6 | P0 | Persistent queue, states | `enqueue_is_atomic_for_identity_and_destination_and_rejects_stale_worker`, `startup_preserves_paused_native_partial_and_removes_only_owned_orphans` | N24 (job COMPLETED VERIFIED) | PARTIAL | Restart/crash natively (S14) | G05 | Engineering |
 | FR-DL-7 | P0 | Progress at ≤ 4 Hz | `subscriptions_snapshot_atomically_drop_stale_progress_and_signal_overflow` | N24 | PARTIAL | Linux | G01 | Engineering |
@@ -150,7 +150,7 @@ Gate IDs refer to [Release gates](#release-gates).
 | NFR-PLAT-WIN-2 | — | Unicode and spaces in paths | Library and writer tests | N15, N16 (`models ทดสอบ`), S5-NATIVE-WIN-N6-001 | PARTIAL | Install root with Unicode | G05 | Engineering |
 | NFR-PLAT-WIN-3 | — | `LongPathsEnabled` warning | Hardware report tests | Not recorded | PARTIAL | Native with long paths off | G05 | Engineering |
 | NFR-PLAT-WIN-4 | — | Locked files | See FR-MODEL-2/3 | S5-NATIVE-WIN-N9-001 | PARTIAL | Loaded-model lock | G05 | Engineering |
-| NFR-PLAT-LINUX-1 | — | AppImage and .deb, `libwebkit2gtk-4.1` | Configuration only | None | OPEN | Build and run on Linux | G01 | Owner: Linux machine |
+| NFR-PLAT-LINUX-1 | — | AppImage and .deb, `libwebkit2gtk-4.1` | Configuration only | S7-NATIVE-LINUX-L2 (both built), L3 (`.deb` installs with `libwebkit2gtk-4.1-0, libgtk-3-0` and runs), L8 (AppImage launches), all in a Debian 13 container | PARTIAL | Run on a Linux desktop | G01 | Owner: Linux machine |
 | NFR-PLAT-LINUX-2 | — | System git, Secret Service fallback | Unit tests (Windows-compiled) | None | OPEN | Linux | G01 | Owner: Linux machine |
 | NFR-PLAT-LINUX-3 | — | freedesktop trash | Compiled and unit-tested in a Linux container (S6-NATIVE-LINUX-N31) | None | OPEN | Linux | G01 | Owner: Linux machine |
 | NFR-PLAT-LINUX-4 | — | WebKitGTK canvas performance | None | None | OPEN | Linux | G01 | Owner: Linux machine |
@@ -174,7 +174,7 @@ Gate IDs refer to [Release gates](#release-gates).
 
 | Scenario | Subclause | Windows result | Linux result | Evidence IDs | Remaining blocker / owner |
 |---|---|---|---|---|---|
-| S01 Clean setup | a. Fresh root, recommended profile, ComfyUI starts, `/system_stats` reports CUDA, final verify imports `torch`, `triton`, `comfy` | PARTIAL: passes on fresh roots of the development machine (debug/custom-protocol build) | OPEN | S6-NATIVE-WIN-N8 … N13, N28 | Clean machine with the installed release bundle (G02); Linux (G01) |
+| S01 Clean setup | a. Fresh root, recommended profile, ComfyUI starts, `/system_stats` reports CUDA, final verify imports `torch`, `triton`, `comfy` | PARTIAL: passes on fresh roots of the development machine (debug/custom-protocol build) | PARTIAL: release `.deb` in a Debian 13 container with the GPU passed through by Docker Desktop (WSL2), not a Linux desktop | S6-NATIVE-WIN-N8 … N13, N28; S7-NATIVE-WIN-W1; S7-NATIVE-LINUX-L4, L6 | Clean machine with the installed release bundle (G02); Linux desktop with a native driver (G01) |
 | S01 | b. The final wizard defaults (Manager ticked, curated unticked, recommended profile first, Latest release) | PARTIAL: defaults shown (N25, N26); a full run with exactly these defaults (Manager only) was not run | OPEN | S6-NATIVE-WIN-N25, N26 | Engineering: one default run (G05) |
 | S02 Custom venv | a. Empty folder → app-owned venv | OPEN (automated only) | OPEN | — | G05, G01 |
 | S02 | b. Existing venv → adopted, never deleted | OPEN (automated only) | OPEN | — | G05, G01 |
@@ -193,7 +193,7 @@ Gate IDs refer to [Release gates](#release-gates).
 | S06 | d. Pause shows "will restart from 0%", resume completes | OPEN (Vitest label only) | OPEN | — | G05 |
 | S06 | e. No token in logs, DB, diagnostics | OPEN | OPEN | — | G03 |
 | S06 | f. `hf` deleted → native fallback, resume after network cut | OPEN | OPEN | — | G05 |
-| S07 Google Drive | a. > 100 MB public file via confirmation page | OPEN | OPEN | — | Fixture (G03) |
+| S07 Google Drive | a. > 100 MB public file via confirmation page | PASS (gdown engine; 498,881,336 B, pause restarts from 0) | PASS (container) | S7-NATIVE-WIN-W2…W5, S7-NATIVE-LINUX-L5 | — |
 | S07 | b. Over-quota error | OPEN | OPEN | — | G03 |
 | S08 Rename/delete while running | a. Locked-file error, Stop ComfyUI and retry succeeds | PARTIAL: controlled sharing lock refused; a lock held by a loaded model not exercised | OPEN | S5-NATIVE-WIN-N9-001 | G05 |
 | S08 | b. Deleted files in the Recycle Bin | PASS | OPEN | S5-NATIVE-WIN-N9-001 | G01 |
@@ -318,6 +318,7 @@ The final run reports 12 ignored tests, and the code has 12 `#[ignore]` definiti
 | `shared_bridge_grandchild`, `shared_bridge_child` | `crates/infrastructure/src/comfy_runtime/process/tests.rs` | Helper subprocess fixtures | Executed indirectly by the bridge ownership test |
 | `working_directory_child`, `dll_lookup_child` | `crates/infrastructure/src/shared/process/tests.rs` | Helper subprocess fixtures | Executed indirectly |
 | `real_hf_download_succeeds_without_user_profile_variables` | `crates/infrastructure/src/models/acquisition/hf_engine.rs` | Live acceptance | **Executed, pass** (N23) |
+| `real_gdown_resolves_and_downloads_through_the_relay` | `crates/infrastructure/src/models/acquisition/gdown_engine.rs` | Live acceptance (added in session 7) | Not executed (needs `VJ_REAL_GDOWN_PYTHON`) |
 | `real_hf_xet_obeys_relay_with_direct_egress_denied` | `crates/infrastructure/src/models/acquisition/hf_proxy/tests.rs` | Live acceptance | Not executed (needs external egress control) |
 | `a_real_interpreter_is_probed` | `crates/infrastructure/src/environment/python/tests.rs` | Live acceptance | Not executed (needs `VJ_TEST_PYTHON`) |
 | `real_tools_are_provisioned` | `crates/infrastructure/src/environment/tools/tests.rs` | Live acceptance | Not executed; the tools step ran natively in N11, N19, N20, N28 |
@@ -325,6 +326,20 @@ The final run reports 12 ignored tests, and the code has 12 `#[ignore]` definiti
 | `real_first_run_setup` | `crates/infrastructure/tests/real_setup.rs` | Live acceptance (bypasses app startup) | Not executed; superseded by app-driven runs N11, N28 |
 
 `node_preview_never_imports_python_modules_from_node_directory` is not ignored but skips without uv; it ran with pinned uv 0.13.1 (N27).
+
+### Session 7 native evidence
+
+Recorded in [s7-native-register.md](handoff/evidence/s7-native-register.md) (Windows W1–W10 with the debug/custom-protocol build `s7-01`; Linux L1–L8 in Docker `rust:1.99.0-trixie` with `--gpus all`; Windows packaging 19:34). Source: HEAD `7d7b8f3` + package G7 (Google Drive through gdown 6.4.2): 813 passed / 0 failed / 13 ignored on Windows, 789 / 0 / 11 on Linux.
+
+| Evidence ID | Check | Result |
+|---|---|---|
+| S7-NATIVE-WIN-W1 | First run, recommended profile; tools step provisions `tools/gdown` | PASS |
+| S7-NATIVE-WIN-W2…W5 | Drive share link `/file/d/<id>/view?usp=sharing` resolved by gdown, exact progress total, pause restarts from 0, published 498,881,336 B (SHA-256 `c187c387…`) | PASS |
+| S7-NATIVE-WIN-W6, W7 | Nonexistent id → permission/not-found message; folder link → folder error | PASS |
+| S7-NATIVE-WIN-W8, W9 | Missing `tools/gdown` → Repair reinstalls it (replacement build); ComfyUI starts on cuda:0 | PASS |
+| S7-NATIVE-LINUX-L1 | `linux-check.sh`: build, clippy, 789 passed / 0 failed / 11 ignored | PASS |
+| S7-NATIVE-LINUX-L2, L3 | `linux-bundle.sh`: `.deb` + AppImage built; `.deb` installs and launches (first GUI run on Linux) | PASS |
+| S7-NATIVE-LINUX-L4…L8 | First run `linux-py313-torch2141-cu130`; Drive download; ComfyUI on cuda:0 (torch 2.14.1+cu130); xterm log and embedded window in WebKitGTK; AppImage launch | PASS (container, GPU via WSL2) |
 
 ## Residuals
 
@@ -335,7 +350,7 @@ Source: [s3-residuals.md](handoff/evidence/s3-residuals.md).
 | R01 | Downloads stay stopped after a failed self-update install until restart | Code (no supervisor restart API) | OPEN | Restart the app | Engineering |
 | R02 | Updater inert without build-time key and endpoint; tracing worker stopped after a failed install | `updates.rs`; S6-PKG-WIN-004 | OWNER DECISION | No self-update in current builds | Owner |
 | R03 | HF relay on loopback has no per-download authentication | Advisor H plan §6 | ACCEPTED RESIDUAL | Another local process can tunnel to HF hosts during a transfer | Engineering |
-| R04 | Linux-only code compiled, clippy-clean and unit-tested on Linux x64 in a container (778 passed); never run on a Linux desktop or GPU | S6-NATIVE-LINUX-N31 | PARTIAL | No Linux support claim | Owner: Linux machine (G01) |
+| R04 | Linux-only code compiled, clippy-clean and unit-tested on Linux x64 in a container (789 passed); the app ran as a GUI in a GPU container but never on a Linux desktop | S6-NATIVE-LINUX-N31, S7-NATIVE-LINUX-L1…L8 | PARTIAL | No Linux support claim | Owner: Linux machine (G01) |
 | R05 | Drive-letter remapping outside the Windows boundary; all reparse points refused | Advisor reparse policy | ACCEPTED RESIDUAL | OneDrive placeholders, dedup and WOF entries unsupported in node trees | Engineering |
 | R06 | Child DLL search after consent | Windows admission tests, N27 | PASS before consent (D1); ACCEPTED RESIDUAL after consent and for installed or user-placed nodes ([s6-advisor-n.md](handoff/evidence/s6-advisor-n.md)) | Consented curated setup may install top-level native images with a warning | Engineering |
 | R07 | Early child exit reported as `InputFailed` | H2 report | OPEN (minor) | Message less specific | Engineering |
@@ -365,7 +380,7 @@ Source: [s3-residuals.md](handoff/evidence/s3-residuals.md).
 
 | Gate | Unmet criterion | Required closure evidence | Owner |
 |---|---|---|---|
-| G01 Linux | Release 1 includes Linux x64; the workspace compiles and passes its automated tests in a Debian container (S6-NATIVE-LINUX-N31), but nothing ran on a Linux desktop or GPU | Linux x64 NVIDIA machine: compile the workspace, run the test suite including Linux-only containment, S01 on Linux, AppImage and .deb build and run, Secret Service, trash, WebKitGTK canvas and Thai fonts | Owner provides the machine; engineering runs it |
+| G01 Linux | Release 1 includes Linux x64; the workspace compiles and passes its automated tests in a Debian container (S7-NATIVE-LINUX-L1); the release `.deb`/AppImage ran in a GPU container (first run, ComfyUI on CUDA, Drive download; S7-NATIVE-LINUX-L2…L8), but nothing ran on a Linux desktop | Linux x64 NVIDIA machine: compile the workspace, run the test suite including Linux-only containment, S01 on Linux, AppImage and .deb build and run, Secret Service, trash, WebKitGTK canvas and Thai fonts | Owner provides the machine; engineering runs it |
 | G02 Installers | NSIS and MSI never executed; release exe never launched | On a disposable Windows VM: install both hashed artifacts, WebView2 bootstrapper, first run, uninstall and reinstall with data preserved | Owner provides the VM; engineering runs it |
 | G03 Providers | CivitAI, gated Hugging Face, Google Drive and redaction scenarios need credentials or fixtures | S05, S06a/e, S07, S12, FR-SET-2 with test credentials in a separate credential context | Owner: test tokens |
 | G04 Signing | Unsigned bundles; updater inert | Authenticode certificate, updater key custody and endpoint, a signed update installed end to end (FR-SET-4) | Owner decision |

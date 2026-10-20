@@ -33,7 +33,11 @@ export function guessProvider(url: string): ProviderGuess | null {
   if (['civitai.com', 'civitai.green', 'civitai.red'].includes(host))
     return 'civitai'
   if (host === 'huggingface.co') return 'huggingface'
-  if (host === 'drive.google.com' || host === 'drive.usercontent.google.com')
+  if (
+    host === 'drive.google.com' ||
+    host === 'docs.google.com' ||
+    host === 'drive.usercontent.google.com'
+  )
     return 'google_drive'
   return 'direct'
 }

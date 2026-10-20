@@ -74,6 +74,7 @@ impl From<&SourceRef> for ProviderDto {
 pub enum EngineDto {
     Native,
     HfCli,
+    Gdown,
 }
 
 impl From<DownloadEngine> for EngineDto {
@@ -81,6 +82,7 @@ impl From<DownloadEngine> for EngineDto {
         match value {
             DownloadEngine::Native => Self::Native,
             DownloadEngine::HfCli => Self::HfCli,
+            DownloadEngine::Gdown => Self::Gdown,
         }
     }
 }
@@ -266,7 +268,7 @@ pub fn describe(code: DownloadErrorCode) -> (&'static str, &'static str) {
         ),
         E::DrivePermission => (
             "drive_permission",
-            "Google Drive denied access. The file must be shared publicly.",
+            "Google Drive denied access or the file does not exist. The file must be shared with \"Anyone with the link\".",
         ),
         E::DriveFolderUnsupported => (
             "drive_folder_unsupported",
@@ -301,12 +303,12 @@ pub fn describe(code: DownloadErrorCode) -> (&'static str, &'static str) {
             "invalid_range",
             "The server answered a resume request incorrectly.",
         ),
-        E::ToolLaunch => ("tool_launch", "The Hugging Face tool could not be started."),
+        E::ToolLaunch => ("tool_launch", "The download tool could not be started."),
         E::BandwidthProxyUnavailable => (
             "bandwidth_proxy_unavailable",
-            "The Hugging Face bandwidth relay is unavailable. Check proxy settings and retry.",
+            "The bandwidth relay is unavailable. Check proxy settings and retry.",
         ),
-        E::ToolRuntime => ("tool_runtime", "The Hugging Face tool reported an error."),
+        E::ToolRuntime => ("tool_runtime", "The download tool reported an error."),
         E::ProcessCleanupFailed => (
             "process_cleanup_failed",
             "The download process could not be stopped cleanly.",
@@ -363,6 +365,8 @@ pub struct DownloadJobDto {
     pub effective_engine: EngineDto,
     /// True when progress is derived from partial files (Hugging Face CLI).
     pub estimated: bool,
+    /// True when pausing or restarting loses the partial file (Hugging Face CLI, gdown).
+    pub restarts_from_zero: bool,
     pub generation: f64,
     pub retry_count: u32,
     pub retry_at: Option<f64>,
@@ -423,6 +427,7 @@ impl From<&DownloadJob> for DownloadJobDto {
             requested_engine: job.requested_engine.into(),
             effective_engine: job.effective_engine.into(),
             estimated: job.effective_engine == DownloadEngine::HfCli,
+            restarts_from_zero: job.restart_from_zero(),
             generation: job.generation as f64,
             retry_count: u32::from(job.retry_count),
             retry_at: job.retry_at.map(|t| t as f64),

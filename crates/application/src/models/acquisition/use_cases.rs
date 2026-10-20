@@ -90,10 +90,10 @@ impl EnqueueDownloads {
                     }
                 }
             }
-            let engine = if matches!(file.source, SourceRef::HuggingFace { .. }) {
-                item.engine
-            } else {
-                DownloadEngine::Native
+            let engine = match &file.source {
+                SourceRef::HuggingFace { .. } => item.engine,
+                SourceRef::GoogleDrive { .. } => DownloadEngine::Gdown,
+                _ => DownloadEngine::Native,
             };
             let job = DownloadJob {
                 id: item.id.clone(),

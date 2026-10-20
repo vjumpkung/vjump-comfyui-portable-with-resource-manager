@@ -230,7 +230,7 @@ impl Downloader for HfDownloader {
         })
     }
 }
-fn runtime_failure_summary(tail: &[String]) -> String {
+pub(super) fn runtime_failure_summary(tail: &[String]) -> String {
     let mut summary = tail[tail.len().saturating_sub(20)..]
         .iter()
         .map(|line| logging::redact(line).chars().take(500).collect::<String>())

@@ -465,6 +465,9 @@ impl Execution {
         if active.state() != EnvState::Verified {
             return Ok(false);
         }
+        if !deps.tools.download_tools_ready(&root) {
+            return Ok(false);
+        }
         let ctx = self.ctx(StepId::Preflight);
         match deps
             .verifier
@@ -555,6 +558,12 @@ impl Execution {
             deps.tools.recreate_hf_tool(&root, &ctx).await?;
         } else {
             deps.tools.ensure_hf_tool(&root, &ctx).await?;
+        }
+        self.check_cancel()?;
+        if self.run.request.mode == SetupMode::Rebuild {
+            deps.tools.recreate_gdown_tool(&root, &ctx).await?;
+        } else {
+            deps.tools.ensure_gdown_tool(&root, &ctx).await?;
         }
         Ok(StepOutcome::Done)
     }

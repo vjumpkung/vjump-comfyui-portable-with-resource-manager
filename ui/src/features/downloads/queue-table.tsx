@@ -136,7 +136,7 @@ function Row({
             ) : null}
           </div>
         ) : null}
-        {job.state === 'paused' && job.estimated && !job.finalizing ? (
+        {job.state === 'paused' && job.restartsFromZero && !job.finalizing ? (
           <p className="text-xs text-muted-foreground">
             Resuming restarts this download from 0%.
           </p>
@@ -150,7 +150,7 @@ function Row({
               size="icon-sm"
               aria-label={`Pause ${label}`}
               title={
-                job.estimated
+                job.restartsFromZero
                   ? 'Pause (this download will restart from 0%)'
                   : 'Pause'
               }
@@ -176,7 +176,7 @@ function Row({
                 size="icon-sm"
                 aria-label={`Resume ${label}`}
                 title={
-                  job.estimated
+                  job.restartsFromZero
                     ? 'Resume (restarts from 0%)'
                     : 'Resume'
                 }

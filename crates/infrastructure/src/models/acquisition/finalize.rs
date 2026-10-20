@@ -56,8 +56,23 @@ impl StagingArea {
         job: &DownloadJob,
         create: bool,
     ) -> io::Result<Arc<PinnedDirectory>> {
+        self.job_directory("hf", job, create)
+    }
+    pub fn gdrive_directory(
+        &self,
+        job: &DownloadJob,
+        create: bool,
+    ) -> io::Result<Arc<PinnedDirectory>> {
+        self.job_directory("gdrive", job, create)
+    }
+    fn job_directory(
+        &self,
+        group: &str,
+        job: &DownloadJob,
+        create: bool,
+    ) -> io::Result<Arc<PinnedDirectory>> {
         self.root
-            .child(&SafeFileName::new("hf").unwrap(), create)?
+            .child(&SafeFileName::new(group).unwrap(), create)?
             .child(
                 &SafeFileName::new(job.id.as_str()).map_err(|_| io::ErrorKind::InvalidInput)?,
                 create,
@@ -209,15 +224,20 @@ impl DownloadFiles for LocalDownloadFiles {
                     Err(e) => return Err(path_error(e)),
                 }
             }
-            match staging.hf_directory(&job, false) {
-                Ok(dir) => {
-                    StagingArea::remove_tree(&dir).map_err(path_error)?;
-                    let path = dir.path.clone();
-                    drop(dir);
-                    fs::remove_dir(path).map_err(path_error)?;
+            for directory in [
+                staging.hf_directory(&job, false),
+                staging.gdrive_directory(&job, false),
+            ] {
+                match directory {
+                    Ok(dir) => {
+                        StagingArea::remove_tree(&dir).map_err(path_error)?;
+                        let path = dir.path.clone();
+                        drop(dir);
+                        fs::remove_dir(path).map_err(path_error)?;
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(path_error(e)),
                 }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(path_error(e)),
             }
             Ok(())
         })
@@ -245,29 +265,35 @@ impl DownloadFiles for LocalDownloadFiles {
                     }
                 }
             }
-            let hf = match staging.root.child(&SafeFileName::new("hf").unwrap(), false) {
-                Ok(d) => d,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-                Err(e) => return Err(path_error(e)),
-            };
-            for entry in fs::read_dir(&hf.path).map_err(disk)? {
-                let entry = entry.map_err(disk)?;
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if keep
-                    .iter()
-                    .any(|j| j.id.as_str() == name && j.publication.is_some())
+            for group in ["hf", "gdrive"] {
+                let group = match staging
+                    .root
+                    .child(&SafeFileName::new(group).unwrap(), false)
                 {
-                    continue;
+                    Ok(d) => d,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(path_error(e)),
+                };
+                for entry in fs::read_dir(&group.path).map_err(disk)? {
+                    let entry = entry.map_err(disk)?;
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if keep
+                        .iter()
+                        .any(|j| j.id.as_str() == name && j.publication.is_some())
+                    {
+                        continue;
+                    }
+                    if domain::shared::model_values::JobId::new(name.clone()).is_err() {
+                        continue;
+                    }
+                    let name =
+                        SafeFileName::new(name).map_err(|_| DownloadErrorCode::Containment)?;
+                    let dir = group.child(&name, false).map_err(path_error)?;
+                    StagingArea::remove_tree(&dir).map_err(path_error)?;
+                    let path = dir.path.clone();
+                    drop(dir);
+                    fs::remove_dir(path).map_err(path_error)?;
                 }
-                if domain::shared::model_values::JobId::new(name.clone()).is_err() {
-                    continue;
-                }
-                let name = SafeFileName::new(name).map_err(|_| DownloadErrorCode::Containment)?;
-                let dir = hf.child(&name, false).map_err(path_error)?;
-                StagingArea::remove_tree(&dir).map_err(path_error)?;
-                let path = dir.path.clone();
-                drop(dir);
-                fs::remove_dir(path).map_err(path_error)?;
             }
             Ok(())
         })

@@ -25,6 +25,7 @@ pub struct DownloadSupervisor {
     pub files: Arc<dyn DownloadFiles>,
     pub native: Arc<dyn Downloader>,
     pub hf: Arc<dyn Downloader>,
+    pub gdown: Arc<dyn Downloader>,
     pub hub: Arc<DownloadHub>,
     concurrency: AtomicUsize,
     shutdown: AtomicBool,
@@ -40,6 +41,7 @@ impl DownloadSupervisor {
         files: Arc<dyn DownloadFiles>,
         native: Arc<dyn Downloader>,
         hf: Arc<dyn Downloader>,
+        gdown: Arc<dyn Downloader>,
         hub: Arc<DownloadHub>,
         concurrency: usize,
     ) -> Arc<Self> {
@@ -48,6 +50,7 @@ impl DownloadSupervisor {
             files,
             native,
             hf,
+            gdown,
             hub,
             concurrency: AtomicUsize::new(concurrency.clamp(1, 32)),
             shutdown: AtomicBool::new(false),
@@ -154,7 +157,7 @@ impl DownloadSupervisor {
             let result = self.finalizer().execute(&mut job).await;
             return self.finish_result(job, result, intent).await;
         }
-        if job.effective_engine == DownloadEngine::HfCli {
+        if job.restart_from_zero() {
             self.files.cleanup(&job, false).await?;
             job.bytes_done = 0;
             job.validator = None;
@@ -165,10 +168,10 @@ impl DownloadSupervisor {
         self.hub.state(&job);
         let mut refreshed = false;
         let transfer = loop {
-            let engine = if job.effective_engine == DownloadEngine::HfCli {
-                &self.hf
-            } else {
-                &self.native
+            let engine = match job.effective_engine {
+                DownloadEngine::HfCli => &self.hf,
+                DownloadEngine::Gdown => &self.gdown,
+                DownloadEngine::Native => &self.native,
             };
             let result = engine
                 .transfer(&job, self.hub.clone(), cancel.clone())
@@ -176,7 +179,10 @@ impl DownloadSupervisor {
             match result {
                 Err(error)
                     if error.0 == DownloadErrorCode::ToolLaunch
-                        && job.effective_engine == DownloadEngine::HfCli =>
+                        && matches!(
+                            job.effective_engine,
+                            DownloadEngine::HfCli | DownloadEngine::Gdown
+                        ) =>
                 {
                     self.files.cleanup(&job, false).await?;
                     job.effective_engine = DownloadEngine::Native;
@@ -250,14 +256,14 @@ impl DownloadSupervisor {
             } else {
                 DownloadState::Cancelled
             };
-            if job.effective_engine == DownloadEngine::HfCli {
+            if job.restart_from_zero() {
                 job.bytes_done = 0;
                 job.validator = None;
             }
         } else if let RetryAction::RetryAfter(seconds) =
             retry_action(error.0, job.retry_count, true)
         {
-            if job.effective_engine == DownloadEngine::HfCli {
+            if job.restart_from_zero() {
                 self.files.cleanup(&job, false).await?;
                 job.bytes_done = 0;
             }
@@ -342,7 +348,7 @@ impl DownloadControl for DownloadSupervisor {
         };
         job.stop_intent = None;
         job.updated_at = now();
-        if job.effective_engine == DownloadEngine::HfCli {
+        if job.restart_from_zero() {
             job.bytes_done = 0;
             job.validator = None;
         }

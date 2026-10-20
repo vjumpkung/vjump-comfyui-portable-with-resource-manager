@@ -333,6 +333,26 @@ pub trait ToolProvisioner: Send + Sync {
     ) -> Result<ToolInfo, ProvisionError> {
         self.ensure_hf_tool(root, ctx).await
     }
+
+    /// Prepares the isolated, hash-locked `gdown` tool venv used for Google Drive downloads.
+    async fn ensure_gdown_tool(
+        &self,
+        root: &Path,
+        ctx: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError>;
+
+    async fn recreate_gdown_tool(
+        &self,
+        root: &Path,
+        ctx: &StepContext,
+    ) -> Result<ToolInfo, ProvisionError> {
+        self.ensure_gdown_tool(root, ctx).await
+    }
+
+    /// False when a download tool venv is missing, so Repair re-runs the Tools step.
+    fn download_tools_ready(&self, _root: &Path) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

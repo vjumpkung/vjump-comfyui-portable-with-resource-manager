@@ -209,6 +209,7 @@ fn rebuild_uses_recorded_profile_revision_and_components() {
         1
     );
     assert_eq!(world.count("recreate_hf_tool"), 1);
+    assert_eq!(world.count("recreate_gdown_tool"), 1);
     assert_no_checkout_or_node_publication(&world);
 }
 

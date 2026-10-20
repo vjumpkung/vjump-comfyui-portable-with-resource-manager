@@ -19,6 +19,7 @@ export function job(overrides: Partial<DownloadJobDto> = {}): DownloadJobDto {
     requestedEngine: 'native',
     effectiveEngine: 'native',
     estimated: false,
+    restartsFromZero: false,
     generation: 1,
     retryCount: 0,
     retryAt: null,

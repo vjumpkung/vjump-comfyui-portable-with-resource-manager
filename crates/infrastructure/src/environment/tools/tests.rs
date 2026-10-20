@@ -378,7 +378,51 @@ async fn matching_hf_marker_still_requires_successful_tool_launch() {
     assert_ne!(marker, hf_marker_text(&layout, &python).unwrap());
 }
 
-/// Real network: provisions uv, MinGit/system git and the hf tool into a temporary root.
+#[tokio::test]
+async fn moved_gdown_marker_cannot_skip_tool_recreation() {
+    let directory = tempfile::tempdir().unwrap();
+    let old = Layout::new(directory.path().join("original root"));
+    let moved = Layout::new(directory.path().join("moved root"));
+    let old_python = old.managed_python_dir().join("cpython/python.exe");
+    let moved_python = moved.managed_python_dir().join("cpython/python.exe");
+    for python in [&old_python, &moved_python] {
+        fs::create_dir_all(python.parent().unwrap()).unwrap();
+        fs::write(python, b"same copied base interpreter").unwrap();
+    }
+    fs::create_dir_all(moved.gdown_python().parent().unwrap()).unwrap();
+    fs::write(moved.gdown_python(), b"copied gdown interpreter").unwrap();
+    let old_marker = gdown_marker_text(&old, &old_python).unwrap();
+    fs::write(moved.gdown_dir().join(".vj-lock"), &old_marker).unwrap();
+
+    let moved_marker = gdown_marker_text(&moved, &moved_python).unwrap();
+    assert_ne!(old_marker, moved_marker);
+    assert!(!reusable_gdown_tool(&moved, &moved_marker, &ctx()).await);
+    assert!(moved.gdown_python().is_file());
+    assert_eq!(
+        fs::read_to_string(moved.gdown_dir().join(".vj-lock")).unwrap(),
+        old_marker
+    );
+}
+
+#[tokio::test]
+async fn matching_gdown_marker_still_requires_successful_tool_launch() {
+    let directory = tempfile::tempdir().unwrap();
+    let layout = Layout::new(directory.path());
+    let python = layout.managed_python_dir().join("cpython/python.exe");
+    fs::create_dir_all(python.parent().unwrap()).unwrap();
+    fs::write(&python, b"base interpreter").unwrap();
+    fs::create_dir_all(layout.gdown_python().parent().unwrap()).unwrap();
+    fs::write(layout.gdown_python(), b"broken gdown interpreter").unwrap();
+    let marker = gdown_marker_text(&layout, &python).unwrap();
+    fs::write(layout.gdown_dir().join(".vj-lock"), &marker).unwrap();
+    assert!(!reusable_gdown_tool(&layout, &marker, &ctx()).await);
+
+    fs::write(&python, b"different base interpreter").unwrap();
+    assert_ne!(marker, gdown_marker_text(&layout, &python).unwrap());
+}
+
+/// Real network: provisions uv, MinGit/system git and the hf and gdown tools into a temporary
+/// root.
 #[tokio::test]
 #[ignore = "downloads uv, MinGit and Python from the network"]
 async fn real_tools_are_provisioned() {
@@ -393,4 +437,9 @@ async fn real_tools_are_provisioned() {
     assert!(Layout::new(&root).hf_exe().is_file());
     // Idempotent.
     tools.ensure_hf_tool(&root, &ctx()).await.unwrap();
+    let gdown = tools.ensure_gdown_tool(&root, &ctx()).await.unwrap();
+    assert_eq!(gdown.version, "6.4.2");
+    assert!(Layout::new(&root).gdown_python().is_file());
+    tools.ensure_gdown_tool(&root, &ctx()).await.unwrap();
+    assert!(tools.download_tools_ready(&root));
 }

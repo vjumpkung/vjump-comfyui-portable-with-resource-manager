@@ -46,6 +46,7 @@ it('guesses the provider for the chip', () => {
   expect(guessProvider('https://drive.google.com/file/d/x/view')).toBe(
     'google_drive',
   )
+  expect(guessProvider('https://docs.google.com/uc?id=x')).toBe('google_drive')
   expect(guessProvider('https://example.com/a.bin')).toBe('direct')
   expect(guessProvider('not a url')).toBeNull()
 })

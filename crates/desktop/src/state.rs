@@ -673,6 +673,10 @@ impl Services {
                     name: "hf".to_owned(),
                     version: pins::HF_VERSION.to_owned(),
                 },
+                PinnedTool {
+                    name: "gdown".to_owned(),
+                    version: pins::GDOWN_VERSION.to_owned(),
+                },
             ],
         );
         let install_update = InstallAppUpdate::new(&deps);
