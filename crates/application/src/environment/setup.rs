@@ -69,6 +69,9 @@ impl StartSetup {
 
     async fn register(&self, mut request: SetupRequest) -> Result<RunId, EnvironmentAppError> {
         let deps = &self.deps;
+        if request.third_party_consent && request.mode != SetupMode::FirstRun {
+            return Err(EnvironmentAppError::ThirdPartyConsentInvalid);
+        }
         if !same_location(&request.install_root, &deps.root.current().root) {
             return Err(EnvironmentAppError::RebuildRequired);
         }
@@ -144,6 +147,7 @@ impl StartSetup {
             request.curated_nodes.clear();
             request.allow_source_builds = false;
             request.confirm_adopted_changes = false;
+            request.third_party_consent = false;
             rebuild_sources = Some(ResolvedSources {
                 comfyui: Some(super::ResolvedGit {
                     url: String::new(),
@@ -290,8 +294,8 @@ impl StartSetup {
     }
 
     /// Validates the curated selection and lists it in catalog order; an unavailable entry cannot
-    /// be selected. A selection is not consent: the nodes are reviewed and confirmed when the run
-    /// reaches them.
+    /// be selected. A selection alone is not consent: unless the request carries the review-stage
+    /// consent, the nodes are reviewed and confirmed when the run reaches them.
     fn curated_progress(
         &self,
         request: &SetupRequest,

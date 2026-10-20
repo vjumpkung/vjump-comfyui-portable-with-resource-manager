@@ -34,6 +34,8 @@ pub enum EnvironmentAppError {
     AcceleratorSelectionInvalid,
     #[error("curated node ids must be unique, belong to the catalog and be used for a first run")]
     CuratedSelectionInvalid,
+    #[error("third-party consent can only be given for a first-run setup")]
+    ThirdPartyConsentInvalid,
     #[error("the recorded setup profile revision is unavailable")]
     ProfileRevisionUnavailable,
     #[error("the selected profile is not available on this machine")]

@@ -4,7 +4,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use application::environment::{RunId, SetupEvent, SetupProgressSink};
-use domain::environment::EnvId;
+use domain::environment::{EnvId, SetupMode};
 use infrastructure::environment::sinks::run_sink;
 use tauri::{State, ipc::Channel};
 
@@ -161,6 +161,12 @@ pub async fn setup_select_root(
     })
 }
 
+/// A rebuilt environment, or the first clone of ComfyUI, is only picked up by a restart: the
+/// maintenance lease stays held until the shell restarts the app.
+fn restarts_after_success(mode: SetupMode) -> bool {
+    matches!(mode, SetupMode::Rebuild | SetupMode::FirstRun)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn setup_run(
@@ -179,7 +185,7 @@ pub async fn setup_run(
         .get(&run_id)
         .await
         .map_err(application::environment::EnvironmentAppError::from)?
-        .is_some_and(|run| run.request.mode == domain::environment::SetupMode::Rebuild);
+        .is_some_and(|run| restarts_after_success(run.request.mode));
     let shell = if restart {
         Some(state.shell()?.clone())
     } else {
@@ -336,4 +342,24 @@ pub async fn pick_file(
         .pick_file(title, extensions)
         .await
         .map(|path| path.display().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_run_and_rebuild_restart_after_success() {
+        for mode in [SetupMode::FirstRun, SetupMode::Rebuild] {
+            assert!(restarts_after_success(mode), "{mode:?}");
+        }
+        for mode in [
+            SetupMode::Repair,
+            SetupMode::ChangeTorch,
+            SetupMode::ChangePython,
+            SetupMode::SwitchVenv,
+        ] {
+            assert!(!restarts_after_success(mode), "{mode:?}");
+        }
+    }
 }

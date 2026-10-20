@@ -118,7 +118,10 @@ pub enum Tool {
     Plain,
 }
 
-const USER_VARIABLES_WINDOWS: [&str; 7] = [
+/// `USERNAME` is required: Python 3.12's `getpass.getuser()` (used by torch) otherwise falls
+/// back to the Unix-only `pwd` module and fails. The user name is already part of `USERPROFILE`.
+const USER_VARIABLES_WINDOWS: [&str; 8] = [
+    "USERNAME",
     "USERPROFILE",
     "APPDATA",
     "LOCALAPPDATA",
@@ -344,6 +347,20 @@ mod tests {
         // Proxy configuration reaches only the tools that fetch from the network.
         let python = names(&tool_environment(&layout, Tool::Python));
         assert!(!python.contains(&"HTTPS_PROXY".to_owned()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn python_children_get_the_windows_user_name() {
+        let Some(user_name) = std::env::var_os("USERNAME") else {
+            return;
+        };
+        let layout = Layout::new("/install");
+        let env = tool_environment(&layout, Tool::Python);
+        assert_eq!(
+            value(&env, "USERNAME"),
+            Some(user_name.to_string_lossy().into_owned())
+        );
     }
 
     #[test]

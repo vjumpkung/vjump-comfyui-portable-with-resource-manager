@@ -124,6 +124,31 @@ fn copied_run_cannot_publish_a_manifest_into_the_old_root() {
 }
 
 #[test]
+fn rebuild_never_inherits_third_party_consent() {
+    let world = World::new();
+    let original = register(
+        &world,
+        SetupRequest {
+            install_manager: true,
+            third_party_consent: true,
+            ..request()
+        },
+    )
+    .unwrap();
+    assert_eq!(execute(&world, &original).0, RunOutcome::Succeeded);
+    let recorded = world.run(&original);
+    assert!(recorded.request.third_party_consent);
+    world.installed.lock().unwrap().clear();
+
+    // The recorded request seeds the rebuild, but its consent does not carry over.
+    let rebuilt = register(&world, rebuild_request()).unwrap();
+    let run = world.run(&rebuilt);
+    assert!(run.request.install_manager);
+    assert!(!run.request.third_party_consent);
+    assert!(world.run(&original).request.third_party_consent);
+}
+
+#[test]
 fn rebuild_uses_recorded_profile_revision_and_components() {
     let (world, original) = provisioned_installation();
     let recorded = world.run(&original);

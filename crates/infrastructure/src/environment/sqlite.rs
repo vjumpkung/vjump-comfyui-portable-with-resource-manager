@@ -482,6 +482,8 @@ struct RequestDoc {
     clean_cache: bool,
     confirm_adopted_changes: bool,
     allow_source_builds: bool,
+    #[serde(default)]
+    third_party_consent: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -609,6 +611,7 @@ fn encode_run(run: &ProvisioningRun) -> Result<String, EnvRepoError> {
             clean_cache: run.request.clean_cache,
             confirm_adopted_changes: run.request.confirm_adopted_changes,
             allow_source_builds: run.request.allow_source_builds,
+            third_party_consent: run.request.third_party_consent,
         },
         profile: ProfileDoc::from(&run.profile),
         python_target: TargetDoc {
@@ -785,6 +788,7 @@ fn run_from_row(row: RunRow) -> Result<ProvisioningRun, EnvRepoError> {
             clean_cache: doc.request.clean_cache,
             confirm_adopted_changes: doc.request.confirm_adopted_changes,
             allow_source_builds: doc.request.allow_source_builds,
+            third_party_consent: doc.request.third_party_consent,
         },
         profile,
         target_env: EnvId::new(row.target_env_id).map_err(corrupt)?,

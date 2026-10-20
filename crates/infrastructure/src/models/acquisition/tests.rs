@@ -907,3 +907,40 @@ async fn overwrite_needs_the_observed_identity_and_a_changed_file_raises_a_fresh
         .unwrap();
     assert_eq!(resumed.state, DownloadState::Queued);
 }
+
+#[tokio::test]
+async fn a_deferred_download_stack_creates_nothing_under_the_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("fresh install");
+    fs::create_dir(&root).unwrap();
+    let db = crate::shared::sqlite::Db::open(temp.path().join("app.db"))
+        .await
+        .unwrap();
+    let stack = super::stack::DownloadStack::open_with_bandwidth(
+        &root,
+        db,
+        Arc::new(NoCredentials),
+        1,
+        Arc::new(PathLocks::default()),
+        None,
+        false,
+    )
+    .unwrap();
+    // Only the staging area exists; the ComfyUI folder is left for the setup clone.
+    assert!(!root.join("ComfyUI").exists());
+    let names: Vec<_> = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["data"]);
+    // No model root is authorized, so a download has nowhere to publish until the next start.
+    let target = RelativeModelPath::new("checkpoints/model.safetensors").unwrap();
+    assert!(
+        stack
+            .files
+            .roots
+            .parent(super::stack::DEFAULT_MODEL_ROOT_ID, &target, true)
+            .is_err()
+    );
+    assert!(!root.join("ComfyUI").exists());
+}

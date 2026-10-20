@@ -158,3 +158,14 @@ it('shows source, version, branch, state, dependencies, origin, conflict and Git
     expect(gitty.textContent).toContain(text)
   }
 })
+
+it('installed_table_active_row_keeps_readable_contrast', () => {
+  const [a, b] = [node({ id: 'a', name: 'Alpha' }), node({ id: 'b', name: 'Beta' })]
+  render(<Harness nodes={[a, b]} initial={a.id} />)
+  const active = row('a') as HTMLElement
+  expect(active.dataset.active).toBe('true')
+  // No brand fill behind table text: the active row is muted with an accent bar.
+  expect(active.classList.contains('bg-muted')).toBe(true)
+  expect(active.classList.contains('bg-accent')).toBe(false)
+  expect(row('b')?.classList.contains('bg-accent')).toBe(false)
+})

@@ -39,7 +39,7 @@ describe('gateway', () => {
   it('setup_curated_catalog_takes_no_arguments', async () => {
     const catalog = [{
       id: 'curated', name: 'Curated node', repository: 'https://example.com/node',
-      branch: 'main', commit: 'a'.repeat(40), provenance: 'Pinned catalog entry',
+      provenance: 'Latest default-branch commit', unavailable: null,
     }]
     commands.setupListCuratedNodes.mockResolvedValue({ status: 'ok', data: catalog })
     await expect(gateway.setupListCuratedNodes()).resolves.toBe(catalog)
@@ -72,6 +72,7 @@ describe('gateway', () => {
       profileId: 'profile-1', comfyuiRef: { kind: 'latest' as const },
       installManager: false, accelerators: ['sage', 'flash'], curatedNodes: ['curated'],
       cleanCache: false, confirmAdoptedChanges: false, allowSourceBuilds: false,
+      thirdPartyConsent: false,
     }
     await expect(gateway.setupRun({ kind: 'new', request }, vi.fn())).resolves.toBe(started)
     expect(commands.setupRun).toHaveBeenLastCalledWith({ kind: 'new', request }, expect.anything())

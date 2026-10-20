@@ -20,7 +20,29 @@ pub use state::{AppState, RecoveryInfo, Services};
 /// The label of the only window that receives the manager capability.
 pub const MANAGER_WINDOW: &str = "manager";
 
+pub(crate) const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) fn async_runtime_builder() -> tokio::runtime::Builder {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.enable_all().thread_stack_size(WORKER_STACK_BYTES);
+    builder
+}
+
+fn install_async_runtime() {
+    // Never dropped: tauri::async_runtime::set takes only a Handle.
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    let runtime = RUNTIME.get_or_init(|| {
+        async_runtime_builder()
+            .build()
+            .expect("the async runtime could not start")
+    });
+    tauri::async_runtime::set(runtime.handle().clone());
+}
+
 pub fn run() {
+    // Worker threads run node rescans; debug builds need more than tokio's 2 MiB default. This
+    // must come first: anything touching tauri::async_runtime would create the default runtime.
+    install_async_runtime();
     // Before any worker starts. A failure does not stop the app: every tool launch repeats the
     // initialization and is refused for as long as it fails.
     let _ = infrastructure::shared::process::initialize_tool_policy();

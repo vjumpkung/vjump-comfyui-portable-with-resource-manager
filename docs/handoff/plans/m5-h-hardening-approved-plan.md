@@ -158,6 +158,8 @@ BOOT receives expected byte length and SHA-256 as arguments derived from the gua
 
 **Windows DLL policy / F9**
 
+**Correction (2026-10-20, D1):** The propagation premise below was false: `SetDllDirectoryW("")` applies to the manager process only; Windows does not pass it to children. D1 replaces it with this invariant: "Before exact-source consent, on Windows, no tool runs with newly acquired node content as its working directory while that content's top level holds an entry with a native-image extension; uv's interpreter query must not import Python modules from that folder." Installed and user-placed nodes are not re-checked. The implementation and any remaining gaps are recorded in `docs/handoff/evidence/s6-d1-implementation.md`.
+
 Keep guarded requirements on stdin and keep the node directory as cwd on both platforms. This preserves current relative include/local-path semantics.
 
 Add a once-only Windows initialization using `SetDllDirectoryW(L"")`, before worker/tool spawning. Call the same initializer defensively from Windows runner spawning for standalone tests. Failure prevents tool launch; do not temporarily toggle this process-wide setting around individual commands.
@@ -187,6 +189,8 @@ The existing `--only-binary :all:` assumption needs a regression test: uv docume
 | `guarded_hook_respects_safe_path_mode` | With safe-path mode, BOOT does not insert the node directory. |
 | `windows_children_exclude_cwd_from_default_dll_search` | A uniquely named invalid DLL existing only in cwd is not selected by a helper child’s default lookup. |
 | `node_preview_never_executes_editable_build_backend` | Root/nested editable and dynamic local-source fixtures create no backend sentinel and produce no environment mutation. |
+
+**Test correction (2026-10-20, D1):** The DLL test above proves process-local initialization only. Rename it to `windows_dll_initializer_is_process_local`; its helper must observe error 193 before initialization and 126 after. The D1 native-image admission checks and the live uv interpreter-isolation test replace the inherited-child-policy acceptance premise.
 
 Re-run `guarded_requirements_preserve_relative_includes_and_local_paths` with **pinned uv 0.13.1**, identified at [pins.rs:14](D:/vjump/vjump-comfyui-portable-with-resource-manager/crates/infrastructure/src/environment/pins.rs:14). Earlier system-uv 0.13.0 evidence is not evidence for that exact binary.
 

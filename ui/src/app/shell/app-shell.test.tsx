@@ -107,3 +107,15 @@ it('awaits_the_stop_mutation_for_the_feature', async () => {
   release()
   await waitFor(() => expect(screen.getByText('restart result:stopped')).toBeTruthy())
 })
+
+it('shell_contains_overflow_inside_main', () => {
+  const view = render(<AppShell status={{ ...setupStatus, phase: 'ready' }} onSetup={onSetup} onResume={onResume} />)
+  // A positioned, clipped shell keeps absolutely positioned descendants from extending the document.
+  const root = view.container.firstElementChild as HTMLElement
+  expect(root.classList.contains('overflow-hidden')).toBe(true)
+  expect(root.classList.contains('relative')).toBe(true)
+  const main = screen.getByRole('main')
+  for (const name of ['relative', 'min-h-0', 'overflow-y-auto']) {
+    expect(main.classList.contains(name)).toBe(true)
+  }
+})

@@ -5,7 +5,7 @@ use crate::shared::{
     archive::{ExtractLimits, validate_entry_name},
     model_paths::PinnedDirectory,
 };
-use application::custom_nodes::NodeAppError;
+use application::custom_nodes::{NodeAppError, NodePreparePolicy};
 use domain::shared::model_values::SafeFileName;
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, io::Write, sync::Arc};
@@ -14,12 +14,44 @@ use std::{
     io::{self, Read},
 };
 
-const MAX_ENTRIES: usize = 200_000;
+pub(crate) const MAX_ENTRIES: usize = 200_000;
 const MAX_BYTES: u64 = 8 << 30;
 pub(crate) const MAX_NODE_PATH_COMPONENTS: usize = 64;
 pub(crate) const MAX_NODE_RELATIVE_PATH_BYTES: usize = 1024;
 pub(crate) const MAX_ARCHIVE_NAME_BYTES: usize = 1024;
 pub(crate) const MAX_ARCHIVE_PLANNED_NAME_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const ROOT_NATIVE_MESSAGE: &str = "This node has programs or libraries (.dll, .exe and similar) in its top-level folder. Tools could load them before you approve the node, so it cannot be installed.";
+pub(crate) const CACHE_SETUP_WARNING: &str =
+    "This repository ships __pycache__ content; consented first-run setup allows it.";
+pub(crate) const NATIVE_SETUP_WARNING: &str = "This node has top-level native-image entries that tools may load; consented first-run setup allows them.";
+
+pub(crate) fn is_native_image_name(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, extension)| {
+        matches!(
+            extension.to_uppercase().as_str(),
+            "DLL" | "EXE" | "COM" | "CPL" | "DRV" | "OCX" | "SCR" | "SYS"
+        )
+    })
+}
+
+pub(crate) fn refuse_root_native(dir: &Arc<PinnedDirectory>) -> Result<(), NodeAppError> {
+    if has_root_native(dir)? {
+        return Err(NodeAppError::Failed(ROOT_NATIVE_MESSAGE.to_owned()));
+    }
+    Ok(())
+}
+
+fn has_root_native(dir: &Arc<PinnedDirectory>) -> Result<bool, NodeAppError> {
+    if cfg!(windows) {
+        let mut entries = 0;
+        for name in frame(dir.clone(), String::new(), 0, false, &mut entries)?.names {
+            if is_native_image_name(name.as_str()) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
 
 /// Names that belong to the app, not to the node, and so are excluded from digests.
 fn app_owned(depth: usize, name: &str) -> bool {
@@ -99,10 +131,20 @@ pub(crate) fn walk_files(
     directory: &Arc<PinnedDirectory>,
     git_node: bool,
     reject_cache: bool,
-    mut visit: impl FnMut(&Arc<PinnedDirectory>, &SafeFileName, &str, bool) -> Result<(), NodeAppError>,
+    visit: impl FnMut(&Arc<PinnedDirectory>, &SafeFileName, &str, bool) -> Result<(), NodeAppError>,
 ) -> Result<(), NodeAppError> {
+    walk_files_inner(directory, git_node, reject_cache, visit).map(|_| ())
+}
+
+fn walk_files_inner(
+    directory: &Arc<PinnedDirectory>,
+    git_node: bool,
+    reject_cache: bool,
+    mut visit: impl FnMut(&Arc<PinnedDirectory>, &SafeFileName, &str, bool) -> Result<(), NodeAppError>,
+) -> Result<bool, NodeAppError> {
     let mut entries = 0;
     let mut bytes = 0u64;
+    let mut shipped_cache = false;
     let mut stack = vec![frame(
         directory.clone(),
         String::new(),
@@ -125,6 +167,7 @@ pub(crate) fn walk_files(
             return Err(NodeAppError::UnsafeSource);
         }
         let cache = current.cache || name.as_str().eq_ignore_ascii_case("__pycache__");
+        shipped_cache |= cache;
         if cache && reject_cache {
             return Err(NodeAppError::UnsafeSource);
         }
@@ -167,15 +210,31 @@ pub(crate) fn walk_files(
             )?;
         }
     }
-    Ok(())
+    Ok(shipped_cache)
 }
 
 pub fn validate_tree(directory: &Arc<PinnedDirectory>, git_node: bool) -> Result<(), NodeAppError> {
     walk_files(directory, git_node, false, |_, _, _, _| Ok(()))
 }
 
-pub(crate) fn validate_fresh_git(directory: &Arc<PinnedDirectory>) -> Result<(), NodeAppError> {
-    walk_files(directory, true, true, |_, _, _, _| Ok(()))
+pub(crate) fn validate_fresh_git(
+    directory: &Arc<PinnedDirectory>,
+    policy: NodePreparePolicy,
+) -> Result<Vec<String>, NodeAppError> {
+    let strict = policy == NodePreparePolicy::Strict;
+    let shipped_cache = walk_files_inner(directory, true, strict, |_, _, _, _| Ok(()))?;
+    let root_native = has_root_native(directory)?;
+    if strict && root_native {
+        return Err(NodeAppError::Failed(ROOT_NATIVE_MESSAGE.to_owned()));
+    }
+    let mut warnings = Vec::new();
+    if shipped_cache {
+        warnings.push(CACHE_SETUP_WARNING.to_owned());
+    }
+    if root_native {
+        warnings.push(NATIVE_SETUP_WARNING.to_owned());
+    }
+    Ok(warnings)
 }
 
 pub fn sha256_file(parent: &PinnedDirectory, name: &SafeFileName) -> io::Result<String> {
@@ -427,6 +486,25 @@ pub(crate) fn extract_zip(
 mod tests {
     use super::*;
     use crate::shared::model_paths::pin_absolute;
+
+    #[test]
+    fn root_native_names_match_pe_extensions_case_insensitively() {
+        for name in ["a.dll", "A.DLL", "c.Exe", "x.ſcr", ".dll"] {
+            assert!(is_native_image_name(name), "{name}");
+        }
+        for name in [
+            "x.pyd",
+            "x.so",
+            "x.bat",
+            "check.bat",
+            "install.bat",
+            "x.dll.txt",
+            "dll",
+            "x.whl",
+        ] {
+            assert!(!is_native_image_name(name), "{name}");
+        }
+    }
 
     #[test]
     fn digest_ignores_app_files_and_changes_with_content() {

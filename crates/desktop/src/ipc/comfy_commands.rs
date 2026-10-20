@@ -1,6 +1,8 @@
 //! Commands of the ComfyUI runtime context. Each one is a thin controller over an application
 //! use case; the runtime itself is owned by the Rust core, never by a window.
 
+use std::path::Path;
+
 use application::{
     comfy_runtime::{RuntimeError, SessionId, UpdateRequest, choice_action},
     shared::CancelToken,
@@ -14,7 +16,7 @@ use super::{
     },
     error::IpcError,
 };
-use crate::state::AppState;
+use crate::state::{AppState, Services};
 
 fn invalid_identifier() -> IpcError {
     IpcError::new("invalid_identifier", "The identifier is not valid.")
@@ -255,6 +257,43 @@ pub async fn comfy_read_extra_model_paths(
 ) -> Result<Vec<ModelRootDto>, IpcError> {
     let roots = state.services()?.comfy.extra_paths.execute().await?;
     Ok(roots.iter().map(ModelRootDto::from).collect())
+}
+
+/// Writes the app's `extra_model_paths.yaml` section for the chosen base folder, then rescans
+/// the library so it sees the new roots. A failed rescan never fails the write.
+#[tauri::command]
+#[specta::specta]
+pub async fn comfy_generate_extra_model_paths(
+    state: State<'_, AppState>,
+    base_path: String,
+) -> Result<(), IpcError> {
+    let services = state.services()?;
+    services
+        .comfy
+        .manage_extra_paths
+        .generate(Path::new(&base_path))
+        .await?;
+    rescan_library(services).await;
+    Ok(())
+}
+
+/// Removes the app's section only, then rescans the library.
+#[tauri::command]
+#[specta::specta]
+pub async fn comfy_remove_extra_model_paths(state: State<'_, AppState>) -> Result<(), IpcError> {
+    let services = state.services()?;
+    services.comfy.manage_extra_paths.remove().await?;
+    rescan_library(services).await;
+    Ok(())
+}
+
+async fn rescan_library(services: &Services) {
+    if let Err(error) = services.library.rescan.execute().await {
+        tracing::warn!(
+            ?error,
+            "the model library rescan after an extra paths change failed"
+        );
+    }
 }
 
 /// Answers a pending manager close request.

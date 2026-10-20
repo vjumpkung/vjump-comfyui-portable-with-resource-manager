@@ -153,6 +153,7 @@ async fn real_first_run_setup() {
             clean_cache: false,
             confirm_adopted_changes: false,
             allow_source_builds: false,
+            third_party_consent: false,
         })))
         .await
         .unwrap();
@@ -207,6 +208,7 @@ async fn real_first_run_setup() {
             clean_cache: false,
             confirm_adopted_changes: false,
             allow_source_builds: false,
+            third_party_consent: false,
         })))
         .await
         .unwrap();

@@ -172,6 +172,8 @@ struct UpdateDoc {
     old_commit: String,
     target_commit: String,
     target_tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_branch: Option<String>,
     fast_forward: bool,
     pins: Vec<(String, String)>,
     phase: String,
@@ -187,6 +189,7 @@ impl From<&UpdateRun> for UpdateDoc {
             old_commit: r.old_commit.clone(),
             target_commit: r.target.commit.clone(),
             target_tag: r.target.tag.clone(),
+            target_branch: r.target.branch.clone(),
             fast_forward: r.target.fast_forward,
             pins: r
                 .pins
@@ -228,6 +231,7 @@ impl TryFrom<UpdateDoc> for UpdateRun {
             target: FrozenUpdate {
                 commit: r.target_commit,
                 tag: r.target_tag,
+                branch: r.target_branch,
                 fast_forward: r.fast_forward,
             },
             pins,
@@ -327,6 +331,49 @@ impl RuntimeStore for SqliteRuntimeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn update_documents_preserve_latest_commit_and_read_legacy_v1() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path().join("app.db")).await.unwrap();
+        let store = SqliteRuntimeStore::new(db);
+        let run = UpdateRun {
+            id: SessionId::new("latest-update").unwrap(),
+            env_id: EnvId::new("selected").unwrap(),
+            old_commit: "a".repeat(40),
+            target: FrozenUpdate {
+                commit: "b".repeat(40),
+                tag: None,
+                branch: Some("main".into()),
+                fast_forward: false,
+            },
+            pins: PinSet::new(),
+            phase: UpdatePhase::Intent,
+            failure: None,
+            created_at: "t".into(),
+        };
+        let json = serde_json::to_value(UpdateDoc::from(&run)).unwrap();
+        assert_eq!(json["version"], 1);
+        assert_eq!(json["target_branch"], "main");
+        store.save_update(&run).await.unwrap();
+        assert_eq!(store.unfinished_update().await.unwrap(), Some(run.clone()));
+        for (tag, fast_forward) in [(Some("v1.0.0"), false), (None, true)] {
+            let mut legacy = json.clone();
+            legacy.as_object_mut().unwrap().remove("target_branch");
+            legacy["target_tag"] = serde_json::json!(tag);
+            legacy["fast_forward"] = serde_json::json!(fast_forward);
+            let doc: UpdateDoc = serde_json::from_value(legacy).unwrap();
+            let read = UpdateRun::try_from(doc).unwrap();
+            let mut expected = run.clone();
+            expected.target.branch = None;
+            expected.target.tag = tag.map(str::to_owned);
+            expected.target.fast_forward = fast_forward;
+            assert_eq!(read, expected);
+            let encoded = serde_json::to_value(UpdateDoc::from(&read)).unwrap();
+            assert!(encoded.get("target_branch").is_none());
+            assert_eq!(encoded["version"], 1);
+            assert!(read.target.policy_target().is_ok());
+        }
+    }
     #[tokio::test]
     async fn options_roundtrip_and_corruption_is_explicit() {
         let dir = tempfile::tempdir().unwrap();

@@ -154,7 +154,11 @@ export function ModelTable({
         className={cn(
           COLUMNS,
           'items-center gap-2 border-b px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan/50',
-          key === activeKey ? 'bg-accent' : 'hover:bg-muted/50',
+          key === activeKey
+            ? 'bg-muted shadow-[inset_3px_0_0_var(--accent)]'
+            : isSelected
+              ? 'bg-muted/60'
+              : 'hover:bg-muted/50',
         )}
       >
         <div role="gridcell" onClick={(event) => event.stopPropagation()}>

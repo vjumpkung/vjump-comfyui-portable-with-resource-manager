@@ -184,6 +184,70 @@ it('shows the git status when an update is refused and nothing changed', async (
   expect(screen.getByText('M main.py')).toBeTruthy()
 })
 
+it('offers_latest_commit_and_tag_updates', async () => {
+  vi.mocked(gateway.comfyListVersions).mockResolvedValue({
+    current: { commit: 'a'.repeat(40), tag: 'v0.40.0', branch: 'release/v0.40' },
+    tags: ['v0.41.0', 'v0.40.0'],
+    pendingUpdate: null,
+  })
+  vi.mocked(gateway.comfyUpdate).mockResolvedValue({
+    kind: 'refused',
+    reason: 'fixture refusal',
+    status: 'clean',
+  })
+  mount(<ComfyPage />)
+  await snapshot()
+  expect(
+    await screen.findByRole('button', { name: 'Update to latest release' }),
+  ).toBeTruthy()
+  expect(
+    screen.getByRole('button', { name: 'Fast-forward release/v0.40' }),
+  ).toBeTruthy()
+  expect(
+    screen.getByText('Switches to origin’s default branch, normally master. Development code may be less stable than a release.'),
+  ).toBeTruthy()
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Update to latest commit (git pull)' }),
+  )
+  expect(gateway.comfyUpdate).not.toHaveBeenCalled()
+  expect(
+    await screen.findByText(/Move ComfyUI to the latest commit on origin’s default branch/),
+  ).toBeTruthy()
+  expect(
+    screen.getByText(/requirements are reinstalled under the protected package pins and the environment is verified again/),
+  ).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(gateway.comfyUpdate).not.toHaveBeenCalled()
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Update to latest commit (git pull)' }),
+  )
+  fireEvent.click(await screen.findByRole('button', { name: 'Update' }))
+  await waitFor(() =>
+    expect(gateway.comfyUpdate).toHaveBeenNthCalledWith(1, {
+      target: { kind: 'latest_commit' },
+      stopRunning: false,
+      retry: null,
+    }),
+  )
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  fireEvent.change(screen.getByLabelText('Release tag'), {
+    target: { value: 'v0.40.0' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Switch to v0.40.0' }))
+  expect(gateway.comfyUpdate).toHaveBeenCalledTimes(1)
+  expect(
+    await screen.findByText(/Move ComfyUI to release v0.40.0/),
+  ).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Update' }))
+  await waitFor(() =>
+    expect(gateway.comfyUpdate).toHaveBeenNthCalledWith(2, {
+      target: { kind: 'tag', name: 'v0.40.0' },
+      stopRunning: false,
+      retry: null,
+    }),
+  )
+})
+
 it('copies the redacted app report and falls back to selectable text', async () => {
   vi.mocked(gateway.appCopyDiagnostics)
     .mockResolvedValueOnce({ text: 'REPORT', copied: true })

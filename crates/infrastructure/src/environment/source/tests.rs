@@ -826,6 +826,138 @@ async fn a_branch_clone_tracks_the_branch() {
 }
 
 #[tokio::test]
+async fn a_tag_clone_stays_on_the_default_branch_and_can_pull() {
+    let fixture = Fixture::new().await;
+    let source = fixture.source();
+    let resolved = first_release(&fixture).await;
+    source
+        .clone_comfyui(&fixture.root, &resolved, &ctx())
+        .await
+        .unwrap();
+    let dir = fixture.root.join("ComfyUI");
+    assert_eq!(git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+    assert_eq!(
+        git(&dir, &["rev-parse", "--abbrev-ref", "main@{upstream}"]),
+        "origin/main"
+    );
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), fixture.remote.first);
+    assert_eq!(git(&dir, &["status", "--porcelain"]), "");
+
+    // The tag commit is behind the remote's main; a plain pull fast-forwards it.
+    git(&dir, &["pull", "--ff-only"]);
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), fixture.remote.second);
+
+    // New remote commits are pulled too.
+    fs::write(fixture.remote.path.join("README.md"), "three").unwrap();
+    git(&fixture.remote.path, &["commit", "-am", "third"]);
+    let third = git(&fixture.remote.path, &["rev-parse", "HEAD"]);
+    git(&dir, &["pull", "--ff-only"]);
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), third);
+    assert_eq!(git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+}
+
+#[tokio::test]
+async fn a_tag_off_the_default_branch_is_detached() {
+    let fixture = Fixture::new().await;
+    git(&fixture.remote.path, &["checkout", "-b", "side"]);
+    fs::write(fixture.remote.path.join("side.txt"), "side").unwrap();
+    git(&fixture.remote.path, &["add", "-A"]);
+    git(&fixture.remote.path, &["commit", "-m", "side only"]);
+    git(&fixture.remote.path, &["tag", "v2.0.0-side"]);
+    let side = git(&fixture.remote.path, &["rev-parse", "HEAD"]);
+    git(&fixture.remote.path, &["checkout", "main"]);
+    let source = fixture.source();
+    let resolved = source
+        .resolve(&fixture.root, &ComfyRef::Tag("v2.0.0-side".into()))
+        .await
+        .unwrap();
+    source
+        .clone_comfyui(&fixture.root, &resolved, &ctx())
+        .await
+        .unwrap();
+    let dir = fixture.root.join("ComfyUI");
+    assert_eq!(git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), side);
+    assert_eq!(git(&dir, &["status", "--porcelain"]), "");
+}
+
+#[tokio::test]
+async fn a_patch_tag_clone_attaches_to_its_release_branch_and_can_pull() {
+    let fixture = Fixture::new().await;
+    let remote = &fixture.remote.path;
+    // ComfyUI publishes patch tags only on `release/vMAJOR.MINOR`, never on the default branch.
+    git(remote, &["checkout", "-b", "release/v1.0", "v1.0.0"]);
+    fs::write(remote.join("README.md"), "patch").unwrap();
+    git(remote, &["commit", "-am", "patch"]);
+    git(remote, &["tag", "v1.0.1"]);
+    let patch = git(remote, &["rev-parse", "HEAD"]);
+    git(remote, &["checkout", "main"]);
+    let source = fixture.source();
+    let resolved = source
+        .resolve(&fixture.root, &ComfyRef::Tag("v1.0.1".into()))
+        .await
+        .unwrap();
+    source
+        .clone_comfyui(&fixture.root, &resolved, &ctx())
+        .await
+        .unwrap();
+    let dir = fixture.root.join("ComfyUI");
+    assert_eq!(
+        git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "release/v1.0"
+    );
+    assert_eq!(
+        git(
+            &dir,
+            &["rev-parse", "--abbrev-ref", "release/v1.0@{upstream}"]
+        ),
+        "origin/release/v1.0"
+    );
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), patch);
+    assert_eq!(git(&dir, &["status", "--porcelain"]), "");
+
+    // A later patch on the release branch is pulled.
+    git(remote, &["checkout", "release/v1.0"]);
+    fs::write(remote.join("README.md"), "patch two").unwrap();
+    git(remote, &["commit", "-am", "patch two"]);
+    let patch_two = git(remote, &["rev-parse", "HEAD"]);
+    git(remote, &["checkout", "main"]);
+    git(&dir, &["pull", "--ff-only"]);
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), patch_two);
+    assert_eq!(
+        git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "release/v1.0"
+    );
+}
+
+#[tokio::test]
+async fn a_patch_tag_clone_whose_release_branch_lacks_it_is_detached() {
+    let fixture = Fixture::new().await;
+    let remote = &fixture.remote.path;
+    // The release branch exists but does not contain the tagged commit.
+    git(remote, &["branch", "release/v1.0", "v1.0.0"]);
+    git(remote, &["checkout", "-b", "hotfix", "v1.0.0"]);
+    fs::write(remote.join("README.md"), "hotfix").unwrap();
+    git(remote, &["commit", "-am", "hotfix"]);
+    git(remote, &["tag", "v1.0.1"]);
+    let hotfix = git(remote, &["rev-parse", "HEAD"]);
+    git(remote, &["checkout", "main"]);
+    let source = fixture.source();
+    let resolved = source
+        .resolve(&fixture.root, &ComfyRef::Tag("v1.0.1".into()))
+        .await
+        .unwrap();
+    source
+        .clone_comfyui(&fixture.root, &resolved, &ctx())
+        .await
+        .unwrap();
+    let dir = fixture.root.join("ComfyUI");
+    assert_eq!(git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), hotfix);
+    assert_eq!(git(&dir, &["status", "--porcelain"]), "");
+}
+
+#[tokio::test]
 async fn failed_and_cancelled_clones_leave_nothing_and_an_existing_folder_is_never_replaced() {
     let fixture = Fixture::new().await;
     let source = fixture.source();
@@ -956,6 +1088,11 @@ async fn the_manager_is_installed_at_the_approved_commit_and_existing_folders_ar
     let manager = fixture.root.join("ComfyUI/custom_nodes/ComfyUI-Manager");
     assert_eq!(files, [manager.join("requirements.txt")]);
     assert_eq!(git(&manager, &["rev-parse", "HEAD"]), resolved.commit);
+    assert_eq!(
+        git(&manager, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "main",
+        "the Manager clone stays on its default branch"
+    );
 
     // The same approved commit is reused without cloning again.
     assert_eq!(

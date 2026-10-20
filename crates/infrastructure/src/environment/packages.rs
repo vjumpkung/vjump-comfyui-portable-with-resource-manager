@@ -20,7 +20,7 @@ use super::{
 };
 use crate::shared::{
     fs::atomic_write,
-    process::{CommandSpec, RunLimits},
+    process::{CommandSpec, RunLimits, default_working_directory},
 };
 
 pub struct UvPackages;
@@ -104,7 +104,7 @@ fn preflight_refused() -> ProvisionError {
 fn preflight_requirements(spec: &InstallSpec) -> Result<(), ProvisionError> {
     let directory = match &spec.guarded {
         Some(guarded) => guarded.directory.clone(),
-        None => std::env::current_dir().map_err(|_| preflight_refused())?,
+        None => default_working_directory().map_err(|_| preflight_refused())?,
     };
     let mut pending = Vec::new();
     for requirement in &spec.requirements {

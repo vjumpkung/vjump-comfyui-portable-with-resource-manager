@@ -44,6 +44,8 @@
     "allow-comfy-open-browser",
     "allow-comfy-diagnostics",
     "allow-comfy-read-extra-model-paths",
+    "allow-comfy-generate-extra-model-paths",
+    "allow-comfy-remove-extra-model-paths",
     "allow-app-close-decide",
     "allow-secret-test",
     "allow-dl-resolve",

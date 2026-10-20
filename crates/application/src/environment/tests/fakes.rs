@@ -76,13 +76,11 @@ pub fn profile() -> SetupProfile {
     }
 }
 
-pub fn curated_spec(id: &str, commit: char) -> CuratedNodeSpec {
+pub fn curated_spec(id: &str) -> CuratedNodeSpec {
     CuratedNodeSpec {
         id: id.into(),
         name: format!("Node-{id}"),
         repository: format!("https://github.com/example/{id}.git"),
-        branch: "main".into(),
-        commit: commit.to_string().repeat(40),
         provenance: "fixture".into(),
         unavailable: None,
     }
@@ -214,9 +212,11 @@ pub struct World {
     pub drift_on_node_requirements: AtomicBool,
     pub gate_busy_at_cancel_cleanup: Mutex<Option<bool>>,
     pub installs: Mutex<Vec<InstallSpec>>,
+    pub preview_specs: Mutex<Vec<InstallSpec>>,
     /// The environment path of every package installation, in order.
     pub install_envs: Mutex<Vec<PathBuf>>,
     pub constraint_writes: Mutex<Vec<PinSet>>,
+    pub constraint_extras: Mutex<Vec<Vec<String>>>,
     pub draft: Mutex<Option<String>>,
     pub resolve_calls: AtomicUsize,
     pub verify_final_fails: AtomicBool,
@@ -263,15 +263,17 @@ impl World {
             drift_on_node_requirements: AtomicBool::new(false),
             gate_busy_at_cancel_cleanup: Mutex::default(),
             installs: Mutex::default(),
+            preview_specs: Mutex::default(),
             install_envs: Mutex::default(),
             constraint_writes: Mutex::default(),
+            constraint_extras: Mutex::default(),
             draft: Mutex::default(),
             resolve_calls: AtomicUsize::new(0),
             verify_final_fails: AtomicBool::new(false),
             install_overrides: Mutex::default(),
             counter: AtomicU64::new(0),
             profiles: Mutex::new(vec![profile(), other_minor_profile()]),
-            curated: Mutex::new(vec![curated_spec("alpha", 'a'), curated_spec("beta", 'b')]),
+            curated: Mutex::new(vec![curated_spec("alpha"), curated_spec("beta")]),
         })
     }
 
@@ -598,8 +600,8 @@ impl SetupNodes for World {
             kind: OperationKind::Install,
             source: domain::custom_nodes::NodeSource::Git {
                 repository: entry.repository.trim_end_matches(".git").to_owned(),
-                commit: entry.commit.clone(),
-                branch: None,
+                commit: "a".repeat(40),
+                branch: Some("main".into()),
             },
             name: entry.name.clone(),
             prior_source: None,
@@ -962,6 +964,11 @@ impl PackageInstaller for World {
         spec: &InstallSpec,
         _ctx: &StepContext,
     ) -> Result<ResolutionPreview, ProvisionError> {
+        let mut recorded = spec.clone();
+        if let Some(file) = recorded.guarded.as_mut() {
+            file.retained = Retained::default();
+        }
+        self.preview_specs.lock().unwrap().push(recorded);
         self.call(if spec.constraint_file.is_some() {
             "preview:constrained"
         } else {
@@ -994,10 +1001,11 @@ impl PackageInstaller for World {
         _root: &Path,
         env: &EnvId,
         pins: &PinSet,
-        _extra: &[String],
+        extra: &[String],
     ) -> Result<PathBuf, ProvisionError> {
         self.call("write_constraints");
         self.constraint_writes.lock().unwrap().push(pins.clone());
+        self.constraint_extras.lock().unwrap().push(extra.to_vec());
         Ok(PathBuf::from(format!(
             "/install/data/cache/constraints-{env}.txt"
         )))
@@ -1401,6 +1409,21 @@ impl RootSwitcher for World {
 /// An event sink that stores every event.
 #[derive(Default)]
 pub struct RecordingSink(pub Mutex<Vec<SetupEvent>>);
+
+impl RecordingSink {
+    /// The log lines in emission order.
+    pub fn log_lines(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                SetupEvent::Log { line, .. } => Some(line.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
 
 impl SetupProgressSink for RecordingSink {
     fn emit(&self, event: SetupEvent) {

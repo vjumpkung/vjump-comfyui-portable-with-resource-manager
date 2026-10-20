@@ -103,3 +103,24 @@ fn run_return_publishes_state_and_retains_close() {
         Some(GateError::Busy)
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn async_runtime_workers_and_blocking_threads_reserve_eight_mib() {
+    fn reserve() -> usize {
+        let (mut low, mut high) = (0, 0);
+        // SAFETY: both pointers refer to live locals for the duration of the call.
+        unsafe {
+            windows_sys::Win32::System::Threading::GetCurrentThreadStackLimits(&mut low, &mut high)
+        };
+        high - low
+    }
+
+    let runtime = crate::async_runtime_builder().build().unwrap();
+    let worker = runtime
+        .block_on(runtime.spawn(async { reserve() }))
+        .unwrap();
+    let blocking = runtime.block_on(runtime.spawn_blocking(reserve)).unwrap();
+    assert!(worker >= WORKER_STACK_BYTES, "worker stack {worker}");
+    assert!(blocking >= WORKER_STACK_BYTES, "blocking stack {blocking}");
+}

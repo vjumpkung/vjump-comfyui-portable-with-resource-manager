@@ -60,6 +60,7 @@ fn run(id: &str, target: &str, created: &str) -> ProvisioningRun {
             clean_cache: true,
             confirm_adopted_changes: true,
             allow_source_builds: false,
+            third_party_consent: false,
         },
         profile,
         target_env: EnvId::new(target).unwrap(),
@@ -632,6 +633,49 @@ async fn components_survive_manifest_and_database_round_trip() {
         reopened.load_components(&second.id).await.unwrap(),
         InstalledComponents::default()
     );
+}
+
+#[tokio::test]
+async fn run_doc_without_third_party_consent_reads_false() {
+    let (store, _directory) = store().await;
+    let mut consenting = run("consent-run", "env-a", "now");
+    consenting.request.third_party_consent = true;
+    ProvisioningRunRepository::insert(&store, &consenting)
+        .await
+        .unwrap();
+    let restored = ProvisioningRunRepository::get(&store, &consenting.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(restored.request.third_party_consent, "the flag round-trips");
+
+    // A document stored before the field existed decodes to false.
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&encode_run(&consenting).unwrap()).unwrap();
+    doc["request"]
+        .as_object_mut()
+        .unwrap()
+        .remove("third_party_consent")
+        .unwrap();
+    let json = doc.to_string();
+    store
+        .db
+        .run(move |connection| {
+            connection
+                .execute(
+                    "UPDATE provisioning_runs SET doc_json = ?1 WHERE id = 'consent-run'",
+                    [json],
+                )
+                .map_err(sql)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let legacy = ProvisioningRunRepository::get(&store, &consenting.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!legacy.request.third_party_consent);
 }
 
 #[tokio::test]

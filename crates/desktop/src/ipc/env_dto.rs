@@ -335,15 +335,13 @@ impl From<&CuratedProgress> for CuratedProgressDto {
     }
 }
 
-/// An entry of the curated node catalog: an exact commit of a repository.
+/// An entry of the curated node catalog: the latest commit of a repository's default branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CuratedNodeDto {
     pub id: String,
     pub name: String,
     pub repository: String,
-    pub branch: String,
-    pub commit: String,
     pub provenance: String,
     pub unavailable: Option<String>,
 }
@@ -354,8 +352,6 @@ impl From<&CuratedNodeSpec> for CuratedNodeDto {
             id: value.id.clone(),
             name: value.name.clone(),
             repository: value.repository.clone(),
-            branch: value.branch.clone(),
-            commit: value.commit.clone(),
             provenance: value.provenance.clone(),
             unavailable: value.unavailable.clone(),
         }
@@ -917,11 +913,15 @@ pub struct SetupRequestDto {
     pub comfyui_ref: ComfyRefDto,
     pub install_manager: bool,
     pub accelerators: Vec<String>,
-    /// Catalog ids of the curated nodes. Choosing them is not consent: each is reviewed first.
+    /// Catalog ids of the curated nodes. Choosing them alone is not consent: each is reviewed
+    /// first unless `thirdPartyConsent` is set.
     pub curated_nodes: Vec<String>,
     pub clean_cache: bool,
     pub confirm_adopted_changes: bool,
     pub allow_source_builds: bool,
+    /// The user confirmed on the wizard's review stage that a first-run setup may install
+    /// ComfyUI-Manager and the selected curated nodes without further prompts.
+    pub third_party_consent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -959,6 +959,7 @@ impl SetupActionDto {
                 clean_cache: request.clean_cache,
                 confirm_adopted_changes: request.confirm_adopted_changes,
                 allow_source_builds: request.allow_source_builds,
+                third_party_consent: request.third_party_consent,
             })),
             Self::Retry {
                 run_id,
@@ -1407,6 +1408,7 @@ mod tests {
                 clean_cache: false,
                 confirm_adopted_changes: false,
                 allow_source_builds: false,
+                third_party_consent: false,
             },
             profile,
             target_env: EnvId::new("env-1").unwrap(),
@@ -1522,6 +1524,7 @@ mod tests {
             clean_cache: false,
             confirm_adopted_changes: false,
             allow_source_builds: false,
+            third_party_consent: true,
         };
         let Ok(SetupAction::New(new)) =
             SetupActionDto::New { request }.into_application(std::path::Path::new("root"))
@@ -1529,6 +1532,7 @@ mod tests {
             panic!("a new run converts");
         };
         assert_eq!(new.curated_nodes, ["comfyui-kjnodes"]);
+        assert!(new.third_party_consent);
         let input = CommitInput {
             plan_id: "plan-a".into(),
             binding: "binding".into(),
@@ -1623,6 +1627,7 @@ mod tests {
                 clean_cache: false,
                 confirm_adopted_changes: false,
                 allow_source_builds: false,
+                third_party_consent: false,
             };
             let SetupAction::New(request) = SetupActionDto::New { request }
                 .into_application(std::path::Path::new("root"))

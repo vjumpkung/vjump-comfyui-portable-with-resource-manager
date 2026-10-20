@@ -324,14 +324,18 @@ pub struct SetupRequest {
     pub install_manager: bool,
     /// Explicit profile component ids. An empty list selects no accelerators.
     pub accelerators: Vec<String>,
-    /// Catalog ids of the curated custom nodes to install (first run only). A selection is not
-    /// consent: every node is reviewed and confirmed before it is installed.
+    /// Catalog ids of the curated custom nodes to install (first run only). A first-run request
+    /// may carry the user's consent, given on the wizard's review stage, for ComfyUI-Manager and
+    /// the selected curated nodes (`third_party_consent`); without it every install pauses.
     pub curated_nodes: Vec<String>,
     pub clean_cache: bool,
     /// Explicit confirmation that setup may install packages into an existing (adopted) venv.
     pub confirm_adopted_changes: bool,
     /// Allows source distributions (build hooks run third-party code) in dependency installs.
     pub allow_source_builds: bool,
+    /// The user confirmed on the review stage that setup may run third-party code (first run
+    /// only).
+    pub third_party_consent: bool,
 }
 
 /// The environment a run builds, decided from the validated Python source.
@@ -468,18 +472,16 @@ impl ProvisioningRun {
     }
 }
 
-/// One curated custom node of the catalog (FR-SETUP-9): an exact commit of a repository.
+/// One curated custom node of the catalog (FR-SETUP-9): the latest commit of a repository's
+/// default branch at setup time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CuratedNodeSpec {
     /// Derived from the repository name; unique within the catalog.
     pub id: String,
     pub name: String,
     pub repository: String,
-    pub branch: String,
-    pub commit: String,
     pub provenance: String,
-    /// Why this entry cannot be installed at its pinned commit. It stays listed but cannot be
-    /// selected.
+    /// Why this entry cannot be installed. It stays listed but cannot be selected.
     pub unavailable: Option<String>,
 }
 

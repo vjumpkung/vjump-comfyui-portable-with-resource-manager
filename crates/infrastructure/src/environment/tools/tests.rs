@@ -22,7 +22,8 @@ fn version_args(text: &str) -> Vec<OsString> {
     if cfg!(windows) {
         vec!["/d".into(), "/c".into(), format!("echo {text}").into()]
     } else {
-        vec!["-c".into(), format!("echo {text}").into()]
+        // The text may contain shell metacharacters such as parentheses.
+        vec!["-c".into(), format!("echo '{text}'").into()]
     }
 }
 

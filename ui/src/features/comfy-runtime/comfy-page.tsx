@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ExternalLink,
   Play,
@@ -34,15 +34,8 @@ import {
   DialogTitle,
 } from '@/shared/ui/dialog'
 import { Skeleton } from '@/shared/ui/skeleton'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/shared/ui/table'
 
+import { ExtraModelPathsCard } from './extra-model-paths-card'
 import { LaunchOptionsCard } from './launch-options'
 import { LifecycleBadge } from './lifecycle-badge'
 import { runtimeStore } from './runtime-store'
@@ -164,10 +157,6 @@ export function ComfyPage() {
   const openBrowser = useMutation({
     mutationFn: () => gateway.comfyOpenBrowser(),
     onError,
-  })
-  const extraPaths = useQuery({
-    queryKey: comfyKeys.extraPaths,
-    queryFn: () => gateway.comfyReadExtraModelPaths(),
   })
   // The report to select by hand when the clipboard could not be written.
   const [diagnosticsFallback, setDiagnosticsFallback] = useState<string | null>(
@@ -318,53 +307,7 @@ export function ComfyPage() {
       <LaunchOptionsCard active={status?.session ?? null} />
       <VersionsPanel />
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg font-bold tracking-tight">
-            Extra model paths
-          </CardTitle>
-          <CardDescription>
-            Read from extra_model_paths.yaml in the ComfyUI folder. Read-only.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {extraPaths.data && extraPaths.data.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Section</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Path</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {extraPaths.data.map((root) => (
-                  <TableRow key={`${root.section}/${root.category}/${root.path}`}>
-                    <TableCell>
-                      {root.section}
-                      {root.isDefault ? ' (default)' : ''}
-                    </TableCell>
-                    <TableCell>{root.category}</TableCell>
-                    <TableCell className="font-mono text-xs break-all">
-                      {root.path}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ) : extraPaths.isError ? (
-            <p className="text-sm text-destructive">
-              {errorMessage(extraPaths.error)}
-            </p>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              {extraPaths.isPending
-                ? 'Loading...'
-                : 'No extra model paths are configured.'}
-            </p>
-          )}
-        </CardContent>
-      </Card>
+      <ExtraModelPathsCard running={active} />
 
       <Dialog
         open={conflict !== null}

@@ -70,6 +70,7 @@ fn completed_run(root: &Path, env: &PythonEnvironment, profile: SetupProfile) ->
             clean_cache: false,
             confirm_adopted_changes: false,
             allow_source_builds: false,
+            third_party_consent: false,
         },
         profile,
         target_env: env.id.clone(),
@@ -166,6 +167,7 @@ async fn relocation_is_detected_before_any_reconciliation() {
         target: FrozenUpdate {
             commit: "b".repeat(40),
             tag: None,
+            branch: None,
             fast_forward: false,
         },
         pins: PinSet::new(),
@@ -563,6 +565,48 @@ async fn e3_valid_manifest_with_missing_database_recovers_instead_of_failing_sta
         services.setup.setup_status.execute().await.unwrap().phase,
         SetupPhase::Recovery(RecoveryReason::ManifestMismatch)
     );
+}
+
+#[tokio::test]
+async fn fresh_root_composes_without_creating_comfyui() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("fresh install");
+    fs::create_dir_all(&root).unwrap();
+
+    let state = compose_at(&root).await;
+
+    // The setup clone must find no ComfyUI folder to merge into.
+    assert!(
+        matches!(
+            fs::symlink_metadata(root.join("ComfyUI")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ),
+        "composition created ComfyUI"
+    );
+    // The wizard's services are available.
+    let services = state.setup_services().unwrap();
+    assert_eq!(
+        services.setup_status.execute().await.unwrap().phase,
+        SetupPhase::NeedsSetup
+    );
+    assert!(state.services().is_ok());
+}
+
+#[tokio::test]
+async fn activated_root_without_comfyui_still_creates_models() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("same install");
+    fs::create_dir_all(&root).unwrap();
+    let profile = bundled_profile();
+    let env = environment(&root, "env-recorded", &profile);
+    let run = completed_run(&root, &env, profile);
+    publish_manifest(&root, &root, &env, &run, 1).await;
+    assert!(!root.join("ComfyUI").exists());
+
+    let state = compose_at(&root).await;
+
+    assert!(state.services().is_ok());
+    assert!(root.join("ComfyUI").join("models").is_dir());
 }
 
 #[test]

@@ -66,7 +66,7 @@ impl UpdateComfy {
                 let revision = deps.repository.revision(&root).await?;
                 self.check_repo(&revision, &input.target).await?;
                 let ctx = context("update-fetch", cancel.clone(), lease.retained())?;
-                deps.repository.fetch(&root, &ctx).await?;
+                deps.repository.fetch(&root, &input.target, &ctx).await?;
                 self.check_repo(&revision, &input.target).await?;
                 let target = deps.repository.freeze(&root, &input.target).await?;
                 let run = UpdateRun {
@@ -131,14 +131,7 @@ impl UpdateComfy {
                 "HEAD changed outside the recorded update; inspect the checkout".into(),
             ));
         }
-        let policy_target = if run.target.fast_forward {
-            UpdateTarget::BranchFfOnly
-        } else {
-            UpdateTarget::Tag(
-                Tag::new(run.target.tag.clone().ok_or(RuntimeError::InvalidRecord)?)
-                    .map_err(|_| RuntimeError::InvalidRecord)?,
-            )
-        };
+        let policy_target = run.target.policy_target()?;
         self.check_repo(&current, &policy_target).await?;
         if current.commit != run.target.commit {
             if run.phase != UpdatePhase::Intent {
@@ -146,6 +139,13 @@ impl UpdateComfy {
                     "the update source no longer matches its frozen revision".into(),
                 ));
             }
+            deps.repository.apply(&root, &run.target, ctx).await?;
+        } else if run.phase == UpdatePhase::Intent
+            && (policy_target == UpdateTarget::LatestCommit
+                || (current.branch.is_none() && !run.target.fast_forward))
+        {
+            // LatestCommit always establishes its frozen branch/upstream at Intent, even
+            // when already attached at the target. Tags retain detached re-placement.
             deps.repository.apply(&root, &run.target, ctx).await?;
         }
         if deps.repository.revision(&root).await?.commit != run.target.commit {

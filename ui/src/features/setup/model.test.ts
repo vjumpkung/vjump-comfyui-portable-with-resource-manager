@@ -58,4 +58,15 @@ describe('setup policies', () => {
       installManager: false,
     })
   })
+  it('reads_the_comfy_source_and_maps_the_legacy_use_tag_flag', () => {
+    const read = (fields: object) =>
+      readDraft(JSON.stringify({ version: 1, ...fields }))
+    expect(read({ comfySource: 'master' })).toEqual({ comfySource: 'master' })
+    expect(read({ comfySource: 'tag', useTag: false })).toEqual({
+      comfySource: 'tag',
+    })
+    expect(read({ useTag: true })).toEqual({ comfySource: 'tag' })
+    expect(read({ useTag: false })).toEqual({ comfySource: 'latest' })
+    expect(read({ comfySource: 'bogus' })).toEqual({})
+  })
 })

@@ -22,8 +22,8 @@ pub(crate) struct Bound {
 
 /// Review text for a root `install.py` in the active environment, where the user may run it.
 const ACTIVE_HOOK_WARNING: &str = "Root install.py executes third-party code only if explicitly selected; a venv is not a sandbox";
-/// Review text for a root `install.py` during setup, which never runs it.
-pub(crate) const SETUP_HOOK_WARNING: &str = "This node has an install.py. Setup never runs it. If the node needs it, uninstall the node in Custom Nodes and install it again, approving install.py in the review.";
+/// Review text for setup's non-consented, skipped-hook path.
+pub(crate) const SETUP_HOOK_WARNING: &str = "This setup will not run this node’s install.py. If needed, reinstall it in Custom Nodes and approve install.py.";
 
 /// The requirement file of a guarded location, read from its protected snapshot.
 fn guarded_files(guard: Option<&dyn NodeLocationGuard>) -> InstallSpec {
@@ -41,6 +41,27 @@ fn guarded_files(guard: Option<&dyn NodeLocationGuard>) -> InstallSpec {
         }),
         ..Default::default()
     }
+}
+
+fn validate_protected_preview(
+    pins: &PinSet,
+    preview: &ResolutionPreview,
+) -> Result<(), NodeAppError> {
+    let mut after = pins.clone();
+    for package in &preview.removals {
+        let name = DistName::new(&package.name).map_err(|_| NodeAppError::ResolutionFailed)?;
+        after = after.without(&[name]);
+    }
+    for package in &preview.installs {
+        let name = DistName::new(&package.name).map_err(|_| NodeAppError::ResolutionFailed)?;
+        if pins.contains(&name) {
+            after.insert(name, package.version.clone());
+        }
+    }
+    if !pins.diff(&after).is_empty() {
+        return Err(NodeAppError::ResolutionFailed);
+    }
+    Ok(())
 }
 
 impl NodeService {
@@ -151,6 +172,10 @@ impl NodeService {
             }
             NodeTarget::Setup(run) => self.setup_binding(run).await?,
         };
+        let prepare_policy = match &scope {
+            NodeTarget::Active => NodePreparePolicy::Strict,
+            NodeTarget::Setup(run) => self.setup_prepare_policy(run, &request).await?,
+        };
         let id =
             NodeId::new(format!("node-{}", d.ids.new_id())).map_err(|_| NodeAppError::Storage)?;
         let target = match &request {
@@ -243,6 +268,7 @@ impl NodeService {
                     &id,
                     &request,
                     op.prior.as_ref(),
+                    prepare_policy,
                     &self.step(&scope, &id, ctx, lease.retained()),
                 )
                 .await
@@ -330,7 +356,7 @@ impl NodeService {
         let setup = scope != NodeTarget::Active;
         if op.hook_digest.is_some() && needs_deps {
             warnings.push(
-                if setup {
+                if setup && prepare_policy == NodePreparePolicy::Strict {
                     SETUP_HOOK_WARNING
                 } else {
                     ACTIVE_HOOK_WARNING
@@ -363,8 +389,9 @@ impl NodeService {
             trusted_install_py: !setup && trust.is_some_and(|t| t.allow_install_py),
             has_requirements: op.requirements_digest.is_some()
                 || !op.dependency_requirements.is_empty(),
-            // A setup plan offers no hook choice: the hook is explained in the warnings instead.
-            has_install_py: !setup && op.hook_digest.is_some() && needs_deps,
+            has_install_py: (!setup || prepare_policy == NodePreparePolicy::ConsentedFirstRun)
+                && op.hook_digest.is_some()
+                && needs_deps,
         };
         if let Err(error) = self.deps.store.save_operation(&op).await {
             self.abandon(&root, &mut op, &error).await;
@@ -384,6 +411,7 @@ impl NodeService {
                 root,
                 package,
                 target: scope,
+                prepare_policy,
             },
         );
         Ok(review)
@@ -451,22 +479,7 @@ impl NodeService {
             .preview_install(root, &env.path, &base, step)
             .await
             .map_err(|_| NodeAppError::ResolutionFailed)?;
-        let mut after = env.pins.clone();
-        for p in &preview.removals {
-            let name = DistName::new(&p.name).map_err(|_| NodeAppError::ResolutionFailed)?;
-            after = after.without(&[name]);
-        }
-        for p in &preview.installs {
-            let name = DistName::new(&p.name).map_err(|_| NodeAppError::ResolutionFailed)?;
-            if env.pins.contains(&name) {
-                after.insert(name, p.version.clone());
-            }
-        }
-        // A preview that would change any protected package is not offered as a node plan; the
-        // separate package-management workflow owns explicit protected-package confirmation.
-        if !env.pins.diff(&after).is_empty() {
-            return Err(NodeAppError::ResolutionFailed);
-        }
+        validate_protected_preview(&env.pins, &preview)?;
         Ok(Some(PackagePlan {
             id: PlanId::new(op.id.as_str()).map_err(|_| NodeAppError::Storage)?,
             env_id: env.id.clone(),
@@ -535,6 +548,10 @@ impl NodeService {
             }
             NodeTarget::Setup(run) => {
                 let bound = self.setup_binding(run).await?;
+                if plan.prepare_policy == NodePreparePolicy::ConsentedFirstRun {
+                    self.revalidate_setup_policy(run, &plan.review.source)
+                        .await?;
+                }
                 self.ensure_reconciled().await?;
                 bound
             }
@@ -767,7 +784,11 @@ impl NodeService {
         ctx: &StepContext,
     ) -> Result<(), NodeAppError> {
         let d = &self.deps.environment;
-        if self.assert_pins(root, env, pins, ctx).await.is_err() {
+        let cleanup = StepContext {
+            cancel: CancelToken::new(),
+            ..ctx.clone()
+        };
+        if self.assert_pins(root, env, pins, &cleanup).await.is_err() {
             let constraints = d
                 .packages
                 .write_constraints(root, &env.id, pins, &[])
@@ -778,16 +799,12 @@ impl NodeService {
                 constraint_file: Some(constraints),
                 ..Default::default()
             };
-            let cleanup = StepContext {
-                cancel: CancelToken::new(),
-                ..ctx.clone()
-            };
             d.packages
                 .install(root, &env.path, &spec, &cleanup)
                 .await
                 .map_err(|_| NodeAppError::PinDrift)?;
         }
-        self.assert_pins(root, env, pins, ctx).await
+        self.assert_pins(root, env, pins, &cleanup).await
     }
     async fn dependencies(
         &self,
@@ -827,7 +844,7 @@ impl NodeService {
             .write_constraints(root, &env.id, &run_pins, &profile.constraints)
             .await
             .map_err(|_| NodeAppError::DependenciesFailed)?;
-        if let Some(package) = package {
+        let mut spec = if let Some(package) = package {
             // Freeze every resolved distribution to the previewed version. Keep root requirements in
             // the command too, so already-satisfied requirements remain enforced by the resolver.
             let mut requirements = op.dependency_requirements.clone();
@@ -842,26 +859,58 @@ impl NodeService {
                 }
                 requirements.push(format!("{name}=={}", p.version));
             }
-            let spec = InstallSpec {
+            Some(InstallSpec {
                 requirements,
                 constraint_file: Some(constraint),
                 ..guarded_files(guard.as_deref())
-            };
-            let result = d.packages.install(root, &env.path, &spec, step).await;
-            let guard = self.reassert(root, &env, &run_pins, step).await;
-            if result.is_err() {
-                return Err(NodeAppError::DependenciesFailed);
-            }
-            guard?;
-        }
+            })
+        } else {
+            None
+        };
         if decision.consent.run_install_py {
             let location = guard.as_deref().ok_or(NodeAppError::UnsafeSource)?;
+            step.log(format!(
+                "{}: running approved install.py before node requirements.",
+                op.node.name.as_str()
+            ));
             let result = self.deps.hook.run(root, &env, location, step).await;
-            let guard = self.reassert(root, &env, &run_pins, step).await;
+            let pins_restored = self.reassert(root, &env, &run_pins, step).await;
             if result.is_err() {
                 return Err(NodeAppError::DependenciesFailed);
             }
-            guard?;
+            pins_restored?;
+            // Pin repair writes the shared constraints file. Restore the profile extras before
+            // checking the same frozen, guarded inputs against the post-hook environment.
+            let constraint = d
+                .packages
+                .write_constraints(root, &env.id, &run_pins, &profile.constraints)
+                .await
+                .map_err(|_| NodeAppError::DependenciesFailed)?;
+            if let Some(spec) = spec.as_mut() {
+                spec.constraint_file = Some(constraint);
+                step.log(format!(
+                    "{}: checking reviewed requirements after install.py.",
+                    op.node.name.as_str()
+                ));
+                let preview = d
+                    .packages
+                    .preview_install(root, &env.path, spec, step)
+                    .await
+                    .map_err(|_| NodeAppError::ResolutionFailed)?;
+                validate_protected_preview(&run_pins, &preview)?;
+            }
+        }
+        if let Some(spec) = &spec {
+            step.log(format!(
+                "{}: installing reviewed node requirements.",
+                op.node.name.as_str()
+            ));
+            let result = d.packages.install(root, &env.path, spec, step).await;
+            let pins_restored = self.reassert(root, &env, &run_pins, step).await;
+            if result.is_err() {
+                return Err(NodeAppError::DependenciesFailed);
+            }
+            pins_restored?;
         }
         if step.cancel.is_cancelled() {
             return Err(NodeAppError::Cancelled);

@@ -79,6 +79,25 @@ it('remembered_hook_starts_unchecked', () => {
   expect((apply() as HTMLButtonElement).disabled).toBe(true)
 })
 
+it('approved_hook_discloses_install_py_before_requirements', () => {
+  render(ui([plan({ hasInstallPy: true })]))
+  const hook = screen.getByRole('checkbox', {
+    name: 'Run the root install.py script with the selected Python environment before requirements.txt',
+  })
+  for (const checkbox of screen.getAllByRole('checkbox'))
+    expect(checkbox.getAttribute('aria-checked')).toBe('false')
+  expect((apply() as HTMLButtonElement).disabled).toBe(true)
+  fireEvent.click(box(/execute third-party code/))
+  fireEvent.click(hook)
+  fireEvent.click(apply())
+  expect(onCommit).toHaveBeenCalledWith([expect.objectContaining({
+    executeNodeCode: true,
+    runInstallPy: true,
+    rememberSource: false,
+    rememberInstallPy: false,
+  })])
+})
+
 it('warnings_and_pin_changes_require_explicit_confirmation', () => {
   const changes = [{ name: 'torch', from: '2.14.1', to: '2.15.0' }]
   render(ui([plan({ id: 'p1', binding: 'b9', warnings: ['Flagged by the registry'], protectedChanges: changes })]))

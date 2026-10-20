@@ -105,11 +105,11 @@ export function AppShell({ status, onSetup, onResume }: PageActions) {
   const [active, setActive] = useState<NavId>('overview')
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div className="relative flex h-screen overflow-hidden bg-background text-foreground">
       <Sidebar active={active} onSelect={setActive} />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <TopBar />
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="relative min-h-0 flex-1 overflow-y-auto p-6">
           <Page
             active={active}
             status={status}

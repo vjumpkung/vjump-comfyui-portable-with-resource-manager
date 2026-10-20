@@ -140,7 +140,11 @@ export function InstalledTable({
         className={cn(
           COLUMNS,
           'items-center gap-2 border-b px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan/50',
-          node.id === activeId ? 'bg-accent' : 'even:bg-muted/45 hover:bg-muted',
+          node.id === activeId
+            ? 'bg-muted shadow-[inset_3px_0_0_var(--accent)]'
+            : isSelected
+              ? 'bg-muted/60 hover:bg-muted'
+              : 'even:bg-muted/45 hover:bg-muted',
         )}
       >
         <div role="gridcell" onClick={(event) => event.stopPropagation()}>

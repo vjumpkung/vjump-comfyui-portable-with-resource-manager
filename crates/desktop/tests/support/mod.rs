@@ -674,6 +674,7 @@ pub fn build_app_with(options: Options) -> TestApp {
                 locks,
                 Arc::new(YamlExtraModelPaths),
                 downloads.repository.clone(),
+                true,
             )
             .unwrap();
             let hub = RuntimeLogHub::default();
@@ -690,6 +691,7 @@ pub fn build_app_with(options: Options) -> TestApp {
                 ports: Arc::new(TcpPortProbe),
                 preflight: Arc::new(PythonLaunchPreflight::new(stubs.clone())),
                 extra_paths: Arc::new(YamlExtraModelPaths),
+                extra_paths_writer: Arc::new(YamlExtraModelPaths),
                 hub,
             };
             let store = Counted {

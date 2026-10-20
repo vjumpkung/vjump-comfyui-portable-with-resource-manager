@@ -1,6 +1,8 @@
 //! Managed CPython, virtual environments, Python validation and seeding.
 
 use std::{
+    collections::HashMap,
+    ffi::OsString,
     fs,
     path::{Component, Path, PathBuf},
     time::Duration,
@@ -14,7 +16,10 @@ use application::{
     shared::CancelToken,
 };
 use async_trait::async_trait;
-use domain::environment::{OsKind, PythonEnvironment, PythonVersion};
+use domain::{
+    environment::{OsKind, PythonEnvironment, PythonVersion},
+    shared::model_values::SafeFileName,
+};
 use serde::Deserialize;
 
 use super::{
@@ -22,7 +27,7 @@ use super::{
     layout::{Layout, Tool, command, ensure_cache_dirs, venv_python, venv_scripts},
     pins::{MSVC_RUNTIME, PYTHON_DOWNLOADS_JSON},
 };
-use crate::shared::{fs::atomic_write, process::RunLimits};
+use crate::shared::{fs::atomic_write, model_paths::pin_absolute, process::RunLimits};
 
 const PROBE_MARKER: &str = "VJ-PROBE:";
 
@@ -233,6 +238,135 @@ fn failed(message: impl Into<String>) -> ProvisionError {
     ProvisionError::Failed(message.into())
 }
 
+#[derive(Deserialize)]
+struct PinnedPython {
+    name: String,
+    arch: PinnedArch,
+    os: String,
+    libc: String,
+    major: u8,
+    minor: u8,
+    patch: u8,
+    variant: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PinnedArch {
+    family: String,
+}
+
+/// The folder name of uv's minor-version link for the pinned Python, derived from the pinned
+/// download metadata (`cpython-3.13-windows-x86_64-none`, `cpython-3.13-linux-x86_64-gnu`).
+fn minor_link_name(
+    version: PythonVersion,
+    os: &str,
+    arch: &str,
+) -> Result<SafeFileName, ProvisionError> {
+    let unknown = || failed("The pinned Python download metadata has no entry for this platform.");
+    let entries: HashMap<String, PinnedPython> =
+        serde_json::from_str(PYTHON_DOWNLOADS_JSON).map_err(|_| unknown())?;
+    let mut matching = entries.values().filter(|entry| {
+        (entry.major, entry.minor, entry.patch) == (version.major, version.minor, version.patch)
+            && entry.os == os
+            && entry.arch.family == arch
+            && entry.variant.is_none()
+    });
+    let (Some(entry), None) = (matching.next(), matching.next()) else {
+        return Err(unknown());
+    };
+    SafeFileName::new(format!(
+        "{}-{}.{}-{}-{}-{}",
+        entry.name, entry.major, entry.minor, entry.os, entry.arch.family, entry.libc
+    ))
+    .map_err(|_| unknown())
+}
+
+fn minor_link_names(os: &str, arch: &str) -> Result<Vec<SafeFileName>, ProvisionError> {
+    let unknown = || failed("The pinned Python download metadata has no entry for this platform.");
+    let entries: HashMap<String, PinnedPython> =
+        serde_json::from_str(PYTHON_DOWNLOADS_JSON).map_err(|_| unknown())?;
+    let mut names = entries
+        .values()
+        .filter(|entry| entry.os == os && entry.arch.family == arch && entry.variant.is_none())
+        .map(|entry| {
+            SafeFileName::new(format!(
+                "{}-{}.{}-{}-{}-{}",
+                entry.name, entry.major, entry.minor, entry.os, entry.arch.family, entry.libc
+            ))
+            .map_err(|_| unknown())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// A symbolic link or, on Windows, any reparse point (a junction is one).
+fn is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    metadata.file_type().is_symlink()
+}
+
+/// Copy tools that follow links turn uv's minor-version links into real folders, and uv then
+/// fails to replace them. uv recreates the minor links of all managed installations on every
+/// install, so every such copied folder is removed. A real link is left for uv and never followed.
+fn clear_copied_minor_link(
+    layout: &Layout,
+    name: &SafeFileName,
+    ctx: &StepContext,
+) -> Result<(), ProvisionError> {
+    let text = name.as_str();
+    let cache = layout.managed_python_dir();
+    let metadata = match fs::symlink_metadata(cache.join(text)) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => {
+            return Err(failed(format!(
+                "The app's Python cache item named {text} could not be inspected. Close programs that use it and retry."
+            )));
+        }
+    };
+    if is_link(&metadata) {
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Err(failed(format!(
+            "The app's Python cache contains an unexpected item named {text}. Remove it and retry."
+        )));
+    }
+    ctx.log(format!(
+        "Removing a copied Python version folder ({text}); uv recreates its link."
+    ));
+    pin_absolute(&cache)
+        .and_then(|pinned| pinned.remove_owned_tree(name))
+        .map_err(|_| {
+            failed(format!(
+                "A copied Python version folder ({text}) in the app's Python cache could not be removed. Close programs that use it and retry."
+            ))
+        })
+}
+
+/// The `uv python install` arguments. The interpreter is neither linked into a bin folder nor
+/// registered with Windows (PEP 514), so the `py` launcher and IDEs never list it.
+fn managed_install_args(version: PythonVersion, metadata: &Path) -> Vec<OsString> {
+    vec![
+        "--no-config".into(),
+        "python".into(),
+        "install".into(),
+        version.to_string().into(),
+        "--no-bin".into(),
+        "--no-registry".into(),
+        "--python-downloads-json-url".into(),
+        metadata.as_os_str().to_owned(),
+    ]
+}
+
 /// Installs the pinned managed CPython through uv, using the pinned download metadata so uv
 /// verifies every archive against its SHA-256. Idempotent. Returns the interpreter path.
 pub(crate) async fn ensure_managed_python(
@@ -252,11 +386,14 @@ pub(crate) async fn ensure_managed_python(
         timeout: Some(Duration::from_secs(1800)),
         ..RunLimits::default()
     };
-    let install = command(layout, Tool::Uv, layout.uv_exe())
-        .arg("--no-config")
-        .args(["python", "install", version_text.as_str(), "--no-bin"])
-        .arg("--python-downloads-json-url")
-        .arg(&metadata);
+    // Release 1 targets Windows x64 and Linux x64 only.
+    let os = if cfg!(windows) { "windows" } else { "linux" };
+    minor_link_name(version, os, "x86_64")?;
+    for name in minor_link_names(os, "x86_64")? {
+        clear_copied_minor_link(layout, &name, ctx)?;
+    }
+    let install =
+        command(layout, Tool::Uv, layout.uv_exe()).args(managed_install_args(version, &metadata));
     run_step(&install, ctx, &limits).await?;
     let find = command(layout, Tool::Uv, layout.uv_exe())
         .arg("--no-config")

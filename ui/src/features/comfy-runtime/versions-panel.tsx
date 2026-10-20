@@ -46,6 +46,8 @@ function describeTarget(input: UpdateInput): string {
   switch (input.target.kind) {
     case 'latest_release':
       return 'the latest published release'
+    case 'latest_commit':
+      return 'the latest commit on origin’s default branch'
     case 'tag':
       return `release ${input.target.name}`
     case 'branch_ff_only':
@@ -164,6 +166,13 @@ export function VersionsPanel() {
             ) : null}
             <div className="flex flex-wrap items-end gap-3">
               <Button
+                variant="outline"
+                disabled={update.isPending}
+                onClick={() => ask({ kind: 'latest_commit' })}
+              >
+                Update to latest commit (git pull)
+              </Button>
+              <Button
                 disabled={update.isPending}
                 onClick={() => ask({ kind: 'latest_release' })}
               >
@@ -179,6 +188,10 @@ export function VersionsPanel() {
                 </Button>
               ) : null}
             </div>
+            <p className="text-xs text-muted-foreground">
+              Switches to origin’s default branch, normally master. Development
+              code may be less stable than a release.
+            </p>
             {data.tags.length > 0 ? (
               <div className="flex flex-wrap items-end gap-3">
                 <div className="flex min-w-48 flex-col gap-1.5">

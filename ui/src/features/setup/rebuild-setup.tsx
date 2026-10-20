@@ -43,6 +43,7 @@ export function RebuildSetup({ status, refresh, renderCuratedReview }: {
         cleanCache: false,
         confirmAdoptedChanges: false,
         allowSourceBuilds: false,
+        thirdPartyConsent: false,
       },
     }, { onSuccess: (result) => {
       setTrackedRunId(result.runId)

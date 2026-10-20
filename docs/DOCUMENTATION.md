@@ -4,9 +4,13 @@ This manual has two parts: a user guide (Part 1) and a developer guide (Part 2).
 
 ## How to read the status markers
 
-This project is under active development. Most of this manual describes behaviour that exists in the code. A few passages describe work that is **approved in a plan but not yet implemented or verified**. Those passages are preceded by an HTML comment starting with `VERIFY:` (invisible when rendered) so that a final pass can confirm or delete them. In the rendered text, such features are introduced with the words "planned" or "in progress".
+This manual describes the behaviour of the code at the final session-6 checkpoint (2026-10-20). Every feature described here is implemented. Where it matters, the text says how far a feature has been checked:
 
-Nothing in this manual states that the application has been accepted on NVIDIA hardware on Linux, or that a release is ready. See [Known limitations and open validation items](#known-limitations-and-open-validation-items).
+- **Verified natively on Windows** means the real application ran it on Windows 11 with an NVIDIA GeForce RTX 3060 (driver 610.88). The evidence IDs (for example N24) refer to [docs/RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md).
+- **Covered by automated tests** means Rust or Vitest tests exercise the behaviour, but no native run has been recorded.
+- Nothing has been compiled or run on Linux. Linux statements describe the code and configuration only.
+
+The release verdict is **NO-GO**: Linux, installer execution, provider-token scenarios, signing and other gates are open. [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md) is the authoritative ledger, and [Known limitations and open validation items](#known-limitations-and-open-validation-items) summarises it.
 
 ## Table of contents
 
@@ -62,7 +66,7 @@ The application window is titled **vjumpkung ComfyUI**. The left navigation has 
 
 ## 1. Installation
 
-Release 1 targets **Windows 10/11 x64** and **Linux x64**, with **NVIDIA GPUs only**. There is no published release yet, so these instructions describe the intended bundles.
+Release 1 targets **Windows 10/11 x64** and **Linux x64**, with **NVIDIA GPUs only**. There is no published release yet, so these instructions describe the bundles as configured.
 
 ### Windows
 
@@ -72,7 +76,7 @@ Release 1 targets **Windows 10/11 x64** and **Linux x64**, with **NVIDIA GPUs on
 
 A current NVIDIA driver is required. The driver's CUDA level decides which profiles are available (see [Profiles](#profiles)).
 
-The locally built Windows installers are unsigned and have not been run end to end. Expect an "unknown publisher" warning from Windows.
+Both Windows installers were built locally on 2026-10-20 (`vjumpkung-comfyui-desktop_0.1.0_x64-setup.exe`, 8.90 MiB, and `vjumpkung-comfyui-desktop_0.1.0_x64_en-US.msi`, 12.72 MiB; hashes in [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md)). They are unsigned and have **not** been run, so the WebView2 bootstrapper, installation and uninstallation are unverified. Expect an "unknown publisher" warning from Windows.
 
 ### Linux
 
@@ -89,7 +93,9 @@ Only one copy of the application runs at a time. Starting it a second time focus
 
 ## 2. First-run setup wizard
 
-When there is no valid installation, the application opens the setup wizard. It has six stages: **Install root, Hardware, Python source, Profile, Options, Review**. After the review, the installation runs and shows live progress.
+When there is no valid installation, the application opens the setup wizard. It has six stages: **Install root, Hardware, Python source, Profile, Options, Review**. After the review, the installation runs and shows live progress. Before setup, the application creates only its `data` folder in the install root; nothing is created inside `ComfyUI/` until setup clones it (verified natively, N8, N26). After a successful first-time setup the application restarts itself once (N11, N28).
+
+A complete first run on the recommended Windows profile with ComfyUI-Manager and 21 curated nodes took about 8.5 minutes on the test machine, with no pause, and every node imported on `cuda:0` (N11, N13).
 
 ### Install root
 
@@ -118,47 +124,52 @@ For the last two, the chosen Python is validated before setup, and each check sh
 
 ### Profiles
 
-Seven profiles are bundled. All use PyTorch from `download.pytorch.org`, a Triton build and a verification step.
+Seven profiles are bundled. All use PyTorch from `download.pytorch.org`, a Triton build and a verification step. The wizard lists the recommended profile for your OS first and preselects it (N25); the other eligible profiles follow.
 
 | Profile | Python | PyTorch | CUDA | Status |
 |---|---|---|---|---|
-| `win-py313-torch2141-cu130` | 3.13.16 | 2.14.1 | 13.0 | Stable, recommended (default on Windows) |
+| `win-py312-torch2100-cu130` | 3.12.15 | 2.10.0 (+ torchvision 0.25.0, torchaudio 2.10.0) | 13.0 | Stable, recommended (default on Windows) |
+| `win-py313-torch2141-cu130` | 3.13.16 | 2.14.1 | 13.0 | Stable, Windows alternative |
 | `win-py313-torch2141-cu126` | 3.13.16 | 2.14.1 | 12.6 | Stable, for drivers without CUDA 13 |
 | `win-py314-torch2141-cu130` | 3.14.8 | 2.14.1 | 13.0 | Experimental |
-| `win-py312-torch2100-cu130` | 3.12.15 | 2.10.0 | 13.0 | Stable compatibility profile |
 | `linux-py313-torch2141-cu130` | 3.13.16 | 2.14.1 | 13.0 | Stable, recommended (default on Linux) |
 | `linux-py313-torch2141-cu126` | 3.13.16 | 2.14.1 | 12.6 | Stable |
 | `linux-py314-torch2141-cu130` | 3.14.8 | 2.14.1 | 13.0 | Experimental |
 
-"Stable" describes the profile's status label in the bundle, not a validation result on real hardware. Only `win-py313-torch2141-cu130` has been run on a real NVIDIA machine (Windows, 2026-10-16).
+"Stable" describes the profile's status label in the bundle, not a validation result on real hardware. On the RTX 3060 test machine:
+
+- `win-py312-torch2100-cu130` (revision 2) was verified natively from the application on 2026-10-20: first-time setup, final verification and ComfyUI 0.42.1 on `cuda:0` with Python 3.12.15 and torch 2.10.0+cu130 (N5, N11, N13, N28). It is the Windows default by owner decision. Its disk estimate is not calibrated.
+- `win-py313-torch2141-cu130` passed a direct setup test on 2026-10-16 and an application-driven first run in session 5 (Python 3.13.16, torch 2.14.1+cu130).
+- The other profiles, and every Linux profile, have not been run.
 
 Notes:
 
-- The PyTorch 2.14.1 profiles install `torch` and `torchvision` only. No matching `torchaudio` wheel was published for 2.14.x when the profiles were prepared. ComfyUI v0.40.0 does not require it. The 3.12 compatibility profile installs `torchaudio` 2.10.0.
+- The PyTorch 2.14.1 profiles install `torch` and `torchvision` only. No matching `torchaudio` wheel was published for 2.14.x when the profiles were prepared, so curated nodes that import `torchaudio` (for example ComfyUI-MelBandRoFormer and ComfyUI-WanVideoWrapper) fail to import on those profiles. The Python 3.12 profile installs `torchaudio` 2.10.0, and those nodes import on it (N13).
 - Triton is `triton-windows` on Windows and `triton` on Linux, at the version the profile pins.
 - Profiles with CUDA 12.6 require a driver that supports CUDA 12.6. Profiles with CUDA 13.0 require 13.0.
 
 ### Options
 
-- **ComfyUI version.** Choose the latest release or enter an exact tag. Browsing tags is not offered in the wizard. After setup, the ComfyUI page has a version picker.
-- **ComfyUI-Manager.** Optional and off by default. Selecting it shows the source and the exact commit, and you must approve running its code. When it is installed, you can launch ComfyUI with its built-in Manager enabled.
-- **Clean caches.** Optional final step that removes download caches to save disk space.
+- **ComfyUI version.** Choose **Latest release** (the default), **Latest commit (master)** or **Specific tag** (N26). Latest commit (master) installs the newest commit on ComfyUI's `master` branch. This is development code and may be less stable than a release. The checkout tracks `origin/master`, so `git pull` and the app's **Fast-forward** update it. A release or tag is placed on the branch that contains it (`master`, or the `release/vX.Y` branch for a patch release; see [Updating ComfyUI](#updating-comfyui-and-the-version-picker)). For a specific tag, enter the exact tag; browsing tags is not offered in the wizard. After setup, the ComfyUI page has a version picker.
+- **ComfyUI-Manager.** Optional. It is ticked by default in first-run setup (other setup modes leave it unticked). It is installed from the latest commit of its default branch. The Review stage states that this runs third-party code and lists the source; clicking **Start setup** is your confirmation, so first-run setup does not pause for consent and logs the approved commit. (Repair with ComfyUI-Manager still asks for consent.) When it is installed, you can launch ComfyUI with its built-in Manager enabled.
+- **Clean package cache after setup.** Optional, off by default. The final step runs `uv cache clean` on the application's uv cache to save disk space.
+- **Accelerators.** Each profile offers its own list. The Python 3.12 profile (revision 2) offers five optional accelerator wheels (SageAttention, llama-cpp-python, FlashAttention 2, FlashAttention 3 and onnxruntime-gpu) and a "Compatibility packages" component (`transformers`, `onnx`, `numpy`, `pillow` constraints). Every option shows its provenance and is labelled **experimental**. None is selected by default, and changing the profile resets the selection to the new profile's defaults. Each wheel is downloaded from its publisher and checked against a pinned SHA-256 before it is installed. A matching hash proves the file is the expected artifact. It does **not** prove the wheel works with your Python, torch, CUDA and GPU. Failure to install or import an accelerator is a warning, not a setup failure, and the result of each component is stored and shown on the Environment page. The other bundled profiles show "This profile offers no optional accelerators." Limitation: no accelerator has been installed on real hardware yet, and FlashAttention 3's import module name is unverified, so it has no import check.
 
-<!-- VERIFY: M6 plan E1 (m6-approved-plan.md "E1 - Hashed accelerators"): the accelerator selection list in the Options stage, the "reset to profile defaults on profile change" behaviour, and the per-component results are not yet implemented -->
-- **Accelerators** (planned). For the Python 3.12 compatibility profile only, a list of optional accelerator wheels (SageAttention, FlashAttention 2 and 3, onnxruntime-gpu, llama-cpp-python) and a "compatibility packages" component (`transformers==5.5.0`, `onnx`, `numpy<2.3`, `pillow<12`). Each wheel is downloaded from its publisher and checked against a pinned SHA-256 before it is installed. A matching hash proves the file is the expected artifact. It does **not** prove the wheel works with your Python, torch, CUDA and GPU, so these wheels are marked **experimental** and start unchecked. Failure to install or import an accelerator is a warning, not a setup failure. The Python 3.13 and 3.14 profiles have no accelerators.
-
-<!-- VERIFY: M6 plan E2 (m6-approved-plan.md "E2 - Curated nodes through M5, before activation") and m6-reference-data.md: the curated-nodes list in the Options stage, the 22-entry catalog, the batch review dialog and the "install.py never runs during setup" rule are not yet implemented -->
-- **Curated custom nodes** (planned, first-run only). A list of 22 recommended nodes, each pinned to an exact Git commit, mirroring the reference installer. 21 of the 22 are ticked by default; ComfyUI-PlagueKind-Nodes is listed as unavailable at its pinned commit (it ships `__pycache__`). Ticking a node does not authorise running its code. Setup pauses on the same review and consent dialog as the Custom Nodes page. During setup, `install.py` scripts are never run and source trust is never remembered. After setup, use the Custom Nodes page to retry a node's script step.
+- **Curated custom nodes** (first-run only). A list of 22 recommended nodes, mirroring the reference installer. Each is cloned at the latest commit of its repository's default branch (there is no commit lock) and tracks that branch afterwards. All 22, including ComfyUI-PlagueKind-Nodes, are selectable; none is ticked by default. The Review stage lists every selected repository and states that third-party code will run; clicking **Start setup** is your confirmation, so setup does not pause for a per-node review. Each full repository URL and resolved commit is logged before it is installed, and warnings are logged as acknowledged. Selected curated Git nodes may ship Python cache files (`__pycache__`) and top-level native programs or libraries; containment, provenance, Git restrictions and resource limits still apply. Setup runs a selected node's `install.py` if present, then installs its reviewed requirements. Source trust and script trust are never remembered, and app-managed installation remains wheel-only. These exceptions apply only to persisted consent for selected curated Git sources in FirstRun; non-consented setup and the Custom Nodes page retain their content refusals. Manager uses its separate source/requirements path.
 
 ### Review and install
 
-The Review stage lists your choices. When you start, the installation runs these steps in order, each idempotent on retry:
+The Review stage lists your choices. When a first run selects ComfyUI-Manager or curated nodes, a **Third-party code** notice lists every source URL and says:
+
+> Installing ComfyUI-Manager and selected custom nodes runs third-party code on this computer; a Python environment is not a sandbox. Setup installs the latest commit of each repository’s default branch. For selected custom nodes, setup allows shipped Python cache files and top-level native programs or libraries, runs install.py if present, then installs the reviewed requirements.txt. It does not ask again. Clicking Start setup confirms this.
+
+The button is **Start setup**. There is no consent checkbox and no later consent pause in a first run (verified natively, N10, N11, N28). When you start, the installation runs these steps in order, each idempotent on retry:
 
 1. Preflight checks.
 2. Fetch and verify the pinned tools: uv, MinGit (Windows only) and the isolated `hf` tool environment.
 3. Create the Python environment.
 4. Seed `pip`, `setuptools` and `wheel` (plus an app-local MSVC runtime on Windows).
-5. Clone ComfyUI at the selected tag.
+5. Clone ComfyUI at the selected source, on a branch that tracks `origin` where possible.
 6. Install `torch` and `torchvision` (and `torchaudio` where the profile lists it).
 7. Verify the torch version and CUDA availability.
 8. Install Triton.
@@ -181,7 +192,7 @@ A failed step shows its name, message, the failing command, its exit code and th
 - **Skip optional step**: only offered when the failed step is optional (for example an accelerator).
 - **Abort setup**: cancel and clean up.
 
-If ComfyUI-Manager needs consent, the Retry button is held until you approve its source.
+A first-run setup carries your consent from the Review stage, so ComfyUI-Manager and the curated nodes install without a pause and Retry never waits for approval. In other modes, for example Repair with a recorded ComfyUI-Manager, the Retry button is held until you approve its source.
 
 ## 3. Changing the environment later (re-setup)
 
@@ -199,24 +210,26 @@ Re-setup starts at the Hardware stage. It keeps the current ComfyUI checkout and
 
 **Side-by-side activation.** A new environment is built next to the old one. It becomes the active environment only after verification passes. If the build fails, the old environment stays active and ComfyUI still starts. The previous environment is kept until you delete it from the Environment page. Models, `user/`, `input/`, `output/` and custom node folders are never touched.
 
-<!-- VERIFY: M5 backend plan WP5 (m5-backend-approved-plan.md): node requirements are restored during Repair/replacement and any node requirement failure blocks activation in every replacement mode -->
-**Custom nodes during re-setup** (in progress). The new environment reinstalls the dependency requirements of installed custom nodes, enabled and disabled. If a node's requirements fail to install, the new environment is **not** activated and the old one stays active. A repair-required environment always gets a full replacement.
+**Custom nodes during re-setup.** The new environment reinstalls the dependency requirements of installed custom nodes, enabled and disabled, under the pin guard. If a node's requirements fail to install, the new environment is **not** activated and the old one stays active. This holds in every replacement mode. A repair-required environment always gets a full replacement. This is covered by automated tests (`replacement_environments_receive_existing_node_requirements_under_the_pin_guard`, `replacement_node_dependency_failure_never_activates`, `repair_required_always_builds_a_replacement`); no re-setup has been run natively yet.
 
 ## 4. Moved install and guided rebuild
 
-<!-- VERIFY: M6 plan E3 (m6-approved-plan.md "E3 - Missing-root recovery and guided rebuild") and REQUIREMENTS FR-SETUP-12: detection of a moved install root or broken interpreter, the Locate/New actions, the Rebuild mode and its database path rebasing are not yet implemented -->
-This section describes **planned** behaviour (FR-SETUP-12).
+This behaviour (FR-SETUP-12) is implemented and was verified natively on Windows on a `robocopy /E` copy of a working installation (11.2 GB): the copy was detected as moved, the rebuild succeeded in about 2 minutes, the application restarted itself and ComfyUI ran with all nodes on `cuda:0` (N19, N20). The variant where the original folder no longer exists, and the Linux symbolic-link case, have not been run natively.
 
 A Python venv records absolute paths, so it stops working when you copy or move the install folder. Release 1 does not try to make a moved folder run unchanged. Instead:
 
-- On launch, if the recorded install root differs from the current one, or the active venv's interpreter no longer works, the application offers a **guided rebuild** and normal commands return `rebuild_required` until you finish it.
-- If the install location the application remembers no longer exists, you can **locate an existing installation** (you point to an existing install, and the application restarts using it) or **start a new install** in an empty folder. Neither option overwrites an existing installation.
+- On launch, if the recorded install root differs from the current one, or the active venv's interpreter no longer works, the application shows a **Rebuild environment** screen (recorded root, profile, Python version and preserved data) and normal commands return `rebuild_required` until you finish it. A failed rebuild stays inspectable: **Retry same run** resumes it, and **Start fresh rebuild** starts again. Locating the original install from this screen is not offered.
+- If the install location the application remembers is missing (`root_missing`) or cannot be accessed (`root_inaccessible`), the application shows **Install recovery required** with the recorded root and three actions: **Locate existing install** (you point to an existing install, and the application restarts using it), **Create new install** (an empty folder; the application restarts using it, and an empty root opens the setup wizard) and **Recheck installation**. Neither selection overwrites an existing installation. A folder that cannot be used is refused with `root_invalid`.
 - A rebuild creates a **new app-owned venv** in the current root using the exact profile revision and component choices that were recorded at the original setup. It never mutates or deletes an adopted venv.
 - The ComfyUI checkout is reused as is (no fetch, checkout or reset), and local edits are preserved. Requirements of enabled and disabled custom nodes are reinstalled. No `install.py` scripts run, and no newer node versions are fetched.
 - The `hf` tool environment is recreated, because it also records absolute paths.
 - Models, nodes, `user/`, `input/`, `output/`, external model roots and launch options are preserved. Paths stored in the database that point into the old root are rebased to the new root. Paths outside the old root are left alone.
 - If the recorded profile revision is no longer available, the rebuild is refused with `profile_revision_unavailable`.
 - If an earlier activation, ComfyUI update or node operation was left half-finished, the application preserves it and reports `relocation_recovery_required` instead of rebuilding.
+
+Copy tools that follow links turn uv's Python version links (junctions on Windows, symbolic links on Linux) into real folders. uv recreates the link of every managed Python version on each install, so the tools step deletes every such copied folder inside the app's Python cache, `data/cache/uv-python` (for example both `cpython-3.12-…` and `cpython-3.13-…`), and uv creates the links again. Links are never followed or deleted by the app. On Windows this was verified on the copy above (N19 found a remaining copied 3.12 link, fixed; N20 passed). The managed Python is installed with `--no-registry`, so neither the original nor the rebuilt installation registers itself under `HKCU\Software\Python\Astral` (N20).
+
+Other limits (residual R21 in the ledger): move detection needs a valid `install.json`; a copy whose manifest is missing or corrupt starts normally while its database still points at the old root. User-owned paths into the old root (for example a launch `--output-directory` or entries in `extra_model_paths.yaml`) are kept as they are.
 
 ## 5. Environment page
 
@@ -229,8 +242,9 @@ The Environment page shows:
 - re-setup actions;
 - deletion of inactive environments.
 
-<!-- VERIFY: M6 plan E1 and "I" (m6-approved-plan.md): the Environment page showing stored accelerator install/import results is not yet implemented -->
-In a planned update, the page also shows the stored accelerator results for the environment (installed, failed or skipped, and whether the import test passed).
+A **Stored accelerator results** card shows the recorded outcome of each accelerator component for the environment (installed, failed or skipped, and whether the import test passed). When nothing was recorded it says so: older metadata may not record optional components, and an empty card does not establish which accelerators are installed.
+
+The app's private Python interpreters are not registered with Windows, so the `py` launcher and IDEs do not list them. Development builds before this change registered them under `HKCU\Software\Python\Astral\CPython<version>`. If such an entry's `InstallPath` points into an install root's `data\cache\uv-python`, you can remove it with `reg delete "HKCU\Software\Python\Astral\CPython<version>" /f`.
 
 ### Installing, upgrading and uninstalling packages
 
@@ -248,12 +262,11 @@ Under "Delete an inactive environment", type the environment's recorded ID and c
 
 ### Start, stop and restart
 
-The page and the top bar have Start, Stop and Restart. ComfyUI runs as a child process that the application owns, started as `python -s main.py --listen 127.0.0.1 --port <port>` plus your options. The application waits for ComfyUI to become ready before it reports Running.
+The page and the top bar have Start, Stop and Restart. ComfyUI runs as a child process that the application owns, started as `python -s main.py --listen 127.0.0.1 --port <port>` plus your options. The application waits for ComfyUI to become ready before it reports Running. Verified natively on Windows: ComfyUI 0.42.1 reported `cuda:0 NVIDIA GeForce RTX 3060` through `/system_stats`, and Stop freed the port and left no Python process (N5, N13; session 5).
 
-Start first checks: custom-node recovery state, a leftover ComfyUI process, a pending update, the selected environment and the port. Start, stop, update and package operations are serialised, so only one runs at a time.
+Start first checks: custom-node recovery state, a leftover ComfyUI process, a pending update, the selected environment and the port. Start, Restart and Stop run their checks and the custom-node rescan under one maintenance lease, and start, stop, update and package operations are serialised, so only one runs at a time.
 
-<!-- VERIFY: M5 backend plan WP6 (m5-backend-approved-plan.md "WP6"): Start/Restart/Stop checks and node rescans under one maintenance lease, and the node_recovery_required / node_rescan_failed errors -->
-Start is refused with `node_recovery_required` while an interrupted custom-node operation needs resolving, and Stop reports `node_rescan_failed` if the node folders could not be re-scanned after ComfyUI stopped (in progress).
+Start is refused with `node_recovery_required` ("interrupted custom-node work must be resolved before launch.") while an interrupted custom-node operation needs resolving. Stop reports `node_rescan_failed` ("ComfyUI stopped, but custom nodes could not be rescanned; retry Rescan.") if the node folders could not be re-scanned after ComfyUI stopped. While that post-stop rescan runs, it holds the maintenance lease, so closing the application right after Stop can be refused for a moment (see [Troubleshooting](#closing-is-refused-with-maintenance-is-in-progress)).
 
 **Port conflicts.** If the port is in use, a dialog tells you which port is taken and offers a free port. If you accept, the new port is saved as your launch port.
 
@@ -292,16 +305,33 @@ The **Settings > Close behaviour** choice decides what happens when you close th
 
 ### Updating ComfyUI and the version picker
 
-The versions panel offers the latest release, a fast-forward of the current branch, and available tags. An update may stop a running ComfyUI, reinstall `requirements.txt` under the pin guard, and then verify the environment. Updates use fast-forward only. If the checkout has local changes or has diverged, the update is refused, shows the Git status, and changes nothing. The application never resets or force-checks-out your files.
+The versions panel offers **Update to latest commit (git pull)** to switch to the latest commit on origin’s default branch, normally `master`. This is development code and may be less stable than a release. **Update to latest release** and **Switch to &lt;tag&gt;** select a release tag for checkout. **Fast-forward &lt;current branch&gt;** updates only the current branch from its upstream using fast-forward only. Source switching checks out the frozen commit with safe branch placement; it is not restricted to fast-forward updates. An update may stop a running ComfyUI, reinstall `requirements.txt` under the pin guard, and then verify the environment. If the checkout has local changes or has diverged, the update is refused, shows the Git status, and changes nothing. The application never resets or force-checks-out your files.
 
 Switching to an older tag does **not** restore the older package set. The panel warns about this. A pending update must be completed or retried before ComfyUI can start.
 
+ComfyUI is a normal git checkout that tracks `origin`, so `git pull` works. A `vX.Y.0` release is on `master`, so `git pull` brings the latest development code. A patch release such as v0.42.1 exists only on ComfyUI's `release/v0.42` branch, so `git pull` brings later v0.42.x patches only; use the app's version switch to move to a newer minor version. An install that is still detached (created by an older version of the app) is attached by switching to its current version in the Version card. Prefer the app's Fast-forward button: it reinstalls requirements with the torch pin guard. After a manual `git pull`, run Repair. Fresh installs: the app creates nothing inside the install folder's `ComfyUI` before setup clones it, and restarts once after first-time setup.
+
+Verified natively on Windows: switching a detached v0.42.1 install to v0.42.1 attached it to `release/v0.42` and `git pull --ff-only` reported "Already up to date." (N18); **Update to latest commit (git pull)** moved it to `master` tracking `origin/master` and ComfyUI ran (N21); switching back to v0.42.1 returned it to `release/v0.42` and kept the local `master` (N22). The refusal of a checkout with local changes is covered by automated tests only.
+
 ### extra_model_paths.yaml
 
-The page shows the model paths read from `ComfyUI/extra_model_paths.yaml`. It is read-only in the application. The parser expands `~`, `$VAR`, `${VAR}` and Windows `%VAR%`, and resolves relative paths against the ComfyUI folder. The model library scans these folders too.
+The page shows the model paths read from `ComfyUI/extra_model_paths.yaml`. The parser expands `~`, `$VAR`, `${VAR}` and Windows `%VAR%`, and resolves relative paths against the ComfyUI folder. The model library scans these folders too.
 
-<!-- VERIFY: M6 plan P (m6-approved-plan.md "Diagnostics"): the Copy diagnostics button on this page moving to the new app_diagnostics/app_copy_diagnostics commands, the extended report, and the textarea fallback -->
-**Copy diagnostics** copies a report to the clipboard. In the planned version the report covers the application version, OS, GPU and driver, the active environment and its pins, accelerator outcomes, the ComfyUI revision, and the last 200 log lines, all redacted. If the clipboard is unavailable, the text is shown in a selectable box instead.
+**Generate from a base folder.** Enter a model base folder (or use Browse) and press **Generate**. The app writes one section, `vjumpkung_desktop`, to `ComfyUI/extra_model_paths.yaml`:
+
+- `base_path` is the folder you chose, and `is_default` is `false`, so `ComfyUI/models` stays ComfyUI's default location.
+- One key per model folder, each pointing at `<name>/` inside the base folder: the standard categories (`checkpoints`, `diffusion_models`, `text_encoders`, `vae`, `loras`, `controlnet`, ...), `configs`, and every folder that already exists in `ComfyUI/models`. `text_encoders` also lists `clip/`, and `diffusion_models` also lists `unet/`, but only when those folders already exist in the base folder.
+- Missing standard folders are created inside the base folder. Existing folders and links are left as they are, and nothing is ever deleted. A file with the name of a standard folder stops the operation.
+
+Other sections of an existing file are kept, but the file is re-written, so its comments are lost. When the file was not written by the app (its first line is not the `# Managed by vjumpkung ComfyUI desktop` header), a copy is first saved as `data/backups/extra_model_paths-<YYYYMMDDTHHMMSSZ>.yaml` in the install folder. Backups are never placed beside the file, because that would make the ComfyUI checkout dirty and block app updates. Press **Generate** again to change the base folder; repeating it with the same folder does not make another backup. **Remove generated section** deletes only the `vjumpkung_desktop` section, and the file itself when no other section remains. Both actions rescan the model library.
+
+The app refuses a file it cannot rewrite safely and shows the reason: a link, larger than 1 MiB, not UTF-8, invalid YAML, a top level that is not a mapping, or a section that uses a `<<` merge key. Edit or move the file, then retry. It also refuses a base folder that is not an absolute local or network path, that contains `$` or `%` or starts with `~` (ComfyUI expands them), that is the install folder or inside its `ComfyUI`, `envs`, `data` or `tools` folders, or that sits behind a link or junction.
+
+Limitations: downloads started in the app still go to `ComfyUI/models`, not to the base folder. ComfyUI reads the file when it starts, so restart ComfyUI after a change; the page reminds you while ComfyUI is running.
+
+Verified natively on Windows with the base folder `D:\vjc-s6\models ทดสอบ` (a space and Thai characters): the file got the header and the `vjumpkung_desktop` section with 27 keys, 18 folders were created and the ComfyUI checkout stayed clean (N15); ComfyUI logged each extra search path, `GET /models/loras` listed a test file in the base folder and the Models page showed it (N16); removing the section deleted the file and kept the folders (N17).
+
+**Copy diagnostics** copies a redacted support report to the clipboard. The same button is in Settings. The report covers the application version, OS, GPU, NVIDIA driver and driver CUDA level, the active environment (profile, Python, torch, Triton, protected pins and stored accelerator outcomes), the install manifest, the ComfyUI revision, tool versions, availability warnings, and the last 200 lines of the application log and of the ComfyUI runtime log. Tokens, signed links and the install folder path are removed. If the clipboard is unavailable, the report is shown in a selectable text box instead. This is covered by automated tests; a native copy has not been recorded.
 
 ## 7. Downloads
 
@@ -329,6 +359,8 @@ Hugging Face downloads use one of two engines, set in **Settings > Hugging Face 
 
 If the `hf` tool is missing or cannot be launched, the job falls back to the native engine. Other `hf` errors (authentication, gated, not found, hash mismatch) do not trigger the fallback. Non-Hugging Face sources always use the native engine. CivitAI links re-resolve on resume, because their signed URLs expire. Whether the native engine can fetch Xet-backed files has not been validated. If it cannot, it fails with a clear error suggesting the `hf` engine.
 
+The `hf` downloader runs with a private home folder (`data/cache/hf/home`), not your profile. It never reads profile credential files such as `.netrc` or a cached Hugging Face token; its only credential is the token stored in the OS keyring. Before this change every `hf` download failed on Windows, because `hf` 2.2.0 needs a home folder at start-up and the child environment had none; runtime failures of the tool are now logged with a redacted summary. Verified natively on Windows: a live engine test without profile variables (N23) and an in-app download of a public Xet-backed file (`stabilityai/sd-vae-ft-mse-original`, `vae-ft-mse-840000-ema-pruned.safetensors`, 334,641,190 bytes) that finished as "COMPLETED VERIFIED" with its SHA-256 checked (N24). Pause and resume, the missing-tool fallback, gated repositories and token-bearing downloads have not been run natively.
+
 ### States, retries and safety
 
 Job states are queued, resolving, downloading, verifying, paused, completed, failed and cancelled. Per job you can pause, resume, retry, cancel, or resolve a filename conflict.
@@ -339,10 +371,9 @@ Job states are queued, resolving, downloading, verifying, paused, completed, fai
 - **Integrity.** Data is written to a temporary file, synced, verified (SHA-256 when the provider supplies one, otherwise marked unverified) and only then renamed into the models folder. A failed hash leaves nothing in the models folder.
 - **Concurrency.** The number of simultaneous downloads is a setting (default 3, range 1 to 32). Lowering it affects new downloads only. Running transfers continue.
 
-<!-- VERIFY: M6 plan B (m6-approved-plan.md "B - One live bandwidth budget"; HANDOFF 5.3): the bandwidth cap setting, shared limiter, and the HF relay on every Hugging Face attempt are partly written in a worktree and never compiled or tested -->
-### Bandwidth cap (in progress)
+### Bandwidth cap
 
-Settings has a **Bandwidth cap (KiB/s)** field. Leave it empty for no limit. When set, one shared budget applies to native downloads and to Hugging Face `hf` CLI downloads together, and a change takes effect for downloads already running. To do this, every Hugging Face `hf` download is routed through a local relay on `127.0.0.1` that only forwards connections to `huggingface.co`, its subdomains and `hf.co`, even when no cap is set. If the relay cannot start, the job fails with `bandwidth_proxy_unavailable` rather than silently running uncapped. Your system proxy settings are passed through to the relay's upstream connection.
+Settings has a **Bandwidth cap (KiB/s)** field ("Shared by all downloads. Leave empty for unlimited speed."). Leave it empty for no limit; 0 is rejected. When set, one shared budget applies to native downloads and to Hugging Face `hf` CLI downloads together, and a change takes effect for downloads already running. To do this, every Hugging Face `hf` download is routed through a local relay on `127.0.0.1` that only forwards connections to `huggingface.co`, `hf.co` and their subdomains, even when no cap is set. If the relay cannot start, the job fails with `bandwidth_proxy_unavailable` rather than silently running uncapped. An `HTTPS_PROXY` setting is passed through to the relay's upstream connection. The relay has no per-download authentication: while a Hugging Face download runs, another local process could use it to reach those hosts (accepted residual R03). The shared budget is covered by automated tests; the cap has not been measured natively.
 
 ### Resource lists and packs
 
@@ -379,7 +410,7 @@ A pack index maps a category to entries whose `url` points at a resource list:
 
 ## 8. Model library
 
-The Models page lists the files under `ComfyUI/models` and under every folder in `extra_model_paths.yaml`. An unavailable root is reported. The scan does not follow links and does not hash files.
+The Models page lists the files under `ComfyUI/models` and under every folder in `extra_model_paths.yaml`. An unavailable root is reported. The scan does not follow links and does not hash files. The ComfyUI page can generate these extra folders from one base folder (see `extra_model_paths.yaml` in the ComfyUI section); downloads still go to `ComfyUI/models`.
 
 - **Find.** Search by name, filter by category and root, and sort by name, category, size or modified time. The page rescans when files change, polls every 30 seconds, and has a Rescan button. If file watching is degraded, the page says so.
 - **Details.** Select a model to see its details, sidecar files and preview.
@@ -390,6 +421,8 @@ The Models page lists the files under `ComfyUI/models` and under every folder in
 - **Identify on CivitAI.** Computes the file's SHA-256 and looks it up on CivitAI to show the model's details and a preview. Identification hashes the file on demand, which can take a while for large files.
 
 Interrupted operations are recovered the next time the library rescans.
+
+Verified natively on Windows (session 5): renaming a model to a Thai file name while ComfyUI ran; refusal of a delete while another program held the file open ("Another program is using the file. Close it, or stop ComfyUI, then retry."), then a successful move to the Recycle Bin after the handle was released. A lock held by a model that ComfyUI has loaded, a non-recyclable volume, a disabled Recycle Bin and network shares have not been exercised.
 
 ## 9. Custom nodes
 
@@ -406,6 +439,14 @@ The browser searches and pages through the Comfy Registry. For each node it show
 
 Either way the application first **prepares** the install and shows a review. Git sources are resolved to an exact commit and cloned to a staging folder. Registry archives are downloaded and extracted with archive hardening. Nothing is published into `custom_nodes/` until you consent.
 
+**Content checks before consent.** The page refuses new node content that it cannot safely stage or review:
+
+- Registry archives that contain `.git` or `__pycache__`, and Git sources that track `__pycache__` content.
+- On Windows, a node whose top-level folder contains a program or library: any file or folder whose name ends in `.dll`, `.exe`, `.com`, `.cpl`, `.drv`, `.ocx`, `.scr` or `.sys`. Tools such as Git, uv or Python could load such a file before you approve the node. For a Git source, the exact commit's file list (`git ls-tree`) is checked **before** anything is checked out; for a Registry archive, the extracted staging folder is checked before the review. The refusal reads: "This node has programs or libraries (.dll, .exe and similar) in its top-level folder. Tools could load them before you approve the node, so it cannot be installed."
+- Native files in sub-folders are allowed. Nodes that are already installed, or that you placed in `custom_nodes/` yourself, are not re-checked.
+
+Tools that the application starts without an explicit working folder start in their own executable's folder, and uv's interpreter query imports nothing from the node folder (checked with pinned uv 0.13.1, N27). The Git and native-image refusals are covered by Windows tests with real Git; no public repository with a top-level `.dll` was available for a native run. These refusals are relaxed only for selected curated nodes in a consented first-run setup (see [Options](#options)).
+
 ### The review and consent
 
 The review shows the exact resolved source (Registry id and version, or Git URL and commit), the previous source for updates, the node's dependency requirements, compatibility and source warnings, and any change to protected packages.
@@ -418,30 +459,32 @@ You must tick **execute** consent for the exact plan. The review warns that:
 
 Other checkboxes:
 
-- If the node has a root `install.py`, a separate checkbox lets you run it. It is unchecked by default and is never implied by anything else.
+- If the node has a root `install.py`, a separate checkbox, "Run the root install.py script with the selected Python environment before requirements.txt", lets you run it. It is unchecked by default and is never implied by anything else.
 - Warnings and protected-package changes need their own explicit confirmations.
 - "Remember this source" lets the application remember a trusted source (a Git repository, or a Registry node with a publisher and repository). A remembered source never replaces the per-install execute consent.
 
 Closing an idle review discards the prepared plan.
 
-<!-- VERIFY: M5 backend plan WP3 (m5-backend-approved-plan.md "WP3"): node dependency previews refuse protected-package changes outright (no unconstrained retry) -->
-**Protected packages** (in progress). Installing a node must not change `torch`, `torchvision`, `torchaudio` or Triton. If a node's requirements conflict with the pins, the install fails with a resolution error and nothing changes. To deliberately change those packages, use the Environment page's package workflow.
+**Protected packages.** Installing a node must not change `torch`, `torchvision`, `torchaudio` or Triton. Node dependency previews are resolved only with the pins held fixed, with no unconstrained retry, so if a node's requirements conflict with the pins, preparation fails with a resolution error that names the protected constraints and nothing changes. Node operations can never authorise a protected-package change. To deliberately change those packages, use the Environment page's package workflow.
 
 ### Updating, enabling, disabling, uninstalling
 
 - **Update.** Registry nodes are installed from the newer version in a staging folder and swapped in, and the old folder goes to the trash. Git nodes use fast-forward only. A repository with local changes, an unfinished operation or a diverged history is **refused**, and your files are left alone.
-- **Update all** prepares reviewed plans one node at a time, then applies them sequentially. Nodes that need an explicit target (a detached HEAD, or no upstream) are skipped with a message. The batch stops if a dependency failure damages the environment.
+- **Update all** prepares reviewed plans one node at a time, then applies them sequentially. More than 128 targets run as successive reviewed groups of at most 128 plans. Nodes that need an explicit target (a detached HEAD, or no upstream) are skipped with a message. A partially executed batch is never replayed: failed and unrun targets are prepared again. The batch stops if a dependency failure damages the environment.
 - **Enable / Disable.** Disabling moves the node folder to `custom_nodes/.disabled/<name>`, the same convention ComfyUI-Manager uses. Enabling moves it back.
 - **Uninstall.** The node folder moves to the Recycle Bin or Trash. Python packages stay installed, because other nodes may share them. There is no permanent-delete fallback.
 
-<!-- VERIFY: M5 frontend plan WP5 (m5-frontend-approved-plan.md "Update all") : groups of at most 128 plans reviewed group by group; Git status inspected before Update -->
-In progress: "Update all" works in reviewed groups of at most 128 plans, and **Update** on a Git node inspects and displays the real `git status` first.
+**Update** on a Git node, and Update all, first read and display the node's real `git status`.
+
+Verified natively on Windows: installing `https://github.com/ltdrdata/ComfyUI-Impact-Subpack` from Git with `install.py` approved. The operation log showed "running approved install.py before node requirements.", the script's own output, a pin re-check and "installing reviewed node requirements."; the node ended enabled with dependencies OK on `main` tracking `origin/main`, and `torch`, `torchvision` and `torchaudio` were unchanged (N29). Registry installs, updates, enable and disable, uninstall and the refusal of an edited repository are covered by automated tests only.
 
 All node operations need ComfyUI stopped and run one at a time. After a successful operation the page offers **Restart ComfyUI**.
 
 ### Dependencies and repair
 
-After a node is published, the application installs its `requirements.txt` into the active environment under the pin guard. A node's own Python dependencies can fail in ways the application cannot undo. When that happens:
+After a node is published, the application runs an approved root `install.py` first, then installs its reviewed requirements into the active environment. This order also applies to updates, dependency retries and consented curated setup installs. Protected pins are restored after the hook even when it fails or is cancelled; a hook or pin-restoration failure stops before requirements installation. Before installing requirements, the application restores profile constraints and validates the same guarded requirements bytes and frozen exact package versions against the post-hook environment. Failed validation stops installation. Pins are restored again after requirements installation, followed by final verification and containment/provenance checks. Requirements created by a hook are not discovered when the reviewed source had none.
+
+App-managed resolution and installation are wheel-only. An approved arbitrary hook can invoke its own installers or builds; that policy does not sandbox scripts. A node's own Python dependencies can fail in ways the application cannot undo. When that happens:
 
 - the node is marked **dependencies failed**;
 - the environment is marked **repair required**;
@@ -453,15 +496,17 @@ Retry dependencies is also offered for nodes whose dependency state is "not run"
 
 Nodes already in `custom_nodes/` (including ones installed by ComfyUI-Manager) are listed as **manual** or unmanaged. They can be disabled and uninstalled. They cannot be updated by the application. If ComfyUI-Manager is present, the application re-scans after ComfyUI stops, so changes made through the Manager appear.
 
+Known limitation: ComfyUI-Manager installed by first-run setup is listed with origin **Observed** and dependencies **NOT RUN**, although setup installed its requirements. Setup does not record it as a node operation.
+
 ### Recovery after interruptions
 
 Node operations are journaled. If the application or system stops mid-operation, the next scan reconciles it: unpublished staging is removed, and copies that cannot be proven safe are **preserved** rather than deleted. Use **Rescan / finish recovery** on the page to run reconciliation. The operations panel shows unresolved operations, recent results and per-operation logs.
 
-<!-- VERIFY: M5 backend plan WP4 (m5-backend-approved-plan.md "WP4"): identity-based recovery, final tree digest, and NodeOperation::blocks_start making ambiguous recovery block ComfyUI launch -->
-In progress: ambiguous recovery states (for example a changed or foreign copy) block ComfyUI from starting until resolved, while ordinary cleanup that failed only because the trash was unavailable does not. The recovery panel marks which operations block launch.
+Recovery is identity-based: a copy is matched by its source, commit and content digest, and a node's final content digest must equal the reviewed one unless an approved `install.py` ran (then the new digest is recorded). Ambiguous recovery states (for example a changed or foreign copy) block ComfyUI from starting until resolved, while ordinary cleanup that failed only because the trash was unavailable does not. The operations panel marks such operations with a **Blocks start** chip, and Restart is unavailable while one exists.
 
-<!-- VERIFY: M5 frontend plan WP1 (m5-frontend-approved-plan.md): pendingReviews/recent in node_list so a reloaded UI can "Resume review" and see recent failures, and node_git_status -->
-In progress: a reloaded page can offer **Resume review** for prepared plans (consent is never restored) and keeps recent failed operations visible.
+After a reload, the page lists prepared plans that are waiting for review ("Nothing runs until you confirm. Resuming starts with every confirmation unchecked.") with **Resume review** and **Discard**, and keeps recent failed operations visible. Consent is never restored.
+
+These recovery paths are covered by automated tests; an interrupted node install has not been run natively (scenario 14).
 
 ### Git requirements
 
@@ -480,8 +525,7 @@ Git-based operations need Git. On Windows the application uses its pinned MinGit
 | Registry cache lifetime | 6 hours | 1 or more | How long Registry results are cached |
 | Bandwidth cap (KiB/s) | Unlimited | 1 or more, or empty | See the bandwidth cap section |
 
-<!-- VERIFY: M6 plan B and "I" (m6-approved-plan.md): the Bandwidth cap field is enabled in the UI and takes effect; in the committed UI the field is disabled and says downloads run unthrottled -->
-The bandwidth cap is part of in-progress work. In the last committed version the field is disabled and downloads run unthrottled.
+The bandwidth cap field is enabled and applies to native and Hugging Face `hf` downloads together, including running ones (see [Bandwidth cap](#bandwidth-cap)).
 
 The install root is shown but is changed only by running setup again.
 
@@ -500,15 +544,15 @@ Each token has **Test** and **Clear**. The page shows only whether a token is se
 
 The Settings page also has buttons for Repair, Change torch / CUDA, Change Python and Switch to custom venv (see [section 3](#3-changing-the-environment-later-re-setup)).
 
-<!-- VERIFY: M6 plan P (m6-approved-plan.md "Updater"): Updates panel with app_update_status/app_update_check/app_update_install; shown only when the build has VJUMP_UPDATER_PUBKEY and VJUMP_UPDATER_ENDPOINT; no check-on-launch setting -->
-### App updates (planned)
+### App updates
 
-When the application was built with an update public key and endpoint, Settings shows an **Updates** panel. **Check for updates** looks for a newer signed release and shows its version, date and notes as plain text. Installing it requires ComfyUI to be stopped, verifies the update's signature and installs exactly the release you reviewed, then restarts the application. There is no automatic check on launch. Builds without the key and endpoint have no update action, and the application never updates itself in that case.
+Settings has an **App updates** panel that shows the installed version. Updates are possible only when the application was built with both an update public key (`VJUMP_UPDATER_PUBKEY`) and an endpoint (`VJUMP_UPDATER_ENDPOINT`). Every build made so far has neither, and the panel then says "This build has no update source configured, so it cannot update itself."; the application never updates itself in that case.
 
-<!-- VERIFY: M6 plan P (m6-approved-plan.md "Diagnostics"): Settings diagnostics panel -->
-### Diagnostics (planned)
+In a configured build, **Check for updates** looks for a newer signed release and shows its version, date and notes as plain text. **Install and restart** requires ComfyUI and other maintenance work to be stopped, verifies the update's signature, installs exactly the release you reviewed and restarts the application. There is no automatic check on launch. This flow is covered by automated tests only; no signed update has been published or installed.
 
-A **Copy diagnostics** action copies a redacted support report. See [ComfyUI page](#6-comfyui-page).
+### Diagnostics
+
+The **Diagnostics** panel has **Copy diagnostics**, the same redacted support report as on the ComfyUI page (its contents are described in [ComfyUI page](#6-comfyui-page)), with the same selectable-text fallback.
 
 ## 11. Troubleshooting and FAQ
 
@@ -546,13 +590,40 @@ Another maintenance operation (setup, an environment change, a node operation, a
 
 ### node_recovery_required
 
-<!-- VERIFY: M5 backend plan WP6 and WP4: the node_recovery_required error on Start and when ambiguous states block launch -->
-(In progress.) A custom-node operation was interrupted and the application could not prove which copy of a node is safe. ComfyUI will not start until you run **Rescan / finish recovery** on the Custom Nodes page and resolve what it reports. Preserved copies stay on disk.
+A custom-node operation was interrupted and the application could not prove which copy of a node is safe. Start is refused with "interrupted custom-node work must be resolved before launch." until you run **Rescan / finish recovery** on the Custom Nodes page and resolve what it reports. The operations panel marks the responsible operation with **Blocks start**. Preserved copies stay on disk.
 
-### rebuild_required
+### node_rescan_failed
 
-<!-- VERIFY: M6 plan E3 (m6-approved-plan.md): rebuild_required / root_missing / root_invalid / relocation_recovery_required error codes and the guided rebuild flow -->
-(Planned.) The install folder was moved or copied, or the venv's interpreter no longer works. See [section 4](#4-moved-install-and-guided-rebuild).
+ComfyUI stopped, but the custom-node folders could not be re-scanned. Run **Rescan / finish recovery** on the Custom Nodes page.
+
+### rebuild_required and install recovery codes
+
+The install folder was moved or copied, or the venv's interpreter no longer works. See [section 4](#4-moved-install-and-guided-rebuild). Related codes:
+
+| Code | Meaning |
+|---|---|
+| `rebuild_required` | Normal commands are refused until the guided rebuild finishes |
+| `root_missing`, `root_inaccessible` | The remembered install root is missing or cannot be accessed; locate it or create a new install |
+| `root_invalid` | The folder you selected cannot be used (for example it is not empty, is a file, or is inside the current root) |
+| `relocation_recovery_required` | An interrupted activation, ComfyUI update or node operation must be recovered before relocation |
+| `profile_revision_unavailable` | The recorded setup profile revision is not bundled with this version |
+| `rebuild_checkout_missing`, `rebuild_checkout_invalid` | The existing ComfyUI checkout is missing, unsafe or not a Git checkout |
+
+### Closing is refused with "Maintenance is in progress"
+
+The dialog "Maintenance is in progress. Wait for it to finish or cancel it before closing." appears when you close the application while setup, a node operation, an update or a post-stop custom-node rescan holds the maintenance lease. Right after **Stop**, the rescan can hold it for a moment; close again once it finishes (seen natively, N17).
+
+### ComfyUI fails to start on the Python 3.12 profile with a `pwd` error
+
+Older builds did not pass `USERNAME` to Python child processes. Python 3.12's `getpass.getuser()` then falls back to the Unix-only `pwd` module, which made `torch._dynamo` and ComfyUI fail on Windows. Current builds pass `USERNAME` (verified natively, N5). Update the application.
+
+### A development build closes immediately with exit code 127
+
+Debug builds before the session-6 fix overflowed the 1 MiB Windows main-thread stack during start-up once custom nodes were installed ("thread 'main' has overflowed its stack"). Current builds reserve 8 MiB for the main thread and for the async worker threads, and a test checks the built executable's stack reserve (N1, N6, N7; the release executable also reserves 8 MiB). Rebuild from the current source.
+
+### Relaunching right after a forced exit fails with a WebView2 error
+
+If the application is killed (for example with Task Manager), its WebView2 helper processes (`msedgewebview2.exe`) stay alive for a few seconds. Launching again immediately can fail with `failed to create webview: WebView2 error … 0x800700AA (The requested resource is in use)`. Wait a few seconds and launch again. Closing the window normally avoids this.
 
 ### Why does pausing a Hugging Face download restart from 0%?
 
@@ -560,7 +631,7 @@ The default `hf` CLI engine cannot resume across runs. Switch **Hugging Face eng
 
 ### Why is there no torchaudio?
 
-The PyTorch 2.14.1 profiles omit it because no matching 2.14.x wheel existed. See [Profiles](#profiles).
+The PyTorch 2.14.1 profiles omit it because no matching 2.14.x wheel existed. Nodes that import `torchaudio` fail on those profiles. The recommended Windows profile (Python 3.12, PyTorch 2.10.0) includes `torchaudio` 2.10.0. See [Profiles](#profiles).
 
 ### Why can't Repair change my Python version?
 
@@ -587,12 +658,12 @@ Everything lives in the install root you chose, apart from one small pointer fil
 | `<root>/install.json` | Marker recording the install root, active environment and profile |
 | `<root>/data/app.db` | SQLite database: settings, environment records, launch options, download queue, model catalogue, node records and the Registry cache. Contains no tokens or signed URLs |
 | `<root>/data/cache/` | `uv`, `uv-python`, `pip`, `hf`, `torch` and `triton` caches |
+| `<root>/data/cache/hf/home` | Private home folder for the `hf` CLI child process |
+| `<root>/data/cache/wheels/<sha256>/` | Verified accelerator wheels, one folder per pinned SHA-256 |
 | `<root>/data/downloads/` | In-progress downloads (temporary files) |
 | `<root>/data/tmp/hf` | Temporary area for `hf` CLI downloads |
+| `<root>/data/backups/` | Copies of an `extra_model_paths.yaml` that the application replaced |
 | `<root>/data/logs/` | Log files |
-
-<!-- VERIFY: M6 plan E1 (m6-approved-plan.md): wheel cache location data/cache/wheels/<sha256>/<filename> -->
-In planned accelerator support, verified wheels are also cached under `<root>/data/cache/wheels/<sha256>/`.
 
 **Bootstrap pointer.** The only file outside the install root is `bootstrap.json`, in the OS configuration folder under `vjumpkung-comfyui`. It records which install root to use. If it is deleted, the application falls back to the default root.
 
@@ -715,15 +786,15 @@ crates/
   domain/                    Business types and invariants
   application/               Use cases and port traits
   infrastructure/
-    migrations/              001_settings.sql ... 006_custom_nodes.sql
+    migrations/              001_settings.sql ... 008_install_relocation.sql
     src/                     comfy_runtime, custom_nodes, environment, models, settings, shared
     tests/                   Integration tests (workflow, real_setup)
   desktop/
     src/ipc/                 Commands, DTOs, bindings.rs (command list)
     capabilities/manager.json
     permissions/autogenerated/   Generated, do not edit
-    tests/                   acl.rs, bindings.rs, navigation.rs
-    build.rs                 App manifest: the command list for the ACL
+    tests/                   acl.rs, bindings.rs, navigation.rs, stack_reserve.rs, startup_smoke.rs
+    build.rs                 App manifest (the command list for the ACL), 8 MiB Windows stack reserve
     tauri.conf.json (+ .windows, .linux, .updater overlays), icons/
 ui/
   src/{app,features,shared}  React/TypeScript frontend
@@ -771,7 +842,7 @@ Also install Git 2.40 or newer. The project has not yet been built or tested on 
 
 ### Memory
 
-The primary development machine has limited RAM. Run at most two Rust builds at once and use `-j 4`.
+Rust builds of this workspace are memory-hungry. On the 32 GB development machine, `-j 4` to `-j 6` works; run only one heavy cargo command at a time.
 
 ## 16. Build, run, test and lint
 
@@ -793,12 +864,14 @@ Run from the repository root.
 | Architecture rules | `node scripts/check-arch-deps.mjs` |
 | Architecture checker tests | `node --test scripts/check-arch-deps.test.mjs` |
 | Binding drift check | `cargo test -p desktop --test bindings --locked` |
+| ACL check | `cargo test -p desktop --test acl --locked` |
 | Production-protocol build | `cargo build -p desktop --locked --features tauri/custom-protocol` |
+| Native start-up smoke test | `cargo test -p desktop --test startup_smoke --features tauri/custom-protocol fresh_root_starts_and_closes_cleanly -- --ignored --exact --nocapture --test-threads=1` |
 
 The full check list, as used for handoff:
 
 ```bash
-pnpm -C ui install --frozen-lockfile && pnpm -C ui lint && pnpm -C ui typecheck && pnpm -C ui test && pnpm -C ui build
+pnpm -C ui install --frozen-lockfile && pnpm -C ui lint && pnpm -C ui typecheck && VITEST_MAX_WORKERS=2 pnpm -C ui test && pnpm -C ui build
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -j 4 -- -D warnings
 cargo test --workspace --locked -j 4 --no-fail-fast
@@ -808,7 +881,11 @@ cargo build -p desktop --locked --features tauri/custom-protocol
 pnpm -C ui tauri build
 ```
 
+The last run of this list (2026-10-20, Windows, MSVC) passed: Vitest 30 files and 202 tests; Rust 802 passed, 0 failed, 12 ignored; architecture self-tests 10/10 and `OK`; bindings 1 passed, 1 ignored (the exporter); ACL 11 passed; the native start-up smoke test passed; the bundles built. See [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md#automated-and-packaging-evidence).
+
 Notes:
+
+- The smoke test opens a visible window, needs WebView2 and an interactive desktop, and fails if another instance of the application is running.
 
 - Without `ui/dist`, the desktop build fails ("`frontendDist` ... doesn't exist"). Run `pnpm -C ui build` first.
 - `pnpm -C ui tauri ...` runs `scripts/tauri.mjs`, which finds the Tauri CLI in `ui/node_modules` and sets `TAURI_APP_PATH` (crates/desktop) and `TAURI_FRONTEND_PATH` (ui).
@@ -850,8 +927,7 @@ The ACL integration tests run against a test app using the real compiled manifes
 
 The existing opener plugin is used only for repository links, and its registration is not to be duplicated. `node_open_repository` validates the URL (HTTPS, a non-empty authority, no user information) before opening.
 
-<!-- VERIFY: M6 plan "I" (m6-approved-plan.md): eight new commands setup_list_curated_nodes, setup_open_install, setup_new_install, app_update_status, app_update_check, app_update_install, app_diagnostics, app_copy_diagnostics, with valid-body ACL cases and recovery-mode handlers; no updater/clipboard plugin IPC permissions granted to webviews -->
-Eight further commands are planned for M6 (curated node list, open and new install for recovery, updater status, check and install, and two diagnostics commands). Updater and clipboard plugin permissions are not granted to any webview. Recovery-mode commands must work when the normal services are unavailable.
+The M6 commands `setup_list_curated_nodes`, `setup_open_install`, `setup_new_install`, `app_update_status`, `app_update_check`, `app_update_install`, `app_diagnostics` and `app_copy_diagnostics` follow the same rules: each has an `allow-…` entry in `manager.json` and an ACL case. The updater and clipboard plugins are used from Rust only; `manager.json` grants no updater or clipboard plugin permission, so no webview can call them. `setup_open_install` and `setup_new_install` work in the recovery state, when the normal services are unavailable.
 
 ## 19. Database migrations
 
@@ -859,13 +935,12 @@ The application database is SQLite (`rusqlite`, bundled) at `data/app.db`. The s
 
 To add a migration:
 
-1. Create `crates/infrastructure/migrations/NNN_name.sql` with the next number (currently the last is `006_custom_nodes.sql`). Migrations are additive.
+1. Create `crates/infrastructure/migrations/NNN_name.sql` with the next number (currently the last is `008_install_relocation.sql`). Migrations are additive.
 2. Add `M::up(include_str!("../../migrations/NNN_name.sql"))` to `migrations()` in order.
 3. Update any test helper that builds a partial migration list (for example in the model library tests).
 4. Test the migration in the owning context's tests.
 
-<!-- VERIFY: M6 plan E1 and E3 (m6-approved-plan.md): migrations 007_environment_components.sql (components_json column) and 008_install_relocation.sql; M5 backend plan WP5 says no migration 007 is needed for node dependency state -->
-Two further migrations are planned for M6: `007_environment_components.sql` (stored accelerator and component results) and `008_install_relocation.sql` (relocation records). Their numbers may change if the order of work changes.
+The M6 migrations are `007_environment_components.sql`, which adds the `components_json` column to `envs` for stored accelerator and component results, and `008_install_relocation.sql`, which creates the `install_relocations` table of accepted root moves. Node dependency state needed no migration.
 
 Tables are described in [REQUIREMENTS section 5.2](REQUIREMENTS.md) (non-normative) and in the migration files, which are the source of truth. Signed URLs and tokens are never stored.
 
@@ -882,7 +957,7 @@ Profiles are versioned JSON files bundled with the application in `crates/infras
 | `torch` | `torch`, `torchvision`, `torchaudio` (nullable), `cuda` (`cu130`, `cu126`) and `index_url` |
 | `min_driver_cuda`, `min_cc`, `torch_archs` | Eligibility gates: driver CUDA level, minimum compute capability, supported GPU architectures |
 | `triton` | Package (`triton-windows` or `triton`) and version specifier |
-| `accelerators` | Optional accelerator list. Empty for all bundled profiles in the committed version |
+| `accelerators` | Optional accelerator records (schema 2). Only `win-py312-torch2100-cu130` has entries |
 | `constraints` | Extra resolver constraints |
 | `verify` | Expected torch version prefix, require CUDA, require Triton |
 | `disk` | Disk budget (`env_bytes`, `other_bytes`, `margin_bytes`, `calibrated`) |
@@ -890,8 +965,7 @@ Profiles are versioned JSON files bundled with the application in `crates/infras
 
 Eligibility checks the OS, an NVIDIA GPU, every detected GPU's compute capability and wheel architecture, the driver's CUDA level, and the disk budget. Pinned tool versions and SHA-256 values (uv 0.13.1, MinGit, `hf` 2.2.0 and its hash-locked requirements, managed CPython hashes, the app-local MSVC runtime) are in `crates/infrastructure/src/environment/pins.rs` and `data/`.
 
-<!-- VERIFY: M6 plan E1 (m6-approved-plan.md "Contract"): schema 2 accelerator records (id, name, modules, source Wheel{url,filename,sha256,size}|Packages, no_deps, default_selected, non_fatal, provenance); schema 1 stays readable only with an empty accelerator list; the win-py312-torch2100-cu130 profile gets revision 2 with five experimental wheels -->
-**Planned (M6, schema 2).** Accelerators become structured records with an id, an importable module list, and a source that is either a hashed direct wheel (HTTPS URL, safe `.whl` filename, SHA-256 and optional size) or package requirements, plus `no_deps`, `default_selected`, `non_fatal` and provenance. Schema 1 profiles remain readable only with an empty accelerator list. The `win-py312-torch2100-cu130` profile is planned to move to revision 2 with five experimental wheels and a "compatibility packages" component. The other profiles keep empty accelerator lists. FlashAttention 3's installed module name is unverified.
+**Accelerator records (schema 2).** Each record has `id`, `name`, `modules` (importable module names used for the import check), `source`, `no_deps`, `default_selected`, `non_fatal` and `provenance`. `source` is either `{"kind": "wheel"}` with an HTTPS `url`, a safe `.whl` `filename`, `sha256` and `size`, or `{"kind": "packages"}` with requirement strings. Schema 1 profiles remain readable only with an empty accelerator list. `win-py312-torch2100-cu130` is schema 2, revision 2, with five experimental wheels and a "Compatibility packages" component, none selected by default; revision 1 is kept in `data/profiles/archive/` for rebuilds. The other six profiles are schema 1 with no accelerators. FlashAttention 3's installed module name is unverified, so its `modules` list is empty.
 
 ## 21. Adding a download provider
 
@@ -926,11 +1000,14 @@ Ordinary tests never touch real credentials or user installations. These tests a
 | Test | Command and variables | Needs |
 |---|---|---|
 | Real first-run setup | `VJ_REAL_ROOT=<empty or nonexistent dir> cargo test -p infrastructure --locked --test real_setup -- --ignored --nocapture`. Optional `VJ_REAL_PROFILE` picks a profile | Network, several GB of downloads, an NVIDIA GPU. The root must not exist yet or be empty |
-| Interpreter validation | `VJ_TEST_PYTHON=<path to CPython 3.12-3.14>` with the ignored Python test in `infrastructure/src/environment/python/tests.rs` | A suitable interpreter |
-| Real `hf` download | Uses `VJ_REAL_HF_EXE`, `VJ_REAL_HF_REPO`, `VJ_REAL_HF_REVISION`, `VJ_REAL_HF_FILE` (in the Hugging Face proxy tests) | A built `hf` tool and network |
+| Interpreter validation | `VJ_TEST_PYTHON=<path to CPython 3.12-3.14>` with `a_real_interpreter_is_probed` in `infrastructure/src/environment/python/tests.rs` | A suitable interpreter |
+| Real tool provisioning | `real_tools_are_provisioned` in `infrastructure/src/environment/tools/tests.rs` | Network; downloads uv, MinGit and Python |
+| Real keyring | `real_keyring_round_trip` in `infrastructure/src/settings/secrets/tests.rs` | An unlocked OS credential store; creates and deletes a temporary credential |
+| Real `hf` download | `VJ_REAL_HF_EXE=<absolute path to the pinned hf> cargo test -p infrastructure --locked real_hf_download_succeeds_without_user_profile_variables -- --ignored --nocapture` | Network; downloads a 334,641,190-byte public Xet-backed file and checks its size and SHA-256. Passed on 2026-10-20 (N23) |
+| `hf` relay with denied egress | `real_hf_xet_obeys_relay_with_direct_egress_denied` in `models/acquisition/hf_proxy/tests.rs`, with `VJ_REAL_HF_EXE`, `VJ_REAL_HF_REPO`, `VJ_REAL_HF_REVISION` (a pinned commit), `VJ_REAL_HF_FILE` (a public Xet-backed file) and `VJ_REAL_HF_SIZE` (its exact size, 1 to 16 MiB) | A disposable sandbox where the child's direct egress is denied externally. Not run yet |
+| Native start-up smoke | See [section 16](#16-build-run-test-and-lint) | WebView2, an interactive desktop, no other running instance. Part of the check list |
 
-<!-- VERIFY: M6 plan B (m6-approved-plan.md tests): the opt-in test real_hf_xet_obeys_relay_with_direct_egress_denied and exact use of VJ_REAL_HF_* variables, which live in uncommitted worktree files -->
-The `VJ_REAL_HF_*` variables appear in the uncommitted bandwidth work and may change.
+Four further ignored tests are helper child processes that their parent tests start, and `export_bindings` regenerates the bindings. The full inventory of the 12 ignored tests and which ones ran in session 6 is in [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md#ignored-test-inventory).
 
 ## 24. Packaging and updater
 
@@ -948,14 +1025,13 @@ Build with `pnpm -C ui tauri build` (about 12 minutes on Windows). The wrapper `
 - `nsis/vjumpkung-comfyui-desktop_0.1.0_x64-setup.exe`
 - `msi/vjumpkung-comfyui-desktop_0.1.0_x64_en-US.msi`
 
-The Windows bundles build locally and are unsigned. The installers have **not** been run. Linux bundles need a Linux host and have not been built.
+The last build (2026-10-20, from the final session-6 checkpoint) exited 0 and produced the NSIS installer (9,336,453 bytes) and the MSI (13,340,672 bytes); their SHA-256 values are in [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md#snapshot). Both installers and the release executable are unsigned (`NotSigned`), and the release executable reserves an 8 MiB main-thread stack. The installers have **not** been run, and the release executable has not been launched. Linux bundles need a Linux host and have not been built.
 
 **Updater.** The updater is inactive unless both `VJUMP_UPDATER_PUBKEY` and `VJUMP_UPDATER_ENDPOINT` are supplied at build time. The release workflow (disabled) also reads `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from secrets, and passes the updater overlay only when a signing key exists. It fails early if a key is present but the public key or endpoint is missing. Key custody belongs to the owner. Never substitute a generated development key in a release.
 
-<!-- VERIFY: M6 plan P (m6-approved-plan.md "Updater"): updater plugin pin =2.14.0 and clipboard plugin =2.5.0 (not yet in Cargo.lock), plugin registered only with complete build-time config, install bound to the reviewed offer via an opaque id, maintenance gate and runtime-stop before install, build-script rerun tracking, no updater/clipboard IPC permissions to webviews -->
-**Planned updater design.** `tauri-plugin-updater` `=2.14.0` and `tauri-plugin-clipboard-manager` `=2.5.0` are to be added. The updater plugin is registered only when both variables are present and valid. The command set stays registered, and absent configuration returns a controlled refusal. Installing takes the maintenance gate, verifies that ComfyUI (including a headless instance) is stopped, and installs only the offer the user reviewed, identified by an opaque id kept in process memory. Cleanup happens before the Windows installer can exit the process. Compatibility of these plugin versions with the workspace is not yet proven by a build.
+**Updater design.** `tauri-plugin-updater` `=2.14.0` and `tauri-plugin-clipboard-manager` `=2.5.0` are pinned in the workspace `Cargo.toml` and `Cargo.lock`. The updater plugin is registered only when both build-time variables are present and valid; `crates/desktop/build.rs` re-runs when either changes. The commands `app_update_status`, `app_update_check` and `app_update_install` stay registered, and absent configuration returns a controlled refusal ("This build has no signed update source configured."). Installing takes the maintenance gate, verifies that ComfyUI (including a headless instance) is stopped, and installs only the offer the user reviewed, identified by the `updateId` of that offer. Downloads and the model library are quiesced and the log is flushed before the installer runs. No webview has an updater or clipboard plugin permission. These rules are covered by automated tests (for example `invalid_signature_never_invokes_installer`, `update_install_requires_the_reviewed_offer`); no signed update has been built, published or installed.
 
-**Remaining packaging work** (plan section R): verify the overlays are picked up by the wrapper, that executable, Cargo and Tauri versions agree, and install, launch and uninstall all four bundle formats, including user-data preservation across update and uninstall.
+**Remaining packaging work:** install, launch and uninstall the Windows bundles on a disposable machine (including the WebView2 bootstrapper and user-data preservation across uninstall and reinstall), build and run the Linux bundles, and sign the Windows artifacts. See the release gates in [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md#release-gates).
 
 ## 25. Continuous integration status
 
@@ -982,38 +1058,56 @@ Both workflow files, `.github/workflows/ci.yml` and `.github/workflows/release.y
 | Keyring | Tokens live in the OS keyring under service `vjumpkung-comfyui`, never in SQLite or logs. Domain and application types hold references or presence only |
 | Archive hardening | The shared extractor rejects traversal, absolute and UNC paths, drive-relative paths, symlinks, reparse points, special files and alternate data streams; checks case-insensitive collisions; enforces limits (20,000 entries, 2 GiB expanded size, 200:1 compression ratio) and extracts into a fresh staging directory |
 | Path containment | Names are validated by domain value objects (no separators, `..`, reserved names, trailing dot or space, control characters, over 255 bytes). Adapters check real containment at operation time against authorised roots, with no-follow and reparse-point checks. Model file operations use pinned directories |
-| Consent | Installing a node, running `install.py` and building from source execute third-party code. The UI states that a venv is not a sandbox, shows the exact source, and requires explicit confirmation per reviewed plan. Source builds are never authorised by node IPC |
+| Consent | Installing a node, running `install.py` and building from source execute third-party code. The UI states that a venv is not a sandbox, shows the exact source, and requires explicit confirmation per reviewed plan. FirstRun's Review disclosure and Start setup click cover Manager and selected curated sources without another pause; selected curated hooks run before reviewed requirements and the two disclosed content exceptions become acknowledged warnings. App-managed resolution/install remains wheel-only; scripts may invoke their own builds. Source builds are never authorised by node IPC |
 | Webview isolation | A strict CSP (`default-src 'self'`; scripts and connections limited to self and Tauri IPC). The ComfyUI window has no capability. Commands are allow-listed to the manager window only. External links open in the system browser |
 | Tool integrity | uv, MinGit, managed Python archives and every `hf` tool artifact have pinned SHA-256 values, installed with hash checking from HTTPS only |
 | LAN exposure | ComfyUI listens on `127.0.0.1` by default. LAN listening needs a settings change and an acknowledgement |
-| Git safety | Git operations never reset, clean or discard local changes. Updates are fast-forward only |
+| Git safety | Git operations never reset, clean or discard local changes. Node updates are fast-forward only. ComfyUI updates fast-forward, or check out a frozen target only on a clean tree with no unpublished local commits. Git runs with an app-owned empty global configuration, `GIT_CONFIG_NOSYSTEM=1` and a non-executing `git config --local --no-includes` preflight that refuses `filter.*`, includes and worktree redirection |
+| Native-image boundary (Windows) | Before consent, new node content whose top-level folder has a `.dll`, `.exe`, `.com`, `.cpl`, `.drv`, `.ocx`, `.scr` or `.sys` entry is refused: Git sources from the exact commit's NUL-delimited `git ls-tree` output before checkout (read as raw bytes, 8 MiB cap, 120 s), Registry archives after extraction into staging. Only selected curated Git sources with persisted first-run consent turn this into an acknowledged warning. Installed and user-placed nodes are not re-checked (residual R06 after consent) |
+| Child processes | Children without an explicit working folder start in their executable's folder, never in the manager's launch folder. The `SetDllDirectoryW("")` policy covers the application process only and is not inherited by children |
 
-<!-- VERIFY: M5 backend plan WP1 and m5-wp1-gap-decision.md: operation-time pinned-directory containment for all node mutations (staging, publication, backup, enable/disable, restore, recycling) and guarded subprocess inputs for requirements and install.py; registry archive download through an already-open create-new file. Linux guarantees are explicitly not yet established -->
-**In progress: pinned containment for custom nodes (M5 WP1).** The plan is to perform every node mutation through retained directory handles for the install root, `ComfyUI`, `custom_nodes`, `.disabled` and staging, so a parent swapped for a link between the check and the use cannot redirect the operation, and to give dependency and `install.py` subprocesses guarded inputs rather than plain paths. Registry archives are to be written through an already-open, create-new file and extracted from the same handle. On Linux the guarantee is limited: pinned directories keep their identity but do not freeze names or contents, and the rename and unlink helpers check identity and then act by name. Native Windows and Linux verification (junction, symlink and substitution tests) has not been done.
+**Pinned containment for custom nodes.** Every node mutation (staging, publication, backup, enable and disable, restore, recycling) runs through retained directory handles for the install root, `ComfyUI`, `custom_nodes`, `.disabled` and staging, so a parent swapped for a link between the check and the use cannot redirect the operation. Dependency and `install.py` subprocesses receive guarded inputs rather than plain paths. Registry archives are written through an already-open, create-new file and extracted from the same handle. All reparse points are refused in node trees, so OneDrive placeholders and deduplicated or WOF-backed entries are unsupported there, and same-user drive-letter remapping (`subst`, `net use`) is outside the boundary (residual R05). This is covered by Windows tests, including real junctions. On Linux the guarantee is limited: pinned directories keep their identity but do not freeze names or contents, and the rename and unlink helpers check identity and then act by name. The Linux-only code has never been compiled or run.
 
-<!-- VERIFY: M5 backend plan WP2 (m5-backend-approved-plan.md): Git node tree identity as a content digest instead of git:<commit>, full staged checkout for updates, post-apply validation before dependencies or hooks, GitRefused { status } -->
-**In progress: Git content identity (M5 WP2).** Git node reviews are to be bound to a content digest of the whole staged tree, not just the commit, so edited, untracked or ignored files change the identity. Updates stage a full checkout of the frozen target commit, and the live fast-forward is validated against the reviewed digest before any dependency or script runs. A refused update keeps a bounded, redacted `git status`.
+**Git content identity.** Git node reviews are bound to a content digest of the whole staged tree, not just the commit, so edited, untracked or ignored files change the identity. Updates stage a full checkout of the frozen target commit, and the live fast-forward is validated against the reviewed digest before any dependency or script runs. A refused update keeps a bounded, redacted `git status`.
 
 ## Known limitations and open validation items
 
-This list is the honest state of validation, not a roadmap.
+This list is the honest state of validation, not a roadmap. The release verdict is **NO-GO**; [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md) maps every requirement and scenario to evidence or an open gate.
+
+**What has been verified natively (Windows only)**
+
+All on one machine: Windows 11, NVIDIA GeForce RTX 3060 12 GiB, driver 610.88 (CUDA 13.3), 2026-10-20, using debug builds with the production asset protocol on fresh install roots. This is not clean-machine or installed-release acceptance.
+
+- First-time setup on `win-py312-torch2100-cu130` with ComfyUI-Manager and curated nodes, final verification and ComfyUI 0.42.1 on `cuda:0` (N8–N13, N28).
+- Wizard defaults and order: recommended profile first, Latest release, Manager ticked, curated nodes unticked (N25, N26).
+- ComfyUI branch tracking, Update to latest commit and switching tags (N18, N21, N22).
+- The `extra_model_paths.yaml` generator with a Thai base path (N15–N17).
+- Moved-install rebuild on a copy whose original root still exists (N19, N20).
+- A Hugging Face Xet download through `hf` (N23, N24).
+- A Custom Nodes Git install with `install.py` before requirements and unchanged pins (N29).
+- From session 5: a rename while ComfyUI ran, a locked-file refusal and the Recycle Bin.
 
 **Not established by any test result**
 
-- Linux: no end-to-end run, including Secret Service, freedesktop trash, WebKitGTK behaviour and Linux packaging. Windows results do not carry over.
-- NVIDIA: the only real-hardware evidence is the Windows run on 2026-10-16 (RTX 3060, profile `win-py313-torch2141-cu130`: Python 3.13.16, torch 2.14.1+cu130, torchvision 0.29.1+cu130, triton-windows 3.8.0.post29, repair of a healthy environment returned "nothing to repair"). That run is not acceptance of every profile. The main development machine has an AMD GPU only.
-- Windows installers (NSIS and MSI) build but have not been installed and run. They are unsigned (no Authenticode certificate) and the application uses placeholder icons.
-- Accelerator wheel sources and compatibility for Python 3.13 and torch 2.14.1 on both operating systems are unvalidated (REQUIREMENTS section 9). The Python 3.12 wheels planned for M6 prove artifact identity only and are experimental. FlashAttention 3's import module name is unverified.
+- Linux: nothing has been compiled or run, including the Linux-only containment code, Secret Service, freedesktop trash, WebKitGTK behaviour, Thai fonts and the AppImage and .deb bundles. Windows results do not carry over.
+- Windows installers: built but never installed or run; the release executable has never been launched. They are unsigned (no Authenticode certificate), and the application uses placeholder icons.
+- Provider scenarios that need credentials or fixtures: CivitAI downloads with and without a token, gated Hugging Face repositories, Google Drive confirmation and quota, the token Test buttons, and the secret-redaction check after a real token download.
+- Further Windows scenarios: custom venv, change torch, the moved install with the original root absent, Hugging Face pause/resume and missing-tool fallback, a lock held by a loaded model, Registry node install, an edited Git node, unsupported hardware, crash recovery, the maintenance race and a failed dependency install with Repair.
+- Accelerator wheels: no accelerator has been installed on real hardware. The Python 3.12 wheels prove artifact identity only and are experimental; FlashAttention 3's import module name is unverified. Wheel sources for Python 3.13 and torch 2.14.1 are not defined (REQUIREMENTS section 9).
 - Whether the native Hugging Face engine can fetch Xet-backed files, and whether a later `hf` release restores cross-run resume.
-- WebKitGTK suitability for the ComfyUI canvas, and Thai font rendering on Linux.
+- Performance targets, the accessibility audit (contrast, keyboard, 200 % zoom) and coverage (`cargo llvm-cov`) have not been measured.
 - Updater key custody and the signed-update flow.
-- The M5 custom-node hardening, M6 features, and the 17 acceptance scenarios in REQUIREMENTS section 8 are not accepted. A `docs/RELEASE_ACCEPTANCE.md` ledger is planned to map each requirement to evidence or an explicit blocker. It does not exist yet.
 
 **Known differences and limits**
 
-- The PyTorch 2.14.1 profiles omit `torchaudio` (no matching wheel).
+- The PyTorch 2.14.1 profiles omit `torchaudio` (no matching wheel); nodes that need it fail to import there.
 - In-place dependency changes are not rolled back. A failed `uv pip` or `install.py` step marks the environment repair-required, and the application does not snapshot venvs.
+- Downloads always go to `ComfyUI/models`, not to a generated extra-model base folder.
+- ComfyUI-Manager installed by setup is listed as Observed with dependencies NOT RUN.
+- Non-consented setup modes still skip a curated node's `install.py`; reinstall the node in Custom Nodes and approve it if needed.
+- One unreachable curated repository stops the curated step until it is skipped, and skipping skips every curated node not yet installed.
+- After a failed self-update install, downloads stay stopped until the application restarts.
+- Move detection needs a valid `install.json` (residual R21).
 - Only one ComfyUI install is managed at a time.
-- `docs/IMPLEMENTATION_STATUS.md` still describes M2 to M5 as remaining work in places, while the code contains their pages and handlers. Treat the status files as acceptance notes and the source as the snapshot of features.
 - No license has been selected. The application does not add one on the owner's behalf.
 - AMD, Intel, macOS, CPU-only, localisation and multi-install support are out of scope for release 1.

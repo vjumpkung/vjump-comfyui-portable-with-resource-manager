@@ -252,6 +252,11 @@ export function RunProgress({
               Verification finished. The selected environment is ready.
             </p>
           )}
+          {run.status === 'succeeded' && run.mode === 'first_run' && (
+            <p role="status">
+              Setup finished. Restarting the app to open the new installation…
+            </p>
+          )}
         </CardContent>
       </Card>
       <Card>

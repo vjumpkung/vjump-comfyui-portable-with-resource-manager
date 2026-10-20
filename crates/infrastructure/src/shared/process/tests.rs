@@ -59,6 +59,200 @@ async fn run_default(spec: &CommandSpec) -> (Result<Output, RunError>, Vec<Strin
     (result, sink.all())
 }
 
+struct ChunkReader {
+    chunks: std::collections::VecDeque<io::Result<Vec<u8>>>,
+    unfinished: bool,
+}
+
+impl AsyncRead for ChunkReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        match self.chunks.pop_front() {
+            Some(Ok(bytes)) => {
+                buffer.put_slice(&bytes);
+                std::task::Poll::Ready(Ok(()))
+            }
+            Some(Err(error)) => std::task::Poll::Ready(Err(error)),
+            None if self.unfinished => std::task::Poll::Pending,
+            None => std::task::Poll::Ready(Ok(())),
+        }
+    }
+}
+
+fn raw_file_command(path: &Path, failed: bool) -> CommandSpec {
+    let exit_code = i32::from(failed);
+    if cfg!(windows) {
+        // cmd.exe /c does not use Rust's argv quoting rules. Keep the script free of
+        // embedded quoted paths, even when the throwaway directory contains spaces.
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        assert!(
+            filename
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte))
+        );
+        shell(&format!(
+            "type {filename}& echo token=rawstderrsecret0123456789 1>&2& exit /b {exit_code}"
+        ))
+        .cwd(path.parent().unwrap())
+    } else {
+        CommandSpec::new("/bin/sh")
+            .args([
+                "-c",
+                &format!(
+                    "cat \"$1\"; printf '%s\\n' 'token=rawstderrsecret0123456789' >&2; exit {exit_code}"
+                ),
+                "raw-output",
+            ])
+            .arg(path.as_os_str())
+            .cwd(scratch_dir())
+            .env_vars(base_env())
+    }
+}
+
+async fn run_lifecycle(
+    spec: &CommandSpec,
+    cancel: &CancelToken,
+    limits: &RunLimits,
+    raw: bool,
+) -> Result<(), RunError> {
+    if raw {
+        run_raw_stdout(spec, cancel, limits)
+            .await
+            .map(|_| ())
+            .map_err(|error| match error {
+                RawOutputError::Run(error) => error,
+                other => panic!("unexpected raw capture failure: {other:?}"),
+            })
+    } else {
+        run(spec, &DiscardSink, cancel, limits).await.map(|_| ())
+    }
+}
+
+#[tokio::test]
+async fn raw_stdout_preserves_exact_bytes() {
+    let bytes = b"native\0next\r\nprogress\rinvalid\xff\0token=rawstdoutsecret0123456789\0https://user:password@host/name\0";
+    let capture = Mutex::new(RawCapture::default());
+    let complete = read_raw_stdout(
+        ChunkReader {
+            chunks: bytes.iter().map(|byte| Ok(vec![*byte])).collect(),
+            unfinished: false,
+        },
+        &capture,
+        bytes.len(),
+    )
+    .await;
+    capture.lock().unwrap().complete = complete;
+    assert_eq!(capture.into_inner().unwrap().finish().unwrap(), bytes);
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("raw-stdout.bin");
+    std::fs::write(&path, bytes).unwrap();
+    let spec = raw_file_command(&path, false);
+    assert_eq!(
+        run_raw_stdout(&spec, &CancelToken::new(), &RunLimits::default())
+            .await
+            .unwrap(),
+        bytes
+    );
+
+    let capture = Mutex::new(RawCapture::default());
+    let sink = Lines::default();
+    let observer = ScopeObserver::default();
+    let output = run_inner(
+        &spec,
+        &sink,
+        &CancelToken::new(),
+        &RunLimits::default(),
+        Some(&observer),
+        Some(&capture),
+    )
+    .await
+    .unwrap();
+    assert!(output.stdout.is_empty());
+    assert_eq!(output.tail, sink.all());
+    assert_eq!(output.tail.len(), 1);
+    assert!(output.tail[0].contains("[REDACTED]"));
+    assert!(!output.tail[0].contains("rawstderrsecret0123456789"));
+    assert!(
+        String::from_utf8_lossy(&observer.raw.lock().unwrap())
+            .contains("rawstderrsecret0123456789")
+    );
+    assert!(
+        !observer
+            .raw
+            .lock()
+            .unwrap()
+            .windows(b"rawstdoutsecret0123456789".len())
+            .any(|chunk| chunk == b"rawstdoutsecret0123456789")
+    );
+    match run_raw_stdout(
+        &raw_file_command(&path, true),
+        &CancelToken::new(),
+        &RunLimits::default(),
+    )
+    .await
+    {
+        Err(RawOutputError::Run(RunError::Failed { tail, .. })) => {
+            assert_eq!(tail, output.tail);
+        }
+        other => panic!("expected a redacted failure without stdout, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn raw_stdout_refuses_overflow_and_incomplete_capture() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("raw-cap.bin");
+    std::fs::write(&path, b"exact\0").unwrap();
+    let limits = RunLimits {
+        max_stdout_bytes: 6,
+        ..RunLimits::default()
+    };
+    assert_eq!(
+        run_raw_stdout(
+            &raw_file_command(&path, false),
+            &CancelToken::new(),
+            &limits
+        )
+        .await
+        .unwrap(),
+        b"exact\0"
+    );
+    // More than a pipe buffer ensures overflow still drains/discards until the child exits.
+    std::fs::write(&path, vec![b'x'; 256 << 10]).unwrap();
+    assert_eq!(
+        run_raw_stdout(
+            &raw_file_command(&path, false),
+            &CancelToken::new(),
+            &limits
+        )
+        .await,
+        Err(RawOutputError::LimitExceeded)
+    );
+
+    for unfinished in [false, true] {
+        let capture = Mutex::new(RawCapture::default());
+        let mut chunks = std::collections::VecDeque::from([Ok(b"partial\0".to_vec())]);
+        if !unfinished {
+            chunks.push_back(Err(io::ErrorKind::BrokenPipe.into()));
+        }
+        let complete = drain_output(
+            read_raw_stdout(ChunkReader { chunks, unfinished }, &capture, 1024),
+            Duration::from_millis(10),
+        )
+        .await;
+        capture.lock().unwrap().complete = complete;
+        assert_eq!(
+            capture.into_inner().unwrap().finish(),
+            Err(RawOutputError::Incomplete),
+            "read errors and unfinished drains must fail closed"
+        );
+    }
+}
+
 #[test]
 fn lines_split_on_lf_crlf_and_carriage_returns() {
     let mut assembler = LineAssembler::new(1024);
@@ -291,13 +485,15 @@ async fn a_timeout_ends_the_command() {
         timeout: Some(Duration::from_millis(300)),
         ..RunLimits::default()
     };
-    let started = Instant::now();
-    let result = run(&sleeper, &DiscardSink, &CancelToken::new(), &limits).await;
-    assert!(
-        matches!(result, Err(RunError::TimedOut { .. })),
-        "{result:?}"
-    );
-    assert!(started.elapsed() < Duration::from_secs(10));
+    for raw in [false, true] {
+        let started = Instant::now();
+        let result = run_lifecycle(&sleeper, &CancelToken::new(), &limits, raw).await;
+        assert!(
+            matches!(result, Err(RunError::TimedOut { .. })),
+            "{result:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
 }
 
 fn marker_processes(marker: &str) -> Vec<procscan::ProcessInfo> {
@@ -309,7 +505,7 @@ fn marker_processes(marker: &str) -> Vec<procscan::ProcessInfo> {
 
 /// Spawns a shell whose child (and, below it, a long-sleeping grandchild) carries a unique
 /// marker, cancels the run and proves that no descendant survives.
-async fn assert_tree_is_killed(script: &str, marker: &str) {
+async fn assert_tree_is_killed(script: &str, marker: &str, raw: bool) {
     let spec = shell(script);
     let cancel = CancelToken::new();
     let watcher = {
@@ -340,7 +536,7 @@ async fn assert_tree_is_killed(script: &str, marker: &str) {
         timeout: Some(Duration::from_secs(60)),
         ..RunLimits::default()
     };
-    let result = run(&spec, &DiscardSink, &cancel, &limits).await;
+    let result = run_lifecycle(&spec, &cancel, &limits, raw).await;
     let seen_before_cancel = watcher.await.unwrap();
     assert!(seen_before_cancel > 0, "the grandchild never started");
     assert!(
@@ -362,15 +558,18 @@ async fn assert_tree_is_killed(script: &str, marker: &str) {
 
 #[tokio::test]
 async fn cancellation_kills_the_child_and_its_grandchild() {
-    if cfg!(windows) {
-        // cmd.exe is the child; each ping is a grandchild.
-        assert_tree_is_killed(
-            "ping -n 937 127.0.0.1 >nul & ping -n 938 127.0.0.1 >nul",
-            "ping -n 937 127.0.0.1",
-        )
-        .await;
-    } else {
-        assert_tree_is_killed("sleep 937 & sleep 938; wait", "sleep 937").await;
+    for raw in [false, true] {
+        if cfg!(windows) {
+            // cmd.exe is the child; each ping is a grandchild.
+            assert_tree_is_killed(
+                "ping -n 937 127.0.0.1 >nul & ping -n 938 127.0.0.1 >nul",
+                "ping -n 937 127.0.0.1",
+                raw,
+            )
+            .await;
+        } else {
+            assert_tree_is_killed("sleep 937 & sleep 938; wait", "sleep 937", raw).await;
+        }
     }
 }
 
@@ -568,23 +767,29 @@ impl Drop for DropFlag {
 async fn maintenance_lease_survives_cleanup_failure() {
     use application::shared::{GateError, MaintenanceGate};
     use std::sync::atomic::{AtomicBool, Ordering};
-    let gate = crate::shared::gate::TokioMaintenanceGate::new();
-    let lease = gate.acquire().await.unwrap();
-    let alive = Arc::new(AtomicBool::new(true));
-    CLEANUP_SURVIVORS.with(|slot| *slot.borrow_mut() = Some(alive.clone()));
-    let spec = shell("echo done").retain(lease.retained());
-    assert!(matches!(
-        run_default(&spec).await.0,
-        Err(RunError::CleanupFailed { .. })
-    ));
-    drop(spec);
-    drop(lease);
-    assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
-    alive.store(false, Ordering::SeqCst);
-    tokio::time::timeout(Duration::from_secs(5), gate.acquire())
-        .await
-        .unwrap()
-        .unwrap();
+    for raw in [false, true] {
+        let gate = crate::shared::gate::TokioMaintenanceGate::new();
+        let lease = gate.acquire().await.unwrap();
+        let released = Arc::new(AtomicBool::new(false));
+        let pin = Retained::new(Arc::new(DropFlag(released.clone())));
+        let alive = Arc::new(AtomicBool::new(true));
+        CLEANUP_SURVIVORS.with(|slot| *slot.borrow_mut() = Some(alive.clone()));
+        let spec = shell("echo done").retain(lease.retained()).retain(pin);
+        assert!(matches!(
+            run_lifecycle(&spec, &CancelToken::new(), &RunLimits::default(), raw).await,
+            Err(RunError::CleanupFailed { .. })
+        ));
+        drop(spec);
+        drop(lease);
+        assert!(!released.load(Ordering::SeqCst));
+        assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
+        alive.store(false, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(5), gate.acquire())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(released.load(Ordering::SeqCst));
+    }
 }
 
 #[tokio::test]
@@ -671,7 +876,7 @@ async fn stdin_writer_obeys_cancellation_and_timeout() {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn windows_children_exclude_cwd_from_default_dll_search() {
+async fn windows_dll_initializer_is_process_local() {
     let directory = tempfile::tempdir().unwrap();
     let name = format!("vjump-dll-policy-{}.dll", std::process::id());
     std::fs::write(directory.path().join(&name), b"invalid DLL").unwrap();
@@ -690,13 +895,43 @@ async fn windows_children_exclude_cwd_from_default_dll_search() {
     run_default(&spec).await.0.unwrap();
 }
 
+#[tokio::test]
+async fn children_without_cwd_start_in_the_executable_directory() {
+    let executable = std::env::current_exe().unwrap();
+    let spec = CommandSpec::new(&executable)
+        .args([
+            "--exact",
+            "shared::process::tests::working_directory_child",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env_vars(base_env());
+    let output = run_default(&spec).await.0.unwrap();
+    let directory = output
+        .stdout
+        .lines()
+        .find_map(|line| line.split_once("VJUMP_CHILD_CWD=").map(|(_, cwd)| cwd))
+        .expect("helper prints its working directory");
+    assert_eq!(Path::new(directory), executable.parent().unwrap());
+}
+
+#[test]
+#[ignore = "helper executed only by children_without_cwd_start_in_the_executable_directory"]
+fn working_directory_child() {
+    println!(
+        "VJUMP_CHILD_CWD={}",
+        std::env::current_dir().unwrap().display()
+    );
+}
+
 /// The process-wide policy applies to the process that sets it. Windows 11 does not hand it
 /// to child processes (verified with `CreateProcess` children): a process that must exclude its
 /// working directory from the default DLL search has to run the initializer itself, as the app
 /// and the runner's spawn path do.
 #[cfg(windows)]
 #[test]
-#[ignore = "helper executed only by windows_children_exclude_cwd_from_default_dll_search"]
+#[ignore = "helper executed only by windows_dll_initializer_is_process_local"]
 fn dll_lookup_child() {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::System::LibraryLoader::LoadLibraryW;
@@ -709,10 +944,7 @@ fn dll_lookup_child() {
     let module = unsafe { LoadLibraryW(name.as_ptr()) };
     assert!(module.is_null());
     let before = io::Error::last_os_error().raw_os_error();
-    assert!(
-        matches!(before, Some(BAD_EXE_FORMAT | MOD_NOT_FOUND)),
-        "unexpected error before the policy: {before:?}"
-    );
+    assert_eq!(before, Some(BAD_EXE_FORMAT), "the child still searches cwd");
     initialize_tool_policy().unwrap();
     // SAFETY: this repeats the same terminated DLL name after applying the policy.
     let module = unsafe { LoadLibraryW(name.as_ptr()) };

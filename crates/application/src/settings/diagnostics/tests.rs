@@ -172,7 +172,12 @@ impl ComfyRepository for Machine {
     async fn status(&self, _: &Path) -> Result<RepoState, RuntimeError> {
         unreachable!()
     }
-    async fn fetch(&self, _: &Path, _: &StepContext) -> Result<(), RuntimeError> {
+    async fn fetch(
+        &self,
+        _: &Path,
+        _: &domain::comfy_runtime::UpdateTarget,
+        _: &StepContext,
+    ) -> Result<(), RuntimeError> {
         unreachable!("diagnostics never touch the network")
     }
     async fn freeze(

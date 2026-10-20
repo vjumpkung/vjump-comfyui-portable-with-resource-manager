@@ -376,6 +376,7 @@ impl ComfyEventDto {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UpdateTargetDto {
     LatestRelease,
+    LatestCommit,
     Tag { name: String },
     BranchFfOnly,
 }
@@ -384,6 +385,7 @@ impl UpdateTargetDto {
     pub fn into_domain(self) -> Result<UpdateTarget, IpcError> {
         Ok(match self {
             Self::LatestRelease => UpdateTarget::LatestRelease,
+            Self::LatestCommit => UpdateTarget::LatestCommit,
             Self::BranchFfOnly => UpdateTarget::BranchFfOnly,
             Self::Tag { name } => UpdateTarget::Tag(
                 Tag::new(name).map_err(|error| IpcError::new("validation", &error.to_string()))?,
@@ -538,6 +540,37 @@ impl From<CloseChoiceDto> for application::comfy_runtime::CloseChoice {
             CloseChoiceDto::StopAndExit => Self::StopAndExit,
             CloseChoiceDto::KeepRunning => Self::KeepRunning,
             CloseChoiceDto::Cancel => Self::Cancel,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_commit_update_target_roundtrips() {
+        let wire = r#"{"target":{"kind":"latest_commit"},"stopRunning":false,"retry":null}"#;
+        let input: UpdateInput = serde_json::from_str(wire).unwrap();
+        assert_eq!(input.target, UpdateTargetDto::LatestCommit);
+        assert!(!input.stop_running);
+        assert_eq!(input.retry, None);
+        assert_eq!(
+            input.target.clone().into_domain().unwrap(),
+            UpdateTarget::LatestCommit
+        );
+        assert_eq!(serde_json::to_string(&input).unwrap(), wire);
+        for (wire, expected) in [
+            (r#"{"kind":"latest_release"}"#, UpdateTarget::LatestRelease),
+            (
+                r#"{"kind":"tag","name":"v1.0.0"}"#,
+                UpdateTarget::Tag(Tag::new("v1.0.0").unwrap()),
+            ),
+            (r#"{"kind":"branch_ff_only"}"#, UpdateTarget::BranchFfOnly),
+        ] {
+            let dto: UpdateTargetDto = serde_json::from_str(wire).unwrap();
+            assert_eq!(serde_json::to_string(&dto).unwrap(), wire);
+            assert_eq!(dto.into_domain().unwrap(), expected);
         }
     }
 }

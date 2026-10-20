@@ -23,6 +23,8 @@ use std::{
 
 #[derive(Default)]
 struct FilesState {
+    prepare_policies: Vec<NodePreparePolicy>,
+    requirements_text: Option<Arc<[u8]>>,
     staged: Option<StagedNode>,
     digest: String,
     requirements_digest: Option<String>,
@@ -47,8 +49,13 @@ struct FilesState {
     /// Git requests stage the requested repository and commit instead of the fixed node.
     curated: bool,
     curated_warnings: Vec<String>,
-    /// The commit a curated preparation resolves to instead of the requested one.
-    commit_override: Option<String>,
+    /// The `(branch, commit)` a curated preparation without a reference resolves to; it
+    /// defaults to `main` at `aaaa…`.
+    default_head: Option<(String, String)>,
+    /// The repository a curated preparation stages instead of the requested one.
+    repository_override: Option<String>,
+    /// The reference of every curated Git preparation, in order.
+    references: Vec<Option<String>>,
     /// One-shot preparation failures keyed by the repository folder.
     prepare_failures: std::collections::HashMap<String, NodeAppError>,
 }
@@ -64,6 +71,7 @@ struct FakeGuard {
     directory: PathBuf,
     snapshot: TreeSnapshot,
     resources: Arc<()>,
+    requirements: Option<Arc<[u8]>>,
 }
 
 impl NodeLocationGuard for FakeGuard {
@@ -71,12 +79,7 @@ impl NodeLocationGuard for FakeGuard {
         &self.directory
     }
     fn requirements(&self) -> Option<Arc<[u8]>> {
-        self.snapshot.requirements_digest.as_ref().map(|_| {
-            Arc::from(
-                &b"numpy
-"[..],
-            )
-        })
+        self.requirements.clone()
     }
     fn install_script(&self) -> Option<Arc<[u8]>> {
         self.snapshot.hook_digest.as_ref().map(|_| {
@@ -136,9 +139,11 @@ impl NodeFiles for FakeFiles {
         _operation: &NodeId,
         request: &PrepareRequest,
         _prior: Option<&InstalledNode>,
+        policy: NodePreparePolicy,
         _ctx: &crate::environment::StepContext,
     ) -> Result<StagedNode, NodeAppError> {
         self.world.call("files:prepare");
+        self.state.lock().unwrap().prepare_policies.push(policy);
         if let PrepareRequest::Git {
             repository,
             reference,
@@ -146,21 +151,31 @@ impl NodeFiles for FakeFiles {
         {
             let mut state = self.state.lock().unwrap();
             if state.curated {
-                let repository = repository.trim_end_matches(".git");
+                let repository = repository.trim_end_matches('/');
+                let repository = repository.strip_suffix(".git").unwrap_or(repository);
                 let folder = repository.rsplit('/').next().unwrap_or(repository);
                 self.world.call(&format!("files:prepare:{folder}"));
                 if let Some(error) = state.prepare_failures.remove(folder) {
                     return Err(error);
                 }
+                state.references.push(reference.clone());
+                // A reference stages that commit detached; none resolves the default branch.
+                let (branch, commit) = match reference {
+                    Some(reference) => (None, reference.clone()),
+                    None => state
+                        .default_head
+                        .clone()
+                        .map(|(branch, commit)| (Some(branch), commit))
+                        .unwrap_or_else(|| (Some("main".into()), "a".repeat(40))),
+                };
                 return Ok(StagedNode {
                     source: NodeSource::Git {
-                        repository: repository.to_owned(),
-                        commit: state
-                            .commit_override
+                        repository: state
+                            .repository_override
                             .clone()
-                            .or_else(|| reference.clone())
-                            .unwrap_or_default(),
-                        branch: None,
+                            .unwrap_or_else(|| repository.to_owned()),
+                        commit,
+                        branch,
                     },
                     name: SafeFileName::new(folder).unwrap(),
                     tree_digest: state.digest.clone(),
@@ -263,6 +278,12 @@ impl NodeFiles for FakeFiles {
                 requirement_lines: vec!["numpy".into()],
             },
             resources,
+            requirements: state.requirements_digest.as_ref().map(|_| {
+                state
+                    .requirements_text
+                    .clone()
+                    .unwrap_or_else(|| Arc::from(&b"numpy\n"[..]))
+            }),
         }))
     }
     async fn publish(
@@ -607,6 +628,8 @@ struct FakeHook {
     world: Arc<World>,
     files: Arc<FakeFiles>,
     fails: Mutex<bool>,
+    changes: Mutex<Vec<(String, String)>>,
+    cancels: Mutex<bool>,
 }
 
 #[async_trait]
@@ -616,15 +639,23 @@ impl NodeHook for FakeHook {
         _root: &Path,
         _env: &PythonEnvironment,
         location: &dyn NodeLocationGuard,
-        _ctx: &crate::environment::StepContext,
+        ctx: &crate::environment::StepContext,
     ) -> Result<(), NodeAppError> {
         assert!(location.install_script().is_some());
         self.world.call("hook:run");
+        for (name, version) in self.changes.lock().unwrap().iter() {
+            self.world.put_installed(name, version);
+        }
         {
             let mut state = self.files.state.lock().unwrap();
+            state.requirements_text = Some(Arc::from(&b"hook-generated-dependency\n"[..]));
             if let Some(digest) = state.hook_final_digest.clone() {
                 state.snapshots.insert("pack".into(), digest);
             }
+        }
+        if *self.cancels.lock().unwrap() {
+            ctx.cancel.cancel();
+            return Err(NodeAppError::Cancelled);
         }
         if *self.fails.lock().unwrap() {
             // A failing script may leave a protected package changed.
@@ -695,6 +726,8 @@ impl Harness {
             world: world.clone(),
             files: files.clone(),
             fails: Mutex::new(false),
+            changes: Mutex::default(),
+            cancels: Mutex::new(false),
         });
         let mut environment = world.deps();
         environment.node_requirements =
@@ -1134,7 +1167,7 @@ fn protected_pins_are_reasserted_after_packages_and_after_a_failing_script() {
 }
 
 #[test]
-fn install_py_runs_only_with_consent_after_requirements_and_trust_is_namespaced() {
+fn install_py_runs_only_with_consent_before_requirements_and_trust_is_namespaced() {
     let h = Harness::new();
     h.files
         .state
@@ -1154,8 +1187,8 @@ fn install_py_runs_only_with_consent_after_requirements_and_trust_is_namespaced(
     block_on(h.service.commit(&review.id, decision, &h.ctx())).unwrap();
     let calls = h.world.calls();
     assert!(
-        calls.iter().position(|c| c == "install:node").unwrap()
-            < calls.iter().position(|c| c == "hook:run").unwrap()
+        calls.iter().position(|c| c == "hook:run").unwrap()
+            < calls.iter().position(|c| c == "install:node").unwrap()
     );
     // The remembered permission belongs to this publisher/node/repository only.
     let remembered = registry_source("1.0.0").trust_namespace().unwrap();
@@ -1941,19 +1974,220 @@ fn hook_decision(review: &PlanReview) -> CommitDecision {
 }
 
 #[test]
-fn node_execution_guard_spans_preview_install_hook_and_cleanup() {
+fn hook_failure_skips_requirements_and_retains_repair_state() {
+    for cancelled in [false, true] {
+        let h = Harness::new();
+        let review = hook_plan(&h);
+        h.hook
+            .changes
+            .lock()
+            .unwrap()
+            .push(("torch".into(), "2.15.0".into()));
+        *h.hook.fails.lock().unwrap() = !cancelled;
+        *h.hook.cancels.lock().unwrap() = cancelled;
+        assert_eq!(
+            block_on(
+                h.service
+                    .commit(&review.id, hook_decision(&review), &h.ctx())
+            )
+            .unwrap_err(),
+            NodeAppError::DependenciesFailed
+        );
+        assert_eq!(h.world.count("install:node"), 0);
+        assert_eq!(h.world.count("preview:constrained"), 1);
+        assert_eq!(h.env().state(), EnvState::RepairRequired);
+        assert!(h.world.position("hook:run") < h.world.position("install:torch"));
+        let calls = h.world.calls();
+        assert!(
+            calls
+                .iter()
+                .rposition(|call| call == "install:torch")
+                .unwrap()
+                < calls.iter().rposition(|call| call == "guard:drop").unwrap()
+        );
+        assert!(
+            h.world
+                .installed
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|package| package.name == "torch" && package.version == "2.14.1+cu130")
+        );
+        let state = h.store.state.lock().unwrap();
+        assert_eq!(state.nodes[0].dependencies, DependencyState::Failed);
+        assert_eq!(
+            state.operations.last().unwrap().phase,
+            OperationPhase::Failed
+        );
+        assert_eq!(
+            state.dependencies.last().unwrap().state,
+            DependencyState::Failed
+        );
+    }
+}
+
+#[test]
+fn hook_pin_repair_restores_profile_constraints_before_requirements() {
+    let h = Harness::new();
+    let extras = vec!["numpy<3".to_owned()];
+    h.world.profiles.lock().unwrap()[0].constraints = extras.clone();
+    let review = hook_plan(&h);
+    h.hook
+        .changes
+        .lock()
+        .unwrap()
+        .push(("torch".into(), "2.15.0".into()));
+    block_on(
+        h.service
+            .commit(&review.id, hook_decision(&review), &h.ctx()),
+    )
+    .unwrap();
+    let writes = h.world.constraint_extras.lock().unwrap();
+    assert_eq!(
+        writes.as_slice(),
+        &[extras.clone(), extras.clone(), Vec::new(), extras]
+    );
+    let calls = h.world.calls();
+    let hook = h.world.position("hook:run");
+    let node = h.world.position("install:node");
+    assert!(hook < h.world.position("install:torch"));
+    let last_constraints = calls
+        .iter()
+        .rposition(|call| call == "write_constraints")
+        .unwrap();
+    let post_preview = calls
+        .iter()
+        .rposition(|call| call == "preview:constrained")
+        .unwrap();
+    assert!(last_constraints < post_preview && post_preview < node);
+}
+
+#[test]
+fn requirements_after_hook_use_reviewed_snapshot_and_frozen_versions() {
+    for refused in [None, Some(false), Some(true)] {
+        let h = Harness::new();
+        h.world
+            .previews
+            .lock()
+            .unwrap()
+            .push_back(Ok(ResolutionPreview {
+                installs: vec![crate::environment::InstalledPackage {
+                    name: "numpy".into(),
+                    version: "2.2.0".into(),
+                }],
+                removals: Vec::new(),
+            }));
+        let review = hook_plan(&h);
+        h.hook
+            .changes
+            .lock()
+            .unwrap()
+            .push(("numpy".into(), "99.0".into()));
+        if let Some(protected) = refused {
+            h.world.previews.lock().unwrap().push_back(if protected {
+                Ok(torch_preview("2.15.0"))
+            } else {
+                Err(ProvisionError::Failed(
+                    "requirements include/local-path preflight refused".into(),
+                ))
+            });
+        }
+        let result = block_on(
+            h.service
+                .commit(&review.id, hook_decision(&review), &h.ctx()),
+        );
+        let previews = h.world.preview_specs.lock().unwrap();
+        assert_eq!(previews.len(), 2);
+        let post_hook = &previews[1];
+        assert_eq!(post_hook.requirements, ["registry-dep>=1", "numpy==2.2.0"]);
+        assert_eq!(&*post_hook.guarded.as_ref().unwrap().text, b"numpy\n");
+        assert_eq!(h.world.count("hook:run"), 1);
+        if refused.is_some() {
+            assert_eq!(result.unwrap_err(), NodeAppError::ResolutionFailed);
+            assert_eq!(h.world.count("install:node"), 0);
+            assert_eq!(h.env().state(), EnvState::RepairRequired);
+        } else {
+            result.unwrap();
+            let installs = h.world.installs.lock().unwrap();
+            let installed = installs.iter().find(|spec| spec.guarded.is_some()).unwrap();
+            assert_eq!(installed.requirements, post_hook.requirements);
+            assert_eq!(installed.requirement_files, post_hook.requirement_files);
+            assert_eq!(installed.constraint_file, post_hook.constraint_file);
+            assert_eq!(
+                &*installed.guarded.as_ref().unwrap().text,
+                &*post_hook.guarded.as_ref().unwrap().text
+            );
+        }
+    }
+    // Invalid frozen versions are refused before any hook executes.
     let h = Harness::new();
     let review = hook_plan(&h);
-    // A drifting requirements install and a failing script force the cleanup reassertion.
+    h.service
+        .deps
+        .plans
+        .0
+        .lock()
+        .unwrap()
+        .get_mut(&review.id)
+        .unwrap()
+        .package
+        .as_mut()
+        .unwrap()
+        .installs
+        .push(crate::environment::InstalledPackage {
+            name: "numpy".into(),
+            version: "2.2.0 --bad".into(),
+        });
+    assert_eq!(
+        block_on(
+            h.service
+                .commit(&review.id, hook_decision(&review), &h.ctx())
+        )
+        .unwrap_err(),
+        NodeAppError::ResolutionFailed
+    );
+    assert_eq!(h.world.count("hook:run"), 0);
+
+    // A hook cannot introduce requirements that were absent from the reviewed source.
+    let h = Harness::new();
+    {
+        let mut files = h.files.state.lock().unwrap();
+        files.requirements_digest = None;
+        let staged = files.staged.as_mut().unwrap();
+        staged.requirements_digest = None;
+        staged.dependencies.clear();
+        staged.requirement_lines.clear();
+    }
+    let review = hook_plan(&h);
+    assert!(!review.has_requirements);
+    block_on(
+        h.service
+            .commit(&review.id, hook_decision(&review), &h.ctx()),
+    )
+    .unwrap();
+    assert_eq!(h.world.count("hook:run"), 1);
+    assert_eq!(h.world.count("preview:constrained"), 0);
+    assert_eq!(h.world.count("install:node"), 0);
+}
+
+#[test]
+fn node_execution_guard_spans_preview_hook_install_and_cleanup() {
+    let h = Harness::new();
+    let review = hook_plan(&h);
+    // Both mutations drift a pin and force cleanup while the live guard is retained.
     h.world
         .drift_on_requirements
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    *h.hook.fails.lock().unwrap() = true;
+    h.hook
+        .changes
+        .lock()
+        .unwrap()
+        .push(("torch".into(), "2.15.0".into()));
     let result = block_on(
         h.service
             .commit(&review.id, hook_decision(&review), &h.ctx()),
     );
-    assert_eq!(result.unwrap_err(), NodeAppError::DependenciesFailed);
+    result.unwrap();
     let calls = h.world.calls();
     let at = |name: &str, nth: usize| {
         calls
@@ -1968,12 +2202,12 @@ fn node_execution_guard_spans_preview_install_hook_and_cleanup() {
     assert!(at("guard:pin:staged", 0) < at("preview:constrained", 0));
     assert!(at("preview:constrained", 0) < at("guard:drop", 0));
     assert!(at("guard:drop", 0) < at("files:publish", 0));
-    // The live guard is acquired after publication and outlives installation, the script and the
-    // pin reassertion that follows it.
+    // The live guard outlives hook, pin cleanup, post-hook preview and requirements installation.
     let live = at("guard:pin:live", 0);
     assert!(at("files:publish", 0) < live);
-    assert!(live < at("install:node", 0));
-    assert!(at("install:node", 0) < at("hook:run", 0));
+    assert!(live < at("hook:run", 0));
+    assert!(at("hook:run", 0) < at("preview:constrained", 1));
+    assert!(at("preview:constrained", 1) < at("install:node", 0));
     let hook = at("hook:run", 0);
     let cleanup = calls[hook..]
         .iter()
@@ -2254,6 +2488,7 @@ impl Harness {
             clean_cache: false,
             confirm_adopted_changes: false,
             allow_source_builds: false,
+            third_party_consent: false,
         };
         let deps = self.service.deps.environment.clone();
         let id =
@@ -2815,7 +3050,7 @@ mod curated_setup {
     const CANDIDATE: &str = "env-candidate";
     const RUN: &str = "run-setup";
     const DETACHED: &str = "This install is detached; it will not track a branch";
-    const HOOK_GUIDANCE: &str = "This node has an install.py. Setup never runs it. If the node needs it, uninstall the node in Custom Nodes and install it again, approving install.py in the review.";
+    const HOOK_GUIDANCE: &str = super::super::workflow::SETUP_HOOK_WARNING;
 
     #[test]
     fn publication_started_fails_closed_on_storage_errors() {
@@ -2866,6 +3101,15 @@ mod curated_setup {
             clean_cache: false,
             confirm_adopted_changes: false,
             allow_source_builds: false,
+            third_party_consent: false,
+        }
+    }
+
+    /// The request of a wizard whose review stage carried the user's consent.
+    fn consenting_request(selected: &[&str]) -> SetupRequest {
+        SetupRequest {
+            third_party_consent: true,
+            ..request(selected)
         }
     }
 
@@ -2876,8 +3120,8 @@ mod curated_setup {
         }
     }
 
-    fn spec(id: &str, commit: char) -> crate::environment::CuratedNodeSpec {
-        crate::environment::tests::fakes::curated_spec(id, commit)
+    fn spec(id: &str) -> crate::environment::CuratedNodeSpec {
+        crate::environment::tests::fakes::curated_spec(id)
     }
 
     fn step_context(run: &RunId) -> StepContext {
@@ -2997,6 +3241,69 @@ mod curated_setup {
                 &mut *lease,
             ))
         }
+    }
+
+    #[test]
+    fn setup_content_policy_requires_persisted_consent_and_selected_curated_source() {
+        let h = Harness::new();
+        h.curated();
+        h.prepare();
+        assert_eq!(
+            h.files.state.lock().unwrap().prepare_policies,
+            [NodePreparePolicy::Strict]
+        );
+        let run = h.setup_run(&["alpha"]);
+        h.prepare_setup(&run, "alpha").unwrap();
+        assert_eq!(
+            h.files.state.lock().unwrap().prepare_policies.last(),
+            Some(&NodePreparePolicy::Strict)
+        );
+        h.edit_run(|run| run.request.third_party_consent = true);
+        let prepare = |request| {
+            let mut lease = block_on(h.service.deps.environment.gate.try_acquire()).unwrap();
+            block_on(
+                h.service
+                    .prepare_for_setup_held(&run, request, &h.ctx(), &mut *lease),
+            )
+        };
+        let review = prepare(PrepareRequest::Git {
+            repository: "https://github.com/example/alpha.git/".into(),
+            reference: None,
+        })
+        .unwrap();
+        assert_eq!(
+            h.files.state.lock().unwrap().prepare_policies.last(),
+            Some(&NodePreparePolicy::ConsentedFirstRun)
+        );
+        let prepared = h.world.count("files:prepare");
+        for request in [
+            PrepareRequest::Git {
+                repository: spec("beta").repository,
+                reference: None,
+            },
+            PrepareRequest::Git {
+                repository: spec("alpha").repository,
+                reference: Some("main".into()),
+            },
+        ] {
+            assert_eq!(prepare(request).unwrap_err(), NodeAppError::InvalidRequest);
+            assert_eq!(h.world.count("files:prepare"), prepared);
+        }
+        h.edit_run(|run| run.request.third_party_consent = false);
+        assert_eq!(
+            h.commit_setup(&run, &review, approve(&review)).unwrap_err(),
+            NodeAppError::StalePlan
+        );
+        assert_eq!(h.world.count("files:publish"), 0);
+        h.edit_run(|run| {
+            run.request.third_party_consent = true;
+            run.request.curated_nodes.clear();
+        });
+        assert_eq!(
+            h.commit_setup(&run, &review, approve(&review)).unwrap_err(),
+            NodeAppError::StalePlan
+        );
+        assert_eq!(h.world.count("files:publish"), 0);
     }
 
     #[test]
@@ -3228,47 +3535,134 @@ mod curated_setup {
     }
 
     #[test]
-    fn curated_commit_mismatch_never_publishes() {
+    fn curated_repository_mismatch_never_publishes() {
         let h = Harness::new();
         h.curated();
         let run = h.setup_run(&["alpha"]);
         let lease = &mut *block_on(h.service.deps.environment.gate.try_acquire()).unwrap();
         let ctx = step_context(&run);
-        h.files.state.lock().unwrap().commit_override = Some("b".repeat(40));
-        let result = block_on(SetupNodes::prepare(
-            &h.service,
-            &run,
-            &spec("alpha", 'a'),
-            &ctx,
-            lease,
-        ));
-        assert!(
-            matches!(result, Err(SetupNodeError::NotApplied(_))),
-            "{result:?}"
-        );
-        assert!(h.service.setup_reviews(&run).unwrap().is_empty());
-        assert_eq!(h.world.count("files:discard"), 1, "the staging is dropped");
-        assert_eq!(h.world.count("files:publish"), 0);
-        // The exact commit prepares a review whose source equals the entry.
-        h.files.state.lock().unwrap().commit_override = None;
+        // Another repository, and a head that is not a full lowercase commit hash, are refused.
+        let refused = [
+            (Some("https://github.com/example/other"), None),
+            (None, Some(("main", "A".repeat(40)))),
+            (None, Some(("main", "abc".to_owned()))),
+            (None, Some(("main", String::new()))),
+        ];
+        for (index, (repository, head)) in refused.into_iter().enumerate() {
+            {
+                let mut files = h.files.state.lock().unwrap();
+                files.repository_override = repository.map(str::to_owned);
+                files.default_head = head.map(|(branch, commit)| (branch.to_owned(), commit));
+            }
+            let result = block_on(SetupNodes::prepare(
+                &h.service,
+                &run,
+                &spec("alpha"),
+                &ctx,
+                lease,
+            ));
+            assert_eq!(
+                result.unwrap_err(),
+                SetupNodeError::NotApplied(
+                    "The repository did not resolve to the curated repository's default branch."
+                        .into()
+                ),
+                "case {index}"
+            );
+            assert!(h.service.setup_reviews(&run).unwrap().is_empty());
+            assert_eq!(
+                h.world.count("files:discard"),
+                index + 1,
+                "the staging is dropped"
+            );
+            assert_eq!(h.world.count("files:publish"), 0);
+        }
+        // The curated repository at a resolved head prepares a review.
+        {
+            let mut files = h.files.state.lock().unwrap();
+            files.repository_override = None;
+            files.default_head = None;
+        }
         let review = block_on(SetupNodes::prepare(
             &h.service,
             &run,
-            &spec("alpha", 'a'),
+            &spec("alpha"),
             &ctx,
             lease,
         ))
-        .expect("the staged source equals the entry");
+        .expect("the staged source is the curated repository");
         assert_eq!(
             review.source,
             NodeSource::Git {
                 repository: "https://github.com/example/alpha".into(),
                 commit: "a".repeat(40),
-                branch: None
+                branch: Some("main".into())
             }
         );
         assert_eq!(h.service.setup_reviews(&run).unwrap().len(), 1);
         assert_eq!(h.world.count("files:publish"), 0);
+    }
+
+    #[test]
+    fn curated_setup_prepares_the_default_branch_head() {
+        let h = Harness::new();
+        h.curated();
+        let run = h.setup_run(&["alpha"]);
+        let lease = &mut *block_on(h.service.deps.environment.gate.try_acquire()).unwrap();
+        let ctx = step_context(&run);
+        // The repository's default branch is whatever it is today, and its head is not pinned.
+        let head = "0123456789abcdef0123456789abcdef01234567".to_owned();
+        h.files.state.lock().unwrap().default_head = Some(("develop".into(), head.clone()));
+        let review = block_on(SetupNodes::prepare(
+            &h.service,
+            &run,
+            &spec("alpha"),
+            &ctx,
+            lease,
+        ))
+        .expect("any default branch is accepted");
+        assert_eq!(
+            h.files.state.lock().unwrap().references,
+            [None],
+            "the preparation asked for the default head, not for a commit"
+        );
+        assert_eq!(
+            review.source,
+            NodeSource::Git {
+                repository: "https://github.com/example/alpha".into(),
+                commit: head,
+                branch: Some("develop".into())
+            }
+        );
+
+        // Once installed the node is recognised by its repository, whichever head it tracks.
+        let node = block_on(SetupNodes::commit(
+            &h.service,
+            &run,
+            &review.id,
+            approve(&review),
+            &ctx,
+            lease,
+        ))
+        .expect("the reviewed head installs")
+        .node;
+        assert!(matches!(
+            node.source,
+            NodeSource::Git { branch: Some(ref branch), .. } if branch == "develop"
+        ));
+        h.files.state.lock().unwrap().default_head = Some(("main".into(), "f".repeat(40)));
+        assert!(
+            block_on(SetupNodes::installed(
+                &h.service,
+                &run,
+                &spec("alpha"),
+                lease
+            ))
+            .unwrap(),
+            "a node installed from the repository counts, even if the branch head moved on"
+        );
+        let other = crate::environment::tests::fakes::curated_spec("beta");
+        assert!(!block_on(SetupNodes::installed(&h.service, &run, &other, lease)).unwrap());
     }
 
     #[test]
@@ -3359,12 +3753,32 @@ mod curated_setup {
             .unwrap()
         }
 
+        /// Registers a first run whose review stage carried the user's consent.
+        fn register_consenting(&self, selected: &[&str]) -> RunId {
+            block_on(
+                StartSetup::new(self.deps())
+                    .execute(SetupAction::New(Box::new(consenting_request(selected)))),
+            )
+            .unwrap()
+        }
+
         fn execute(&self, id: &RunId) -> RunOutcome {
             block_on(
                 ExecuteSetup::new(self.deps(), Arc::new(self.service.clone()))
                     .execute(id, Arc::new(NullSink)),
             )
             .unwrap()
+        }
+
+        /// Like `execute`, with the log lines of the run.
+        fn execute_logged(&self, id: &RunId) -> (RunOutcome, Vec<String>) {
+            let sink = Arc::new(crate::environment::tests::fakes::RecordingSink::default());
+            let outcome = block_on(
+                ExecuteSetup::new(self.deps(), Arc::new(self.service.clone()))
+                    .execute(id, sink.clone()),
+            )
+            .unwrap();
+            (outcome, sink.log_lines())
         }
 
         fn retry(&self, id: &RunId, decisions: Vec<CommitDecision>) -> RunId {
@@ -3923,5 +4337,178 @@ mod curated_setup {
         flow.retry(&id, decisions);
         assert_eq!(flow.execute(&id), RunOutcome::Succeeded);
         assert_eq!(flow.h.world.count("files:publish"), 2);
+    }
+
+    #[test]
+    fn curated_auto_consent_installs_every_node_and_logs_warnings() {
+        let flow = Flow::new();
+        flow.h.files.state.lock().unwrap().hook_digest = Some("hook".into());
+        let cache_warning =
+            "This repository ships __pycache__ content; consented first-run setup allows it.";
+        let native_warning = "This node has top-level native-image entries that tools may load; consented first-run setup allows them.";
+        flow.h
+            .files
+            .state
+            .lock()
+            .unwrap()
+            .curated_warnings
+            .extend([cache_warning.into(), native_warning.into()]);
+        let id = flow.register_consenting(&["alpha", "beta"]);
+        let (outcome, log) = flow.execute_logged(&id);
+        // No pause: every reviewed plan is answered from the consent given on the review page.
+        assert_eq!(outcome, RunOutcome::Succeeded);
+        let run = flow.run(&id);
+        assert!(run.request.third_party_consent);
+        assert!(run.curated.iter().all(|entry| {
+            entry.status == crate::environment::CuratedStatus::Installed
+                && entry.plan.is_none()
+                && entry.operation.is_some()
+        }));
+        assert_eq!(flow.h.world.count("files:publish"), 2);
+        assert_eq!(flow.h.world.count("install:node"), 2);
+        assert_eq!(
+            flow.h.files.state.lock().unwrap().references,
+            [None, None],
+            "both nodes were prepared at their default branch head"
+        );
+        // Every present hook runs before requirements; source builds and trust remain disabled.
+        assert_eq!(flow.h.world.count("hook:run"), 2);
+        assert!(flow.h.store.state.lock().unwrap().trusts.is_empty());
+        for operation in flow.h.store.state.lock().unwrap().operations.iter() {
+            assert!(
+                operation
+                    .consent_identity
+                    .as_deref()
+                    .is_some_and(|identity| identity.contains("hook=true")),
+                "{:?}",
+                operation.consent_identity
+            );
+        }
+        for spec in flow.h.world.installs.lock().unwrap().iter() {
+            assert!(!spec.allow_source_builds);
+        }
+        // Content findings are acknowledged, and successful hooks leave no skipped-hook note.
+        for name in ["alpha", "beta"] {
+            for warning in [DETACHED, cache_warning, native_warning] {
+                let line = format!("{name}: {warning} (acknowledged on the setup review page).");
+                assert!(log.contains(&line), "{line}\n{log:#?}");
+            }
+            // The resolved head is logged before the node is installed.
+            let resolved = format!(
+                "Node-{name}: main from https://github.com/example/{name} at commit {}.",
+                "a".repeat(40)
+            );
+            let installing = format!("Installing {name}.");
+            let at = |wanted: &str| log.iter().position(|line| line == wanted);
+            assert!(at(&resolved) < at(&installing), "{log:#?}");
+            assert!(at(&resolved).is_some() && at(&installing).is_some());
+            assert!(log.contains(&format!(
+                "Preparing Node-{name} from the latest commit of its default branch."
+            )));
+            let hook = format!("{name}: running approved install.py before node requirements.");
+            let checked = format!("{name}: checking reviewed requirements after install.py.");
+            let requirements = format!("{name}: installing reviewed node requirements.");
+            assert!(at(&hook).is_some() && at(&checked).is_some() && at(&requirements).is_some());
+            assert!(at(&hook) < at(&checked) && at(&checked) < at(&requirements));
+        }
+        assert!(run.curated.iter().all(|entry| entry.message.is_none()));
+        assert_eq!(run.step(StepId::CuratedNodes).status, StepStatus::Succeeded);
+        assert!(log.iter().all(|line| !line.contains(HOOK_GUIDANCE)));
+        let calls = flow.h.world.calls();
+        for (hook, requirements) in calls
+            .iter()
+            .enumerate()
+            .filter(|(_, call)| *call == "hook:run")
+            .map(|(hook, _)| {
+                (
+                    hook,
+                    calls
+                        .iter()
+                        .enumerate()
+                        .skip(hook)
+                        .find(|(_, call)| *call == "install:node")
+                        .unwrap()
+                        .0,
+                )
+            })
+        {
+            assert!(hook < requirements);
+        }
+
+        let no_hook = Flow::new();
+        let id = no_hook.register_consenting(&["alpha"]);
+        assert_eq!(no_hook.execute(&id), RunOutcome::Succeeded);
+        assert_eq!(no_hook.h.world.count("hook:run"), 0);
+
+        // A covering decision from an earlier attempt cannot suppress a current reviewed hook.
+        let retry = Flow::new();
+        retry.h.files.state.lock().unwrap().hook_digest = Some("hook".into());
+        retry
+            .h
+            .files
+            .state
+            .lock()
+            .unwrap()
+            .prepare_failures
+            .insert("beta".into(), NodeAppError::Offline);
+        let id = retry.register_consenting(&["alpha", "beta"]);
+        assert!(matches!(retry.execute(&id), RunOutcome::Failed(_)));
+        let old = retry.reviews(&id);
+        assert_eq!(old.len(), 1);
+        assert!(old[0].has_install_py);
+        let old_decision = approve(&old[0]);
+        assert!(!old_decision.consent.run_install_py);
+        retry.retry(&id, vec![old_decision]);
+        assert_eq!(retry.execute(&id), RunOutcome::Succeeded);
+        assert_eq!(retry.h.world.count("hook:run"), 2);
+    }
+
+    #[test]
+    fn curated_auto_consent_resynthesizes_after_restart() {
+        let mut flow = Flow::new();
+        // The second node cannot be prepared, so the first plan waits uncommitted.
+        flow.h
+            .files
+            .state
+            .lock()
+            .unwrap()
+            .prepare_failures
+            .insert("beta".into(), NodeAppError::Offline);
+        let id = flow.register_consenting(&["alpha", "beta"]);
+        assert!(matches!(flow.execute(&id), RunOutcome::Failed(_)));
+        let old = flow.reviews(&id);
+        assert_eq!(old.len(), 1);
+        assert_eq!(flow.h.world.count("files:publish"), 0);
+
+        // A restart empties the process-local plans and decisions, then settles the journal.
+        let mut deps = flow.service.deps.clone();
+        deps.plans = Arc::default();
+        deps.environment.active_runs = Arc::default();
+        flow.service = NodeService::new(deps);
+        flow.h.files.state.lock().unwrap().recover = Some(RecoveryAction::Discarded);
+        block_on(flow.service.reconcile()).unwrap();
+        assert!(flow.reviews(&id).is_empty());
+
+        // The flag is part of the persisted run: a plain retry installs without any decision.
+        assert!(flow.run(&id).request.third_party_consent);
+        flow.retry(&id, Vec::new());
+        let (outcome, log) = flow.execute_logged(&id);
+        assert_eq!(outcome, RunOutcome::Succeeded);
+        assert_eq!(flow.h.world.count("files:publish"), 2);
+        let run = flow.run(&id);
+        assert!(
+            run.curated
+                .iter()
+                .all(|entry| entry.status == crate::environment::CuratedStatus::Installed)
+        );
+        assert!(
+            run.curated
+                .iter()
+                .all(|entry| entry.operation.as_deref() != Some(old[0].id.as_str())),
+            "the nodes were reviewed again, not replayed from the lost plan"
+        );
+        assert!(log.contains(&format!(
+            "alpha: {DETACHED} (acknowledged on the setup review page)."
+        )));
     }
 }

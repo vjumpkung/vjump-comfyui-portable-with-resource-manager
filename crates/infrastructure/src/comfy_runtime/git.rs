@@ -2,6 +2,7 @@
 use crate::{
     environment::{
         layout::{Layout, Tool, command},
+        source::placement::{default_branch, placement, placement_with_default},
         tools::git_program,
     },
     shared::process::{self, CommandSpec, RunLimits},
@@ -80,6 +81,46 @@ impl GitRepository {
     }
     async fn read(&self, root: &Path, args: &[&str]) -> Result<String, RuntimeError> {
         self.run(root, args, &CancelToken::new()).await
+    }
+    /// Moves to `commit` on the remote's default branch, or on the release branch of `tag`, when
+    /// nothing local is lost, so that `git pull` keeps working; otherwise detached.
+    async fn check_out(
+        &self,
+        root: &Path,
+        commit: &str,
+        tag: Option<&str>,
+        branch: Option<&str>,
+        cancel: &CancelToken,
+    ) -> Result<(), RuntimeError> {
+        let base = self.command(root, &[])?;
+        let git = |args: &[&str]| base.clone().args(args.iter().copied());
+        let placement = if let Some(branch) = branch {
+            placement_with_default(git, commit, tag, Some(branch), cancel).await
+        } else {
+            placement(git, commit, tag, cancel).await
+        }
+        .map_err(|_| RuntimeError::Cancelled)?;
+        match placement {
+            CheckoutPlacement::Branch(branch) => {
+                self.run(root, &["checkout", "-B", &branch, commit, "--"], cancel)
+                    .await?;
+                let upstream = format!("--set-upstream-to=origin/{branch}");
+                match self
+                    .run(root, &["branch", &upstream, &branch], cancel)
+                    .await
+                {
+                    Err(RuntimeError::Cancelled) => return Err(RuntimeError::Cancelled),
+                    Err(_) => tracing::info!(%branch, "the branch was not set to track origin"),
+                    Ok(_) => {}
+                }
+            }
+            CheckoutPlacement::Detached(reason) => {
+                tracing::info!(reason, "ComfyUI is checked out detached");
+                self.run(root, &["checkout", "--detach", commit, "--"], cancel)
+                    .await?;
+            }
+        }
+        Ok(())
     }
     async fn commit(&self, root: &Path, reference: &str) -> Result<String, RuntimeError> {
         let value = self
@@ -187,10 +228,23 @@ impl ComfyRepository for GitRepository {
             status,
         })
     }
-    async fn fetch(&self, root: &Path, ctx: &StepContext) -> Result<(), RuntimeError> {
-        self.run(root, &["fetch", "--tags"], &ctx.cancel)
-            .await
-            .map(|_| ())
+    async fn fetch(
+        &self,
+        root: &Path,
+        target: &UpdateTarget,
+        ctx: &StepContext,
+    ) -> Result<(), RuntimeError> {
+        let args: &[&str] = if matches!(target, UpdateTarget::LatestCommit) {
+            &[
+                "fetch",
+                "--tags",
+                "origin",
+                "refs/heads/*:refs/remotes/origin/*",
+            ]
+        } else {
+            &["fetch", "--tags"]
+        };
+        self.run(root, args, &ctx.cancel).await.map(|_| ())
     }
     async fn freeze(
         &self,
@@ -198,6 +252,25 @@ impl ComfyRepository for GitRepository {
         target: &UpdateTarget,
     ) -> Result<FrozenUpdate, RuntimeError> {
         let tag = match target {
+            UpdateTarget::LatestCommit => {
+                let base = self.command(root, &[])?;
+                let branch = default_branch(
+                    |args| base.clone().args(args.iter().copied()),
+                    &CancelToken::new(),
+                )
+                .await
+                .map_err(|_| RuntimeError::Cancelled)?
+                .ok_or_else(|| RuntimeError::Failed("The remote has no default branch.".into()))?;
+                let commit = self
+                    .commit(root, &format!("refs/remotes/origin/{branch}^{{commit}}"))
+                    .await?;
+                return Ok(FrozenUpdate {
+                    commit,
+                    tag: None,
+                    branch: Some(branch),
+                    fast_forward: false,
+                });
+            }
             UpdateTarget::Tag(tag) => Some(tag.clone()),
             UpdateTarget::LatestRelease => {
                 let resolved = self.source.resolve(root, &ComfyRef::Latest).await?;
@@ -214,6 +287,7 @@ impl ComfyRepository for GitRepository {
                 return Ok(FrozenUpdate {
                     commit,
                     tag: Some(tag.as_str().into()),
+                    branch: None,
                     fast_forward: false,
                 });
             }
@@ -226,6 +300,7 @@ impl ComfyRepository for GitRepository {
             Ok(FrozenUpdate {
                 commit,
                 tag: Some(tag.as_str().into()),
+                branch: None,
                 fast_forward: false,
             })
         } else {
@@ -238,6 +313,7 @@ impl ComfyRepository for GitRepository {
             Ok(FrozenUpdate {
                 commit: self.commit(root, "@{upstream}^{commit}").await?,
                 tag: None,
+                branch: None,
                 fast_forward: true,
             })
         }
@@ -251,26 +327,30 @@ impl ComfyRepository for GitRepository {
         if !super::sqlite::oid(&frozen.commit) {
             return Err(RuntimeError::InvalidRecord);
         }
+        let target = frozen.policy_target()?;
         let state = self.status(root).await?;
-        let target = if frozen.fast_forward {
-            UpdateTarget::BranchFfOnly
-        } else {
-            UpdateTarget::Tag(
-                Tag::new(frozen.tag.clone().ok_or(RuntimeError::InvalidRecord)?)
-                    .map_err(|_| RuntimeError::InvalidRecord)?,
-            )
-        };
         let revision = self.revision(root).await?;
         can_update(&state, &revision, &target).map_err(|reason| RuntimeError::UpdateRefused {
             reason,
             status: state.status,
         })?;
-        let args = if frozen.fast_forward {
-            vec!["merge", "--ff-only", frozen.commit.as_str()]
+        if frozen.fast_forward {
+            self.run(
+                root,
+                &["merge", "--ff-only", frozen.commit.as_str()],
+                &ctx.cancel,
+            )
+            .await?;
         } else {
-            vec!["checkout", "--detach", frozen.commit.as_str(), "--"]
-        };
-        self.run(root, &args, &ctx.cancel).await?;
+            self.check_out(
+                root,
+                &frozen.commit,
+                frozen.tag.as_deref(),
+                frozen.branch.as_deref(),
+                &ctx.cancel,
+            )
+            .await?;
+        }
         if self.revision(root).await?.commit != frozen.commit {
             return Err(RuntimeError::Failed(
                 "Git did not reach the exact frozen target".into(),
@@ -314,6 +394,8 @@ pub(crate) fn parse_counts(text: &str) -> Result<(u64, u64), RuntimeError> {
         values[1].parse().map_err(|_| RuntimeError::InvalidRecord)?,
     ))
 }
+#[cfg(test)]
+mod placement_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

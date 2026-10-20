@@ -77,7 +77,8 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
                         "curatedNodes": [],
                         "cleanCache": false,
                         "confirmAdoptedChanges": false,
-                        "allowSourceBuilds": false
+                        "allowSourceBuilds": false,
+                        "thirdPartyConsent": false
                     }
                 },
                 "onEvent": "__CHANNEL__:1"
@@ -152,6 +153,13 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
         ("comfy_open_browser", json!({}), HandlerError),
         ("comfy_diagnostics", json!({}), HandlerError),
         ("comfy_read_extra_model_paths", json!({}), HandlerError),
+        // A relative path is refused by validation before anything is written.
+        (
+            "comfy_generate_extra_model_paths",
+            json!({ "basePath": "relative/models" }),
+            HandlerError,
+        ),
+        ("comfy_remove_extra_model_paths", json!({}), HandlerError),
         (
             "app_close_decide",
             json!({ "requestId": "close-unknown", "choice": "cancel" }),

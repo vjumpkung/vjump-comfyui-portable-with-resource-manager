@@ -382,6 +382,7 @@ impl LocalNodeFiles {
                         return Err(NodeAppError::UnsafeSource);
                     }
                     validate_tree(&directory, false)?;
+                    tree::refuse_root_native(&directory)?;
                     remove(&(directory.clone(), safe_name(TRACKING)))?;
                     let snapshot = read_tree(&directory, false)?;
                     write_tracking(&directory)?;
@@ -415,12 +416,14 @@ impl LocalNodeFiles {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_git_install(
         &self,
         root: &Path,
         op: &NodeId,
         url: &str,
         reference: Option<&str>,
+        policy: NodePreparePolicy,
         ctx: &StepContext,
     ) -> Result<StagedNode, NodeAppError> {
         let paths = Arc::new(NodePaths::open(root, true)?);
@@ -468,14 +471,15 @@ impl LocalNodeFiles {
                 &remote,
                 &resolved,
                 &staging,
+                policy,
                 ctx,
             )
             .await?;
             let directory = directory.clone();
             let source = git_source(&remote.identity, &resolved);
             let (marker_source, marker_name) = (source.clone(), name.as_str().to_owned());
-            let tree = blocking(move || {
-                tree::validate_fresh_git(&directory)?;
+            let (tree, findings) = blocking(move || {
+                let findings = tree::validate_fresh_git(&directory, policy)?;
                 // Keep the app's marker out of `git status`.
                 let git = directory
                     .child(&safe_name(".git"), false)
@@ -496,18 +500,19 @@ impl LocalNodeFiles {
                     .and_then(|()| file.sync_all())
                     .map_err(filesystem)?;
                 write_marker(&directory, &marker_name, &marker_source, None)?;
-                read_tree(&directory, true)
+                Ok((read_tree(&directory, true)?, findings))
             })
             .await?;
             // The reviewed tree is exactly the checkout of the resolved commit.
             git.require_clean(&paths.root.anchored_path(), &hooks, &staging)
                 .await?;
-            Ok::<_, NodeAppError>((source, tree))
+            Ok::<_, NodeAppError>((source, tree, findings))
         }
         .await;
-        let (source, tree) = match cloned {
+        let (source, tree, mut warnings) = match cloned {
             Ok(value) => value,
             Err(error) => {
+                drop(git);
                 drop(directory);
                 if !matches!(error, NodeAppError::UnsafeSource) {
                     remove_owned(&staged, &owned)?;
@@ -515,7 +520,6 @@ impl LocalNodeFiles {
                 return Err(error);
             }
         };
-        let mut warnings = Vec::new();
         if staging.join(".gitmodules").is_file() {
             warnings.push("This repository declares submodules; they are not initialized".into());
         }
@@ -603,12 +607,13 @@ impl LocalNodeFiles {
                 &remote,
                 &frozen,
                 &staging,
+                NodePreparePolicy::Strict,
                 ctx,
             )
             .await?;
             let checkout = directory.clone();
             let tree = blocking(move || {
-                tree::validate_fresh_git(&checkout)?;
+                tree::validate_fresh_git(&checkout, NodePreparePolicy::Strict)?;
                 read_tree(&checkout, true)
             })
             .await?;
@@ -620,6 +625,7 @@ impl LocalNodeFiles {
         let tree = match cloned {
             Ok(tree) => tree,
             Err(error) => {
+                drop(git);
                 drop(directory);
                 if !matches!(error, NodeAppError::UnsafeSource) {
                     remove_owned(&staged, &owned)?;
@@ -850,6 +856,7 @@ impl NodeFiles for LocalNodeFiles {
         operation: &NodeId,
         request: &PrepareRequest,
         prior: Option<&InstalledNode>,
+        policy: NodePreparePolicy,
         ctx: &StepContext,
     ) -> Result<StagedNode, NodeAppError> {
         let outcome = match (request, prior) {
@@ -864,8 +871,15 @@ impl NodeFiles for LocalNodeFiles {
                 },
                 None,
             ) => {
-                self.prepare_git_install(root, operation, repository, reference.as_deref(), ctx)
-                    .await
+                self.prepare_git_install(
+                    root,
+                    operation,
+                    repository,
+                    reference.as_deref(),
+                    policy,
+                    ctx,
+                )
+                .await
             }
             (PrepareRequest::Update { reference, .. }, Some(prior)) => match &prior.source {
                 NodeSource::Registry { id, .. } => {

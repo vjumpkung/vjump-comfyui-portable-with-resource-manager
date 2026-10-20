@@ -322,6 +322,12 @@ pub enum NodeTarget {
     Setup(RunId),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodePreparePolicy {
+    Strict,
+    ConsentedFirstRun,
+}
+
 #[derive(Clone)]
 pub(crate) struct PreparedPlan {
     pub review: PlanReview,
@@ -329,6 +335,7 @@ pub(crate) struct PreparedPlan {
     pub root: PathBuf,
     pub package: Option<PackagePlan>,
     pub target: NodeTarget,
+    pub prepare_policy: NodePreparePolicy,
 }
 #[derive(Default)]
 pub struct NodePlans(pub(crate) Mutex<HashMap<String, PreparedPlan>>);

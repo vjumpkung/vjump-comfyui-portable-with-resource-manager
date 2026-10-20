@@ -1,24 +1,22 @@
 //! The bundled curated custom nodes of first-run setup (FR-SETUP-9): a versioned JSON document of
-//! GitHub repositories, each pinned to an exact commit, in the order of the reference installer.
+//! GitHub repositories, each installed at the latest commit of its default branch, in the order
+//! of the reference installer.
 
 use application::environment::{CuratedNodeCatalog, CuratedNodeSpec};
 use serde::Deserialize;
 use thiserror::Error;
 
-use super::source::valid_ref_name;
 use crate::custom_nodes::provenance::{repository_folder, validate_remote};
 
 const BUNDLED: &str = include_str!("data/curated_nodes.json");
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const MAX_UNAVAILABLE_BYTES: usize = 300;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EntryDoc {
     repository: String,
-    branch: String,
-    commit: String,
-    /// Why the entry cannot be installed at its pinned commit; the entry stays listed but unselectable.
+    /// Why the entry cannot be installed; the entry stays listed but unselectable.
     #[serde(default)]
     unavailable: Option<String>,
 }
@@ -39,10 +37,6 @@ pub enum CuratedError {
     Schema,
     #[error("a curated node repository is not a GitHub owner/name pair")]
     Repository,
-    #[error("a curated node branch is not a valid branch name")]
-    Branch,
-    #[error("a curated node commit is not a full commit hash")]
-    Commit,
     #[error("the curated node catalog has no provenance or no nodes")]
     Empty,
     #[error("two curated nodes have the same id")]
@@ -101,17 +95,6 @@ impl BundledCuratedNodes {
             if !valid_repository(&entry.repository) {
                 return Err(CuratedError::Repository);
             }
-            if !valid_ref_name(&entry.branch) {
-                return Err(CuratedError::Branch);
-            }
-            if entry.commit.len() != 40
-                || !entry
-                    .commit
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
-                return Err(CuratedError::Commit);
-            }
             if entry
                 .unavailable
                 .as_deref()
@@ -132,8 +115,6 @@ impl BundledCuratedNodes {
                 id,
                 name: name.as_str().to_owned(),
                 repository: url,
-                branch: entry.branch,
-                commit: entry.commit,
                 provenance: doc.provenance.clone(),
                 unavailable: entry.unavailable,
             });

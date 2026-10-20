@@ -319,8 +319,10 @@ pub trait SetupNodes: Send + Sync {
 
 #### Consent and execution
 
+Superseded for first-run setup by the owner decision of 2026-10-20 (`plans/s6-owner-feedback-plan.md`, F).
+
 - `SetupRequest.curated_nodes: Vec<String>` contains catalog IDs, not arbitrary repository/commit pairs.
-- Offer only for FirstRun; default all 22 selected.
+- Offer only for FirstRun; default all 22 selected (superseded 2026-10-20: none selected by default).
 - Selection is not execution consent.
 - Prepare sequentially at the exact catalog commit; require resolved source equality.
 - Persist per-entry progress and one pending `PlanReview`.

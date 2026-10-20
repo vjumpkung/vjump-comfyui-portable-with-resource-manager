@@ -85,7 +85,7 @@ function PlanConsent({ plan, value, onChange, allowRememberSource }: {
     </p>}
     <FieldGroup>
       {check('execute', 'I allow this exact source to execute third-party code')}
-      {plan.hasInstallPy && check('hook', 'Run the root install.py script with the selected Python environment')}
+      {plan.hasInstallPy && check('hook', 'Run the root install.py script with the selected Python environment before requirements.txt')}
       {plan.warnings.length > 0 && check('warnings', 'I acknowledge all displayed warnings')}
       {plan.protectedChanges.length > 0 && check('pins', 'I approve exactly these protected-package changes')}
       {allowRememberSource && namespace && check('remember', 'Remember this source as trusted')}

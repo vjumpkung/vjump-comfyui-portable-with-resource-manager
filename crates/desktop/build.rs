@@ -42,6 +42,8 @@ fn main() {
             "comfy_open_browser",
             "comfy_diagnostics",
             "comfy_read_extra_model_paths",
+            "comfy_generate_extra_model_paths",
+            "comfy_remove_extra_model_paths",
             "app_close_decide",
             "secret_test",
             "dl_resolve",
@@ -108,5 +110,15 @@ fn main() {
         println!(
             "cargo:rustc-link-arg-tests=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
         );
+    }
+
+    // Debug startup (compose -> node reconcile/rescan) and shutdown run block_on on the main
+    // thread; the 1 MiB Windows default overflows. Keep in sync with tests/stack_reserve.rs.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
+            Ok("msvc") => println!("cargo:rustc-link-arg-bins=/STACK:8388608"),
+            Ok("gnu") | Ok("gnullvm") => println!("cargo:rustc-link-arg-bins=-Wl,--stack,8388608"),
+            _ => {}
+        }
     }
 }

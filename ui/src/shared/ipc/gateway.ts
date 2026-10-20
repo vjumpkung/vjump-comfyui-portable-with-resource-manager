@@ -164,6 +164,10 @@ export const gateway = {
   comfyDiagnostics: () => unwrap(() => commands.comfyDiagnostics()),
   comfyReadExtraModelPaths: () =>
     unwrap(() => commands.comfyReadExtraModelPaths()),
+  comfyGenerateExtraModelPaths: (basePath: string) =>
+    unwrap(() => commands.comfyGenerateExtraModelPaths(basePath)),
+  comfyRemoveExtraModelPaths: () =>
+    unwrap(() => commands.comfyRemoveExtraModelPaths()),
   appCloseDecide: (requestId: string, choice: CloseChoiceDto) =>
     unwrap(() => commands.appCloseDecide(requestId, choice)),
   dlResolve: (input: ResolveInput) => unwrap(() => commands.dlResolve(input)),

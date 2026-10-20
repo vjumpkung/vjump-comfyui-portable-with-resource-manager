@@ -127,7 +127,23 @@ impl UpdatePhase {
 pub struct FrozenUpdate {
     pub commit: String,
     pub tag: Option<String>,
+    pub branch: Option<String>,
     pub fast_forward: bool,
+}
+impl FrozenUpdate {
+    pub fn policy_target(&self) -> Result<UpdateTarget, RuntimeError> {
+        match (self.fast_forward, &self.tag, &self.branch) {
+            (true, None, None) => Ok(UpdateTarget::BranchFfOnly),
+            (false, Some(tag), None) => Tag::new(tag.clone())
+                .map(UpdateTarget::Tag)
+                .map_err(|_| RuntimeError::InvalidRecord),
+            (false, None, Some(branch)) => {
+                Tag::new(branch.clone()).map_err(|_| RuntimeError::InvalidRecord)?;
+                Ok(UpdateTarget::LatestCommit)
+            }
+            _ => Err(RuntimeError::InvalidRecord),
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateRun {
@@ -193,6 +209,9 @@ pub enum RuntimeError {
     Cancelled,
     #[error("{0}")]
     Failed(String),
+    /// The message is meant for the user and never contains secrets.
+    #[error("{0}")]
+    ExtraPathsRejected(String),
 }
 impl From<crate::environment::ProvisionError> for RuntimeError {
     fn from(error: crate::environment::ProvisionError) -> Self {

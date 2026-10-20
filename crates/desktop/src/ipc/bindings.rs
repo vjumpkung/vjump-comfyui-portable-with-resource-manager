@@ -48,6 +48,8 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
             comfy_commands::comfy_open_browser,
             comfy_commands::comfy_diagnostics,
             comfy_commands::comfy_read_extra_model_paths,
+            comfy_commands::comfy_generate_extra_model_paths,
+            comfy_commands::comfy_remove_extra_model_paths,
             comfy_commands::app_close_decide,
             download_commands::dl_resolve,
             download_commands::dl_enqueue,

@@ -3,7 +3,7 @@
 use super::{
     paths::{NodePaths, filesystem, safe_name},
     provenance::{Remote, observed_identity, validate_remote},
-    tree::is_link,
+    tree::{MAX_ENTRIES, ROOT_NATIVE_MESSAGE, is_link, is_native_image_name},
 };
 use crate::{
     comfy_runtime::git::{parse_counts, porcelain_dirty},
@@ -13,14 +13,15 @@ use crate::{
         source::valid_ref_name,
         tools::git_program,
     },
-    shared::process::{self, CommandSpec, DiscardSink, RunError, RunLimits},
+    shared::process::{self, CommandSpec, DiscardSink, RawOutputError, RunError, RunLimits},
 };
 use application::{
-    custom_nodes::NodeAppError,
+    custom_nodes::{NodeAppError, NodePreparePolicy},
     environment::{Retained, StepContext},
     shared::CancelToken,
 };
 use domain::comfy_runtime::{RepoState, Revision, UpdateRefusal, UpdateTarget, can_update};
+use domain::shared::model_values::SafeFileName;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -111,6 +112,30 @@ fn update_refused(state: &RepoState, reason: &UpdateRefusal) -> NodeAppError {
 
 fn config_refused() -> NodeAppError {
     refused("", "Repository configuration requires external inspection.")
+}
+
+fn tree_listing_failed() -> NodeAppError {
+    failed("The repository tree could not be listed")
+}
+
+pub(crate) fn admit_root_tree(bytes: &[u8]) -> Result<(), NodeAppError> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let records = bytes.strip_suffix(&[0]).ok_or_else(tree_listing_failed)?;
+    let mut native = false;
+    for (index, record) in records.split(|byte| *byte == 0).enumerate() {
+        if index >= MAX_ENTRIES {
+            return Err(NodeAppError::UnsafeSource);
+        }
+        let name = std::str::from_utf8(record).map_err(|_| NodeAppError::UnsafeSource)?;
+        SafeFileName::new(name).map_err(|_| NodeAppError::UnsafeSource)?;
+        native |= is_native_image_name(name);
+    }
+    if native {
+        return Err(failed(ROOT_NATIVE_MESSAGE));
+    }
+    Ok(())
 }
 
 fn safe_config(config: &str) -> bool {
@@ -234,6 +259,9 @@ impl GitNodes {
             resources.config.path().as_os_str().to_owned(),
         ));
         spec.env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
+        // Load-bearing: MinGit's etc/gitconfig defines required filter "lfs" with
+        // process = git-lfs filter-process. Without this, malicious .gitattributes
+        // could spawn that filter during pre-consent checkout.
         if !matches!(args.first(), Some(&"fetch" | &"clone" | &"ls-remote")) {
             spec.env.retain(|(key, _)| {
                 !matches!(
@@ -286,17 +314,26 @@ impl GitNodes {
         Ok(spec)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn run(
+    async fn checked_spec(
         &self,
         root: &Path,
         hooks: &Path,
         cwd: Option<&Path>,
         args: &[&str],
         cancel: &CancelToken,
-        ctx: Option<&StepContext>,
-        timeout: Duration,
-    ) -> Result<String, NodeAppError> {
+    ) -> Result<CommandSpec, NodeAppError> {
+        if let Some(dir) = cwd {
+            let metadata = dir.join(".git").symlink_metadata().map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    refused("", "The repository metadata (.git) is missing.")
+                } else {
+                    filesystem(error)
+                }
+            })?;
+            if !metadata.is_dir() || is_link(&metadata) {
+                return Err(NodeAppError::UnsafeSource);
+            }
+        }
         let spec = self.spec(root, hooks, cwd, args)?;
         if let Some(dir) = cwd {
             let query = self.spec(
@@ -320,6 +357,21 @@ impl GitNodes {
                 return Err(config_refused());
             }
         }
+        Ok(spec)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn run(
+        &self,
+        root: &Path,
+        hooks: &Path,
+        cwd: Option<&Path>,
+        args: &[&str],
+        cancel: &CancelToken,
+        ctx: Option<&StepContext>,
+        timeout: Duration,
+    ) -> Result<String, NodeAppError> {
+        let spec = self.checked_spec(root, hooks, cwd, args, cancel).await?;
         let spec = if let Some(ctx) = ctx {
             spec.retain(ctx.retained.clone())
         } else {
@@ -356,16 +408,6 @@ impl GitNodes {
         dir: &Path,
         args: &[&str],
     ) -> Result<String, NodeAppError> {
-        let metadata = dir.join(".git").symlink_metadata().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                refused("", "The repository metadata (.git) is missing.")
-            } else {
-                filesystem(error)
-            }
-        })?;
-        if !metadata.is_dir() || is_link(&metadata) {
-            return Err(NodeAppError::UnsafeSource);
-        }
         self.run(
             root,
             hooks,
@@ -376,6 +418,33 @@ impl GitNodes {
             Duration::from_secs(120),
         )
         .await
+    }
+
+    pub(crate) async fn read_raw(
+        &self,
+        root: &Path,
+        hooks: &Path,
+        dir: &Path,
+        args: &[&str],
+        cancel: &CancelToken,
+    ) -> Result<Vec<u8>, NodeAppError> {
+        let spec = self
+            .checked_spec(root, hooks, Some(dir), args, cancel)
+            .await?;
+        let limits = RunLimits {
+            timeout: Some(Duration::from_secs(120)),
+            max_stdout_bytes: 8 * 1024 * 1024,
+            ..Default::default()
+        };
+        process::run_raw_stdout(&spec, cancel, &limits)
+            .await
+            .map_err(|error| match error {
+                RawOutputError::Run(RunError::Cancelled { .. }) => NodeAppError::Cancelled,
+                RawOutputError::Run(
+                    RunError::Failed { tail, .. } | RunError::TimedOut { tail },
+                ) if looks_transient(&tail) => NodeAppError::Offline,
+                _ => tree_listing_failed(),
+            })
     }
 
     /// Resolves the reference to one immutable commit. A name that matches both a branch and a
@@ -484,6 +553,7 @@ impl GitNodes {
 
     /// Clones into the fresh `staging` directory without checking out, then checks out exactly the
     /// resolved commit. Branch installs keep tracking; tags and commits stay detached.
+    #[allow(clippy::too_many_arguments)]
     pub async fn clone_checkout(
         &self,
         root: &Path,
@@ -491,6 +561,7 @@ impl GitNodes {
         remote: &Remote,
         resolved: &Resolved,
         staging: &Path,
+        policy: NodePreparePolicy,
         ctx: &StepContext,
     ) -> Result<(), NodeAppError> {
         let timeout = Duration::from_secs(3600);
@@ -526,6 +597,28 @@ impl GitNodes {
             NodeAppError::Cancelled | NodeAppError::Offline => e,
             _ => failed("The commit is not part of the cloned repository"),
         })?;
+        if cfg!(windows) && policy == NodePreparePolicy::Strict {
+            let bytes = self
+                .read_raw(
+                    root,
+                    hooks,
+                    staging,
+                    &[
+                        "ls-tree",
+                        "--full-tree",
+                        "-z",
+                        "--name-only",
+                        &resolved.commit,
+                    ],
+                    &ctx.cancel,
+                )
+                .await
+                .map_err(|error| match error {
+                    NodeAppError::Cancelled | NodeAppError::Offline => error,
+                    _ => tree_listing_failed(),
+                })?;
+            admit_root_tree(&bytes)?;
+        }
         match &resolved.branch {
             Some(branch) => {
                 self.run(

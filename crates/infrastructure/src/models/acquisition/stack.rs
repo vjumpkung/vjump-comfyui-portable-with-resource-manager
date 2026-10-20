@@ -49,7 +49,7 @@ impl DownloadStack {
         concurrency: usize,
         locks: Arc<dyn ModelPathLocks>,
     ) -> Result<Self> {
-        Self::open_with_bandwidth(root, db, vault, concurrency, locks, None)
+        Self::open_with_bandwidth(root, db, vault, concurrency, locks, None, true)
     }
 
     pub fn open_with_bandwidth(
@@ -59,13 +59,21 @@ impl DownloadStack {
         concurrency: usize,
         locks: Arc<dyn ModelPathLocks>,
         limit_kib_s: Option<NonZeroU32>,
+        create_default_root: bool,
     ) -> Result<Self> {
         let bandwidth = Arc::new(BandwidthLimiter::new(limit_kib_s));
         let layout = Layout::new(root);
-        let models = layout.comfyui_dir().join("models");
-        std::fs::create_dir_all(&models).map_err(|_| DownloadError(DownloadErrorCode::Disk))?;
+        // Before the first ComfyUI clone nothing may exist under `ComfyUI/`, so the stack opens
+        // without a model root and downloads are refused until the next start.
+        let default_root = if create_default_root {
+            let models = layout.comfyui_dir().join("models");
+            std::fs::create_dir_all(&models).map_err(|_| DownloadError(DownloadErrorCode::Disk))?;
+            vec![(DEFAULT_MODEL_ROOT_ID.to_owned(), models)]
+        } else {
+            Vec::new()
+        };
         let roots = Arc::new(
-            AuthorizedModelRoots::new([(DEFAULT_MODEL_ROOT_ID.to_owned(), models)])
+            AuthorizedModelRoots::new(default_root)
                 .map_err(|_| DownloadError(DownloadErrorCode::Containment))?,
         );
         let staging = Arc::new(

@@ -6,7 +6,10 @@ use super::{
 };
 use crate::{
     settings::secrets::CredentialVault,
-    shared::process::{self, CommandSpec, DiscardSink, RunError, RunLimits},
+    shared::{
+        logging,
+        process::{self, CommandSpec, DiscardSink, RunError, RunLimits},
+    },
 };
 use application::{models::acquisition::*, shared::CancelToken};
 use async_trait::async_trait;
@@ -56,11 +59,15 @@ impl HfDownloadCommand {
             .map_err(|_| DownloadErrorCode::TokenRequired)?;
         let mut env = process::system_baseline();
         let cache = root.join("data/cache/hf");
+        let home = root.join("data/cache/hf/home");
         let temp = root.join("data/tmp/hf");
         std::fs::create_dir_all(&cache).map_err(|_| DownloadErrorCode::Disk)?;
+        std::fs::create_dir_all(&home).map_err(|_| DownloadErrorCode::Disk)?;
         std::fs::create_dir_all(&temp).map_err(|_| DownloadErrorCode::Disk)?;
         env.extend([
             (OsString::from("HF_HOME"), cache.into_os_string()),
+            ("USERPROFILE".into(), home.as_os_str().into()),
+            ("HOME".into(), home.into_os_string()),
             ("HF_HUB_DISABLE_TELEMETRY".into(), "1".into()),
             ("PYTHONNOUSERSITE".into(), "1".into()),
             ("PYTHONUTF8".into(), "1".into()),
@@ -147,7 +154,13 @@ impl Downloader for HfDownloader {
                         Err(RunError::Cancelled { .. }) => Err(DownloadErrorCode::Cancelled.into()),
                         Err(RunError::TimedOut { .. }) => Err(DownloadErrorCode::Network.into()),
                         Err(RunError::CleanupFailed { .. }) => Err(DownloadErrorCode::ProcessCleanupFailed.into()),
-                        Err(RunError::Failed { tail, .. }) => Err(classify_stderr(&tail.join("\n")).into()),
+                        Err(RunError::Failed { tail, .. }) => {
+                            let code = classify_stderr(&tail.join("\n"));
+                            if code == DownloadErrorCode::ToolRuntime {
+                                tracing::warn!(summary = %runtime_failure_summary(&tail), "Hugging Face tool runtime failure");
+                            }
+                            Err(code.into())
+                        },
                     },
                     _ = interval.tick() => {
                         let dir = directory.path.clone();
@@ -217,6 +230,20 @@ impl Downloader for HfDownloader {
         })
     }
 }
+fn runtime_failure_summary(tail: &[String]) -> String {
+    let mut summary = tail[tail.len().saturating_sub(20)..]
+        .iter()
+        .map(|line| logging::redact(line).chars().take(500).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut end = summary.len().min(4 * 1024);
+    while !summary.is_char_boundary(end) {
+        end -= 1;
+    }
+    summary.truncate(end);
+    summary
+}
+
 pub fn classify_stderr(text: &str) -> DownloadErrorCode {
     let text = text.to_ascii_lowercase();
     if text.contains("gatedrepo") || text.contains("accept the license") {
@@ -280,4 +307,172 @@ pub fn poll_bytes(directory: &std::path::Path, selected: &str) -> Result<u64> {
         }
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::secrets::CredentialSnapshot;
+    use domain::{
+        models::library::ModelCategory,
+        shared::model_values::{JobId, RelativeModelPath, SafeFileName, Sha256},
+    };
+
+    const FILE: &str = "vae-ft-mse-840000-ema-pruned.safetensors";
+    const SIZE: u64 = 334_641_190;
+    const SHA256: &str = "735e4c3a447a3255760d7f86845f09f937809baa529c17370d83e4c3758f3c75";
+
+    struct NoCredentials;
+
+    #[async_trait]
+    impl CredentialVault for NoCredentials {
+        async fn read(
+            &self,
+            _: CredentialKind,
+        ) -> std::result::Result<CredentialSnapshot, application::settings::CredentialStoreError>
+        {
+            Ok(CredentialSnapshot {
+                generation: 0,
+                value: None,
+            })
+        }
+
+        async fn generation(
+            &self,
+            _: CredentialKind,
+        ) -> std::result::Result<u64, application::settings::CredentialStoreError> {
+            Ok(0)
+        }
+    }
+
+    fn hf_job() -> DownloadJob {
+        DownloadJob {
+            id: JobId::new("hf-home").unwrap(),
+            source: SourceRef::HuggingFace {
+                repo_type: RepoType::Model,
+                repo: "stabilityai/sd-vae-ft-mse-original".into(),
+                revision: "629b3ad3030ce36e15e70c5db7d91df0d60c627f".into(),
+                path: Some(RelativeModelPath::new(FILE).unwrap()),
+            },
+            identity: ProviderIdentity("hf-home".into()),
+            destination: Destination {
+                root_id: "models".into(),
+                category: ModelCategory::new("vae").unwrap(),
+                subdirectory: RelativeModelPath::default(),
+                filename: SafeFileName::new(FILE).unwrap(),
+            },
+            state: DownloadState::Queued,
+            requested_engine: DownloadEngine::HfCli,
+            effective_engine: DownloadEngine::HfCli,
+            generation: 0,
+            size: DownloadSize::Exact(SIZE),
+            expected_sha256: Some(Sha256::new(SHA256).unwrap()),
+            bytes_done: 0,
+            validator: None,
+            retry_count: 0,
+            retry_at: None,
+            stop_intent: None,
+            error: None,
+            conflict: None,
+            decision_id: None,
+            observed: None,
+            publication: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn hf_spec_uses_an_app_owned_home() {
+        let root = tempfile::tempdir().unwrap();
+        let command = HfDownloadCommand::for_job(
+            root.path(),
+            &hf_job(),
+            root.path().join("files"),
+            &NoCredentials,
+        )
+        .await
+        .unwrap();
+        let home = root.path().join("data/cache/hf/home");
+        assert!(home.is_dir());
+        for key in ["USERPROFILE", "HOME"] {
+            let values: Vec<_> = command.spec.env.iter().filter(|(k, _)| k == key).collect();
+            assert_eq!(values.len(), 1);
+            assert_eq!(values[0].1, home.as_os_str());
+            assert_ne!(Some(values[0].1.clone()), std::env::var_os(key));
+        }
+    }
+
+    #[test]
+    fn hf_runtime_failure_summary_is_bounded_and_redacted() {
+        let secret = "d4-registered-runtime-secret";
+        let token = "hf_abcdefghijklmnopqrstuvwxyz123456";
+        logging::register_secret(secret);
+        let mut tail = vec!["discarded old line".into(); 5];
+        tail.push(format!("{secret} {token}"));
+        tail.extend((0..19).map(|index| format!("line {index}")));
+        let summary = runtime_failure_summary(&tail);
+        assert_eq!(summary.lines().count(), 20);
+        assert!(!summary.contains("discarded old line"));
+        assert!(!summary.contains(secret));
+        assert!(!summary.contains(token));
+        assert!(summary.contains("[REDACTED] [REDACTED]"));
+        assert!(summary.ends_with("line 18"));
+
+        let long = format!("{} {secret} {token}", "界".repeat(600));
+        let summary = runtime_failure_summary(std::slice::from_ref(&long));
+        assert_eq!(summary.chars().count(), 500);
+        let summary = runtime_failure_summary(&vec![long; 30]);
+        assert!(summary.len() <= 4 * 1024);
+        assert!(summary.lines().all(|line| line.chars().count() <= 500));
+
+        let boundary = format!("{}{secret}", "x".repeat(499));
+        assert_eq!(
+            runtime_failure_summary(&[boundary]),
+            format!("{}[", "x".repeat(499))
+        );
+    }
+
+    /// Set VJ_REAL_HF_EXE to the absolute path of the pinned hf CLI with hf-xet.
+    #[tokio::test]
+    #[ignore = "requires real pinned hf with hf-xet, network and a 334,641,190-byte download"]
+    async fn real_hf_download_succeeds_without_user_profile_variables() {
+        use std::{fs, time::Duration};
+
+        let executable = PathBuf::from(std::env::var_os("VJ_REAL_HF_EXE").unwrap());
+        assert!(executable.is_absolute() && executable.is_file());
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let local_dir = root.path().join("files");
+        let mut command =
+            HfDownloadCommand::for_job(root.path(), &hf_job(), local_dir.clone(), &NoCredentials)
+                .await
+                .unwrap();
+        command.spec.program = executable;
+        assert!(
+            !command
+                .spec
+                .env
+                .iter()
+                .any(|(key, _)| key == "HOMEDRIVE" || key == "HOMEPATH" || key == "HF_TOKEN")
+        );
+        let result = process::run(
+            &command.spec,
+            &DiscardSink,
+            &CancelToken::new(),
+            &RunLimits {
+                timeout: Some(Duration::from_secs(600)),
+                ..RunLimits::default()
+            },
+        )
+        .await;
+        assert!(result.is_ok(), "hf must download with the app-owned home");
+        let mut file = fs::File::open(local_dir.join(FILE)).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), SIZE);
+        assert_eq!(
+            crate::shared::model_paths::digest(&mut file)
+                .unwrap()
+                .as_str(),
+            SHA256
+        );
+    }
 }

@@ -22,6 +22,7 @@ pub fn request() -> SetupRequest {
         clean_cache: false,
         confirm_adopted_changes: false,
         allow_source_builds: false,
+        third_party_consent: false,
     }
 }
 
@@ -424,6 +425,101 @@ fn optional_manager_step_needs_consent_for_the_resolved_commit() {
     assert_eq!(
         world.run(&run_id).step(StepId::Manager).status,
         StepStatus::Succeeded
+    );
+}
+
+#[test]
+fn first_run_consent_installs_manager_without_pausing() {
+    let world = World::new();
+    let run_id = register(
+        &world,
+        SetupRequest {
+            install_manager: true,
+            third_party_consent: true,
+            ..request()
+        },
+    )
+    .unwrap();
+    assert!(world.run(&run_id).request.third_party_consent);
+    let (outcome, sink) = execute(&world, &run_id);
+    assert_eq!(outcome, RunOutcome::Succeeded);
+    assert_eq!(world.count("install_manager"), 1);
+    let run = world.run(&run_id);
+    assert_eq!(run.step(StepId::Manager).status, StepStatus::Succeeded);
+    let manager = run.resolved.manager.expect("the Manager was resolved");
+    assert_eq!(
+        run.manager_consent.as_deref(),
+        Some(manager.commit.as_str()),
+        "the approved commit is persisted with the run"
+    );
+    assert!(sink.log_lines().contains(&format!(
+        "ComfyUI-Manager {} at commit {} was approved on the setup review page.",
+        manager.url, manager.commit
+    )));
+
+    // A pre-approved commit is not logged as approved again, and a run without the flag
+    // still pauses (see `optional_manager_step_needs_consent_for_the_resolved_commit`).
+    let world = World::new();
+    let run_id = register(
+        &world,
+        SetupRequest {
+            install_manager: true,
+            third_party_consent: true,
+            ..request()
+        },
+    )
+    .unwrap();
+    world
+        .runs
+        .lock()
+        .unwrap()
+        .get_mut(run_id.as_str())
+        .unwrap()
+        .manager_consent = Some("mgr0000000000000000000000000000000000001".into());
+    let (outcome, sink) = execute(&world, &run_id);
+    assert_eq!(outcome, RunOutcome::Succeeded);
+    assert!(
+        sink.log_lines()
+            .iter()
+            .all(|line| !line.contains("was approved on the setup review page"))
+    );
+}
+
+#[test]
+fn third_party_consent_is_refused_outside_first_run() {
+    for mode in [
+        SetupMode::Repair,
+        SetupMode::ChangeTorch,
+        SetupMode::ChangePython,
+        SetupMode::SwitchVenv,
+        SetupMode::Rebuild,
+    ] {
+        let world = World::new();
+        let result = register(
+            &world,
+            SetupRequest {
+                mode,
+                third_party_consent: true,
+                ..request()
+            },
+        );
+        assert!(
+            matches!(result, Err(EnvironmentAppError::ThirdPartyConsentInvalid)),
+            "{mode:?}: {result:?}"
+        );
+        assert!(world.runs.lock().unwrap().is_empty(), "{mode:?}");
+    }
+    // The first run accepts it.
+    let world = World::new();
+    assert!(
+        register(
+            &world,
+            SetupRequest {
+                third_party_consent: true,
+                ..request()
+            }
+        )
+        .is_ok()
     );
 }
 
@@ -1666,6 +1762,16 @@ impl Curated {
         .unwrap()
     }
 
+    fn register_consenting(&self, ids: &[&str]) -> RunId {
+        block_on(
+            StartSetup::new(self.deps.clone()).execute(SetupAction::New(Box::new(SetupRequest {
+                third_party_consent: true,
+                ..curated_request(ids)
+            }))),
+        )
+        .unwrap()
+    }
+
     fn execute(&self, id: &RunId) -> RunOutcome {
         block_on(
             ExecuteSetup::new(self.deps.clone(), self.world.nodes())
@@ -1925,5 +2031,31 @@ fn curated_failures_are_classified_before_they_reach_the_user() {
     let failure = failure_of(c.execute(&id));
     assert_eq!(failure.kind, FailureKind::ConsentRequired);
     assert_eq!(c.world.count("setup_nodes:prepare:alpha"), 2);
+    assert!(c.world.node_installed.lock().unwrap().is_empty());
+}
+
+#[test]
+fn curated_auto_consent_stops_when_plans_keep_changing() {
+    let c = Curated::new();
+    for _ in 0..5 {
+        c.world.fail_nodes("commit", SetupNodeError::PlanStale);
+    }
+    let id = c.register_consenting(&["alpha"]);
+    let failure = failure_of(c.execute(&id));
+    assert_eq!(failure.step, StepId::CuratedNodes);
+    assert_eq!(failure.kind, FailureKind::Failed);
+    assert_eq!(
+        failure.message,
+        "The curated node plans kept changing. Retry setup."
+    );
+    // Three passes prepared and tried the plan; a fourth never started.
+    assert_eq!(c.world.count("setup_nodes:prepare:alpha"), 3);
+    let commits = c
+        .world
+        .calls()
+        .iter()
+        .filter(|call| call.starts_with("setup_nodes:commit:"))
+        .count();
+    assert_eq!(commits, 3);
     assert!(c.world.node_installed.lock().unwrap().is_empty());
 }

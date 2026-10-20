@@ -21,7 +21,7 @@ fn every_bundled_profile_parses_validates_and_has_a_unique_id() {
     for profile in &profiles {
         profile.validate().unwrap();
         assert!(!profile.provenance.is_empty(), "{}", profile.id);
-        // Only the default Windows profile was measured on a real install.
+        // Only the Python 3.13 Windows profile was measured on a real install.
         assert_eq!(
             profile.disk.calibrated,
             profile.id == "win-py313-torch2141-cu130",
@@ -74,14 +74,17 @@ fn every_bundled_profile_parses_validates_and_has_a_unique_id() {
 #[test]
 fn each_os_has_exactly_one_recommended_profile_with_the_spec_defaults() {
     let profiles = catalog().list();
-    for (os, id) in [
+    // Windows recommends Python 3.12 with torch 2.10 (owner decision 2026-10-20).
+    for (os, id, python) in [
         (
             domain::environment::OsKind::Windows,
-            "win-py313-torch2141-cu130",
+            "win-py312-torch2100-cu130",
+            PythonVersion::new(3, 12, 15),
         ),
         (
             domain::environment::OsKind::Linux,
             "linux-py313-torch2141-cu130",
+            PythonVersion::new(3, 13, 16),
         ),
     ] {
         let recommended: Vec<_> = profiles
@@ -90,7 +93,7 @@ fn each_os_has_exactly_one_recommended_profile_with_the_spec_defaults() {
             .collect();
         assert_eq!(recommended.len(), 1, "{os:?}");
         assert_eq!(recommended[0].id, id);
-        assert_eq!(recommended[0].python, PythonVersion::new(3, 13, 16));
+        assert_eq!(recommended[0].python, python);
     }
 }
 

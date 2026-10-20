@@ -65,7 +65,19 @@ impl LibraryRoots {
     ) -> io::Result<Self> {
         let default = Layout::new(install_root).comfyui_dir().join("models");
         std::fs::create_dir_all(&default)?;
-        let this = Self {
+        let this = Self::deferred(install_root, extra, locks)?;
+        this.install(Self::default_only(&default)?, Vec::new());
+        Ok(this)
+    }
+
+    /// No roots and nothing created on disk: used before ComfyUI is cloned. `refresh` reports
+    /// the missing default root and registers it once it exists.
+    pub fn deferred(
+        install_root: &Path,
+        extra: Arc<dyn ExtraModelPaths>,
+        locks: Arc<PathLocks>,
+    ) -> io::Result<Self> {
+        Ok(Self {
             install_root: install_root.to_owned(),
             extra,
             locks,
@@ -74,9 +86,7 @@ impl LibraryRoots {
                 specs: Vec::new(),
                 infos: Vec::new(),
             }),
-        };
-        this.install(Self::default_only(&default)?, Vec::new());
-        Ok(this)
+        })
     }
 
     fn default_only(default: &Path) -> io::Result<Vec<(RootSpec, RootInfo)>> {

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-comfy-remove-extra-model-paths"
+description = "Enables the comfy_remove_extra_model_paths command without any pre-configured scope."
+commands.allow = ["comfy_remove_extra_model_paths"]
+
+[[permission]]
+identifier = "deny-comfy-remove-extra-model-paths"
+description = "Denies the comfy_remove_extra_model_paths command without any pre-configured scope."
+commands.deny = ["comfy_remove_extra_model_paths"]

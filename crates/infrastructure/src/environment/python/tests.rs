@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use application::environment::{NullSink, RunId, StepId};
+use application::environment::{NullSink, RunId, SetupEvent, SetupProgressSink, StepId};
 use domain::environment::{EnvId, NewEnvironment, Ownership, PythonSourceKind};
 
 use super::*;
@@ -372,6 +372,294 @@ fn runtime_dlls_are_copied_once_and_never_overwritten() {
     assert!(home.join("concrt140.dll").is_file());
     assert!(!home.join("pip.exe").exists());
     assert!(!home.join("other.dll").exists());
+}
+
+#[test]
+fn minor_link_name_is_derived_from_pinned_metadata() {
+    let entries: serde_json::Value = serde_json::from_str(PYTHON_DOWNLOADS_JSON).unwrap();
+    let entries = entries.as_object().unwrap();
+    assert!(!entries.is_empty());
+    for (key, entry) in entries {
+        let number = |field: &str| entry[field].as_u64().unwrap() as u8;
+        let (major, minor, patch) = (number("major"), number("minor"), number("patch"));
+        let derived = minor_link_name(
+            PythonVersion::new(major, minor, patch),
+            entry["os"].as_str().unwrap(),
+            entry["arch"]["family"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            derived.as_str(),
+            key.replacen(
+                &format!("{major}.{minor}.{patch}"),
+                &format!("{major}.{minor}"),
+                1
+            )
+        );
+    }
+    assert_eq!(
+        minor_link_name(PythonVersion::new(3, 13, 16), "windows", "x86_64")
+            .unwrap()
+            .as_str(),
+        "cpython-3.13-windows-x86_64-none"
+    );
+    assert_eq!(
+        minor_link_name(PythonVersion::new(3, 12, 15), "linux", "x86_64")
+            .unwrap()
+            .as_str(),
+        "cpython-3.12-linux-x86_64-gnu"
+    );
+    for (version, os, arch) in [
+        (PythonVersion::new(3, 13, 99), "windows", "x86_64"),
+        (PythonVersion::new(3, 11, 9), "linux", "x86_64"),
+        (PythonVersion::new(3, 13, 16), "macos", "x86_64"),
+        (PythonVersion::new(3, 13, 16), "windows", "aarch64"),
+    ] {
+        assert!(
+            matches!(
+                minor_link_name(version, os, arch),
+                Err(ProvisionError::Failed(message))
+                    if message == "The pinned Python download metadata has no entry for this platform."
+            ),
+            "{version} {os} {arch}"
+        );
+    }
+}
+
+#[test]
+fn minor_link_names_cover_every_pinned_minor_version() {
+    let os = if cfg!(windows) { "windows" } else { "linux" };
+    let libc = if cfg!(windows) { "none" } else { "gnu" };
+    let names = minor_link_names(os, "x86_64").unwrap();
+    for minor in [12, 13, 14] {
+        let expected = format!("cpython-3.{minor}-{os}-x86_64-{libc}");
+        assert!(names.iter().any(|name| name.as_str() == expected));
+    }
+    assert!(
+        names.windows(2).all(|pair| pair[0] < pair[1]),
+        "names are sorted and deduplicated"
+    );
+}
+
+struct LogSink(Mutex<Vec<String>>);
+
+impl SetupProgressSink for LogSink {
+    fn emit(&self, event: SetupEvent) {
+        if let SetupEvent::Log { line, .. } = event {
+            self.0.lock().unwrap().push(line);
+        }
+    }
+}
+
+/// An install root whose Python cache exists, and the minor-version link name uv uses there.
+fn python_cache() -> (tempfile::TempDir, Layout, SafeFileName) {
+    let directory = tempfile::tempdir().unwrap();
+    let layout = Layout::new(directory.path().join("install"));
+    fs::create_dir_all(layout.managed_python_dir()).unwrap();
+    let os = if cfg!(windows) { "windows" } else { "linux" };
+    let name = minor_link_name(PythonVersion::new(3, 13, 16), os, "x86_64").unwrap();
+    (directory, layout, name)
+}
+
+/// The patch folder uv installs into, which the minor-version link points at.
+fn patch_directory(layout: &Layout, link: &SafeFileName) -> PathBuf {
+    let patch = link.as_str().replacen("3.13", "3.13.16", 1);
+    let directory = layout.managed_python_dir().join(patch);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("python"), b"interpreter").unwrap();
+    directory
+}
+
+#[cfg(windows)]
+fn directory_link(target: &Path, link: &Path) -> bool {
+    std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+#[test]
+fn missing_minor_link_is_left_alone() {
+    let (_directory, layout, name) = python_cache();
+    clear_copied_minor_link(&layout, &name, &ctx()).unwrap();
+    assert!(
+        fs::symlink_metadata(layout.managed_python_dir().join(name.as_str())).is_err(),
+        "nothing is created"
+    );
+}
+
+#[test]
+fn copied_minor_link_directory_is_removed_and_patch_directory_kept() {
+    let (_directory, layout, name) = python_cache();
+    let patch = patch_directory(&layout, &name);
+    let copied = layout.managed_python_dir().join(name.as_str());
+    fs::create_dir_all(copied.join("Lib").join("site-packages ไทย")).unwrap();
+    fs::write(copied.join("python"), b"copy").unwrap();
+    fs::write(copied.join("Lib").join("site.py"), b"copy").unwrap();
+    fs::write(
+        copied.join("Lib").join("site-packages ไทย").join("a.py"),
+        b"copy",
+    )
+    .unwrap();
+
+    let sink = Arc::new(LogSink(Mutex::new(Vec::new())));
+    let context = StepContext {
+        sink: sink.clone(),
+        ..ctx()
+    };
+    clear_copied_minor_link(&layout, &name, &context).unwrap();
+
+    assert!(fs::symlink_metadata(&copied).is_err(), "the copy is gone");
+    assert_eq!(fs::read(patch.join("python")).unwrap(), b"interpreter");
+    assert_eq!(
+        *sink.0.lock().unwrap(),
+        [format!(
+            "Removing a copied Python version folder ({}); uv recreates its link.",
+            name.as_str()
+        )]
+    );
+}
+
+#[test]
+fn copied_minor_links_of_other_versions_are_removed_too() {
+    let (_directory, layout, name) = python_cache();
+    let os = if cfg!(windows) { "windows" } else { "linux" };
+    let other_name = minor_link_name(PythonVersion::new(3, 12, 15), os, "x86_64").unwrap();
+    let patch = patch_directory(&layout, &name);
+    let other_patch = layout
+        .managed_python_dir()
+        .join(other_name.as_str().replacen("3.12", "3.12.15", 1));
+    fs::create_dir_all(&other_patch).unwrap();
+    fs::write(other_patch.join("python"), b"interpreter").unwrap();
+    for link in [&other_name, &name] {
+        let copied = layout.managed_python_dir().join(link.as_str());
+        fs::create_dir_all(copied.join("Lib")).unwrap();
+        fs::write(copied.join("Lib").join("site.py"), b"copy").unwrap();
+    }
+
+    minor_link_name(PythonVersion::new(3, 13, 16), os, "x86_64").unwrap();
+    for name in minor_link_names(os, "x86_64").unwrap() {
+        clear_copied_minor_link(&layout, &name, &ctx()).unwrap();
+    }
+
+    for link in [&other_name, &name] {
+        assert!(
+            fs::symlink_metadata(layout.managed_python_dir().join(link.as_str())).is_err(),
+            "the copied minor directory is gone: {}",
+            link.as_str()
+        );
+    }
+    for directory in [other_patch, patch] {
+        assert_eq!(fs::read(directory.join("python")).unwrap(), b"interpreter");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn minor_link_junction_is_left_for_uv() {
+    let (_directory, layout, name) = python_cache();
+    let patch = patch_directory(&layout, &name);
+    let link = layout.managed_python_dir().join(name.as_str());
+    if !directory_link(&patch, &link) {
+        eprintln!("junction creation is unavailable; skipping");
+        return;
+    }
+
+    clear_copied_minor_link(&layout, &name, &ctx()).unwrap();
+
+    assert!(is_link(&fs::symlink_metadata(&link).unwrap()));
+    assert_eq!(fs::read(patch.join("python")).unwrap(), b"interpreter");
+    assert_eq!(fs::read(link.join("python")).unwrap(), b"interpreter");
+}
+
+#[cfg(windows)]
+#[test]
+fn junction_inside_copied_minor_directory_is_not_followed() {
+    let (directory, layout, name) = python_cache();
+    let copied = layout.managed_python_dir().join(name.as_str());
+    fs::create_dir_all(&copied).unwrap();
+    fs::write(copied.join("python"), b"copy").unwrap();
+    let outside = directory.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("sentinel.txt"), b"keep me").unwrap();
+    if !directory_link(&outside, &copied.join("linked")) {
+        eprintln!("junction creation is unavailable; skipping");
+        return;
+    }
+
+    let error = clear_copied_minor_link(&layout, &name, &ctx()).unwrap_err();
+
+    assert!(
+        matches!(
+            &error,
+            ProvisionError::Failed(message) if *message == format!(
+                "A copied Python version folder ({}) in the app's Python cache could not be removed. Close programs that use it and retry.",
+                name.as_str()
+            )
+        ),
+        "{error:?}"
+    );
+    assert_eq!(fs::read(outside.join("sentinel.txt")).unwrap(), b"keep me");
+}
+
+#[test]
+fn unexpected_file_at_minor_link_path_fails_closed() {
+    let (_directory, layout, name) = python_cache();
+    let path = layout.managed_python_dir().join(name.as_str());
+    fs::write(&path, b"not a link").unwrap();
+
+    let error = clear_copied_minor_link(&layout, &name, &ctx()).unwrap_err();
+
+    assert!(
+        matches!(
+            &error,
+            ProvisionError::Failed(message) if *message == format!(
+                "The app's Python cache contains an unexpected item named {}. Remove it and retry.",
+                name.as_str()
+            )
+        ),
+        "{error:?}"
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"not a link");
+}
+
+#[cfg(unix)]
+#[test]
+fn minor_link_symlink_is_left_for_uv() {
+    let (_directory, layout, name) = python_cache();
+    let patch = patch_directory(&layout, &name);
+    let link = layout.managed_python_dir().join(name.as_str());
+    std::os::unix::fs::symlink(&patch, &link).unwrap();
+
+    clear_copied_minor_link(&layout, &name, &ctx()).unwrap();
+
+    assert!(is_link(&fs::symlink_metadata(&link).unwrap()));
+    assert_eq!(fs::read(link.join("python")).unwrap(), b"interpreter");
+    assert_eq!(fs::read(patch.join("python")).unwrap(), b"interpreter");
+}
+
+#[test]
+fn managed_python_install_never_registers_with_windows() {
+    let args = managed_install_args(
+        PythonVersion::new(3, 13, 16),
+        Path::new("cache/python-downloads.json"),
+    );
+    assert_eq!(
+        args,
+        [
+            "--no-config",
+            "python",
+            "install",
+            "3.13.16",
+            "--no-bin",
+            "--no-registry",
+            "--python-downloads-json-url",
+            "cache/python-downloads.json",
+        ]
+        .map(OsString::from)
+    );
 }
 
 /// Runs against a real interpreter named by `VJ_TEST_PYTHON`; skipped when it is not set.

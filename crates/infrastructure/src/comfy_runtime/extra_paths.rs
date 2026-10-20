@@ -1,4 +1,5 @@
-//! Read-only ComfyUI extra model paths.
+//! ComfyUI extra model paths: the reader parses `extra_model_paths.yaml`; `writer` manages the
+//! one section the app owns.
 use crate::environment::layout::{Layout, Tool, tool_environment};
 use application::comfy_runtime::{ExtraModelPaths, ModelRoot, RuntimeError};
 use async_trait::async_trait;
@@ -7,6 +8,9 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
+
+mod writer;
+pub use writer::APP_SECTION;
 
 pub struct YamlExtraModelPaths;
 #[async_trait]

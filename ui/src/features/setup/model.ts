@@ -93,11 +93,14 @@ export type CuratedReviewProps = {
   notice?: ReactNode
 }
 
+/** First-run ComfyUI source: newest release, master's newest commit, or an exact tag. */
+export type ComfySource = 'latest' | 'master' | 'tag'
+
 export type WizardDraft = {
   pythonSource: PythonSourceDto
   profileId: string
   tag: string
-  useTag: boolean
+  comfySource: ComfySource
   installManager: boolean
   cleanCache: boolean
 }
@@ -118,8 +121,16 @@ export function readDraft(raw: string | null): Partial<WizardDraft> {
     if ('profileId' in value && typeof value.profileId === 'string')
       draft.profileId = value.profileId
     if ('tag' in value && typeof value.tag === 'string') draft.tag = value.tag
-    if ('useTag' in value && typeof value.useTag === 'boolean')
-      draft.useTag = value.useTag
+    if (
+      'comfySource' in value &&
+      (value.comfySource === 'latest' ||
+        value.comfySource === 'master' ||
+        value.comfySource === 'tag')
+    )
+      draft.comfySource = value.comfySource
+    // Drafts saved before the master option stored a boolean instead.
+    else if ('useTag' in value && typeof value.useTag === 'boolean')
+      draft.comfySource = value.useTag ? 'tag' : 'latest'
     if ('installManager' in value && typeof value.installManager === 'boolean')
       draft.installManager = value.installManager
     if ('cleanCache' in value && typeof value.cleanCache === 'boolean')

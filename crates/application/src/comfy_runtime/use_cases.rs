@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    environment::{ManifestState, same_location},
+    environment::{ManifestState, RootSwitcher, same_location},
     shared::MaintenanceLease,
 };
 use domain::{
@@ -304,5 +304,25 @@ impl ReadExtraModelPaths {
             .extra_paths
             .read(&self.deps.environment.root.current().root)
             .await
+    }
+}
+
+/// Generates or removes the app's section of `extra_model_paths.yaml` in the current root.
+pub struct ManageExtraModelPaths {
+    root: std::sync::Arc<dyn RootSwitcher>,
+    writer: std::sync::Arc<dyn ExtraModelPathsWriter>,
+}
+impl ManageExtraModelPaths {
+    pub fn new(
+        root: std::sync::Arc<dyn RootSwitcher>,
+        writer: std::sync::Arc<dyn ExtraModelPathsWriter>,
+    ) -> Self {
+        Self { root, writer }
+    }
+    pub async fn generate(&self, base: &std::path::Path) -> Result<(), RuntimeError> {
+        self.writer.generate(&self.root.current().root, base).await
+    }
+    pub async fn remove(&self) -> Result<(), RuntimeError> {
+        self.writer.remove(&self.root.current().root).await
     }
 }

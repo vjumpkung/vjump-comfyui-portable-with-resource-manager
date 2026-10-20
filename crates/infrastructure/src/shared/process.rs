@@ -14,7 +14,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -41,6 +41,20 @@ pub fn initialize_tool_policy() -> io::Result<()> {
     #[cfg(windows)]
     windows::initialize_dll_policy()?;
     Ok(())
+}
+
+pub(crate) fn default_working_directory() -> io::Result<PathBuf> {
+    static DIRECTORY: OnceLock<Result<PathBuf, io::ErrorKind>> = OnceLock::new();
+    match DIRECTORY.get_or_init(|| {
+        std::env::current_exe()
+            .map_err(|error| error.kind())?
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or(io::ErrorKind::NotFound)
+    }) {
+        Ok(directory) => Ok(directory.clone()),
+        Err(kind) => Err((*kind).into()),
+    }
 }
 
 /// Read-only membership in the process scope owned by this runner. This never
@@ -163,7 +177,7 @@ fn quote(value: &str) -> String {
 pub struct RunLimits {
     pub max_tail_lines: usize,
     pub max_line_bytes: usize,
-    /// Captured stdout is truncated beyond this many bytes.
+    /// Text stdout is truncated beyond this many bytes; raw capture refuses overflow.
     pub max_stdout_bytes: usize,
     pub timeout: Option<Duration>,
     /// How long a Unix process group gets between SIGTERM and SIGKILL.
@@ -223,6 +237,43 @@ pub enum RunError {
         exit_code: Option<i32>,
         tail: Vec<String>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RawOutputError {
+    Run(RunError),
+    LimitExceeded,
+    Incomplete,
+}
+
+#[derive(Default)]
+struct RawCapture {
+    bytes: Vec<u8>,
+    limit_exceeded: bool,
+    complete: bool,
+}
+
+impl RawCapture {
+    fn push(&mut self, bytes: &[u8], limit: usize) {
+        if self.limit_exceeded {
+            return;
+        }
+        if bytes.len() > limit.saturating_sub(self.bytes.len()) {
+            self.limit_exceeded = true;
+            return;
+        }
+        self.bytes.extend_from_slice(bytes);
+    }
+
+    fn finish(self) -> Result<Vec<u8>, RawOutputError> {
+        if self.limit_exceeded {
+            Err(RawOutputError::LimitExceeded)
+        } else if !self.complete {
+            Err(RawOutputError::Incomplete)
+        } else {
+            Ok(self.bytes)
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -385,12 +436,13 @@ async fn read_stream<R: AsyncRead + Unpin>(
     stream: Stream,
     collector: &Collector<'_>,
     observer: Option<&dyn ProcessObserver>,
-) {
+) -> bool {
     let mut assembler = LineAssembler::new(collector.limits.max_line_bytes);
     let mut chunk = [0u8; 8192];
-    loop {
+    let complete = loop {
         match reader.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break true,
+            Err(_) => break false,
             Ok(count) => {
                 if let Some(observer) = observer {
                     observer.chunk(stream == Stream::Stderr, &chunk[..count]);
@@ -400,8 +452,31 @@ async fn read_stream<R: AsyncRead + Unpin>(
                 });
             }
         }
-    }
+    };
     assembler.finish(|line, progress| collector.push(stream, line, progress));
+    complete
+}
+
+async fn read_raw_stdout<R: AsyncRead + Unpin>(
+    mut reader: R,
+    capture: &Mutex<RawCapture>,
+    limit: usize,
+) -> bool {
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => return true,
+            Err(_) => return false,
+            Ok(count) => capture
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(&chunk[..count], limit),
+        }
+    }
+}
+
+async fn drain_output(pump: impl Future<Output = bool>, grace: Duration) -> bool {
+    tokio::time::timeout(grace, pump).await.unwrap_or(false)
 }
 
 /// Keeps `retained` alive until `empty` reports that no process of the command is left.
@@ -440,7 +515,7 @@ pub async fn run(
     cancel: &CancelToken,
     limits: &RunLimits,
 ) -> Result<Output, RunError> {
-    run_inner(spec, sink, cancel, limits, None).await
+    run_inner(spec, sink, cancel, limits, None, None).await
 }
 
 pub async fn run_observed(
@@ -450,7 +525,23 @@ pub async fn run_observed(
     limits: &RunLimits,
     observer: &dyn ProcessObserver,
 ) -> Result<Output, RunError> {
-    run_inner(spec, sink, cancel, limits, Some(observer)).await
+    run_inner(spec, sink, cancel, limits, Some(observer), None).await
+}
+
+/// Captures exact stdout bytes without forwarding them to diagnostics or observers.
+pub(crate) async fn run_raw_stdout(
+    spec: &CommandSpec,
+    cancel: &CancelToken,
+    limits: &RunLimits,
+) -> Result<Vec<u8>, RawOutputError> {
+    let capture = Mutex::new(RawCapture::default());
+    run_inner(spec, &DiscardSink, cancel, limits, None, Some(&capture))
+        .await
+        .map_err(RawOutputError::Run)?;
+    capture
+        .into_inner()
+        .unwrap_or_else(|p| p.into_inner())
+        .finish()
 }
 
 async fn run_inner(
@@ -459,6 +550,7 @@ async fn run_inner(
     cancel: &CancelToken,
     limits: &RunLimits,
     observer: Option<&dyn ProcessObserver>,
+    raw_stdout: Option<&Mutex<RawCapture>>,
 ) -> Result<Output, RunError> {
     #[cfg(test)]
     let cleanup_survivors = CLEANUP_SURVIVORS.with(|slot| slot.borrow_mut().take());
@@ -476,9 +568,11 @@ async fn run_inner(
         .stderr(Stdio::piped())
         // A supplementary safeguard only: the tree guard below does the real cleanup.
         .kill_on_drop(true);
-    if let Some(cwd) = &spec.cwd {
-        command.current_dir(cwd);
-    }
+    let cwd = match &spec.cwd {
+        Some(cwd) => cwd.clone(),
+        None => default_working_directory().map_err(|error| RunError::Spawn(error.kind()))?,
+    };
+    command.current_dir(cwd);
     let (mut child, tree) =
         platform::spawn(&mut command).map_err(|error| RunError::Spawn(error.kind()))?;
     let tree = Arc::new(tree);
@@ -507,18 +601,27 @@ async fn run_inner(
         }),
     };
     let pump = async {
-        tokio::join!(
+        let (stdout_complete, stderr_complete) = tokio::join!(
             async {
                 if let Some(stdout) = stdout {
-                    read_stream(stdout, Stream::Stdout, &collector, observer).await;
+                    if let Some(capture) = raw_stdout {
+                        read_raw_stdout(stdout, capture, limits.max_stdout_bytes).await
+                    } else {
+                        read_stream(stdout, Stream::Stdout, &collector, observer).await
+                    }
+                } else {
+                    false
                 }
             },
             async {
                 if let Some(stderr) = stderr {
-                    read_stream(stderr, Stream::Stderr, &collector, observer).await;
+                    read_stream(stderr, Stream::Stderr, &collector, observer).await
+                } else {
+                    false
                 }
             }
         );
+        stdout_complete && stderr_complete
     };
     tokio::pin!(pump);
 
@@ -526,6 +629,7 @@ async fn run_inner(
     let mut ticker = tokio::time::interval(Duration::from_millis(40));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pump_done = false;
+    let mut pump_complete = false;
     let ended = {
         let input = async move {
             if let Some(bytes) = &spec.stdin {
@@ -566,7 +670,10 @@ async fn run_inner(
                         break Ended::TimedOut;
                     }
                 }
-                () = &mut pump, if !pump_done => pump_done = true,
+                complete = &mut pump, if !pump_done => {
+                    pump_done = true;
+                    pump_complete = complete;
+                },
             }
         }
     };
@@ -589,7 +696,10 @@ async fn run_inner(
         }
     }
     if !pump_done {
-        let _ = tokio::time::timeout(limits.drain_grace, &mut pump).await;
+        pump_complete = drain_output(&mut pump, limits.drain_grace).await;
+    }
+    if let Some(capture) = raw_stdout {
+        capture.lock().unwrap_or_else(|p| p.into_inner()).complete = pump_complete;
     }
     // Ownership of the tree ends only when no descendant is left.
     let mut cleanup_verified = tree.wait_empty(limits.kill_grace).await;

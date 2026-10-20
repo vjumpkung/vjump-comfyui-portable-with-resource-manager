@@ -1,0 +1,1132 @@
+diff --git a/crates/desktop/Cargo.toml b/crates/desktop/Cargo.toml
+index 9873225..fd2bdfb 100644
+--- a/crates/desktop/Cargo.toml
++++ b/crates/desktop/Cargo.toml
+@@ -30,7 +30,7 @@ specta.workspace = true
+ specta-typescript.workspace = true
+ serde.workspace = true
+ serde_json.workspace = true
+-tokio = { workspace = true, features = ["sync", "macros", "time"] }
++tokio = { workspace = true, features = ["sync", "macros", "time", "rt-multi-thread"] }
+ tracing.workspace = true
+ async-trait.workspace = true
+ 
+diff --git a/crates/desktop/build.rs b/crates/desktop/build.rs
+index 53ff69d..376ffb6 100644
+--- a/crates/desktop/build.rs
++++ b/crates/desktop/build.rs
+@@ -109,4 +109,14 @@ fn main() {
+             "cargo:rustc-link-arg-tests=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+         );
+     }
++
++    // Debug startup (compose -> node reconcile/rescan) and shutdown run block_on on the main
++    // thread; the 1 MiB Windows default overflows. Keep in sync with tests/stack_reserve.rs.
++    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
++        match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
++            Ok("msvc") => println!("cargo:rustc-link-arg-bins=/STACK:8388608"),
++            Ok("gnu") | Ok("gnullvm") => println!("cargo:rustc-link-arg-bins=-Wl,--stack,8388608"),
++            _ => {}
++        }
++    }
+ }
+diff --git a/crates/desktop/src/lib.rs b/crates/desktop/src/lib.rs
+index 1aa33be..ce52cdf 100644
+--- a/crates/desktop/src/lib.rs
++++ b/crates/desktop/src/lib.rs
+@@ -20,7 +20,29 @@ pub use state::{AppState, RecoveryInfo, Services};
+ /// The label of the only window that receives the manager capability.
+ pub const MANAGER_WINDOW: &str = "manager";
+ 
++pub(crate) const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
++
++pub(crate) fn async_runtime_builder() -> tokio::runtime::Builder {
++    let mut builder = tokio::runtime::Builder::new_multi_thread();
++    builder.enable_all().thread_stack_size(WORKER_STACK_BYTES);
++    builder
++}
++
++fn install_async_runtime() {
++    // Never dropped: tauri::async_runtime::set takes only a Handle.
++    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
++    let runtime = RUNTIME.get_or_init(|| {
++        async_runtime_builder()
++            .build()
++            .expect("the async runtime could not start")
++    });
++    tauri::async_runtime::set(runtime.handle().clone());
++}
++
+ pub fn run() {
++    // Worker threads run node rescans; debug builds need more than tokio's 2 MiB default. This
++    // must come first: anything touching tauri::async_runtime would create the default runtime.
++    install_async_runtime();
+     // Before any worker starts. A failure does not stop the app: every tool launch repeats the
+     // initialization and is refused for as long as it fails.
+     let _ = infrastructure::shared::process::initialize_tool_policy();
+diff --git a/crates/desktop/src/startup_tests.rs b/crates/desktop/src/startup_tests.rs
+index 559ad5a..c94a6de 100644
+--- a/crates/desktop/src/startup_tests.rs
++++ b/crates/desktop/src/startup_tests.rs
+@@ -103,3 +103,24 @@ fn run_return_publishes_state_and_retains_close() {
+         Some(GateError::Busy)
+     );
+ }
++
++#[cfg(windows)]
++#[test]
++fn async_runtime_workers_and_blocking_threads_reserve_eight_mib() {
++    fn reserve() -> usize {
++        let (mut low, mut high) = (0, 0);
++        // SAFETY: both pointers refer to live locals for the duration of the call.
++        unsafe {
++            windows_sys::Win32::System::Threading::GetCurrentThreadStackLimits(&mut low, &mut high)
++        };
++        high - low
++    }
++
++    let runtime = crate::async_runtime_builder().build().unwrap();
++    let worker = runtime
++        .block_on(runtime.spawn(async { reserve() }))
++        .unwrap();
++    let blocking = runtime.block_on(runtime.spawn_blocking(reserve)).unwrap();
++    assert!(worker >= WORKER_STACK_BYTES, "worker stack {worker}");
++    assert!(blocking >= WORKER_STACK_BYTES, "blocking stack {blocking}");
++}
+diff --git a/crates/desktop/tests/stack_reserve.rs b/crates/desktop/tests/stack_reserve.rs
+new file mode 100644
+index 0000000..be1bddd
+--- /dev/null
++++ b/crates/desktop/tests/stack_reserve.rs
+@@ -0,0 +1,67 @@
++#![cfg(windows)]
++
++//! The desktop binary reserves an 8 MiB main-thread stack (`build.rs`); test executables keep
++//! the linker default. The PE header is read directly, so the test locks the size, not usage.
++
++const EIGHT_MIB: u64 = 8 * 1024 * 1024;
++
++#[test]
++fn desktop_exe_reserves_an_eight_mib_main_stack() {
++    let image = std::fs::read(env!("CARGO_BIN_EXE_vjumpkung-comfyui-desktop"))
++        .expect("the desktop executable must be readable");
++    let reserve = stack_reserve(&image).expect("the desktop executable must be a PE image");
++    assert!(
++        reserve >= EIGHT_MIB,
++        "the desktop executable reserves {reserve} bytes of main-thread stack"
++    );
++}
++
++#[test]
++fn test_executables_keep_the_default_stack_reserve() {
++    let image = std::fs::read(std::env::current_exe().expect("the test executable path"))
++        .expect("the test executable must be readable");
++    let reserve = stack_reserve(&image).expect("the test executable must be a PE image");
++    assert!(
++        reserve < EIGHT_MIB,
++        "the test executable reserves {reserve} bytes of main-thread stack"
++    );
++}
++
++/// Reads `SizeOfStackReserve` from the optional header of a PE image.
++fn stack_reserve(image: &[u8]) -> Result<u64, String> {
++    fn bytes<const N: usize>(image: &[u8], at: usize, what: &str) -> Result<[u8; N], String> {
++        let end = at
++            .checked_add(N)
++            .ok_or_else(|| format!("{what} offset overflows"))?;
++        image
++            .get(at..end)
++            .and_then(|slice| slice.try_into().ok())
++            .ok_or_else(|| format!("{what} is outside the image"))
++    }
++
++    if bytes::<2>(image, 0, "the DOS signature")? != *b"MZ" {
++        return Err("missing MZ signature".to_owned());
++    }
++    let pe = u32::from_le_bytes(bytes(image, 0x3C, "e_lfanew")?) as usize;
++    if bytes::<4>(image, pe, "the PE signature")? != *b"PE\0\0" {
++        return Err("missing PE signature".to_owned());
++    }
++    let optional_size = u16::from_le_bytes(bytes(image, pe + 20, "SizeOfOptionalHeader")?);
++    if optional_size < 80 {
++        return Err(format!("optional header is too small ({optional_size})"));
++    }
++    let optional = pe + 24;
++    match u16::from_le_bytes(bytes(image, optional, "the optional header magic")?) {
++        0x20B => Ok(u64::from_le_bytes(bytes(
++            image,
++            optional + 72,
++            "SizeOfStackReserve",
++        )?)),
++        0x10B => Ok(u64::from(u32::from_le_bytes(bytes(
++            image,
++            optional + 72,
++            "SizeOfStackReserve",
++        )?))),
++        magic => Err(format!("unknown optional header magic {magic:#x}")),
++    }
++}
+diff --git a/crates/infrastructure/src/environment/layout.rs b/crates/infrastructure/src/environment/layout.rs
+index c627351..da073be 100644
+--- a/crates/infrastructure/src/environment/layout.rs
++++ b/crates/infrastructure/src/environment/layout.rs
+@@ -118,7 +118,10 @@ pub enum Tool {
+     Plain,
+ }
+ 
+-const USER_VARIABLES_WINDOWS: [&str; 7] = [
++/// `USERNAME` is required: Python 3.12's `getpass.getuser()` (used by torch) otherwise falls
++/// back to the Unix-only `pwd` module and fails. The user name is already part of `USERPROFILE`.
++const USER_VARIABLES_WINDOWS: [&str; 8] = [
++    "USERNAME",
+     "USERPROFILE",
+     "APPDATA",
+     "LOCALAPPDATA",
+@@ -346,6 +349,20 @@ mod tests {
+         assert!(!python.contains(&"HTTPS_PROXY".to_owned()));
+     }
+ 
++    #[cfg(windows)]
++    #[test]
++    fn python_children_get_the_windows_user_name() {
++        let Some(user_name) = std::env::var_os("USERNAME") else {
++            return;
++        };
++        let layout = Layout::new("/install");
++        let env = tool_environment(&layout, Tool::Python);
++        assert_eq!(
++            value(&env, "USERNAME"),
++            Some(user_name.to_string_lossy().into_owned())
++        );
++    }
++
+     #[test]
+     fn paths_follow_the_documented_layout() {
+         let layout = Layout::new("/r");
+diff --git a/docs/DESIGN.md b/docs/DESIGN.md
+index f0bbb0f..2b1469c 100644
+--- a/docs/DESIGN.md
++++ b/docs/DESIGN.md
+@@ -100,6 +100,7 @@ Long paths, model names and URLs wrap with `break-words [overflow-wrap:anywhere]
+   - wrapper: `overflow-x-auto rounded-lg border bg-card`;
+   - header: cyan `bg-brand-cyan text-[#2a313a]`;
+   - zebra rows `even:bg-muted/45`, hover rows `hover:bg-muted`;
++  - Active row: `bg-muted` with a 3px accent inset bar (`shadow-[inset_3px_0_0_var(--accent)]`); checked rows `bg-muted/60`. Never put a brand fill behind table text (contrast).
+   - columns for size, hash and version use mono;
+   - lists over 200 rows are virtualized.
+ - **Status chips [desktop].** These use the chip style. Each one MUST include a text label and a Lucide icon, never color alone.
+diff --git a/docs/handoff/evidence/s3-residuals.md b/docs/handoff/evidence/s3-residuals.md
+index 1944793..27eb7d6 100644
+--- a/docs/handoff/evidence/s3-residuals.md
++++ b/docs/handoff/evidence/s3-residuals.md
+@@ -25,3 +25,4 @@ Each item: source package, statement, evidence, status.
+ | 19 | E1 | Accelerator wheel installation (`--only-binary :all:`, `--no-deps`) is covered by fakes and argument tests only; no real uv/NVIDIA run. | merge-E1 coder report | Open (native acceptance) |
+ | 20 | M2/E3 | Runtime assessment (`environment/runtime_guard.rs::assess`) is conservative by design: any python-like process on the machine whose cwd/exe/cmd cannot be read (elevated, or caught while starting/exiting) makes the inventory Unknown, so Stop/close/maintenance can refuse with "cannot assess" until it is retried. This also made runtime tests flaky when other tests spawned interpreters in parallel (test isolation fix in progress, no production change). | session-4 flake diagnosis | By design / documented |
+ | 21 | E3 | Move detection needs a valid `install.json`; a copied root with an absent/corrupt manifest composes normally while its DB still points env paths at the old root. User-owned paths into the old root (launch `--output-directory`, `extra_model_paths.yaml`) are kept as the spec says. An adopted interpreter's exact Python patch version must be installable by uv for a rebuild. `open_existing` refuses roots under junctions/OneDrive placeholders (reparse policy). Opening a WAL DB read-only may create `-wal`/`-shm` next to a candidate DB. ComfyUI-Manager requirements during a rebuild come only from the custom_nodes scan. Scenario 4 needs a manual NVIDIA run. | thinker E3 review | Residuals / open acceptance |
++| 22 | S0 | (native, S0) Debug builds overflowed the 1 MiB Windows main-thread stack during startup node reconcile once a custom node was installed (exit 127, owner-visible as a crash). Fixed in S0: 8 MiB main-thread reserve (/STACK) and 8 MiB tokio worker stacks; PE and worker tests lock the sizes, not the actual usage. | `crates/desktop/build.rs`, `crates/desktop/src/lib.rs`, `crates/desktop/tests/stack_reserve.rs`; `docs/handoff/plans/s6-s0-stack-overflow.md` | Fixed |
+diff --git a/docs/handoff/evidence/s6-advisor-rulings.md b/docs/handoff/evidence/s6-advisor-rulings.md
+new file mode 100644
+index 0000000..0821102
+--- /dev/null
++++ b/docs/handoff/evidence/s6-advisor-rulings.md
+@@ -0,0 +1,58 @@
++# Session 6 — advisor stand-in rulings (2026-10-20)
++
++Codex rate-limited until 14:36 → read-only Opus stand-ins (tested fallback). Plans reviewed:
++`plans/s6-owner-feedback-plan.md` (Q, F, G, X) and `plans/s6-s0-stack-overflow.md` (S0). All questions AI-decidable;
++the corrected plans are embedded verbatim in the coder prompts under `prompts/session6/`.
++
++## S0 (P0 stack overflow) — GO with corrections
++- Linker reserve alone suffices for the main thread (covers setup/shutdown `block_on` and sync commands); no extra
++  thread. tokio moves `block_on` futures > 2 KiB to the heap in debug, so the overflow is poll-call depth, not future
++  size; node walks already run in `spawn_blocking`.
++- Also give tokio workers 8 MiB (the same `rescan` chain runs on workers for `node_rescan` and after ComfyUI stops):
++  explicit runtime installed first in `run()` via `tauri::async_runtime::set`, runtime kept in a static.
++- Tests: PE `SizeOfStackReserve` of the real bin ≥ 8 MiB and test exe < 8 MiB; worker/blocking thread limits via
++  `GetCurrentThreadStackLimits`. Node-tree smoke test optional (likely would not fail pre-fix) → not shipped; native
++  check on the owner root is the evidence.
++
++## Q — GO (diff reviewed, correct). Optional nit: checked Models row has no hover style.
++
++## F — GO with corrections
++1. Consent = disclosure on the wizard's review stage + the **Start setup** click (button label is "Start setup", not
++   "Install"); no checkbox. NFR-SEC-3 gets an explicit first-run exception; every URL@commit is logged before install.
++2. Auto-acknowledging curated warnings is acceptable: setup prepares only Git sources; possible warnings are
++   informational (submodules, install.py not run); DETACHED disappears with DefaultHead; all warnings logged.
++3. The "protected change → Skipped" branch is dead code: protected changes fail at prepare (`workflow.rs:465-469`),
++   `protected_changes` is always empty (`:478`), commit refuses them (`:562-564`). Dropped. Prepare failures keep
++   today's Retry/Skip semantics.
++4. FirstRun only; Repair with Manager still pauses for consent (tell the owner).
++5. Drop `branch` from the catalog (reference installer clones the default branch; rgthree's default moved dev→main).
++6. F3: flip `recommended` without a revision bump, keep `calibrated: false`, fix the py312 label.
++- Add `MAX_CURATED_PASSES = 3` guard against an endless PlanStale loop in auto mode.
++
++## G — GO with corrected G1
++- Restricted mode cannot be reused: its state has no `services()`, which the wizard needs (hardware, profiles,
++  python validation). Instead keep normal services and only defer the model roots (download stack + library roots)
++  and the node reconcile when the manifest is Absent AND `<root>/ComfyUI` does not exist; restart after a successful
++  FirstRun (same path as Rebuild). Only those two constructors create anything under `ComfyUI/` at startup.
++- G2: domain `checkout_placement` rules (no default branch / other branch / target not ancestor / local-only commits →
++  detached with reason; else Branch(D)); apply `checkout -B D <commit>` + best-effort `--set-upstream-to`; used by the
++  setup clone (also attaches the Manager clone to `main`) and by the app update's non-ff arm. Compatible with
++  FR-COMFY-6 because it runs only on a clean tree with no unpublished local commits. Older tag keeps the branch.
++
++## X — GO with corrections
++- Separate `ExtraModelPathsWriter` port (read-only consumers untouched); `is_default: false`; app downloads stay in
++  `ComfyUI/models` (documented limitation).
++- Backups go to `<root>/data/backups/extra_model_paths-<UTC>.yaml`, never beside the file (a sibling `.bak` would
++  dirty the ComfyUI checkout and make app updates refuse).
++- Fail closed on files that cannot be rewritten safely (link, >1 MiB, non-UTF-8/malformed, non-mapping top level,
++  `<<` merge keys); base-path validation (absolute local/UNC, no `\\?\`/`\\.\`, no `$`/`%`/leading `~`/control chars,
++  outside ComfyUI/envs/data/tools and not the root, no reparse point in the existing prefix).
++
++## Order
++S0 → F → G → X → D3+D5 → D4 → D1 → R (F before G: owner's main request; G touches startup composition and needs the
++mandatory smoke test).
++
++## Owner follow-up (optional, non-blocking)
++Should app downloads and ComfyUI's default write folder (`is_default: true`) use the chosen base folder? Advisor
++recommendation: keep current behaviour for Release 1; a separate package can add a selectable download root (widens
++NFR-SEC-5 write authorization).
+diff --git a/docs/handoff/evidence/s6-native-register.md b/docs/handoff/evidence/s6-native-register.md
+new file mode 100644
+index 0000000..909fbbc
+--- /dev/null
++++ b/docs/handoff/evidence/s6-native-register.md
+@@ -0,0 +1,19 @@
++# Session 6 — native evidence register (Windows 11, RTX 3060 12 GiB, driver 610.88)
++
++Driver script: `D:\vjc-s6\drive.ps1` (launch with `VJUMPKUNG_COMFYUI_HOME`, PrintWindow screenshots, UI Automation
++click/list/type, wheel, WM_CLOSE). Screenshots under `D:\vjc-s6\`.
++
++| # | When | Binary | Root | Check | Result |
++|---|---|---|---|---|---|
++| N1 | 12:40 | `bin\vjumpkung-comfyui-desktop-s6-01.exe` (debug + custom-protocol, HEAD e384d43 + Q, SHA-256 2ab32a47…) | `D:\comfyui-test\v1` (owner; py312 env, ComfyUI-Manager installed) | app start | **FAIL — P0 S0:** `thread 'main' has overflowed its stack`, exit 127, twice; app.log stops after model recovery. |
++| N2 | 12:41 | copy of N1 with `editbin /STACK:8388608` (`bin\stack8m-experiment.exe`) | same | app start | PASS: "custom node recovery and scan finished", "application setup finished" ⇒ stack size, not recursion. |
++| N3 | 12:42 | N2 | same | Q2 Settings + ComfyUI page scrolled to bottom (`q-settings-bottom.png`, `q-comfy-bottom.png`) | PASS: one inner scrollbar, sidebar full height, no band below. |
++| N4 | 12:43 | N2 | same | Q3 Models / Custom Nodes active row (`q-models-active.png`, `q-nodes-active.png`) | PASS: muted row + pink inset bar, all cell text/badges readable. |
++| N5 | 12:44 | N2 | same | Q1 Start ComfyUI from the app (profile `win-py312-torch2100-cu130` r2) | PASS: Running; log has no `pwd`/Traceback; `/system_stats`: Python 3.12.15, torch 2.10.0+cu130, ComfyUI 0.42.1, `cuda:0 NVIDIA GeForce RTX 3060`. Stop → Stopped; WM_CLOSE → "application shutdown finished". |
++
++Observation (not fixed): ComfyUI-Manager installed by setup shows `DEPS NOT RUN` / origin `Observed` on the Custom
++Nodes page although setup installed its requirements (setup does not record it as a node operation).
++| N6 | 12:52 | `bin\vjumpkung-comfyui-desktop-s6-02.exe` (Q + S0, SHA-256 6eb4c7cd…) | `D:\comfyui-test\v1` | S0 app start without editbin | PASS: "custom node recovery and scan finished", "application setup finished". |
++| N7 | 12:54 | N6 | same | S0 worker path: Start ComfyUI → Running, Stop → Stopped (rescan on a worker), Custom Nodes → "Rescan / finish recovery", WM_CLOSE | PASS: no overflow, "application shutdown finished". |
++
++Observation (not fixed, tooling): force-killing the app (`timeout`/TerminateProcess) leaves its msedgewebview2 processes alive for some seconds; an immediate relaunch panics with `failed to create webview: WebView2 error … 0x800700AA (The requested resource is in use)` (tauri app.rs:1444). Close the app with WM_CLOSE in acceptance runs.
+diff --git a/docs/handoff/evidence/s6-q-implementation.md b/docs/handoff/evidence/s6-q-implementation.md
+new file mode 100644
+index 0000000..ece12eb
+--- /dev/null
++++ b/docs/handoff/evidence/s6-q-implementation.md
+@@ -0,0 +1,47 @@
++# Session 6, package Q implementation report
++
++Branch `feat/m0-skeleton`, HEAD `e384d43`. No git write commands were used. The owner's running exe (`target\debug\vjumpkung-comfyui-desktop.owner-running-1159.exe`) was not touched and no `cargo build -p desktop` was run.
++
++## Per-file summary
++
++### Q1 (P0) Python 3.12 ComfyUI start on Windows
++- `crates/infrastructure/src/environment/layout.rs:121-124` — `USER_VARIABLES_WINDOWS` grows from `[&str; 7]` to `[&str; 8]` with `"USERNAME"` added (first entry). Doc comment added above the const explaining Python 3.12 `getpass.getuser()` / `pwd` fallback and that the user name is already part of `USERPROFILE`.
++- `crates/infrastructure/src/environment/layout.rs:352-364` — new `#[cfg(windows)] #[test] fn python_children_get_the_windows_user_name()`. Early return if the parent has no `USERNAME`; otherwise `tool_environment(&layout, Tool::Python)` must contain `USERNAME` with the parent's value. The test ran with `USERNAME` present on this machine (it is not just the early-return path; the machine has the variable set).
++- Not changed: `shared/process.rs::system_baseline`, `the_child_only_sees_the_given_environment`, `arbitrary_parent_variables_are_not_inherited` (still passes unchanged since it derives the allow-list from the arrays).
++
++### Q2 Shell overflow
++- `ui/src/app/shell/app-shell.tsx:108` root: `relative flex h-screen overflow-hidden bg-background text-foreground`.
++- `ui/src/app/shell/app-shell.tsx:110` column: `flex min-h-0 min-w-0 flex-1 flex-col`.
++- `ui/src/app/shell/app-shell.tsx:112` main: `relative min-h-0 flex-1 overflow-y-auto p-6`.
++- No global `html/body` rules added.
++- `ui/src/app/shell/app-shell.test.tsx:111` — new `shell_contains_overflow_inside_main`: root (`container.firstElementChild`) has `overflow-hidden` + `relative`; `getByRole('main')` has `relative`, `min-h-0`, `overflow-y-auto`.
++
++### Q3 Active-row contrast
++- `ui/src/features/library/model-table.tsx:157-161` — active: `bg-muted shadow-[inset_3px_0_0_var(--accent)]`; else checked: `bg-muted/60`; else `hover:bg-muted/50`.
++- `ui/src/features/custom-nodes/installed-table.tsx:143-148` — active: `bg-muted shadow-[inset_3px_0_0_var(--accent)]`; else checked: `bg-muted/60 hover:bg-muted`; else `even:bg-muted/45 hover:bg-muted`.
++- `docs/DESIGN.md:103` — Tables bullet "Active row: ..." added (text as specified).
++- `ui/src/features/library/library-page.test.tsx:414` — new `model_table_active_row_keeps_readable_contrast` (click row `a.pt`; it has `bg-muted`, not `bg-accent`; the other row has no `bg-accent`).
++- `ui/src/features/custom-nodes/installed-table.test.tsx:162` — new `installed_table_active_row_keeps_readable_contrast` (active row `a` has `data-active=true`, `bg-muted`, not `bg-accent`; row `b` has no `bg-accent`).
++- Headers, chips, badges, `globals.css` untouched.
++
++## Commands and results (all from the repo root)
++
++| Command | Result |
++|---|---|
++| `cargo fmt --all -- --check` | exit 0 |
++| `cargo clippy --workspace --all-targets --locked -j 6 -- -D warnings` | exit 0, no warnings |
++| `cargo test -p infrastructure --locked -j 6 layout` | 6 passed, 0 failed (incl. `python_children_get_the_windows_user_name`, `arbitrary_parent_variables_are_not_inherited`, `environment_is_an_allow_list_with_isolated_caches`, `paths_follow_the_documented_layout`) |
++| `cargo test --workspace --locked -j 6 --no-fail-fast` | exit 0; summed over all `test result` lines: 719 passed / 0 failed / 10 ignored (baseline 718 / 0 / 10, +1 new test) |
++| targeted vitest (app-shell, installed-table, library-page) | 3 files, 25 tests passed |
++| `pnpm -C ui lint` | exit 0 |
++| `pnpm -C ui typecheck` | exit 0 |
++| `VITEST_MAX_WORKERS=2 pnpm -C ui test` | 29 files passed / 187 tests passed (baseline 29 / 184, +3 new tests) |
++| `pnpm -C ui build` | exit 0 (only the existing chunk-size warning) |
++| `node scripts/check-arch-deps.mjs` | `Architecture dependencies: OK` |
++
++## Deviations
++- None from the spec. Notes:
++  - `USERNAME` is placed first in the array (order is irrelevant to behavior).
++  - Selected non-active rows use a ternary instead of appending a class, so the zebra (`even:`) variant cannot override `bg-muted/60` on even rows; unchecked rows keep their exact previous classes. In the Models table a checked row has no extra hover class (unchecked keep `hover:bg-muted/50`); in the Custom Nodes table a checked row keeps `hover:bg-muted`.
++  - `ui/src/features/library/model-table.tsx` had CRLF line endings in the working copy (index is LF, `* text=auto`); it is now LF as instructed, so it does not appear as a whole-file change in `git diff`.
++  - Visual verification of the Q2/Q3 CSS in the running app was not performed (the tests assert classes only).
+diff --git a/docs/handoff/evidence/s6-s0-implementation.md b/docs/handoff/evidence/s6-s0-implementation.md
+new file mode 100644
+index 0000000..1402ac5
+--- /dev/null
++++ b/docs/handoff/evidence/s6-s0-implementation.md
+@@ -0,0 +1,77 @@
++# S0 implementation report: 8 MiB main-thread and worker stacks
++
++Package S0 (native P0: debug desktop exe overflowed the 1 MiB Windows main-thread stack at startup once a custom node was installed). Implemented exactly as the advisor-approved plan (`docs/handoff/prompts/session6/s0-stack-reserve.md`, `docs/handoff/plans/s6-s0-stack-overflow.md`). Default MSVC toolchain, default `target/`, `-j 6`, no git write commands.
++
++## Per-file summary
++
++| File | Change |
++| --- | --- |
++| `crates/desktop/build.rs:113-121` | New block after the unchanged MSVC manifest block. On Windows: `msvc` emits `cargo:rustc-link-arg-bins=/STACK:8388608`; `gnu`/`gnullvm` emit `-Wl,--stack,8388608`. `-bins` reaches only the `[[bin]]` target, never test executables. |
++| `crates/desktop/Cargo.toml:33` | tokio features now `["sync", "macros", "time", "rt-multi-thread"]`. No other dependency change: `windows-sys` already has `Win32_System_Threading` through the workspace (`Cargo.toml:42`), so the dev-dependency is untouched. |
++| `crates/desktop/src/lib.rs:23` | `pub(crate) const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;` |
++| `crates/desktop/src/lib.rs:25-29` | `pub(crate) fn async_runtime_builder()`: `Builder::new_multi_thread()` + `enable_all()` + `thread_stack_size(WORKER_STACK_BYTES)`. |
++| `crates/desktop/src/lib.rs:31-40` | `fn install_async_runtime()`: process-lifetime `static RUNTIME: OnceLock<Runtime>`, then `tauri::async_runtime::set(handle)`. |
++| `crates/desktop/src/lib.rs:42-45` | `install_async_runtime();` is the first statement of `run()` (before `initialize_tool_policy` and the builder), with a comment. Not called from `run_with_runtime`, so the startup tests keep the default runtime. |
++| `crates/desktop/src/startup_tests.rs:107-126` | `#[cfg(windows)] #[test] async_runtime_workers_and_blocking_threads_reserve_eight_mib`: builds `crate::async_runtime_builder()`, measures `GetCurrentThreadStackLimits` (`high - low`) on a spawned worker task and on a `spawn_blocking` thread, asserts both `>= WORKER_STACK_BYTES`. Never calls `install_async_runtime()`. |
++| `crates/desktop/tests/stack_reserve.rs` (new) | `#![cfg(windows)]`. `desktop_exe_reserves_an_eight_mib_main_stack` reads `CARGO_BIN_EXE_vjumpkung-comfyui-desktop` and asserts reserve `>= 8 MiB`. `test_executables_keep_the_default_stack_reserve` reads `current_exe()` and asserts `< 8 MiB`. `fn stack_reserve(&[u8]) -> Result<u64, String>` is std-only: checked `image.get(a..b)` through a small `bytes::<N>` helper plus `from_le_bytes`; checks `MZ`, `e_lfanew @ 0x3C`, `PE\0\0`, `SizeOfOptionalHeader @ pe+20 >= 80`, then magic `0x20B` -> u64 @ opt+72, `0x10B` -> u32 @ opt+72 widened, else error. |
++| `docs/handoff/evidence/s3-residuals.md:28` | Row 22 appended (package S0, text as specified; evidence column lists the changed files and the plan; status Fixed). |
++
++## Key diffs
++
++`crates/desktop/build.rs`
++```rust
++// Debug startup (compose -> node reconcile/rescan) and shutdown run block_on on the main
++// thread; the 1 MiB Windows default overflows. Keep in sync with tests/stack_reserve.rs.
++if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
++    match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
++        Ok("msvc") => println!("cargo:rustc-link-arg-bins=/STACK:8388608"),
++        Ok("gnu") | Ok("gnullvm") => println!("cargo:rustc-link-arg-bins=-Wl,--stack,8388608"),
++        _ => {}
++    }
++}
++```
++
++`crates/desktop/src/lib.rs`
++```rust
++pub(crate) const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
++
++pub(crate) fn async_runtime_builder() -> tokio::runtime::Builder {
++    let mut builder = tokio::runtime::Builder::new_multi_thread();
++    builder.enable_all().thread_stack_size(WORKER_STACK_BYTES);
++    builder
++}
++
++fn install_async_runtime() {
++    // Never dropped: tauri::async_runtime::set takes only a Handle.
++    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
++    let runtime = RUNTIME.get_or_init(|| {
++        async_runtime_builder().build().expect("the async runtime could not start")
++    });
++    tauri::async_runtime::set(runtime.handle().clone());
++}
++// run(): first statement is install_async_runtime();
++```
++(rustfmt wrapped the `get_or_init` closure body over several lines.)
++
++## Commands run and results
++
++| Command | Result |
++| --- | --- |
++| `cargo fmt --all -- --check` | exit 0 (run before and after the docs row; `cargo fmt --all` had reformatted only my `startup_tests.rs` addition; `git status` shows no other file touched) |
++| `cargo clippy --workspace --all-targets --locked -j 6 -- -D warnings` | exit 0, no warnings (run twice: after the code changes and at the end) |
++| `cargo test -p desktop --locked -j 6 --test stack_reserve` | 2 passed; 0 failed; 0 ignored |
++| `cargo test -p desktop --locked -j 6 --lib async_runtime_workers` | 1 passed; 0 failed; 48 filtered out |
++| `cargo test --workspace --locked -j 6 --no-fail-fast` | exit 0. 722 passed; 0 failed; 10 ignored. Per target: application 198, desktop lib 49, desktop bin 0, acl 11, bindings 1 (+1 ignored), navigation 2, stack_reserve 2, startup_smoke 0 (+1 ignored), domain 45, infrastructure lib 405 (+7 ignored), real_setup 0 (+1 ignored), workflow 9, doc-tests 0. |
++| `node scripts/check-arch-deps.mjs` | `Architecture dependencies: OK` (exit 0) |
++
++Baseline was 719 passed / 0 failed / 10 ignored; delta +3 = 2 PE tests + 1 worker-stack test; ignored count unchanged at 10.
++
++## Verification notes
++
++- The PE test proves the debug `vjumpkung-comfyui-desktop.exe` now carries `SizeOfStackReserve >= 8 MiB`, and the second test proves `-bins` scoping: the integration-test executable (which links with the MSVC default) stays below 8 MiB, so the parser is reading the real field rather than returning a constant.
++- Library unit tests (`desktop-*.exe`) and the other integration tests are unaffected, since `rustc-link-arg-bins` applies only to the `[[bin]]` target.
++- Native verification on the owner root (the original exit-127 repro with ComfyUI-Manager installed) was not run here; per the package spec, main verifies that. These tests lock the reserved sizes, not actual stack usage.
++
++## Deviations
++
++None from the approved plan. Only cosmetic: rustfmt line-wrapping of the `get_or_init` closure and of the two `spawn` calls in the new startup test; the comment at the `install_async_runtime();` call site is two lines (the plan's short comment plus the "must come first" reason). During the workspace test run, cargo printed "Blocking waiting for file lock on build directory" once (another cargo process outside this package held the lock); my commands ran strictly sequentially. The pre-existing working-copy changes (package Q and session-6 docs) were not touched.
+diff --git a/docs/handoff/plans/s6-owner-feedback-plan.md b/docs/handoff/plans/s6-owner-feedback-plan.md
+new file mode 100644
+index 0000000..c12e5e2
+--- /dev/null
++++ b/docs/handoff/plans/s6-owner-feedback-plan.md
+@@ -0,0 +1,229 @@
++# Session 6 — owner feedback plan (draft by main, for advisor review)
++
++Date: 2026-10-20 (~12:40 +07:00). HEAD `e384d43` (owner commit = all session-5 work through D2), working tree clean.
++Codex is rate-limited until 14:36; advisor = read-only Opus stand-in, coder = Sonnet xhigh fallback (tested in sessions 4/5).
++
++## Owner request (verbatim intent)
++1. UI: (a) Settings page "overflowing" — the whole document scrolls besides the inner `main` scroll; the sidebar and its
++   border stop ~2/3 down; an empty band shows below. (b)+(c) colour contrast — the active row in the Models and Custom
++   Nodes tables is bright pink (`bg-accent` #ff9fed) with inherited light text (dark theme 1.45:1; muted text 1.0:1).
++2. Profile Python 3.12 + torch 2.10 fails to start ComfyUI (owner install `D:\comfyui-test\v1`, log
++   `data\logs\comfyui-20261020T050302135Z-…log`).
++3. Feedback: (a) installing the curated custom nodes and ComfyUI-Manager in FIRST-TIME setup must not ask for
++   permission — the flow must run automatically; (b) curated nodes must be `git clone`d at the LATEST commit of the
++   repository (no commit lock); (c) if py3.12 + torch 2.10 works, make it the recommended profile.
++4. New feature: `extra_model_paths.yaml` — the user picks a base path, the app generates the rest automatically.
++5. Then continue the pending packages (D3+D5, D4, D1), native acceptance R, and generate README.md + documentation.
++
++## Evidence gathered by main / explorers
++- **P0 root cause (2), reproduced:** the ComfyUI child gets `tool_environment(layout, Tool::Python)`
++  (`crates/infrastructure/src/environment/layout.rs:120-171`); `USER_VARIABLES_WINDOWS` passes USERPROFILE, APPDATA,
++  LOCALAPPDATA, HOMEDRIVE, HOMEPATH, TEMP, TMP but **not USERNAME** (Unix list has USER/LOGNAME). Python 3.12
++  `getpass.getuser()` checks LOGNAME/USER/LNAME/USERNAME then does `import pwd` → `ModuleNotFoundError` on Windows
++  (3.13 converts that into `OSError`, which torch tolerates). `comfy_kitchen` → `torch._dynamo` import aborts half-way;
++  the second import hits `AssertionError: Artifact of type=precompile already registered`. Reproduced with `env -i`
++  + the owner's env python: without USERNAME `import torch._dynamo` fails with `No module named 'pwd'`; with
++  USERNAME it imports. With the app's exact environment + USERNAME, `main.py --quick-test-for-ci` (user/temp/in/out
++  redirected to scratch) exits 0: Python 3.12.15, torch 2.10.0+cu130, `Device: cuda:0 NVIDIA GeForce RTX 3060`,
++  ComfyUI 0.42.1, ComfyUI-Manager V3.42 loads. (Owner install has only Manager, no curated nodes.)
++  USERPROFILE already exposes the user name, so adding USERNAME discloses nothing new.
++- **UI (explorer):** shell `ui/src/app/shell/app-shell.tsx:108` `flex h-screen` (no overflow-hidden), `:112`
++  `<main className="flex-1 overflow-y-auto p-6">` (not positioned). No html/body/#root sizing in `globals.css`.
++  No escaping element identified statically; hypothesis: an absolutely positioned descendant (e.g. Tailwind `sr-only`,
++  Radix visually-hidden input) whose containing block is the initial containing block is not clipped by `main`'s
++  overflow and extends the document. Active rows: `ui/src/features/library/model-table.tsx:157` and
++  `ui/src/features/custom-nodes/installed-table.tsx:143` use `bg-accent` without `text-accent-foreground`; children use
++  `text-muted-foreground`, outline badges (`text-foreground`), and a pink Conflict chip. DESIGN.md:39 "text on a brand
++  fill is always #2a313a"; no spec for an active row. Headers (cyan + #2a313a) pass (~11:1).
++- **Setup consent (explorer):** Manager gate `crates/application/src/environment/execute.rs:1080-1087`
++  (`run.manager_consent != Some(resolved.commit)` → `ConsentRequired`); Manager source = `ls-remote HEAD` of
++  `pins.rs:73 MANAGER_URL` (not pinned); `run.manager_consent` persisted. Curated: `execute.rs:1106-1209`
++  (`prepare_curated` → pause at `:1137` unless every Prepared plan is covered by a process-local decision, `covers()`
++  `:1505-1512` = plan/binding match, `execute_node_code`, warnings acknowledged, no protected changes).
++  Setup decisions are forced to `run_install_py=false`, no remember, no source builds
++  (`crates/application/src/custom_nodes/setup.rs:140-154`). Catalog
++  `crates/infrastructure/src/environment/data/curated_nodes.json` (schema 1, 22 entries with repository/branch/
++  40-hex commit; PlagueKind `unavailable`), parser `curated.rs`; prepare uses
++  `PrepareRequest::Git { repository, reference: Some(entry.commit) }` and requires
++  `review.source == Git { repository, commit, branch: None }` (`custom_nodes/setup.rs:21-31, 219-246`);
++  `installed()` `:308-347` compares the same expected source. Default-branch mode already exists:
++  `git.rs:383-432` `reference: None` → `ls-remote --symref HEAD` → `RefKind::DefaultHead`, branch `Some(name)`;
++  `files.rs:518-527` adds the DETACHED warning only for Tag/Commit. UI: wizard `setup-wizard.tsx` (Manager off by
++  default `:95-97`, help text `:732-736`, review text `:872`, `:894` "Curated selection is not execution consent…"),
++  run progress `run-progress.tsx` (Manager consent `:144-174`, curated review `:186-204, :272-296`), App render prop
++  `App.tsx:22-25`. Plans: `m6-approved-plan.md:322-333` ("Selection is not execution consent", "Never automatically
++  acknowledge newly discovered warnings"); NFR-SEC-3 (`REQUIREMENTS.md:473`).
++- **Upstream heads now (main, `git ls-remote --symref`):** PlagueKind HEAD is still `d58d006` (stays unavailable);
++  rgthree default branch is now `main` @ `d7297b42` (catalog had `dev` @ `5f940ddf`, which was incompatible with
++  ComfyUI 0.42.1); GGUF, KJNodes, WAS moved; 18 others unchanged.
++- **Profiles (explorer):** `recommended` is a JSON flag per profile (`data/profiles/*.json:7`); exactly one per OS
++  asserted by `profiles/tests.rs:75-95`; wizard preselects the first eligible recommended (`setup-wizard.tsx:173-176`).
++  py312 = revision 2, torch 2.10.0 / torchvision 0.25.0 / **torchaudio 2.10.0**, triton-windows >=3.6,<3.7, six
++  experimental accelerators all default-off, `calibrated: false`. No Linux py312 profile. The flag is not used by any
++  install/rebuild/repair decision (revision-dependent paths use the recorded snapshot).
++- **Extra model paths (explorer):** read-only parser `crates/infrastructure/src/comfy_runtime/extra_paths.rs`, port
++  `ExtraModelPaths` (`application/src/comfy_runtime/ports.rs:56-59`), command `comfy_read_extra_model_paths`, card on
++  the **ComfyUI page** (`ui/src/features/comfy-runtime/comfy-page.tsx:321-340`). The library re-reads the YAML on every
++  scan (`models/library/roots.rs:122-216`) and scans/watches extra roots; downloads only target `ComfyUI/models`
++  (`DEFAULT_MODEL_ROOT_ID`, `acquisition/stack.rs:30-31, 64-70`). ComfyUI loads `ComfyUI/extra_model_paths.yaml` by
++  default (app passes no `--extra-model-paths-config`; users cannot either — reserved). ComfyUI's loader
++  (`ComfyUI/utils/extra_config.py:6-34`): per top-level section, `base_path` → `expandvars(expanduser())`, relative
++  → yaml dir; `is_default`; each other key = folder name, value split on `\n`, joined to base_path. Requirement
++  FR-COMFY-8 (P1): "Read it, and optionally manage it". Atomic write helper `shared/fs.rs:6-23`.
++
++## Proposed packages (sequential, one coder each; main verifies the full check list after each)
++
++### Q — quick fixes (one package)
++- **Q1 (P0)** add `"USERNAME"` to `USER_VARIABLES_WINDOWS` (layout.rs), with a one-line comment (Python 3.12
++  `getpass.getuser()` falls back to `pwd`). Test `#[cfg(windows)] python_children_get_the_windows_user_name`
++  (Tool::Python env contains USERNAME equal to the parent's when the parent has it). Keep
++  `arbitrary_parent_variables_are_not_inherited` passing. Leave `system_baseline` and the process.rs test that asserts a
++  baseline-only child has no USERNAME unchanged.
++- **Q2** shell: `app-shell.tsx:108` → `relative flex h-screen overflow-hidden …`; `:110` column `min-h-0`;
++  `:112` main → `relative min-h-0 flex-1 overflow-y-auto p-6` (positioned so absolutely positioned descendants are
++  clipped and scroll inside main). No global body overflow change (SetupFrame relies on document scroll). Vitest:
++  assert the shell root and main carry the containment classes. Main verifies natively (screenshot of Settings
++  scrolled to bottom, no document scrollbar).
++- **Q3** active row: replace the brand fill with a readable highlight in both tables:
++  `bg-muted shadow-[inset_3px_0_0_var(--accent)]` (pink left bar) for the active row; keep zebra/hover; checked rows
++  (`aria-selected`) get `bg-muted/60`. Contrast: dark #e0e5ec/#b8c0c9 on #3b4652 ≈ 8.5:1/5.9:1; light #2a313a/#56606c
++  on #d2d8e0 ≈ 10:1/4.6:1. DESIGN.md Tables section: add "active row = `bg-muted` + 3px accent inset bar; never a
++  brand fill behind table text".
++
++### F — setup automation (one package)
++- **F1 auto-consent in first-run setup.** `SetupRequest.third_party_consent: bool` (wire `thirdPartyConsent`, required
++  on the wire like the other fields). Accepted only for `SetupMode::FirstRun`; any other mode with `true` → validation
++  error (new code `third_party_consent_invalid`); Rebuild/Repair derivations force false. Persisted with the run's
++  request document (serde default false — no migration if the request is stored as JSON; coder confirms).
++  - Manager step: when `third_party_consent` and the resolved commit differs from `run.manager_consent`, set
++    `run.manager_consent = Some(resolved.commit)`, persist, log "ComfyUI-Manager <url> at <commit> was approved on the
++    setup review page." and continue (no pause).
++  - Curated step: after `prepare_curated`, when `third_party_consent`, synthesize a decision for every Prepared plan not
++    yet covered: `execute_node_code=true`, `acknowledge_warnings=true` (each warning is written to the setup log and
++    the entry message), `run_install_py=false`, no remember, no source builds, no confirmed protected changes. A plan
++    with protected changes cannot be approved → that entry becomes `Skipped` with the message "Not installed: its
++    requirements would change protected packages (…)." (nothing was modified yet) and the run continues. Decisions are
++    re-synthesized after a backend restart (flag is persisted), so Retry never pauses for consent.
++  - Without the flag every existing pause/consent path is unchanged (Repair with Manager, M5 node installs).
++  - UI wizard review page: when Manager or ≥1 curated node is selected, show the NFR-SEC-3 disclosure: "Installing
++    ComfyUI-Manager and the selected custom nodes runs third-party code on this computer; a Python environment is not
++    a sandbox. Setup installs the latest commit of each repository's default branch, never runs install.py scripts,
++    and does not ask again. Clicking Install confirms this." followed by the list of sources (Manager URL + each
++    selected curated repository URL). Install sends `thirdPartyConsent = installManager || curated.length > 0`.
++    Remove the copy "Manager selected; consent still required", "Curated selection is not execution consent…" and the
++    Manager help text about pausing; keep run-progress consent UI for runs without the flag.
++- **F2 latest default-branch commit for curated nodes.** Catalog schema 2: entries `{ repository, unavailable? }`
++  (drop `branch` and `commit`; provenance text updated). `CuratedNodeSpec` loses `commit`/`branch`.
++  `SetupNodes::prepare` uses `reference: None` (default branch HEAD via `ls-remote --symref`); the review is accepted
++  when `review.source` is Git with the entry's repository and a resolved commit (any branch); the reviewed commit is the
++  one installed (staged checkout is frozen at prepare, so no TOCTOU). `installed()` recognizes an entry by repository
++  (+ existing digest/dependency checks). The installed node tracks its branch (normal Update works later). DTO
++  `CuratedNodeDto` drops `commit`/`branch`; the run progress shows the resolved commit when known. PlagueKind stays
++  `unavailable`; reason text: "Its repository tracks Python cache files (__pycache__), which the app refuses to
++  install." Tests updated (`curated/tests.rs`, application curated tests) + new
++  `curated_setup_prepares_the_default_branch_head`.
++- **F3 recommended profile.** `win-py312-torch2100-cu130.json` `recommended: true`, `win-py313-torch2141-cu130.json`
++  `recommended: false`; Linux unchanged (no Linux py312 profile). No revision bump (the flag does not affect install
++  content; rebuild/repair use recorded snapshots). Update `profiles/tests.rs:75-95`. UI fixture untouched.
++- **Docs (F):** REQUIREMENTS NFR-SEC-3 (+ first-run exception), FR-SETUP-9 (latest default-branch commit), §2.4/§5.4
++  (Windows recommended = py312/torch 2.10, owner decision 2026-10-20); `docs/DOCUMENTATION.md` setup sections;
++  HANDOFF §3 decision rows. `m6-approved-plan.md` stays historical with a pointer.
++
++### X — `extra_model_paths.yaml` generator (one package)
++- ComfyUI page "Extra model paths" card gains: "Model base folder" (folder picker + text), buttons **Generate** and
++  **Remove generated section**; the read-only list stays below. Copy: "The app writes an `extra_model_paths.yaml`
++  section that points every model folder at this base folder and creates missing folders. ComfyUI uses it from its
++  next start." When ComfyUI is running: "Restart ComfyUI to use the new paths."
++- Backend: application use case `ManageExtraModelPaths` (generate/remove) behind a new port method on the existing
++  infrastructure adapter (`YamlExtraModelPaths::generate(root, base) / remove(root)`); commands
++  `comfy_generate_extra_model_paths { basePath }` and `comfy_remove_extra_model_paths`, manager-window ACL +
++  permission TOMLs + bindings + ACL test cases. After a write, trigger a library refresh (existing rescan path).
++- File semantics: app section key `vjumpkung_desktop`; generated layout `base_path: <abs>`, `is_default: true`, one
++  key per folder name = the union of the §4.6 categories, `configs`, and every existing subfolder of the install's
++  `ComfyUI/models` (validated as `SafeFileName`); value `<name>/`; for `text_encoders`/`diffusion_models` the legacy
++  alias folder (`clip/`, `unet/`) is added as a second line only if it exists under the base. Missing primary folders
++  are created under the base. Other top-level sections of an existing file are preserved by data (re-serialized;
++  comments are lost), and the previous file is first copied to `extra_model_paths.yaml.bak-<UTC timestamp>` whenever
++  it is not byte-identical to the last app-generated content (header line `# Managed by vjumpkung ComfyUI desktop`).
++  Remove deletes only the app section (and the file if nothing else remains). Writes are atomic (`shared/fs.rs`).
++- Validation (fail closed with messages): base must be absolute, a local drive path or UNC share, existing or
++  creatable; must not contain `$`, `%` or start with `~` (ComfyUI expands them); must not equal or be inside the
++  install's `ComfyUI/models`, `envs/`, `data/` or `tools/`; no reparse point on the existing prefix (reuse
++  `reject_reparse`). YAML is emitted with `serde_yaml_ng` (correct quoting for spaces/Thai).
++- Downloads keep targeting `ComfyUI/models` (unchanged; documented as a limitation) — see question Q-X1.
++- Tests: generator (fresh, preserve other sections + backup, regenerate idempotent without new backup, remove,
++  alias lines only when present, refusal cases incl. `$`/`%`/`~`/inside root), round trip through the existing parser
++  (generated roots == expected), use case, ACL, UI (generate/remove flows, running hint).
++- Docs: DOCUMENTATION model-library section, REQUIREMENTS FR-COMFY-8 note.
++
++### G — git-friendly ComfyUI checkout (owner follow-up, 12:45: "make a ComfyUI clone before the program creates
++folders, for making updating ComfyUI by git pull easily")
++Evidence (explorer + main): owner checkout `D:\comfyui-test\v1\ComfyUI` is complete and clean but `HEAD (detached at
++63be2f9b)` (tag v0.42.1); a local `master` exists (created by the plain `git clone`), `origin/HEAD -> origin/master`;
++`git pull` → "You are not currently on a branch". Setup: `source.rs:286-326` full `git clone` into
++`<root>/.ComfyUI.cloning`, then `checkout --detach <commit>` for Latest/Tag (`:312-316`; branch refs use
++`checkout -B <b> --track origin/<b>` `:305-311`), then rename into an absent `ComfyUI` (`:270-276`) or
++`publish_scaffold` merge (publish.rs) because startup composition already created `ComfyUI/models`
++(`acquisition/stack.rs:64-70`, `library/roots.rs:61-80`, both pinned) and `custom_nodes/.disabled/.vjump-no-hooks`
++(node reconcile `state.rs:591-598`, `paths.rs:88-108`). A moved root already composes in restricted mode without both
++model stacks (`state.rs:871-878, 955-978`); a successful Rebuild already requests a shell restart
++(`env_commands.rs:176-186, 207-211`); first runs do not recompose today. App updates: `comfy_runtime/git.rs` apply =
++`merge --ff-only` for BranchFfOnly else `checkout --detach <commit>` (`:268-272`); the Version card shows
++"Fast-forward {branch}" only when HEAD is on a branch with an upstream (`versions-panel.tsx:172-180`); policy
++`domain/comfy_runtime/update.rs:67-90` (dirty, unfinished op, diverged; BranchFfOnly needs branch + upstream).
++FR-COMFY-6: "git fetch then switch to the selected tag, or pull --ff-only on a branch … no reset or force".
++- **G1 clone first.** At composition, when `<root>/ComfyUI/.git` does not exist (fresh root, nothing cloned yet), compose
++  in a *pre-install* mode: do not open the download stack or the library stack and skip node reconcile/scan, so nothing
++  is created under `ComfyUI/` (reuse the restricted-mode "model stacks absent" handling; commands that need them return
++  the existing not-available error; the wizard does not use them). After a successful FirstRun activation, request the
++  same shell restart as Rebuild so services are recomposed with the new checkout. The clone then goes through the
++  existing "ComfyUI absent → rename stage into place" path; the scaffold-merge path stays for roots scaffolded by older
++  builds. Tests: pre-install composition creates no `ComfyUI` entry; first-run success returns restart; existing restart
++  handling in the UI.
++- **G2 stay on a branch so `git pull` works.** One infrastructure helper `attach_or_detach(target_commit)` used by the
++  setup clone (Latest/Tag) and by the app update apply for Tag/LatestRelease targets: determine the remote default
++  branch `D` from `refs/remotes/origin/HEAD`; if the target commit is an ancestor of `origin/D` and local `D` either
++  does not exist or has no commits that are not in `origin/D` (and the tree is clean — already enforced), run
++  `git checkout -B D <commit>` and `git branch --set-upstream-to=origin/D D`; otherwise fall back to today's
++  `checkout --detach <commit>` and log why. Result after setup: `On branch master … behind 'origin/master' by N
++  commits, and can be fast-forwarded` → `git pull` fast-forwards; the Version card then also offers "Fast-forward
++  master" (= pull --ff-only with requirements reinstall and the pin guard). Existing detached installs are attached on
++  their next app update/switch. `install.json` `comfyui_reference` stays the tag (Latest/Tag) — unchanged semantics.
++  Tests (real git, local bare repo fixtures like `source/tests.rs:775-827`): tag clone ends on `master` tracking
++  `origin/master` at the tag commit and `git pull --ff-only` advances it; non-ancestor tag → detached fallback; local
++  `master` with unique commits → detached fallback, commits preserved; update Switch-to-tag on an attached repo keeps
++  the branch; update on a detached repo attaches.
++- Docs: DOCUMENTATION ComfyUI updates section ("ComfyUI is a normal git checkout on `master`; `git pull` works; prefer
++  the app's Fast-forward so requirements are reinstalled with the pin guard; after a manual pull run Repair"),
++  REQUIREMENTS FR-COMFY-6 note.
++
++### Then (unchanged, already advisor-approved in session 5)
++D3+D5 (`prompts/session5/d3-copied-python-link.md`), D4 (`d4-hf-home.md`), D1 (`d1-r6-closure.md`) — prompts get the
++new HEAD/working-copy line; then R (frozen binary, native pass incl. a fresh first run with the NEW recommended
++profile + 21 curated at latest commits + auto-consent, Settings/Models/Custom Nodes screenshots), RELEASE_ACCEPTANCE,
++README + DOCUMENTATION.
++
++## Questions for the advisor (classify AI-decidable vs user-only; decide the former)
++1. F1: is "disclosure on the review page + Install click = consent" an acceptable NFR-SEC-3 reconciliation, or must there
++   be an explicit checkbox? (Owner explicitly asked for no permission prompts in first-time setup.)
++2. F1: auto-acknowledging warnings for curated plans (contradicts m6 plan "never automatically acknowledge newly
++   discovered warnings") — acceptable under the owner's instruction if every warning is logged and shown on the entry?
++3. F1: protected-change plans → `Skipped` (vs fall back to the manual pause, vs Failed).
++4. F1: scope = FirstRun only (Repair with Manager keeps its pause) — correct reading of "first time setup"?
++5. F2: drop `branch` from the catalog (use the remote default HEAD) vs keep it as the requested branch.
++6. F3: flip without revision bump; keep `calibrated:false` (owner install measured: env 4.25 GB, ComfyUI 0.36 GB,
++   tools 0.13 GB, cache 0.25 GB after cleanup).
++7. X: `is_default: true`? Should app downloads also go to the base folder when it is configured (scope growth:
++   authorizing a second download root), or stay in `ComfyUI/models` for now (Q-X1)?
++8. X: preserve-other-sections-with-backup vs refuse when a hand-written file exists.
++9. Q2: is the `relative`/`min-h-0`/`overflow-hidden` containment the right fix without identifying the escaping element?
++10. Package order and whether Q can run before advisor sign-off on F/X (it is independent). (Main already started Q
++    with the Sonnet coder at ~12:50 because it is trivial and file-disjoint; flag anything wrong in Q.)
++11. G1: is the pre-install composition + post-first-run restart the right mechanism, or is a lazy creation of the model
++    roots on first use simpler/safer? Any composition pieces besides the two model stacks and node reconcile that write
++    under `ComfyUI/`?
++12. G2: is `checkout -B D <commit>` (moving a local branch pointer that has no unique commits) compatible with FR-COMFY-6
++    "no reset or force"? Should switching to an OLDER tag on an attached repo detach instead (so `git pull` would not
++    silently jump forward), or keep the branch (owner wants `git pull` to work)?
++13. Package order proposal: Q → G → F → X → D3+D5 → D4 → D1 → R. G before F because both touch setup execution
++    and the run/restart flow.
+diff --git a/docs/handoff/plans/s6-s0-stack-overflow.md b/docs/handoff/plans/s6-s0-stack-overflow.md
+new file mode 100644
+index 0000000..fe220f9
+--- /dev/null
++++ b/docs/handoff/plans/s6-s0-stack-overflow.md
+@@ -0,0 +1,37 @@
++# S0 — P0: debug app overflows the main-thread stack at startup once custom nodes exist (draft by main)
++
++## Native evidence (main, 2026-10-20 12:40, RTX 3060 machine)
++- Binary `D:\vjc-s6\bin\vjumpkung-comfyui-desktop-s6-01.exe` (debug + `tauri/custom-protocol`, tree = HEAD e384d43 + Q,
++  SHA-256 prefix 2ab32a47) launched with `VJUMPKUNG_COMFYUI_HOME=D:\comfyui-test\v1` (owner root; activated py312 env;
++  `ComfyUI/custom_nodes/ComfyUI-Manager` installed by setup). stderr:
++  `thread 'main' (44764) has overflowed its stack`, exit 127; app.log stops after
++  "model operation recovery finished" (node reconcile/scan never logs). Reproducible twice.
++- The owner's own start of the same root at 11:59 (before setup installed the Manager) finished
++  ("custom node recovery and scan finished"). Fresh-root smoke test (`tests/startup_smoke.rs`) has no nodes → never hits it.
++- Same exe with only the PE stack reserve raised (`editbin /STACK:8388608` on a copy) starts normally on the same root:
++  "custom node recovery and scan finished", "application setup finished". ⇒ stack size, not unbounded recursion
++  (debug-build async state machines of `AppState::compose` → `NodeServices::reconcile` → `rescan`).
++- Where: `crates/desktop/src/lib.rs:97-114` `tauri::async_runtime::block_on(AppState::compose(..))` inside `.setup`
++  on the main thread (Windows main-thread reserve = 1 MiB default; nothing sets `/STACK`). `crates/desktop/build.rs`
++  only emits `rustc-link-arg-tests` manifest args (:97-109). Shutdown also uses `block_on` on the main thread
++  (lib.rs:172-173). Later rescans (after ComfyUI stops, node commands) run on Tauri's default tokio runtime workers
++  (2 MiB default stack) — not observed to overflow, not proven safe in debug.
++- Release builds were not observed to overflow (smaller futures) but are not proven either.
++
++## Proposed fix (minimal)
++1. `crates/desktop/build.rs`: for the desktop binary on Windows, reserve an 8 MiB main-thread stack:
++   MSVC `cargo:rustc-link-arg-bins=/STACK:8388608`; windows-gnu `cargo:rustc-link-arg-bins=-Wl,--stack,8388608`
++   (select by `CARGO_CFG_TARGET_ENV`). Linux main threads already get the 8 MiB rlimit default; no change.
++2. Tokio workers: install an explicit Tauri async runtime before the builder runs
++   (`tauri::async_runtime::set(..)`) = multi-thread tokio runtime, `enable_all()`, `thread_stack_size(8 MiB)`
++   (same worker count as the default). Only if the advisor rules it necessary (see question).
++3. Tests: (a) `#[cfg(windows)]` integration test in `crates/desktop/tests/` that reads the PE header of
++   `env!("CARGO_BIN_EXE_vjumpkung-comfyui-desktop")` and asserts `SizeOfStackReserve >= 8 MiB`
++   (`desktop_exe_reserves_an_eight_mib_main_stack`); (b) extend the ignored native smoke test with a root that already
++   contains a custom node folder tree (`root_with_installed_nodes_starts_and_closes_cleanly`), run explicitly by main.
++4. Native check by main: the frozen debug binary starts on `D:\comfyui-test\v1`.
++
++## Questions
++1. Is the linker reserve (1) sufficient, or should compose additionally run on a dedicated large-stack thread?
++2. Is (2) (8 MiB tokio worker stacks) warranted, given rescans after ComfyUI stop run on workers?
++3. Any risk with `rustc-link-arg-bins` and the existing `rustc-link-arg-tests` manifest args / the bundler?
+diff --git a/docs/handoff/prompts/session6/f-setup-automation.md b/docs/handoff/prompts/session6/f-setup-automation.md
+new file mode 100644
+index 0000000..ca70cc1
+--- /dev/null
++++ b/docs/handoff/prompts/session6/f-setup-automation.md
+@@ -0,0 +1,62 @@
++ROLE: coder (write-capable). Mechanically implement the advisor-approved plan below. Do not redesign or expand scope. If the plan is underspecified or conflicts with the code, stop that item and report the gap precisely instead of improvising.
++
++## Build environment and repository rules (mandatory)
++- WORKING COPY: `D:\vjump\vjump-comfyui-portable-with-resource-manager` (branch `feat/m0-skeleton`, HEAD `e384d43`). Uncommitted working-copy changes = verified packages Q and S0 (`docs/handoff/patches/s6-*`) + session-6 docs: preserve them; never revert files you did not change for this package.
++- Read `AGENTS.md` and `docs/handoff/tooling/coder-env.md` first. Default MSVC toolchain from `rust-toolchain.toml`, default `target/`; do NOT set RUSTUP_TOOLCHAIN or CARGO_TARGET_DIR.
++- Memory: 32 GB machine, ~10 GB free. Use `-j 6`; targeted runs (`-p application`, `-p infrastructure`, `-p desktop` with filters) while iterating; workspace-wide commands once at the end. Never run two cargo commands at once. Vitest with `VITEST_MAX_WORKERS=2`.
++- Rust: rustfmt, clippy `-D warnings`; TypeScript: 2-space, single quotes, no semicolons; match surrounding style and comment density. Normalize edited files to LF. Regenerate `ui/src/shared/ipc/bindings.ts` only via `cargo test -p desktop --test bindings --locked -- --ignored export_bindings`; never hand-edit it.
++- Do not commit, push, stash, reset, checkout, apply, clean or touch git history. Do not modify files outside the stated scope. Do not touch `D:\vjc-s6\` or `D:\comfyui-test\`; do not kill `vjumpkung-comfyui-desktop` processes.
++
++## Owner decisions (2026-10-20; not to be re-litigated)
++(a) First-time setup must install ComfyUI-Manager and the selected curated custom nodes WITHOUT asking for permission (fully automatic flow). (b) Curated nodes are `git clone`d at the LATEST commit of each repository's default branch — no commit lock. (c) Python 3.12 + torch 2.10 (`win-py312-torch2100-cu130`, verified natively: ComfyUI 0.42.1 runs on cuda:0 once USERNAME reaches the child) becomes the recommended Windows profile.
++Background: `docs/handoff/plans/s6-owner-feedback-plan.md` (evidence with file:line), `docs/handoff/evidence/s6-advisor-rulings.md`.
++
++## F1 — third-party consent in first-run setup
++Domain/application:
++1. `SetupRequest` (`crates/application/src/environment/model.rs:318-335`) gains `third_party_consent: bool`; update the doc comment at `:327-329` (a first-run request may carry the user's consent, given on the wizard's review stage, for ComfyUI-Manager and the selected curated nodes). Every struct literal gets `third_party_consent: false` unless a test needs true.
++2. New error variant `EnvironmentAppError::ThirdPartyConsentInvalid` → IPC code `third_party_consent_invalid`, message "Third-party consent can only be given for a first-run setup." Map it in `crates/desktop/src/ipc/error.rs` and add a mapping test next to the `curated_selection_invalid` one (~:379).
++3. Validation in `StartSetup::register` (`crates/application/src/environment/setup.rs:~70`), first check: flag true and mode ≠ `FirstRun` → the new error. Rebuild derivation (`setup.rs:139-146`) copies the recorded request: set `request.third_party_consent = false;` there (also any Repair derivation that copies a recorded request).
++4. Persistence: `#[serde(default)] third_party_consent: bool` on `RequestDoc` (`crates/infrastructure/src/environment/sqlite.rs:471-485`) + `encode_run`/`run_from_row` (request stored as JSON → no migration).
++Execution (`crates/application/src/environment/execute.rs`):
++5. `manager()` (`:1080-1087`): when `run.manager_consent != Some(resolved.commit)` AND `request.third_party_consent`: set `self.run.manager_consent = Some(resolved.commit.clone())`, save the run, log "ComfyUI-Manager {url} at commit {commit} was approved on the setup review page." and continue. Without the flag keep today's `ConsentRequired`.
++6. `curated_nodes()` (`:1106-1209`): make `decisions` mutable; after `nodes.pending()`, when the flag is set, for every Prepared entry whose review no existing decision `covers()` and whose `protected_changes` is empty, first log every warning as "{name}: {warning} (acknowledged on the setup review page).", then synthesize `setup_review_decision(review)` = `execute_node_code: true`, `acknowledge_warnings: true`, everything else false (`run_install_py`, remember flags, source builds), `protected_changes: vec![]`, bound to the review's plan id/binding exactly like a user decision. Add `const MAX_CURATED_PASSES: usize = 3;` — if the prepare/commit loop needs more passes than that in auto mode, fail the step with "The curated node plans kept changing. Retry setup." No "Skipped" path for protected changes (they already fail at prepare). The flag is persisted, so decisions are re-synthesized after a backend restart (Retry never pauses for consent).
++Wire/UI:
++7. `SetupRequestDto.third_party_consent` (wire `thirdPartyConsent`, required on the wire like the other fields), mapped in `into_application` (`crates/desktop/src/ipc/env_dto.rs:913-962`). Regenerate bindings. Add `thirdPartyConsent: false` where requests are built: `ui/src/features/setup/rebuild-setup.tsx:~45`, `ui/src/shared/ipc/gateway.test.ts:~74`, `ui/src/app/App.test.tsx`, `ui/src/features/setup/setup-wizard.test.tsx` (and any other TS request literal the type checker reports).
++8. Wizard (`ui/src/features/setup/setup-wizard.tsx`): send `thirdPartyConsent: mode === 'first_run' && (installManager || (curatedSelection ?? []).length > 0)` (use the component's actual variable names). On the review stage (stage 5), when that value is true, show the disclosure: "Installing ComfyUI-Manager and the selected custom nodes runs third-party code on this computer; a Python environment is not a sandbox. Setup installs the latest commit of each repository's default branch, never runs install.py scripts, and does not ask again. Clicking Start setup confirms this." followed by a list of sources: `https://github.com/Comfy-Org/ComfyUI-Manager` (display constant, when Manager is selected) and each selected curated repository URL. Replace the copy at `:733-735` (Manager help text about pausing for consent → "Installed from the latest commit of its default branch; covered by the confirmation on the review step."), `:791-793` (curated section copy → say entries install the latest commit of their default branch and are covered by the review-step confirmation), `:872` ("Manager selected; consent still required" → "Manager selected"), and remove the sentence at `:894` ("Curated selection is not execution consent…"). Keep the consent UI in `run-progress.tsx` (it still serves runs without the flag).
++
++## F2 — curated nodes at the latest commit of the default branch
++1. `crates/infrastructure/src/environment/curated.rs`: `SCHEMA_VERSION = 2`; `EntryDoc { repository, #[serde(default)] unavailable }` with `deny_unknown_fields`; remove branch/commit validation (`:104-114`), `CuratedError::{Branch, Commit}` and the now-unused `valid_ref_name` import. `crates/infrastructure/src/environment/data/curated_nodes.json`: schema 2, entries `{ "repository": … }` (+ `unavailable` for PlagueKind), same order; provenance "reference installer order; each entry installs the latest commit of its repository's default branch at setup time (owner decision 2026-10-20)"; PlagueKind reason "Its repository tracks Python cache files (__pycache__), which the app refuses to install."
++2. Remove `branch` and `commit` from `CuratedNodeSpec` (`crates/application/src/environment/model.rs:473-484`) and from `CuratedNodeDto` (`crates/desktop/src/ipc/env_dto.rs:341-363`). Wizard row (`setup-wizard.tsx:818-821`) shows `{entry.repository} · latest commit of the default branch`.
++3. `crates/application/src/custom_nodes/setup.rs`: replace `expected_source` with `expected_repository(entry) -> String` (the same URL form the catalog builds today); `prepare` uses `PrepareRequest::Git { repository, reference: None }`; accept the review only if `review.source` is `NodeSource::Git { repository, commit, .. }` with that repository and a 40-hex lowercase commit (any branch); otherwise discard the plan and return NotApplied with "The repository did not resolve to the curated repository's default branch." `installed()` matches a Git node by repository (keep the conflict, single-file, digest and dependency checks). `verify_curated` (`execute.rs:~1342`) inherits this.
++4. `execute.rs`: the log at `:1280-1284` that uses `spec.commit` → "Preparing {name} from the latest commit of its default branch."; after a successful prepare log "{name}: {branch} at commit {short}." from `review.source` (short = 10 hex chars; branch "default branch" when None); update the doc comments at `:1102-1105` and `:1211-1212`.
++
++## F3 — recommended profile
++`crates/infrastructure/src/environment/data/profiles/win-py312-torch2100-cu130.json`: `recommended: true`, label "Python 3.12, PyTorch 2.10.0, CUDA 13.0"; `win-py313-torch2141-cu130.json`: `recommended: false`. Linux unchanged. No revision bump; keep `calibrated: false`. Update `crates/infrastructure/src/environment/profiles/tests.rs:75-95` (per-OS recommended id + Python: Windows `win-py312-torch2100-cu130` / 3.12.15, Linux `linux-py313-torch2141-cu130` / 3.13.16).
++
++## Tests (exact names)
++Application: `first_run_consent_installs_manager_without_pausing`; `third_party_consent_is_refused_outside_first_run`; `rebuild_never_inherits_third_party_consent`; `curated_auto_consent_installs_every_node_and_logs_warnings`; `curated_auto_consent_resynthesizes_after_restart`; `curated_setup_prepares_the_default_branch_head`; `curated_repository_mismatch_never_publishes` (replaces `curated_commit_mismatch_never_publishes`; the fake returns `branch: Some("main")` and a resolved commit when `reference` is `None`). Existing pause tests without the flag must keep passing (adapt only their struct literals/catalog shape). Infrastructure: `run_doc_without_third_party_consent_reads_false` (sqlite: a stored run JSON without the field decodes to false); update `crates/infrastructure/src/environment/curated/tests.rs` (22 entries in reference order, repository only, schema 2, malformed-catalog cases incl. unknown `commit` field refused, only PlagueKind unavailable with the new reason). Vitest: `review_page_discloses_third_party_code_and_sends_consent` (first_run with Manager or curated → disclosure shown + `thirdPartyConsent: true`; nothing selected → false and no disclosure; repair/other modes → false).
++
++## Docs (only these)
++- `docs/REQUIREMENTS.md`: NFR-SEC-3 — append the first-run exception: "First-run setup: the review step states this risk and lists the sources (ComfyUI-Manager and each selected curated repository, latest commit of its default branch); starting setup is the confirmation and setup does not ask again. Each URL@commit is logged before it is installed; install.py never runs during setup. Repair and the Custom Nodes page keep the per-plan review." FR-SETUP-9 — curated nodes install the latest commit of each repository's default branch and track that branch. §2.4 and §5.4 — Windows recommended/default profile = `win-py312-torch2100-cu130` (Python 3.12 + torch 2.10.0 cu130, owner decision 2026-10-20, verified on RTX 3060); Linux unchanged.
++- `docs/DOCUMENTATION.md` setup sections: same facts (no consent pause in first-run setup, latest default-branch commits, recommended profile; Repair with ComfyUI-Manager still asks for consent).
++- `HANDOFF.md` §3 decisions table: amend the "Python 3.13 + torch 2.14.1 cu130 default" row (Windows default is now py312/torch 2.10 per owner) and add a row "First-run setup installs Manager + curated nodes without consent pauses; curated = latest default-branch commit (owner, 2026-10-20)".
++- `docs/handoff/plans/m6-approved-plan.md` near §322-333: one-line pointer "Superseded for first-run setup by the owner decision of 2026-10-20 (`plans/s6-owner-feedback-plan.md`, F)."
++
++## Success criteria (run at the end; report exact counts)
++```
++cargo fmt --all -- --check
++cargo clippy --workspace --all-targets --locked -j 6 -- -D warnings
++cargo test -p application --locked -j 6 curated
++cargo test -p application --locked -j 6 third_party
++cargo test -p infrastructure --locked -j 6 curated
++cargo test -p infrastructure --locked -j 6 profiles
++cargo test -p desktop --test bindings --locked
++cargo test -p desktop --test acl --locked
++cargo test --workspace --locked -j 6 --no-fail-fast
++pnpm -C ui lint
++pnpm -C ui typecheck
++VITEST_MAX_WORKERS=2 pnpm -C ui test
++pnpm -C ui build
++node scripts/check-arch-deps.mjs
++```
++OUTPUT: per-file summary with file:line, key diffs, every command result with counts, deviations with reasons. Also write it to `docs/handoff/evidence/s6-f-implementation.md`.
+diff --git a/docs/handoff/prompts/session6/g-git-friendly-comfyui.md b/docs/handoff/prompts/session6/g-git-friendly-comfyui.md
+new file mode 100644
+index 0000000..8b1a283
+--- /dev/null
++++ b/docs/handoff/prompts/session6/g-git-friendly-comfyui.md
+@@ -0,0 +1,48 @@
++ROLE: coder (write-capable). Mechanically implement the advisor-approved plan below. Do not redesign or expand scope. If the plan is underspecified or conflicts with the code, stop that item and report the gap precisely instead of improvising.
++
++## Build environment and repository rules (mandatory)
++- WORKING COPY: `D:\vjump\vjump-comfyui-portable-with-resource-manager` (branch `feat/m0-skeleton`, HEAD `e384d43`). Uncommitted working-copy changes = verified packages Q, S0, F (`docs/handoff/patches/s6-*`) + session-6 docs: preserve them; never revert files you did not change for this package.
++- Read `AGENTS.md` and `docs/handoff/tooling/coder-env.md` first. Default MSVC toolchain from `rust-toolchain.toml`, default `target/`; do NOT set RUSTUP_TOOLCHAIN or CARGO_TARGET_DIR.
++- Memory: 32 GB machine, ~10 GB free. Use `-j 6`; targeted runs while iterating; workspace-wide commands once at the end. Never run two cargo commands at once. Vitest with `VITEST_MAX_WORKERS=2`. Git tests must actually execute (git is on PATH).
++- Rust: rustfmt, clippy `-D warnings`; TypeScript: 2-space, single quotes, no semicolons; match surrounding style and comment density. Normalize edited files to LF. Regenerate bindings only through the export test if a DTO changes (none expected).
++- Do not commit, push, stash, reset, checkout, apply, clean or touch git history of THIS repository (git commands inside test fixtures/temp dirs are fine). Do not modify files outside the stated scope. Do not touch `D:\vjc-s6\` or `D:\comfyui-test\`; do not kill `vjumpkung-comfyui-desktop` processes.
++
++## Owner request (2026-10-20)
++"Make a ComfyUI clone before the program creates folders, so updating ComfyUI by `git pull` is easy." Evidence: the owner's `D:\comfyui-test\v1\ComfyUI` is a complete clean clone but `HEAD (detached at 63be2f9b)` = tag v0.42.1; a local `master` exists (plain `git clone`), `origin/HEAD -> origin/master`; `git pull` → "You are not currently on a branch". Setup clones into `<root>/.ComfyUI.cloning` then `checkout --detach <commit>` (`crates/infrastructure/src/environment/source.rs:312-316`) and renames into an absent `ComfyUI` (`:270-276`) or merges into the startup scaffold (`source/publish.rs`), because startup composition already created `ComfyUI/models`. Plan + evidence: `docs/handoff/plans/s6-owner-feedback-plan.md` §G; rulings `docs/handoff/evidence/s6-advisor-rulings.md`.
++
++## G1 — clone first (nothing created under `ComfyUI/` before the first-run clone)
++Only two startup constructors create anything under `ComfyUI/`: `DownloadStack::open_with_bandwidth` (`crates/infrastructure/src/models/acquisition/stack.rs:65-70`, creates + pins `ComfyUI/models`) and `LibraryRoots::new` (`crates/infrastructure/src/models/library/roots.rs:66-67`). Node reconcile creates `custom_nodes/.disabled/.vjump-no-hooks` only when `ComfyUI` exists (`crates/infrastructure/src/custom_nodes/paths.rs:88-101`). Restricted mode must NOT be reused (its state has no `services()`, which the wizard needs).
++1. `AppState::compose` (`crates/desktop/src/state.rs`), normal path: compute `defer_models = manifest read (~:867) is ManifestState::Absent && symlink_metadata(root/"ComfyUI") is NotFound`.
++2. Constructors: `DownloadStack::open_with_bandwidth(…, create_default_root: bool)` — when false: no `create_dir_all`, `AuthorizedModelRoots::new([])` (downloads report the existing not-available/destination error until restart); `open()` passes true. Add `LibraryRoots::deferred(…)` (no creation, empty roots; `refresh()` (`:122-135`) already reports RootMissing and registers `ComfyUI/models` once it exists). `LibraryStack::open(…, create_default_root: bool)`; existing call sites pass true. When `defer_models`, skip `services.nodes.reconcile()` (`state.rs:~1025`) and log at info "custom node scan deferred until ComfyUI is installed" (`prepare_for_setup_held` already reconciles under its lease).
++3. `crates/desktop/src/ipc/env_commands.rs:176-182`: replace the Rebuild-only restart check with `fn restarts_after_success(mode: SetupMode) -> bool { matches!(mode, SetupMode::Rebuild | SetupMode::FirstRun) }` (reuses `execute_for_restart` — lease held until the restart — and `request_restart`). A deferred session can only run FirstRun.
++4. `ui/src/features/setup/run-progress.tsx`: when `run.mode === 'first_run'` and the outcome is succeeded, show `<p role="status">Setup finished. Restarting the app to open the new installation…</p>` (use the component's actual field names).
++5. The scaffold-merge path (`publish.rs`) stays unchanged for roots that older builds already scaffolded.
++Tests: `fresh_root_composes_without_creating_comfyui` (in `crates/desktop/src/state/recovery_tests.rs`, via `compose_at` or the existing compose helper: no `<root>/ComfyUI` entry after compose; wizard services available); `activated_root_without_comfyui_still_creates_models`; `deferred_library_roots_register_comfyui_models_once_it_exists`; `a_deferred_download_stack_creates_nothing_under_the_root`; `first_run_and_rebuild_restart_after_success`; Vitest `first_run_success_announces_the_restart`.
++
++## G2 — stay on the default branch so `git pull` works
++1. Domain `crates/domain/src/comfy_runtime/update.rs`: `pub enum CheckoutPlacement { Branch(String), Detached(&'static str) }` and `pub fn checkout_placement(default_branch: Option<&str>, current_branch: Option<&str>, target_on_default: bool, local_only_commits: u64) -> CheckoutPlacement`, rules in order: no default branch → `Detached("the remote has no default branch")`; HEAD on a branch other than the default → `Detached("HEAD is on another branch")`; `!target_on_default` → `Detached("the target is not on the default branch")`; `local_only_commits > 0` → `Detached("the local default branch has unpublished commits")`; otherwise `Branch(default)`.
++2. Facts, gathered identically at both call sites (shared infrastructure helper; reuse each site's existing git runner/command style): `symbolic-ref --quiet refs/remotes/origin/HEAD` → strip `refs/remotes/origin/` → D (must pass the existing `valid_ref_name`, else None); `symbolic-ref --quiet --short HEAD` (error ⇒ detached ⇒ None); `merge-base --is-ancestor <commit> refs/remotes/origin/<D>` (exit 0 ⇒ true; any non-zero ⇒ false); if `refs/heads/<D>` exists: `rev-list --count refs/remotes/origin/<D>..refs/heads/<D>` (else 0).
++3. Apply: `Branch(D)` → `checkout -B <D> <commit>` then `branch --set-upstream-to=origin/<D> <D>` (best-effort: failure logged, not fatal — a fresh clone already tracks); `Detached(reason)` → today's `checkout --detach <commit>` + a log line with the reason. Both call sites keep their existing HEAD == commit verification.
++4. Call sites: `crates/infrastructure/src/environment/source.rs:312-316` (the non-branch arm of `clone_into_stage`; this deliberately also attaches the ComfyUI-Manager clone to its default branch so Manager's own `git pull` updates work; log through the step context like neighbouring lines), and `crates/infrastructure/src/comfy_runtime/git.rs:268-272` (the non-fast-forward arm of apply; use `tracing::info!` because the update context uses `NullSink`). `install.json` `comfyui_reference` semantics unchanged. The existing `can_update` / dirty / diverged policy is unchanged and still runs first.
++Tests: domain `checkout_placement_attaches_only_when_nothing_local_is_lost` (every rule); `crates/infrastructure/src/environment/source/tests.rs` with the existing bare-repo fixtures (`:775-827` style): `a_tag_clone_stays_on_the_default_branch_and_can_pull` (HEAD on D tracking `origin/D` at the tag commit; after adding a commit to the remote's D, `git pull --ff-only` in the published checkout advances it) and `a_tag_off_the_default_branch_is_detached`; new real-git tests for `GitRepository` in `crates/infrastructure/src/comfy_runtime/` (use `GitRepository::with_git` or the existing constructor with the system git): `switching_tags_on_an_attached_checkout_keeps_the_branch`, `a_detached_checkout_is_attached_on_update`, `local_commits_keep_the_update_detached` (the local commits stay reachable on the branch).
++
++## Docs (only these)
++- `docs/REQUIREMENTS.md` FR-COMFY-6: append "ComfyUI stays on its default branch (tracking `origin`), so `git pull` works. Switching tags moves the local branch pointer only when the tree is clean and the branch has no unpublished commits; otherwise the checkout is detached as before." §3.2 layout line may say `ComfyUI/ git checkout on the default branch`.
++- `docs/DOCUMENTATION.md` ComfyUI updates section: "ComfyUI is a normal git checkout on `master` that tracks `origin/master`, so `git pull` works. Prefer the app's Fast-forward button: it reinstalls requirements with the torch pin guard. After a manual `git pull`, run Repair. Fresh installs: the app creates nothing inside the install folder's `ComfyUI` before setup clones it, and restarts once after first-time setup."
++
++## Success criteria (run at the end; report exact counts)
++```
++cargo fmt --all -- --check
++cargo clippy --workspace --all-targets --locked -j 6 -- -D warnings
++cargo test -p domain --locked -j 6 checkout_placement
++cargo test -p infrastructure --locked -j 6 tag_clone
++cargo test -p infrastructure --locked -j 6 comfy_runtime
++cargo test -p desktop --locked -j 6 --lib fresh_root_composes_without_creating_comfyui
++cargo test --workspace --locked -j 6 --no-fail-fast
++pnpm -C ui lint
++pnpm -C ui typecheck
++VITEST_MAX_WORKERS=2 pnpm -C ui test
++node scripts/check-arch-deps.mjs
++```
++Main runs the ignored native smoke test (`cargo test -p desktop --test startup_smoke --features tauri/custom-protocol fresh_root_starts_and_closes_cleanly -- --ignored --exact --nocapture --test-threads=1`) afterwards — do not run it yourself.
++OUTPUT: per-file summary with file:line, key diffs, every command result with counts, deviations with reasons. Also write it to `docs/handoff/evidence/s6-g-implementation.md`.
+diff --git a/docs/handoff/prompts/session6/q-quick-fixes.md b/docs/handoff/prompts/session6/q-quick-fixes.md
+new file mode 100644
+index 0000000..9bdf177
+--- /dev/null
++++ b/docs/handoff/prompts/session6/q-quick-fixes.md
+@@ -0,0 +1,44 @@
++ROLE: coder (write-capable). Mechanically implement the approved plan below. Do not redesign or expand scope. If the plan is underspecified or conflicts with the code, stop that item and report the gap precisely instead of improvising.
++
++## Build environment and repository rules (mandatory)
++- WORKING COPY: `D:\vjump\vjump-comfyui-portable-with-resource-manager` (branch `feat/m0-skeleton`, HEAD `e384d43`, tree clean at start). Other agents may be reading the tree; only you write. Never revert files you did not change for this package.
++- Read `AGENTS.md` and `docs/handoff/tooling/coder-env.md` first. Default MSVC toolchain from `rust-toolchain.toml`, default `target/`; do NOT set RUSTUP_TOOLCHAIN or CARGO_TARGET_DIR.
++- Memory: 32 GB machine, ~10 GB free. Use `-j 6`; targeted runs while iterating; workspace-wide commands once at the end. Never run two cargo commands at once. Vitest with `VITEST_MAX_WORKERS=2`.
++- Rust: rustfmt, clippy `-D warnings`; TypeScript: 2-space, single quotes, no semicolons. Match surrounding style and comment density. Normalize edited files to LF.
++- Do not commit, push, stash, reset, checkout, apply, clean or touch git history. Do not modify files outside the stated scope. Do not touch `D:\vjc-s5\` or `D:\comfyui-test\`, and do not kill `vjumpkung-comfyui-desktop` processes (the owner's debug app may be running from `target\debug`; do NOT run `cargo build -p desktop` without `--tests`/test commands — building the desktop binary would fail on the locked exe).
++
++## Q1 (P0) — Python 3.12 cannot start ComfyUI on Windows
++Root cause (reproduced by main): the ComfyUI child gets `tool_environment(layout, Tool::Python)` (`crates/infrastructure/src/environment/layout.rs:120-171`). `USER_VARIABLES_WINDOWS` lacks `USERNAME`. Python 3.12 `getpass.getuser()` checks LOGNAME/USER/LNAME/USERNAME, then `import pwd` → `ModuleNotFoundError` on Windows; torch 2.10's `torch._dynamo` import calls it (via comfy_kitchen) and ComfyUI dies with `AssertionError: Artifact of type=precompile already registered`. Python 3.13 raises `OSError` instead, which torch tolerates. With USERNAME present ComfyUI 0.42.1 starts (verified).
++1. Add `"USERNAME"` to `USER_VARIABLES_WINDOWS` (array length 7 → 8) with a short comment: Python 3.12's `getpass.getuser()` (used by torch) falls back to the Unix-only `pwd` module without it; the user name is already part of USERPROFILE.
++2. Test in the existing `layout.rs` tests module: `#[cfg(windows)] #[test] fn python_children_get_the_windows_user_name()` — if the parent has `USERNAME`, `tool_environment(&layout, Tool::Python)` contains `USERNAME` with the parent's value (skip with an early return if the parent lacks it). `arbitrary_parent_variables_are_not_inherited` must keep passing unchanged (it derives the allow-list from the arrays).
++3. Do NOT change `shared/process.rs::system_baseline` or the test `the_child_only_sees_the_given_environment` (a baseline-only child must still not see USERNAME).
++
++## Q2 — document scroll / shell overflow (Settings page)
++Observed in the running app (dark theme, Settings scrolled to bottom): the whole document scrolls in addition to `main`; the sidebar and its border stop ~2/3 down; an empty band shows below; two scrollbars. Shell: `ui/src/app/shell/app-shell.tsx:108` root `flex h-screen …` (no overflow containment), `:110` column `flex min-w-0 flex-1 flex-col`, `:112` `<main className="flex-1 overflow-y-auto p-6">` (not positioned). Cause (accepted hypothesis): an absolutely positioned descendant (e.g. Tailwind `sr-only`, Radix hidden inputs) has the initial containing block as containing block, so `main`'s overflow does not clip it and it extends the document.
++1. Root (`:108`): add `relative` and `overflow-hidden` (keep existing classes).
++2. Column (`:110`): add `min-h-0`.
++3. Main (`:112`): `relative min-h-0 flex-1 overflow-y-auto p-6`.
++4. Do NOT add global `html/body` overflow rules (`App.tsx` `SetupFrame` uses `min-h-screen` and relies on document scroll).
++5. Vitest in `ui/src/app/shell/app-shell.test.tsx` (extend, exact name): `shell_contains_overflow_inside_main` — the shell root has `overflow-hidden` and `relative`; `main` has `relative`, `min-h-0`, `overflow-y-auto`.
++
++## Q3 — active-row colour contrast (Models and Custom Nodes tables)
++Observed: the active row is `bg-accent` (#ff9fed, pink) with inherited light text: dark theme #e0e5ec on #ff9fed = 1.45:1, muted #b8c0c9 = 1.0:1; outline badges and the pink Conflict chip disappear. Files: `ui/src/features/library/model-table.tsx:157` (`key === activeKey ? 'bg-accent' : 'hover:bg-muted/50'`), `ui/src/features/custom-nodes/installed-table.tsx:143` (`node.id === activeId ? 'bg-accent' : 'even:bg-muted/45 hover:bg-muted'`). Both rows set `aria-selected={isSelected}` (checkbox state) which is unstyled.
++1. Active row in both tables: `bg-muted shadow-[inset_3px_0_0_var(--accent)]` (no brand fill behind table text). Non-active rows keep their current classes, and additionally a checked (selected) non-active row gets `bg-muted/60` (use the existing `isSelected` value in each component; keep zebra/hover for unchecked rows). Contrast: dark #e0e5ec/#b8c0c9 on #3b4652 ≈ 8.5:1/5.9:1; light #2a313a/#56606c on #d2d8e0 ≈ 10:1/4.6:1.
++2. Do not change table headers, chips, badges or tokens in `globals.css`.
++3. `docs/DESIGN.md` Tables section (lines ~99-102): add one bullet: "Active row: `bg-muted` with a 3px accent inset bar (`shadow-[inset_3px_0_0_var(--accent)]`); checked rows `bg-muted/60`. Never put a brand fill behind table text (contrast)."
++4. Vitest (extend the existing test files, exact names): `model_table_active_row_keeps_readable_contrast` in the library model-table/library-page test and `installed_table_active_row_keeps_readable_contrast` in `installed-table.test.tsx` — the active row has `bg-muted` and not `bg-accent`.
++
++## Success criteria (run at the end; report exact counts)
++```
++cargo fmt --all -- --check
++cargo clippy --workspace --all-targets --locked -j 6 -- -D warnings
++cargo test -p infrastructure --locked -j 6 layout
++cargo test --workspace --locked -j 6 --no-fail-fast
++pnpm -C ui lint
++pnpm -C ui typecheck
++VITEST_MAX_WORKERS=2 pnpm -C ui test
++pnpm -C ui build
++node scripts/check-arch-deps.mjs
++```
++Expected baseline before your change: Rust 718 passed / 0 failed / 10 ignored; Vitest 29 files / 184 tests.
++OUTPUT: per-file summary with file:line, key diffs, every command result with counts, deviations with reasons. Also write it to `docs/handoff/evidence/s6-q-implementation.md`.
+diff --git a/docs/handoff/prompts/session6/s0-stack-reserve.md b/docs/handoff/prompts/session6/s0-stack-reserve.md
+new file mode 100644
+index 0000000..565eef8
+--- /dev/null
++++ b/docs/handoff/prompts/session6/s0-stack-reserve.md
+@@ -0,0 +1,66 @@
++ROLE: coder (write-capable). Mechanically implement the advisor-approved plan below. Do not redesign or expand scope. If the plan is underspecified or conflicts with the code, stop that item and report the gap precisely instead of improvising.
++
++## Build environment and repository rules (mandatory)
++- WORKING COPY: `D:\vjump\vjump-comfyui-portable-with-resource-manager` (branch `feat/m0-skeleton`, HEAD `e384d43`). Uncommitted working-copy changes = verified package Q (`docs/handoff/patches/s6-01-q-verified.patch`) + session-6 docs: preserve them; never revert files you did not change for this package.
++- Read `AGENTS.md` and `docs/handoff/tooling/coder-env.md` first. Default MSVC toolchain from `rust-toolchain.toml`, default `target/`; do NOT set RUSTUP_TOOLCHAIN or CARGO_TARGET_DIR.
++- Memory: 32 GB machine, ~10 GB free. Use `-j 6`; targeted `-p desktop` runs while iterating; workspace-wide commands once at the end. Never run two cargo commands at once.
++- Rust: rustfmt, clippy `-D warnings`; match surrounding style and comment density. Normalize edited files to LF.
++- Do not commit, push, stash, reset, checkout, apply, clean or touch git history. Do not modify files outside the stated scope. Do not touch `D:\vjc-s6\` or `D:\comfyui-test\`; do not kill `vjumpkung-comfyui-desktop` processes.
++
++## Problem (native P0, verified by main 2026-10-20 12:40; plan `docs/handoff/plans/s6-s0-stack-overflow.md`)
++The debug desktop binary started on a root that has an installed custom node (ComfyUI-Manager) dies with `thread 'main' has overflowed its stack` (exit 127) during startup composition (`crates/desktop/src/lib.rs:97-114`, `tauri::async_runtime::block_on(AppState::compose(..))` → node reconcile/rescan on the main thread; Windows default main-thread reserve = 1 MiB). The same exe with only `editbin /STACK:8388608` starts normally. The same rescan chain also runs on Tauri's default tokio workers (2 MiB) for `node_rescan` and the rescan after ComfyUI stops.
++
++## Approved plan (advisor stand-in ruling S0: GO)
++1. `crates/desktop/build.rs` — add a separate block after the existing MSVC manifest block (keep that block unchanged):
++```rust
++// Debug startup (compose -> node reconcile/rescan) and shutdown run block_on on the main
++// thread; the 1 MiB Windows default overflows. Keep in sync with tests/stack_reserve.rs.
++if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
++    match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
++        Ok("msvc") => println!("cargo:rustc-link-arg-bins=/STACK:8388608"),
++        Ok("gnu") | Ok("gnullvm") => println!("cargo:rustc-link-arg-bins=-Wl,--stack,8388608"),
++        _ => {}
++    }
++}
++```
++   (Linux/macOS main threads already get 8 MiB.) `-bins` reaches only the `[[bin]]` target, never tests.
++2. `crates/desktop/Cargo.toml` — tokio features become `["sync", "macros", "time", "rt-multi-thread"]` (rt-multi-thread currently arrives only through Tauri). No other new dependency (dev-dependency `windows-sys` already has `Win32_System_Threading` through the workspace — verify; if not, add only that feature to the desktop dev-dependency).
++3. `crates/desktop/src/lib.rs`:
++```rust
++pub(crate) const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
++
++pub(crate) fn async_runtime_builder() -> tokio::runtime::Builder {
++    let mut builder = tokio::runtime::Builder::new_multi_thread();
++    builder.enable_all().thread_stack_size(WORKER_STACK_BYTES);
++    builder
++}
++
++fn install_async_runtime() {
++    // Never dropped: tauri::async_runtime::set takes only a Handle.
++    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
++    let runtime = RUNTIME.get_or_init(|| {
++        async_runtime_builder().build().expect("the async runtime could not start")
++    });
++    tauri::async_runtime::set(runtime.handle().clone());
++}
++```
++   Call `install_async_runtime();` as the FIRST statement of `run()` (before `initialize_tool_policy` and the builder; anything touching `tauri::async_runtime` first would create the default runtime and `set` would panic). Do NOT call it from `run_with_runtime` (startup_tests rely on the default runtime). Short comment at the call site: worker threads run node rescans; debug builds need more than tokio's 2 MiB default.
++4. New `crates/desktop/tests/stack_reserve.rs` with `#![cfg(windows)]` (not gated on debug_assertions):
++   - `desktop_exe_reserves_an_eight_mib_main_stack`: `std::fs::read(env!("CARGO_BIN_EXE_vjumpkung-comfyui-desktop"))` → `stack_reserve(&image) >= 8 * 1024 * 1024`.
++   - `test_executables_keep_the_default_stack_reserve`: `std::env::current_exe()` → reserve `< 8 MiB` (proves the parser reads the real field and `-bins` scoping).
++   - `fn stack_reserve(image: &[u8]) -> Result<u64, String>` std-only with checked `image.get(a..b)` + `from_le_bytes`: require `MZ` at 0; `e_lfanew = u32 @ 0x3C`; require `PE\0\0` at e_lfanew; `SizeOfOptionalHeader = u16 @ pe+20` ≥ 80; `opt = pe + 24`; `magic = u16 @ opt`: `0x20B` → `u64 @ opt+72`; `0x10B` → `u32 @ opt+72` widened; else error.
++5. `crates/desktop/src/startup_tests.rs` — `#[cfg(windows)] #[test] fn async_runtime_workers_and_blocking_threads_reserve_eight_mib()`: build `crate::async_runtime_builder().build()`; `reserve()` calls `windows_sys::Win32::System::Threading::GetCurrentThreadStackLimits(&mut low, &mut high)` and returns `high - low`; assert `rt.block_on(rt.spawn(async { reserve() }))` and `rt.block_on(rt.spawn_blocking(reserve))` are both `>= WORKER_STACK_BYTES`. Never call `install_async_runtime()` in tests.
++6. No smoke-test change (the node-tree smoke test was ruled optional and is NOT part of this package; main verifies natively on the owner root).
++7. Docs: append one row to `docs/handoff/evidence/s3-residuals.md` (next free number): "(native, S0) Debug builds overflowed the 1 MiB Windows main-thread stack during startup node reconcile once a custom node was installed (exit 127, owner-visible as a crash). Fixed in S0: 8 MiB main-thread reserve (/STACK) and 8 MiB tokio worker stacks; PE and worker tests lock the sizes, not the actual usage."
++
++## Success criteria (run at the end; report exact counts)
++```
++cargo fmt --all -- --check
++cargo clippy --workspace --all-targets --locked -j 6 -- -D warnings
++cargo test -p desktop --locked -j 6 --test stack_reserve
++cargo test -p desktop --locked -j 6 --lib async_runtime_workers
++cargo test --workspace --locked -j 6 --no-fail-fast
++node scripts/check-arch-deps.mjs
++```
++Baseline before your change: Rust 719 passed / 0 failed / 10 ignored.
++OUTPUT: per-file summary with file:line, key diffs, every command result with counts, deviations with reasons. Also write it to `docs/handoff/evidence/s6-s0-implementation.md`.
+diff --git a/docs/handoff/prompts/session6/x-extra-model-paths.md b/docs/handoff/prompts/session6/x-extra-model-paths.md
+new file mode 100644
+index 0000000..3fd7eae
+--- /dev/null
++++ b/docs/handoff/prompts/session6/x-extra-model-paths.md
+@@ -0,0 +1,43 @@
++ROLE: coder (write-capable). Mechanically implement the advisor-approved plan below. Do not redesign or expand scope. If the plan is underspecified or conflicts with the code, stop that item and report the gap precisely instead of improvising.
++
++## Build environment and repository rules (mandatory)
++- WORKING COPY: `D:\vjump\vjump-comfyui-portable-with-resource-manager` (branch `feat/m0-skeleton`, HEAD `e384d43`). Uncommitted working-copy changes = verified packages Q, S0, F, G (`docs/handoff/patches/s6-*`) + session-6 docs: preserve them; never revert files you did not change for this package.
++- Read `AGENTS.md` and `docs/handoff/tooling/coder-env.md` first. Default MSVC toolchain from `rust-toolchain.toml`, default `target/`; do NOT set RUSTUP_TOOLCHAIN or CARGO_TARGET_DIR.
++- Memory: 32 GB machine, ~10 GB free. Use `-j 6`; targeted runs while iterating; workspace-wide commands once at the end. Never run two cargo commands at once. Vitest with `VITEST_MAX_WORKERS=2`.
++- Rust: rustfmt, clippy `-D warnings`; no serde/tokio/etc. in domain/application; ports via async-trait `Arc<dyn …>`; composition only in `crates/desktop/src/state.rs`. TypeScript: 2-space, single quotes, no semicolons; Tauri access only through `ui/src/shared/ipc/gateway.ts`. Regenerate `bindings.ts` only via `cargo test -p desktop --test bindings --locked -- --ignored export_bindings`. New commands need: the `build.rs` command list, `crates/desktop/capabilities/manager.json`, the autogenerated permission TOMLs (generated by the build), the bindings, and `crates/desktop/tests/acl.rs` cases. Normalize edited files to LF.
++- Do not commit, push, stash, reset, checkout, apply, clean or touch git history. Do not modify files outside the stated scope. Do not touch `D:\vjc-s6\` or `D:\comfyui-test\`; do not kill `vjumpkung-comfyui-desktop` processes.
++
++## Owner request (2026-10-20)
++"extra_model_paths.yaml: let the user customize the base path and automatically generate the rest of the paths." FR-COMFY-8 (P1): "Read it, and optionally manage it, so the model library and ComfyUI agree on model locations." Today: read-only parser `crates/infrastructure/src/comfy_runtime/extra_paths.rs` (`YamlExtraModelPaths`, port `ExtraModelPaths` in `crates/application/src/comfy_runtime/ports.rs:56-59`, command `comfy_read_extra_model_paths`, card on the ComfyUI page `ui/src/features/comfy-runtime/comfy-page.tsx:321-340`). The library re-reads the YAML on every scan (`crates/infrastructure/src/models/library/roots.rs:122-216`). ComfyUI loads `ComfyUI/extra_model_paths.yaml` (`ComfyUI/utils/extra_config.py`: per top-level section `base_path` (expandvars+expanduser), `is_default`, every other key = folder name, value split on `\n`, joined to base_path). Plan/evidence: `docs/handoff/plans/s6-owner-feedback-plan.md` §X; rulings `docs/handoff/evidence/s6-advisor-rulings.md`.
++
++## Approved plan
++1. Port: new trait `ExtraModelPathsWriter { async fn generate(&self, root: &Path, base: &Path) -> Result<(), RuntimeError>; async fn remove(&self, root: &Path) -> Result<(), RuntimeError>; }` in `crates/application/src/comfy_runtime/ports.rs` (separate from `ExtraModelPaths`, so read-only consumers and fakes stay untouched). `YamlExtraModelPaths` implements both.
++2. Use case `ManageExtraModelPaths::new(EnvironmentDeps-or-the-existing-root-provider, Arc<dyn ExtraModelPathsWriter>)` with `generate(base)` and `remove()`; the root comes from the current root provider (`root.current()` as other use cases do). Wire the writer into the desktop runtime adapters and the use case into the comfy services. New error `RuntimeError::ExtraPathsRejected(String)` → IPC code `extra_model_paths_invalid` (message passed through; it never contains secrets) with an error-mapping test.
++3. Commands `comfy_generate_extra_model_paths { basePath: string }` and `comfy_remove_extra_model_paths` (manager window only; ACL + permissions + bindings + acl.rs cases). After a successful write, trigger the existing library rescan (`services.library.rescan` or equivalent); rescan errors are logged only.
++4. File semantics (infrastructure `extra_paths.rs`, writer side):
++   - App section key `vjumpkung_desktop`. File's first line: `# Managed by vjumpkung ComfyUI desktop. Other sections are kept; the vjumpkung_desktop section is rewritten by the app.`
++   - Section: `base_path` = the user's absolute path (trailing separators removed, never a `\\?\` form), `is_default: false`, then keys sorted and de-duplicated case-insensitively = the REQUIREMENTS §4.6 primary names (`checkpoints, diffusion_models, text_encoders, vae, loras, controlnet, clip_vision, embeddings, upscale_models, latent_upscale_models, style_models, hypernetworks, photomaker, gligen, audio_encoders, model_patches, vae_approx, diffusers`) plus `configs`, plus every existing subfolder of the install's `ComfyUI/models` that is a valid `SafeFileName`, does not start with `.`, and is not `clip` or `unet`. Each value `<name>/`; `text_encoders` gets a second line `clip/` only if `<base>/clip` is a directory, `diffusion_models` gets `unet/` the same way (multi-line value joined with `\n`).
++   - Create missing primary folders under the base (`create_dir_all` for the base itself, `create_dir` per category); if a FILE with a category's name exists → refuse; existing folders (and links) are left as they are.
++   - Emit with `serde_yaml_ng` (correct quoting for spaces/Thai); write with `crate::shared::fs::atomic_write`.
++5. Existing file: refuse with "extra_model_paths.yaml could not be updated safely: {reason}. Edit or move it, then retry." when it is a link/reparse point, > 1 MiB, not UTF-8, malformed YAML, the top level is not a mapping (null/empty counts as empty mapping), or any section contains a `<<` merge key. Otherwise keep the other sections as data (comments are lost). If the file exists and its first line is not the app header, first copy it to `<root>/data/backups/extra_model_paths-<YYYYMMDDTHHMMSSZ>.yaml` (create `data/backups`; never write a backup next to the original — ComfyUI's `.gitignore` covers only `extra_model_paths.yaml`, a sibling would dirty the checkout and block app updates). `remove()` deletes only the app section and deletes the file when no section remains; it never deletes folders; a missing file/section is a no-op success.
++6. Validation (fail closed, `ExtraPathsRejected` with these exact messages): not absolute, or a `\\?\` / `\\.\` form → "Choose an absolute folder path on a local drive or network share."; contains `$` or `%` or starts with `~` → "The folder path must not contain $ or % and must not start with ~, because ComfyUI expands them."; control characters → same as the first message; equal to the install root or inside `<root>/ComfyUI`, `<root>/envs`, `<root>/data`, `<root>/tools` (compare after canonicalizing the nearest existing ancestor; case-insensitive on Windows) → "Choose a folder outside the app's ComfyUI, envs, data and tools folders."; any existing prefix component is a link/junction (reuse `reject_reparse` from `crate::shared::model_paths`) → "The folder or one of its parents is a link or junction. Choose the real folder."; `<root>/ComfyUI` missing → "ComfyUI is not installed yet."
++7. UI (`comfy-page.tsx` card, extract a component file in the same feature folder if the card grows; kebab-case file name): input "Model base folder" + Browse (`gateway.pickFolder`), buttons **Generate** and **Remove generated section** (enabled only when the read list contains a root with section `vjumpkung_desktop`). Description replaces "Read-only.": "Choose a model base folder and the app writes a section that adds every model folder inside it, creating missing folders. ComfyUI/models stays the default location, and app downloads still go there." While ComfyUI is running show "Restart ComfyUI to use the new paths." after a successful change. Refetch the extra-paths list and library after success; show errors from the IPC message.
++8. Tests (exact names) — Rust: `generate_writes_a_managed_section_and_creates_missing_folders`, `generate_preserves_other_sections_and_backs_up_a_hand_written_file` (backup in `data/backups`, original content byte-equal in the backup), `regenerate_is_idempotent_and_makes_no_new_backup`, `remove_deletes_only_the_app_section_and_the_file_when_empty`, `legacy_alias_lines_are_added_only_when_the_folder_exists`, `generate_refuses_unsafe_base_paths`, `generate_refuses_a_file_it_cannot_rewrite_safely`, `generated_file_round_trips_through_the_reader` (the existing parser returns exactly the expected roots, incl. a base path with a space and Thai characters), `#[cfg(windows)] generate_refuses_a_junction_in_the_base_prefix` (create via `cmd /C mklink /J`; skip if unavailable like other junction tests), `manage_extra_model_paths_uses_the_current_root` (application), ACL + error-mapping cases. Vitest: `generates_with_the_chosen_folder_and_refreshes_the_list`, `remove_is_offered_only_for_the_app_section`, `shows_restart_hint_while_comfyui_runs`.
++9. Docs (only these): `docs/DOCUMENTATION.md` model library / ComfyUI section — how to generate, what is written, backups in `data/backups`, `is_default: false`, limitation "app downloads still go to ComfyUI/models", ComfyUI must be restarted; `docs/REQUIREMENTS.md` FR-COMFY-8 — append "Implemented: the app manages its own `vjumpkung_desktop` section from a chosen base folder; other sections are kept."
++
++## Success criteria (run at the end; report exact counts)
++```
++cargo fmt --all -- --check
++cargo clippy --workspace --all-targets --locked -j 6 -- -D warnings
++cargo test -p infrastructure --locked -j 6 extra_paths
++cargo test -p application --locked -j 6 extra_model_paths
++cargo test -p desktop --test bindings --locked
++cargo test -p desktop --test acl --locked
++cargo test --workspace --locked -j 6 --no-fail-fast
++pnpm -C ui lint
++pnpm -C ui typecheck
++VITEST_MAX_WORKERS=2 pnpm -C ui test
++pnpm -C ui build
++node scripts/check-arch-deps.mjs
++```
++OUTPUT: per-file summary with file:line, key diffs, every command result with counts, deviations with reasons. Also write it to `docs/handoff/evidence/s6-x-implementation.md`.
+diff --git a/ui/src/app/shell/app-shell.test.tsx b/ui/src/app/shell/app-shell.test.tsx
+index e94aa14..9800a16 100644
+--- a/ui/src/app/shell/app-shell.test.tsx
++++ b/ui/src/app/shell/app-shell.test.tsx
+@@ -107,3 +107,15 @@ it('awaits_the_stop_mutation_for_the_feature', async () => {
+   release()
+   await waitFor(() => expect(screen.getByText('restart result:stopped')).toBeTruthy())
+ })
++
++it('shell_contains_overflow_inside_main', () => {
++  const view = render(<AppShell status={{ ...setupStatus, phase: 'ready' }} onSetup={onSetup} onResume={onResume} />)
++  // A positioned, clipped shell keeps absolutely positioned descendants from extending the document.
++  const root = view.container.firstElementChild as HTMLElement
++  expect(root.classList.contains('overflow-hidden')).toBe(true)
++  expect(root.classList.contains('relative')).toBe(true)
++  const main = screen.getByRole('main')
++  for (const name of ['relative', 'min-h-0', 'overflow-y-auto']) {
++    expect(main.classList.contains(name)).toBe(true)
++  }
++})
+diff --git a/ui/src/app/shell/app-shell.tsx b/ui/src/app/shell/app-shell.tsx
+index 3b5582a..ece9507 100644
+--- a/ui/src/app/shell/app-shell.tsx
++++ b/ui/src/app/shell/app-shell.tsx
+@@ -105,11 +105,11 @@ export function AppShell({ status, onSetup, onResume }: PageActions) {
+   const [active, setActive] = useState<NavId>('overview')
+ 
+   return (
+-    <div className="flex h-screen bg-background text-foreground">
++    <div className="relative flex h-screen overflow-hidden bg-background text-foreground">
+       <Sidebar active={active} onSelect={setActive} />
+-      <div className="flex min-w-0 flex-1 flex-col">
++      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+         <TopBar />
+-        <main className="flex-1 overflow-y-auto p-6">
++        <main className="relative min-h-0 flex-1 overflow-y-auto p-6">
+           <Page
+             active={active}
+             status={status}
+diff --git a/ui/src/features/custom-nodes/installed-table.test.tsx b/ui/src/features/custom-nodes/installed-table.test.tsx
+index b27f444..e9d38ab 100644
+--- a/ui/src/features/custom-nodes/installed-table.test.tsx
++++ b/ui/src/features/custom-nodes/installed-table.test.tsx
+@@ -158,3 +158,14 @@ it('shows source, version, branch, state, dependencies, origin, conflict and Git
+     expect(gitty.textContent).toContain(text)
+   }
+ })
++
++it('installed_table_active_row_keeps_readable_contrast', () => {
++  const [a, b] = [node({ id: 'a', name: 'Alpha' }), node({ id: 'b', name: 'Beta' })]
++  render(<Harness nodes={[a, b]} initial={a.id} />)
++  const active = row('a') as HTMLElement
++  expect(active.dataset.active).toBe('true')
++  // No brand fill behind table text: the active row is muted with an accent bar.
++  expect(active.classList.contains('bg-muted')).toBe(true)
++  expect(active.classList.contains('bg-accent')).toBe(false)
++  expect(row('b')?.classList.contains('bg-accent')).toBe(false)
++})
+diff --git a/ui/src/features/custom-nodes/installed-table.tsx b/ui/src/features/custom-nodes/installed-table.tsx
+index 098c380..b1e5307 100644
+--- a/ui/src/features/custom-nodes/installed-table.tsx
++++ b/ui/src/features/custom-nodes/installed-table.tsx
+@@ -140,7 +140,11 @@ export function InstalledTable({
+         className={cn(
+           COLUMNS,
+           'items-center gap-2 border-b px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan/50',
+-          node.id === activeId ? 'bg-accent' : 'even:bg-muted/45 hover:bg-muted',
++          node.id === activeId
++            ? 'bg-muted shadow-[inset_3px_0_0_var(--accent)]'
++            : isSelected
++              ? 'bg-muted/60 hover:bg-muted'
++              : 'even:bg-muted/45 hover:bg-muted',
+         )}
+       >
+         <div role="gridcell" onClick={(event) => event.stopPropagation()}>
+diff --git a/ui/src/features/library/library-page.test.tsx b/ui/src/features/library/library-page.test.tsx
+index 651b927..947b105 100644
+--- a/ui/src/features/library/library-page.test.tsx
++++ b/ui/src/features/library/library-page.test.tsx
+@@ -410,3 +410,13 @@ it('refetches the list when the backend announces a change', async () => {
+   expect(await screen.findByText('new.pt')).toBeTruthy()
+   expect(screen.queryByText('old.pt')).toBeNull()
+ })
++
++it('model_table_active_row_keeps_readable_contrast', async () => {
++  mount(snapshot([model({ name: 'a.pt' }), model({ name: 'b.pt' })]))
++  fireEvent.click(await screen.findByRole('row', { name: /a\.pt/ }))
++  // No brand fill behind table text: the active row is muted with an accent bar.
++  const active = row('a.pt')
++  expect(active.classList.contains('bg-muted')).toBe(true)
++  expect(active.classList.contains('bg-accent')).toBe(false)
++  expect(row('b.pt').classList.contains('bg-accent')).toBe(false)
++})
+diff --git a/ui/src/features/library/model-table.tsx b/ui/src/features/library/model-table.tsx
+index 523e286..d352236 100644
+--- a/ui/src/features/library/model-table.tsx
++++ b/ui/src/features/library/model-table.tsx
+@@ -154,7 +154,11 @@ export function ModelTable({
+         className={cn(
+           COLUMNS,
+           'items-center gap-2 border-b px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan/50',
+-          key === activeKey ? 'bg-accent' : 'hover:bg-muted/50',
++          key === activeKey
++            ? 'bg-muted shadow-[inset_3px_0_0_var(--accent)]'
++            : isSelected
++              ? 'bg-muted/60'
++              : 'hover:bg-muted/50',
+         )}
+       >
+         <div role="gridcell" onClick={(event) => event.stopPropagation()}>

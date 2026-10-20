@@ -25,7 +25,12 @@ pub trait RuntimeStore: Send + Sync {
 pub trait ComfyRepository: Send + Sync {
     async fn revision(&self, root: &Path) -> Result<Revision, RuntimeError>;
     async fn status(&self, root: &Path) -> Result<RepoState, RuntimeError>;
-    async fn fetch(&self, root: &Path, ctx: &StepContext) -> Result<(), RuntimeError>;
+    async fn fetch(
+        &self,
+        root: &Path,
+        target: &UpdateTarget,
+        ctx: &StepContext,
+    ) -> Result<(), RuntimeError>;
     async fn freeze(
         &self,
         root: &Path,
@@ -56,6 +61,15 @@ pub trait LaunchPreflight: Send + Sync {
 #[async_trait]
 pub trait ExtraModelPaths: Send + Sync {
     async fn read(&self, root: &Path) -> Result<Vec<ModelRoot>, RuntimeError>;
+}
+/// Writes the one section of `extra_model_paths.yaml` that the app owns. Separate from
+/// [`ExtraModelPaths`] so read-only consumers never depend on it.
+#[async_trait]
+pub trait ExtraModelPathsWriter: Send + Sync {
+    /// Points every model folder at `base` and creates the missing primary folders.
+    async fn generate(&self, root: &Path, base: &Path) -> Result<(), RuntimeError>;
+    /// Removes the app's section only; a missing file or section is a successful no-op.
+    async fn remove(&self, root: &Path) -> Result<(), RuntimeError>;
 }
 
 /// Called under the runtime workflow's held lease; implementations must not acquire the gate.

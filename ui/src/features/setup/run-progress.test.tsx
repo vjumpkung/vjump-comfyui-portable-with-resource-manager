@@ -204,3 +204,14 @@ it('waits for backend cleanup after requesting cancellation', async () => {
   expect(screen.queryByText(/Setup was cancelled/)).toBeNull()
   view.unmount()
 })
+
+it('first_run_success_announces_the_restart', () => {
+  const restart = 'Setup finished. Restarting the app to open the new installation…'
+  const view = mount({ ...run, mode: 'first_run', status: 'succeeded', failure: null })
+  expect(screen.getByText('Verification finished. The selected environment is ready.')).toBeTruthy()
+  expect(screen.getByText(restart).getAttribute('role')).toBe('status')
+  view.update({ ...run, mode: 'repair', status: 'succeeded', failure: null })
+  expect(screen.queryByText(restart)).toBeNull()
+  view.update({ ...run, mode: 'first_run', status: 'running', failure: null })
+  expect(screen.queryByText(restart)).toBeNull()
+})

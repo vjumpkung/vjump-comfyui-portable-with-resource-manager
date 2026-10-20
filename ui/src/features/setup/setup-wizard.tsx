@@ -39,6 +39,7 @@ import {
   modeLabels,
   profileReasons,
   readDraft,
+  type ComfySource,
   type CuratedReviewProps,
 } from './model'
 import { RunProgress } from './run-progress'
@@ -52,6 +53,11 @@ const stages = [
   'Options',
   'Review',
 ]
+
+// Display only: the backend resolves and installs the real Manager source.
+const MANAGER_SOURCE = 'https://github.com/Comfy-Org/ComfyUI-Manager'
+const THIRD_PARTY_DISCLOSURE =
+  "Installing ComfyUI-Manager and selected custom nodes runs third-party code on this computer; a Python environment is not a sandbox. Setup installs the latest commit of each repository’s default branch. For selected custom nodes, setup allows shipped Python cache files and top-level native programs or libraries, runs install.py if present, then installs the reviewed requirements.txt. It does not ask again. Clicking Start setup confirms this."
 
 export function SetupWizard({
   status,
@@ -91,9 +97,11 @@ export function SetupWizard({
         : ''),
   )
   const [tag, setTag] = useState(draft.tag ?? '')
-  const [useTag, setUseTag] = useState(draft.useTag ?? false)
+  const [comfySource, setComfySource] = useState<ComfySource>(
+    draft.comfySource ?? 'latest',
+  )
   const [installManager, setInstallManager] = useState(
-    draft.installManager ?? false,
+    draft.installManager ?? mode === 'first_run',
   )
   const [cleanCache, setCleanCache] = useState(draft.cleanCache ?? false)
   const [acceleratorSelection, setAcceleratorSelection] = useState<{
@@ -114,7 +122,7 @@ export function SetupWizard({
           pythonSource: source,
           profileId,
           tag,
-          useTag,
+          comfySource,
           installManager,
           cleanCache,
         }),
@@ -161,11 +169,13 @@ export function SetupWizard({
     queryFn: () => gateway.setupListCuratedNodes(),
     enabled: mode === 'first_run' && !showRun,
   })
-  if (curated.data && curatedSelection === null)
-    setCuratedSelection(
-      curated.data.filter((entry) => entry.unavailable === null).map((entry) => entry.id),
-    )
+  // The curated list is offered unticked: the user ticks the nodes they want.
+  if (curated.data && curatedSelection === null) setCuratedSelection([])
   const offers = profiles.data ?? []
+  // Recommended profiles first; the sort is stable, so the backend order is kept otherwise.
+  const listed = [...offers].sort(
+    (a, b) => Number(b.recommended) - Number(a.recommended),
+  )
   const eligible = offers.filter(
     (profile) =>
       profileReasons(profile, mode, status.activeEnv, report).length === 0,
@@ -194,7 +204,7 @@ export function SetupWizard({
       (report.target !== 'existing_venv' || adoptedConfirmed))
   const optionsOK =
     mode !== 'first_run' ||
-    ((!useTag || tag.trim().length > 0) &&
+    ((comfySource !== 'tag' || tag.trim().length > 0) &&
       curated.isSuccess &&
       curatedSelection !== null)
   const ready =
@@ -214,6 +224,18 @@ export function SetupWizard({
     setAdoptedConfirmed(false)
   }
   const sourceLocked = mode === 'change_torch'
+  // Only a first run carries the review-step consent; other modes keep the per-install prompts.
+  const thirdPartyConsent =
+    mode === 'first_run' &&
+    (installManager || (curatedSelection ?? []).length > 0)
+  const thirdPartySources = thirdPartyConsent
+    ? [
+        ...(installManager ? [MANAGER_SOURCE] : []),
+        ...(curated.data ?? [])
+          .filter((entry) => curatedSelection?.includes(entry.id))
+          .map((entry) => entry.repository),
+      ]
+    : []
 
   if (showRun || (resume && dismissedRun !== status.run?.id))
     return (
@@ -595,7 +617,7 @@ export function SetupWizard({
                     value={chosen?.id ?? ''}
                     onValueChange={setProfileId}
                   >
-                    {offers.map((profile) => {
+                    {listed.map((profile) => {
                       const reasons = profileReasons(
                         profile,
                         mode,
@@ -672,25 +694,33 @@ export function SetupWizard({
                     <ToggleGroup
                       type="single"
                       variant="outline"
-                      value={useTag ? 'tag' : 'latest'}
+                      value={comfySource}
                       onValueChange={(value) => {
-                        if (value) setUseTag(value === 'tag')
+                        if (
+                          value === 'latest' ||
+                          value === 'master' ||
+                          value === 'tag'
+                        )
+                          setComfySource(value)
                       }}
                     >
                       <ToggleGroupItem value="latest">
                         Latest release
+                      </ToggleGroupItem>
+                      <ToggleGroupItem value="master">
+                        Latest commit (master)
                       </ToggleGroupItem>
                       <ToggleGroupItem value="tag">
                         Specific tag
                       </ToggleGroupItem>
                     </ToggleGroup>
                     <FieldDescription>
-                      The backend resolves the release tag and commit once per
-                      run. Tag browsing is not available; enter the exact tag
-                      below.
+                      {comfySource === 'master'
+                        ? "Installs the newest commit on ComfyUI's master branch (development code, may be less stable than a release). The checkout tracks origin/master, so `git pull` and the app's Fast-forward update it."
+                        : 'The backend resolves the release tag and commit once per run. Tag browsing is not available; enter the exact tag below.'}
                     </FieldDescription>
                   </Field>
-                  {useTag && (
+                  {comfySource === 'tag' && (
                     <Field>
                       <FieldLabel htmlFor="comfy-tag">ComfyUI tag</FieldLabel>
                       <Input
@@ -726,13 +756,13 @@ export function SetupWizard({
                           }
                         />
                         <FieldLabel htmlFor="manager">
-                          Install ComfyUI-Manager (off by default)
+                          Install ComfyUI-Manager
                         </FieldLabel>
                       </Field>
                       <FieldDescription>
-                        If selected, setup pauses for consent after resolving the
-                        exact Manager source and commit, before installing its
-                        dependencies.
+                        {mode === 'first_run'
+                          ? 'Installed from the latest commit of its default branch; covered by the confirmation on the review step.'
+                          : 'If selected, setup pauses for consent after resolving the exact Manager source and commit, before installing its dependencies.'}
                       </FieldDescription>
                       <FieldSet>
                         <FieldLegend>Accelerators</FieldLegend>
@@ -788,9 +818,12 @@ export function SetupWizard({
                 <FieldSet>
                   <FieldLegend>Curated custom nodes</FieldLegend>
                   <FieldDescription>
-                    Selection is not execution consent. Earlier setup steps run
-                    first; every actual curated plan is reviewed before any
-                    curated node is committed. Setup never runs install.py.
+                    Each entry installs the latest commit of its repository’s
+                    default branch and is covered by the confirmation on the
+                    review step. For selected custom nodes, setup allows shipped
+                    Python cache files and top-level native programs or libraries,
+                    runs install.py if present, then installs the reviewed
+                    requirements.txt without asking again.
                   </FieldDescription>
                   {curated.isPending && <p role="status">Loading curated catalog…</p>}
                   {curated.isError && (
@@ -816,8 +849,7 @@ export function SetupWizard({
                           </FieldLabel>
                         </Field>
                         <FieldDescription className="break-all font-mono">
-                          {entry.repository} · branch {entry.branch} (informational)
-                          {' '}· pinned commit {entry.commit.slice(0, 12)}
+                          {entry.repository} · latest commit of the default branch
                         </FieldDescription>
                         {entry.unavailable !== null && (
                           <FieldDescription>Unavailable: {entry.unavailable}</FieldDescription>
@@ -859,9 +891,11 @@ export function SetupWizard({
                   <dt>ComfyUI</dt>
                   <dd>
                     {mode === 'first_run'
-                      ? useTag
+                      ? comfySource === 'tag'
                         ? tag
-                        : 'Latest published release'
+                        : comfySource === 'master'
+                          ? 'Latest commit on master'
+                          : 'Latest published release'
                       : 'Keep current checkout'}
                   </dd>
                 </div>
@@ -869,7 +903,9 @@ export function SetupWizard({
                   <dt>Manager / cache clean</dt>
                   <dd>
                     {mode === 'repair' ? 'Recorded component choices retained' : installManager
-                      ? 'Manager selected; consent still required'
+                      ? mode === 'first_run'
+                        ? 'Manager selected'
+                        : 'Manager selected; consent still required'
                       : 'Manager off'}{' '}
                     / {cleanCache ? 'Clean cache' : 'Keep cache'}
                   </dd>
@@ -891,7 +927,23 @@ export function SetupWizard({
                 before work. Package operations are serialized and require
                 ComfyUI to be stopped.
               </p>
-              {mode === 'first_run' && <p>Curated selection is not execution consent. Earlier setup steps run first; every actual curated plan must be reviewed before any curated node is committed.</p>}
+              {thirdPartyConsent && (
+                <Alert>
+                  <Info />
+                  <AlertTitle>Third-party code</AlertTitle>
+                  <AlertDescription>
+                    <p>{THIRD_PARTY_DISCLOSURE}</p>
+                    <ul
+                      aria-label="Third-party sources"
+                      className="break-all font-mono text-xs"
+                    >
+                      {thirdPartySources.map((source) => (
+                        <li key={source}>{source}</li>
+                      ))}
+                    </ul>
+                  </AlertDescription>
+                </Alert>
+              )}
               {!ready && (
                 <Alert variant="destructive">
                   <AlertTitle>Setup is not ready</AlertTitle>
@@ -966,15 +1018,18 @@ export function SetupWizard({
                       comfyuiRef:
                         mode !== 'first_run'
                           ? { kind: 'keepCurrent' }
-                          : useTag
+                          : comfySource === 'tag'
                             ? { kind: 'tag', value: tag.trim() }
-                            : { kind: 'latest' },
+                            : comfySource === 'master'
+                              ? { kind: 'branch', value: 'master' }
+                              : { kind: 'latest' },
                       installManager,
                       accelerators: mode === 'repair' ? [] : accelerators,
                       curatedNodes: mode === 'first_run' ? curatedSelection ?? [] : [],
                       cleanCache,
                       confirmAdoptedChanges: adoptedConfirmed,
                       allowSourceBuilds: false,
+                      thirdPartyConsent,
                     },
                   },
                   { onSuccess: () => setShowRun(true) },

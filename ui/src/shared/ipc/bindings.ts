@@ -48,6 +48,13 @@ export const commands = {
 	comfyOpenBrowser: () => typedError<null, IpcError>(__TAURI_INVOKE("comfy_open_browser")),
 	comfyDiagnostics: () => typedError<DiagnosticsDto, IpcError>(__TAURI_INVOKE("comfy_diagnostics")),
 	comfyReadExtraModelPaths: () => typedError<ModelRootDto[], IpcError>(__TAURI_INVOKE("comfy_read_extra_model_paths")),
+	/**
+	 *  Writes the app's `extra_model_paths.yaml` section for the chosen base folder, then rescans
+	 *  the library so it sees the new roots. A failed rescan never fails the write.
+	 */
+	comfyGenerateExtraModelPaths: (basePath: string) => typedError<null, IpcError>(__TAURI_INVOKE("comfy_generate_extra_model_paths", { basePath })),
+	/**  Removes the app's section only, then rescans the library. */
+	comfyRemoveExtraModelPaths: () => typedError<null, IpcError>(__TAURI_INVOKE("comfy_remove_extra_model_paths")),
 	/**  Answers a pending manager close request. */
 	appCloseDecide: (requestId: string, choice: CloseChoiceDto) => typedError<null, IpcError>(__TAURI_INVOKE("app_close_decide", { requestId, choice })),
 	dlResolve: (input: ResolveInput) => typedError<ResolutionDto, IpcError>(__TAURI_INVOKE("dl_resolve", { input })),
@@ -281,13 +288,11 @@ export type CredentialTestDto = {
 
 export type CredentialTestResultDto = "valid" | "invalid" | "absent" | "backend_unavailable" | "backend_locked" | "network_failure";
 
-/**  An entry of the curated node catalog: an exact commit of a repository. */
+/**  An entry of the curated node catalog: the latest commit of a repository's default branch. */
 export type CuratedNodeDto = {
 	id: string,
 	name: string,
 	repository: string,
-	branch: string,
-	commit: string,
 	provenance: string,
 	unavailable: string | null,
 };
@@ -1056,11 +1061,19 @@ export type SetupRequestDto = {
 	comfyuiRef: ComfyRefDto,
 	installManager: boolean,
 	accelerators: string[],
-	/**  Catalog ids of the curated nodes. Choosing them is not consent: each is reviewed first. */
+	/**
+	 *  Catalog ids of the curated nodes. Choosing them alone is not consent: each is reviewed
+	 *  first unless `thirdPartyConsent` is set.
+	 */
 	curatedNodes: string[],
 	cleanCache: boolean,
 	confirmAdoptedChanges: boolean,
 	allowSourceBuilds: boolean,
+	/**
+	 *  The user confirmed on the wizard's review stage that a first-run setup may install
+	 *  ComfyUI-Manager and the selected curated nodes without further prompts.
+	 */
+	thirdPartyConsent: boolean,
 };
 
 export type SetupStartedDto = {
@@ -1188,7 +1201,7 @@ export type UpdateStatusDto = {
 	currentVersion: string,
 };
 
-export type UpdateTargetDto = { kind: "latest_release" } | { kind: "tag"; name: string } | { kind: "branch_ff_only" };
+export type UpdateTargetDto = { kind: "latest_release" } | { kind: "latest_commit" } | { kind: "tag"; name: string } | { kind: "branch_ff_only" };
 
 export type ValidationTargetDto = "empty_folder" | "existing_venv" | "interpreter" | "rejected";
 

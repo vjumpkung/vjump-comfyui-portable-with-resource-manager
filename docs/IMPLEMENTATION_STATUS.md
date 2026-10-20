@@ -3,41 +3,89 @@
 This is the working completion ledger. `REQUIREMENTS.md` remains the release scope;
 passing a subset of checks does not establish release completion.
 
+Last updated: **2026-10-20, ~16:50 (+07:00)**, end of session 6. Branch `feat/m0-skeleton`, HEAD
+`e384d43` (owner commit = all session-5 work) + uncommitted, verified session-6 work. Final cumulative
+checkpoint: `docs/handoff/patches/s6-14-final-code-verified.patch` (code identical to `s6-13`).
+Native evidence: `docs/handoff/evidence/s6-native-register.md` (N1–N29, Windows 11, NVIDIA GeForce
+RTX 3060 12 GiB, driver 610.88 / CUDA 13.3). Packaging and final snapshot:
+`docs/handoff/evidence/s6-packaging.md`. Acceptance ledger: [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md).
+Release verdict: **NO-GO** (see "Release gates" below).
+
 ## Milestones
 
 | Milestone | Current evidence | Remaining work |
 | --- | --- | --- |
-| M0 — skeleton | Workspace, UI shell, settings, keyring, redacted logging, generated IPC, compiled ACL tests and architecture checks are implemented. | Repeat platform acceptance with the complete application. |
-| M1 — setup | Hardware/profile detection, managed/custom Python, pinned tools, hash-locked hf, provisioning journal, activation recovery, package plans and pin guard exist. Windows default setup passed on 2026-10-16 through the direct `real_setup` test. **Fixed 2026-10-19:** a clean first-run setup started from the app always failed at `clone_comfyui` ("The ComfyUI folder exists but is not a git checkout"), because startup creates `ComfyUI/models` and `ComfyUI/custom_nodes/.disabled/.vjump-no-hooks` before setup. A directory-only scaffold is now treated as absent and the clone is merged into it in place, with a recovery record so an interrupted publication can be retried. | Repeat scenario 1 from the running app (the 2026-10-16 evidence bypassed app startup); custom/re-setup acceptance; Linux acceptance. |
-| M2 — runtime | Implemented: start/stop/restart under the maintenance lease with node reconciliation (WP6), logs, embedded window, update. Close policy (H3): closing while maintenance runs is refused with a message; Stop-and-exit tolerates only a node-rescan failure after a verified stop; an exit lease is held until the process exits. | Native acceptance (headless detection, whole-tree termination, embedded-window capability denial). |
-| M3 — downloads | Implemented: queue, providers, pause/resume, `resource_list`, shared bandwidth cap incl. the HF relay (package B). | Real provider acceptance (CivitAI, HF gated/LFS/Xet, Drive), throughput and redaction checks. |
-| M4 — library | Implemented: scan, rename, move, delete to the Recycle Bin/trash, identify. **Fixed 2026-10-19:** moving a model to the Windows Recycle Bin always failed because verbatim `\\?\` paths were passed to the shell API. Recycling now requires a positive per-item completion and never falls back to permanent deletion. | Native locked-file acceptance; non-recyclable volume, disabled Recycle Bin and oversized-item cases. |
-| M5 — custom nodes | **Implemented and verified on Windows:** UI + contract (C0/FE), launch lifecycle (WP6), pinned containment (WP1), Git content identity / staged updates / refusal status and protected-package refusal / registry warnings (WP2+WP3), hardening H1 (bounded pinned traversal), H2 (lease/pin retention, BOOT/stdin integrity, Git configuration safety, editable-requirement refusal) and H3 (rejecting Recycle Bin sink, close policy), WP4 (final content digest, identity-based recovery, launch blocking only for ambiguous recovery) and WP5 (exact node requirements restored during Repair/replacement; any node requirement failure prevents activation; dependency state per environment and content). An oversized or non-UTF-8 `requirements.txt` is now refused instead of silently skipped. | Native Linux runs of the Linux-only code paths; acceptance scenarios 10, 11, 14, 16, 17 on real installs. |
-| M6 — release | **Backend implemented and verified on Windows:** bandwidth cap (B), signed updater + redacted diagnostics (P), hashed accelerator wheels with pin safety and stored outcomes (E1), curated setup nodes installed through the M5 review before activation (E2, 22-entry catalog, damage can never be skipped), missing-root recovery and guided rebuild (E3: missing root reported before any directory is created; a moved root detected before startup reconciliation and restricted to setup/recovery; open-existing / new-install with a controlled restart; rebuild into a new app-owned environment from the exact recorded profile revision; migration 008 relocation rebasing that never touches the original root). E2 and E3 passed a review with corrections, all applied. | UI integration (I: accelerator and curated selection in the wizard, batch curated review, missing-root/rebuild screens, accelerator results on the Environment page — prompt drafted, not run); release audit and packaging (R). No native NVIDIA evidence for accelerators, curated node dependencies or a moved-install rebuild (scenario 4). |
-| README | Session-2 draft with verification markers. | Final pass after R from verified behaviour and the acceptance ledger. |
+| M0 — skeleton | Workspace, UI shell, settings, keyring, redacted logging, generated IPC, compiled ACL tests and architecture checks. **Session 6:** the shell keeps all scrolling inside the main area (no second document scrollbar, sidebar full height — N3); the active row in the Models and Custom Nodes tables is a muted row with an accent bar instead of a pink fill with unreadable text (N4); a debug build no longer overflows the 1 MiB Windows main-thread stack when custom nodes are installed (8 MiB main-thread reserve and 8 MiB tokio worker stacks, PE and worker tests — N1, N6, N7). | Linux acceptance. |
+| M1 — setup | Hardware/profile detection, managed/custom Python, pinned tools, hash-locked hf, provisioning journal, activation recovery, pin guard. **Session 6, verified natively on a fresh root (N8–N13):** nothing is created inside `ComfyUI/` before setup clones it, and the app restarts once after first-time setup; the recommended Windows profile is now **Python 3.12.15 + PyTorch 2.10.0 cu130 with torchaudio 2.10.0** (listed first, preselected); the first-run wizard ticks ComfyUI-Manager by default and offers the curated nodes unticked; the review step discloses the third-party sources and **Start setup** is the confirmation, so setup never pauses for consent; curated nodes install the **latest commit of each repository's default branch** (no commit lock) and track that branch; ComfyUI source choice offers Latest release (default), **Latest commit (master)** and a specific tag. Python 3.12 children now receive `USERNAME` (Python 3.12's `getpass` fallback to `pwd` crashed `torch._dynamo`/ComfyUI before — N5). A full first run with ComfyUI-Manager + 21 curated nodes finished in ~8.5 min with no pause; all nodes imported on cuda:0 (N11, N13). | Linux; custom-venv/adopted and change-torch scenarios natively; a first run with exactly the final defaults (Manager only). The final-code binary ran a first run with Manager + PlagueKind (N28), and the final defaults were checked in the wizard (N25, N26). |
+| M1 — moved install (FR-SETUP-12) | **Verified natively on a `robocopy /E` copy (N19, N20):** the copy is detected as moved, Rebuild removes uv's copied minor-version folders for every managed Python (D3/D3b) and succeeds; managed Python is no longer registered under `HKCU\Software\Python\Astral` (`--no-registry`, D5); ComfyUI then runs with all nodes on cuda:0. | Linux symlink branch; "original root absent" variant. |
+| M2 — runtime | Start/stop/restart under the maintenance lease, logs, embedded window, close policy, update. **Session 6:** ComfyUI stays on a git branch that tracks `origin`, so `git pull` works — `master` for `.0` releases and latest commits, `release/vX.Y` for patch releases (G2b, N12/N18); an older detached install is attached by switching to its current version (G2c, N18); the Version card offers **Update to latest commit (git pull)**, Update to latest release, Switch to a tag and Fast-forward the current branch, all with the requirements reinstall and pin guard (U, N21, N22). **extra_model_paths.yaml generator:** choose a model base folder and the app writes its own `vjumpkung_desktop` section with every model folder, creates missing folders, keeps other sections (backup in `data/backups/`), and can remove its section (X, N15–N17; ComfyUI loads the paths and the library lists the files). | Linux; headless detection and whole-tree termination natively. |
+| M3 — downloads | Queue, providers, pause/resume, `resource_list`, bandwidth cap incl. the HF relay. **Session 6:** every `hf` CLI download failed on Windows before (no profile directory in the child environment); the `hf` child now gets a private home (`data/cache/hf/home`) and runtime failures are logged redacted (D4). Native: live engine test and an in-app Hugging Face Xet download, 334,641,190 B, SHA-256 verified (N23, N24). | Provider-token scenarios (CivitAI, gated HF, Google Drive quota), pause/resume and crash recovery natively, redaction grep. |
+| M4 — library | Scan, rename, move, delete to the Recycle Bin/trash, identify; extra roots from `extra_model_paths.yaml` (N16). Session 5: rename while ComfyUI runs with a Thai name, controlled-lock refusal and Recycle Bin (S5-NATIVE-WIN-N6-001, N9-001). | Lock held by a loaded model; non-recyclable volume cases; Linux. |
+| M5 — custom nodes | UI + backend complete and verified on Windows (WP1–WP6, H1–H3). **Session 6, D1 + N (+D1b) done:** on Windows, new node content whose top-level folder has a native image (`.dll`, `.exe`, `.com`, `.cpl`, `.drv`, `.ocx`, `.scr`, `.sys`) is refused before consent — Git sources from a raw, NUL-delimited pre-checkout `ls-tree` of the exact commit, Registry archives after extraction (residual #6 closed before consent); children without an explicit working directory start in the executable's folder; uv 0.13.1's interpreter query imports nothing from the node folder (N27). An approved `install.py` now runs **before** the reviewed `requirements.txt` everywhere (Custom Nodes page: order only, its refusals stay), with pin restoration, profile-constraint restore and a frozen post-hook preview. Native: a Git install with `install.py` through the page, hook before requirements, pins unchanged (N29). | Scenarios 10, 11, 14, 16a, 17 natively; residual #28; Linux. |
+| M6 — release | Backend + UI integration complete (B, P, E1–E3, I, D2). **Session 6, N:** consented first-run setup installs every selected curated node, including content-policy findings (shipped `__pycache__`, Windows top-level native images) as acknowledged warnings; ComfyUI-PlagueKind-Nodes is selectable again and was installed and imported natively (N28). Accelerators remain experimental and unchecked for the py312 profile. **Packaging done:** `pnpm -C ui tauri build` produced unsigned NSIS (9,336,453 B) and MSI (13,340,672 B) bundles; release exe reserves an 8 MiB stack; updater inert (`s6-packaging.md`). Installers not executed. | Installer run on a disposable VM; Linux bundles; Authenticode and updater key custody (owner); native accelerator run. |
+| Docs | **Done (session 6):** README rewritten, docs/DOCUMENTATION.md updated with every `VERIFY` marker resolved (0 left), new [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md) ledger, REQUIREMENTS §9 refreshed. Report: `docs/handoff/evidence/s6-docs-report.md`. | Keep the ledger in step with new evidence. |
 
-## Verification recorded on 2026-10-19, evening (Windows, MSVC, no NVIDIA GPU)
+## Verification recorded on 2026-10-20 (session 6, Windows, MSVC, RTX 3060)
 
-- Working copy = HEAD `a879fc0` + uncommitted session-4 work through E3 and its review
-  corrections (checkpoint `docs/handoff/patches/s4-11-through-e3-final-verified.patch`).
-  Each package was re-verified by the orchestrator after its coder finished.
-- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
-  `node scripts/check-arch-deps.mjs` (and its 10 self-tests): pass.
-- `cargo test --workspace --locked --no-fail-fast`: **709 passed, 0 failed, 9 ignored**
-  (opt-in real-system tests and the binding export helper). Git tests executed with git 2.55;
-  native Recycle Bin tests ran on a fixed NTFS volume.
-- UI: lint and typecheck pass; 28 files / 160 tests pass; bindings drift and 11 ACL tests pass.
-- Migrations: 001–008 (007 environment components, 008 install relocation).
-- Progress of the test count during the session: 561 (start) → 567 (first-run fix) →
-  582 (H3) → 593 (WP4) → 615 (WP5) → 633 (E1 merge) → 652 (E2) → 657 (E2 corrections) →
-  697 (E3) → 709 (E3 corrections).
-- Two runtime tests were intermittently failing under parallel load (machine-wide process scan
-  and a test port race); the tests were isolated without changing production behaviour, and the
-  infrastructure suite was then clean in repeated and loaded runs.
-- Not established by these runs: Linux compilation of the Linux-only code paths, NVIDIA/CUDA
-  behaviour (accelerator wheels, curated node dependencies), a first-run setup driven from the
-  running app, real WebView2 rendering, native recycle edge cases, packaging and installers.
-  Accumulated residuals: `docs/handoff/evidence/s3-residuals.md`.
+- Each package was implemented by a coder (Claude Sonnet xhigh while Codex was rate-limited,
+  then Codex gpt-6.1-sol xhigh) from an advisor-reviewed prompt (`docs/handoff/prompts/session6/`),
+  then re-verified by the orchestrator: `cargo fmt --check`, `cargo clippy --workspace
+  --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, UI lint, typecheck,
+  Vitest, bindings drift, ACL, architecture check; native checks per the register.
+- Test counts (Rust passed / failed / ignored; Vitest tests): start 718/0/10, 184 → Q 719, 187 →
+  S0 722 → F 731, 188 → G 742, 189 (+ native startup smoke test) → X 753, 193 → G2b 758, 194 →
+  G2c 761 → D3+D5 768 → D3b 770 → U 781, 195 → W 197 → W2 200 → D4 783 / 0 / 11, 200 → D1
+  (partial) 792 / 0 / 12 → N (+D1b) **802 / 0 / 12, Vitest 30 files / 202 tests**.
+- **Final automated snapshot (main, 16:29–16:45, checkpoint `s6-14`):** `pnpm -C ui install
+  --frozen-lockfile` ok; lint and typecheck ok; Vitest 30 files, 202 tests passed; `pnpm -C ui build`
+  ok; `cargo fmt --check` ok; Clippy ok; `cargo test --workspace --locked --no-fail-fast` **802
+  passed, 0 failed, 12 ignored**; architecture self-tests 10/10 and check OK; bindings 1 passed,
+  1 ignored (exporter); ACL 11 passed; `cargo build -p desktop --locked --features
+  tauri/custom-protocol` ok; native `startup_smoke` 1 passed. `pnpm -C ui tauri build` exit 0
+  (unsigned NSIS + MSI, hashes in `s6-packaging.md`). Ignored tests: 12 definitions; executed
+  explicitly in session 6: the start-up smoke test and the live Hugging Face download (N23); four
+  are helper subprocesses run by their parent tests; the exporter regenerates bindings; the other
+  five were not run (see RELEASE_ACCEPTANCE.md).
+- Checkpoints: `s6-01-q-verified` … `s6-14-final-code-verified` in `docs/handoff/patches/`.
+- Advisor rulings: `docs/handoff/evidence/s6-advisor-rulings.md`, `s6-advisor-u.md`,
+  `s6-advisor-n.md`.
+- Linux x64: compiles, clippy-clean, 778 automated tests pass in a Debian container (`docs/handoff/evidence/s6-linux.md`).
+- Not established: Linux desktop/GPU runs, installer execution,
+  provider-token scenarios, Authenticode signing, accelerator wheels on the py312 profile,
+  coverage (`cargo llvm-cov` not run on this tree), performance and accessibility measurements.
+
+## Release gates (open)
+
+Full list with closure evidence and owners: [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md#release-gates).
+
+| Gate | Needed to close |
+| --- | --- |
+| Linux | A Linux x64 NVIDIA machine: compile and run the Linux-only paths, S1 on Linux, AppImage/.deb. |
+| Installers | Run the hashed NSIS/MSI bundles on a disposable Windows machine/VM: install, launch, uninstall, data preservation. |
+| Providers | CivitAI and gated Hugging Face tokens, Google Drive confirmation and quota cases (S5, S6 gated, S7, S12). |
+| Signing | Authenticode certificate and updater key custody (owner). |
+| Windows native scenarios | S2, S3, S4 original-absent, S6 pause/fallback, S8 loaded-model lock, S10, S11, S13, S14, S16a, S17; one first run with the final defaults. |
+| Coverage, performance, UX | `cargo llvm-cov`; NFR-PERF timings; offline/theme/keyboard/200 % zoom audit. |
+| Residuals | #19 accelerators, #21 moved root without a valid manifest, #28 Git staging leftovers. |
+
+Closed in session 6: security closure D1 (residual #6 before consent, N + D1b, N27), packaging
+build (unsigned bundles built, `s6-packaging.md`), acceptance ledger (`RELEASE_ACCEPTANCE.md`).
+
+## Verification recorded on 2026-10-20, morning (session 5)
+
+- Startup panic (`state() called before manage()`) fixed (P0); UI integration (I); curated
+  PlagueKind entry marked unavailable (D2). 718 Rust tests passed, 10 ignored; Vitest 29 files /
+  184 tests; native smoke test passes. Native session-5 evidence:
+  `docs/handoff/evidence/s5-native-register.md`.
+
+## Verification recorded on 2026-10-19, evening
+
+- Working copy = HEAD `a879fc0` + session-4 work through E3 and its review corrections
+  (checkpoint `docs/handoff/patches/s4-11-through-e3-final-verified.patch`).
+- `cargo test --workspace --locked --no-fail-fast`: 709 passed, 0 failed, 9 ignored; UI 28 files /
+  160 tests; bindings drift and 11 ACL tests pass. Migrations 001–008.
+- Test-count progress during that session: 561 → 567 → 582 → 593 → 615 → 633 → 652 → 657 → 697 → 709.
+- Accumulated residuals: `docs/handoff/evidence/s3-residuals.md`.
 
 ## Verification recorded on 2026-10-19, afternoon
 
@@ -66,8 +114,9 @@ No ordinary test accesses real credentials or deletes user installations.
 
 - PyTorch 2.14.1 profiles omit torchaudio because a matching artifact was unavailable
   when prepared; the bundled profiles record the registry evidence. They protect
-  every installed core distribution. The Python 3.12 compatibility profile includes
-  torchaudio 2.10.0. Do not silently substitute an incompatible torchaudio build.
+  every installed core distribution. The recommended Python 3.12 profile includes
+  torchaudio 2.10.0 (needed by e.g. ComfyUI-MelBandRoFormer and ComfyUI-WanVideoWrapper,
+  which import on it — N13). Do not silently substitute an incompatible torchaudio build.
 - Desktop ACL and binding tests are integration targets so their Windows executable
   manifests can be linked correctly.
 - Linux GPU, Secret Service, trash and WebKitGTK acceptance have not been established

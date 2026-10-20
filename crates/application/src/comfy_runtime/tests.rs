@@ -10,7 +10,7 @@ use domain::{
     environment::{EnvState, PythonEnvironment, PythonVersion},
 };
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -28,6 +28,8 @@ struct Machine {
     update: Mutex<Option<UpdateRun>>,
     revision: Mutex<Revision>,
     repo: Mutex<RepoState>,
+    applied: Mutex<Vec<FrozenUpdate>>,
+    latest_detached: AtomicBool,
     inventory_checked: AtomicBool,
     mutation_saw_repair: AtomicBool,
     node_journal_failure: AtomicBool,
@@ -68,6 +70,8 @@ impl Machine {
                 branch: None,
             }),
             repo: Mutex::default(),
+            applied: Mutex::default(),
+            latest_detached: AtomicBool::new(false),
             inventory_checked: AtomicBool::new(false),
             mutation_saw_repair: AtomicBool::new(false),
             node_journal_failure: AtomicBool::new(false),
@@ -420,21 +424,32 @@ impl ComfyRepository for Machine {
     async fn status(&self, _: &Path) -> Result<RepoState, RuntimeError> {
         Ok(self.repo.lock().unwrap().clone())
     }
-    async fn fetch(&self, _: &Path, _: &StepContext) -> Result<(), RuntimeError> {
+    async fn fetch(&self, _: &Path, _: &UpdateTarget, _: &StepContext) -> Result<(), RuntimeError> {
         self.env.call("runtime_fetch");
         Ok(())
     }
-    async fn freeze(&self, _: &Path, _: &UpdateTarget) -> Result<FrozenUpdate, RuntimeError> {
+    async fn freeze(&self, _: &Path, target: &UpdateTarget) -> Result<FrozenUpdate, RuntimeError> {
         self.env.call("runtime_freeze");
         Ok(FrozenUpdate {
             commit: "b".repeat(40),
-            tag: Some("v2".into()),
+            tag: (target != &UpdateTarget::LatestCommit).then(|| "v2".into()),
+            branch: (target == &UpdateTarget::LatestCommit).then(|| "main".into()),
             fast_forward: false,
         })
     }
     async fn apply(&self, _: &Path, f: &FrozenUpdate, _: &StepContext) -> Result<(), RuntimeError> {
         self.env.call("runtime_apply");
-        self.revision.lock().unwrap().commit = f.commit.clone();
+        self.applied.lock().unwrap().push(f.clone());
+        let mut revision = self.revision.lock().unwrap();
+        revision.commit = f.commit.clone();
+        if f.branch.is_some() {
+            revision.tag = None;
+            revision.branch = if self.latest_detached.load(Ordering::SeqCst) {
+                None
+            } else {
+                f.branch.clone()
+            };
+        }
         Ok(())
     }
     async fn versions(&self, _: &Path) -> Result<VersionList, RuntimeError> {
@@ -481,6 +496,54 @@ impl ExtraModelPaths for Machine {
     async fn read(&self, _: &Path) -> Result<Vec<ModelRoot>, RuntimeError> {
         Ok(Vec::new())
     }
+}
+
+type WriterCall = (&'static str, PathBuf, Option<PathBuf>);
+#[derive(Default)]
+struct RecordingWriter {
+    calls: Mutex<Vec<WriterCall>>,
+}
+#[async_trait]
+impl ExtraModelPathsWriter for RecordingWriter {
+    async fn generate(&self, root: &Path, base: &Path) -> Result<(), RuntimeError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("generate", root.to_owned(), Some(base.to_owned())));
+        if base.ends_with("rejected") {
+            return Err(RuntimeError::ExtraPathsRejected("not here".into()));
+        }
+        Ok(())
+    }
+    async fn remove(&self, root: &Path) -> Result<(), RuntimeError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("remove", root.to_owned(), None));
+        Ok(())
+    }
+}
+
+#[test]
+fn manage_extra_model_paths_uses_the_current_root() {
+    let m = Machine::new();
+    let writer = Arc::new(RecordingWriter::default());
+    let manage = ManageExtraModelPaths::new(m.env.clone(), writer.clone());
+    block_on(manage.generate(Path::new("/models"))).unwrap();
+    assert_eq!(
+        block_on(manage.generate(Path::new("/rejected"))),
+        Err(RuntimeError::ExtraPathsRejected("not here".into()))
+    );
+    block_on(manage.remove()).unwrap();
+    let root = PathBuf::from(env_fakes::ROOT);
+    assert_eq!(
+        *writer.calls.lock().unwrap(),
+        vec![
+            ("generate", root.clone(), Some(PathBuf::from("/models"))),
+            ("generate", root.clone(), Some(PathBuf::from("/rejected"))),
+            ("remove", root, None),
+        ]
+    );
 }
 
 #[test]
@@ -576,6 +639,33 @@ fn update_failure_keeps_actual_source_and_blocks_start_then_retries_frozen_targe
     );
 }
 #[test]
+fn switching_to_the_current_tag_re_places_a_detached_checkout() {
+    let m = Machine::new();
+    *m.revision.lock().unwrap() = Revision {
+        commit: "b".repeat(40),
+        tag: Some("v2".into()),
+        branch: None,
+    };
+    let run = block_on(UpdateComfy::new(m.deps()).execute(Machine::request(), CancelToken::new()))
+        .unwrap();
+    assert_eq!(run.phase, UpdatePhase::Complete);
+    assert_eq!(m.env.count("runtime_apply"), 1);
+    assert_eq!(m.revision.lock().unwrap().commit, "b".repeat(40));
+}
+#[test]
+fn switching_to_the_current_tag_on_a_branch_does_not_apply() {
+    let m = Machine::new();
+    *m.revision.lock().unwrap() = Revision {
+        commit: "b".repeat(40),
+        tag: Some("v2".into()),
+        branch: Some("release/v0.2".into()),
+    };
+    let run = block_on(UpdateComfy::new(m.deps()).execute(Machine::request(), CancelToken::new()))
+        .unwrap();
+    assert_eq!(run.phase, UpdatePhase::Complete);
+    assert_eq!(m.env.count("runtime_apply"), 0);
+}
+#[test]
 fn an_update_needs_explicit_stop_authorization() {
     let m = Machine::new();
     m.status.lock().unwrap().lifecycle = Lifecycle::Running;
@@ -584,4 +674,237 @@ fn an_update_needs_explicit_stop_authorization() {
         Err(RuntimeError::NeedsStop)
     );
     assert_eq!(m.env.count("runtime_fetch"), 0);
+}
+
+#[test]
+fn frozen_update_policy_rejects_invalid_target_shapes() {
+    let frozen = |fast_forward, tag: Option<&str>, branch: Option<&str>| FrozenUpdate {
+        commit: "b".repeat(40),
+        fast_forward,
+        tag: tag.map(str::to_owned),
+        branch: branch.map(str::to_owned),
+    };
+    assert_eq!(
+        frozen(true, None, None).policy_target(),
+        Ok(UpdateTarget::BranchFfOnly)
+    );
+    assert_eq!(
+        frozen(false, Some("v1.0.0"), None).policy_target(),
+        Ok(UpdateTarget::Tag(Tag::new("v1.0.0").unwrap()))
+    );
+    assert_eq!(
+        frozen(false, None, Some("release/v1.0")).policy_target(),
+        Ok(UpdateTarget::LatestCommit)
+    );
+    for (ff, tag, branch) in [
+        (false, None, None),
+        (false, Some("v1"), Some("main")),
+        (true, Some("v1"), None),
+        (true, None, Some("main")),
+        (true, Some("v1"), Some("main")),
+    ] {
+        assert_eq!(
+            frozen(ff, tag, branch).policy_target(),
+            Err(RuntimeError::InvalidRecord)
+        );
+    }
+    for reference in [
+        "",
+        "-main",
+        "/main",
+        "main/",
+        ".main",
+        "main.",
+        "a..b",
+        "a//b",
+        "a@{b}",
+        "a/.b",
+        "a.lock/b",
+        "a b",
+        "main^{commit}",
+        &"x".repeat(201),
+    ] {
+        assert_eq!(
+            frozen(false, None, Some(reference)).policy_target(),
+            Err(RuntimeError::InvalidRecord)
+        );
+        assert_eq!(
+            frozen(false, Some(reference), None).policy_target(),
+            Err(RuntimeError::InvalidRecord)
+        );
+    }
+}
+
+fn latest_commit_request() -> UpdateRequest {
+    UpdateRequest {
+        target: UpdateTarget::LatestCommit,
+        stop_running: false,
+        retry: None,
+    }
+}
+
+#[test]
+fn latest_commit_update_records_the_actual_reference() {
+    for detached in [false, true] {
+        let m = Machine::new();
+        let pins = m.env.env("selected").pins;
+        m.latest_detached.store(detached, Ordering::SeqCst);
+        let run = block_on(
+            UpdateComfy::new(m.deps()).execute(latest_commit_request(), CancelToken::new()),
+        )
+        .unwrap();
+        assert_eq!(run.phase, UpdatePhase::Complete);
+        assert_eq!(run.target.commit, "b".repeat(40));
+        assert_eq!(run.target.branch.as_deref(), Some("main"));
+        assert_eq!(run.target.tag, None);
+        let ManifestState::Valid(manifest) = m.env.manifest.lock().unwrap().clone() else {
+            panic!("valid manifest")
+        };
+        assert_eq!(manifest.comfyui_commit, Some(run.target.commit));
+        assert_eq!(
+            manifest.comfyui_reference,
+            (!detached).then(|| "main".to_owned())
+        );
+        assert_eq!(m.env.env("selected").pins, pins);
+        assert_eq!(*m.env.constraint_writes.lock().unwrap(), [pins]);
+        let installs = m.env.installs.lock().unwrap();
+        assert_eq!(installs.len(), 1);
+        assert!(installs[0].constraint_file.is_some());
+        assert!(!installs[0].allow_source_builds);
+        assert_eq!(
+            installs[0].requirement_files,
+            [PathBuf::from(env_fakes::ROOT).join("ComfyUI/requirements.txt")]
+        );
+        assert_eq!(m.env.count("verify_final"), 1);
+    }
+    // A protected change is rejected during preview, before any package mutation.
+    let m = Machine::new();
+    m.env
+        .previews
+        .lock()
+        .unwrap()
+        .push_back(Ok(crate::environment::ResolutionPreview {
+            installs: vec![env_fakes::package("torch", "99.0.0")],
+            ..Default::default()
+        }));
+    assert!(matches!(
+        block_on(UpdateComfy::new(m.deps()).execute(latest_commit_request(), CancelToken::new())),
+        Err(RuntimeError::RecoveryRequired(_))
+    ));
+    assert!(m.env.installs.lock().unwrap().is_empty());
+    assert_eq!(m.env.count("verify_final"), 0);
+    // An unexpected installed pin is also refused before verification/publication.
+    let m = Machine::new();
+    m.env.put_installed("torch", "99.0.0");
+    assert!(matches!(
+        block_on(UpdateComfy::new(m.deps()).execute(latest_commit_request(), CancelToken::new())),
+        Err(RuntimeError::RecoveryRequired(_))
+    ));
+    assert_eq!(m.env.count("verify_final"), 0);
+    let ManifestState::Valid(manifest) = m.env.manifest.lock().unwrap().clone() else {
+        panic!("valid manifest")
+    };
+    assert_eq!(manifest.comfyui_commit, Some("a".repeat(40)));
+}
+
+#[test]
+fn latest_commit_retries_the_frozen_target() {
+    use UpdatePhase::*;
+    for (phase, at_target, branch, applies) in [
+        (Intent, false, "release/v1.0", 1),
+        (Intent, true, "release/v1.0", 1),
+        (Intent, true, "frozen-default", 1),
+        (SourceChanged, true, "frozen-default", 0),
+        (Dependencies, true, "frozen-default", 0),
+        (Verifying, true, "frozen-default", 0),
+        (Publishing, true, "frozen-default", 0),
+    ] {
+        let m = Machine::new();
+        let frozen = FrozenUpdate {
+            commit: "c".repeat(40),
+            tag: None,
+            branch: Some("frozen-default".into()),
+            fast_forward: false,
+        };
+        *m.revision.lock().unwrap() = Revision {
+            commit: if at_target {
+                frozen.commit.clone()
+            } else {
+                "a".repeat(40)
+            },
+            tag: None,
+            branch: Some(branch.into()),
+        };
+        let pending = UpdateRun {
+            id: SessionId::new("frozen-update").unwrap(),
+            env_id: m.env.env("selected").id,
+            old_commit: "a".repeat(40),
+            target: frozen.clone(),
+            pins: m.env.env("selected").pins,
+            phase,
+            failure: Some("interrupted".into()),
+            created_at: "t".into(),
+        };
+        *m.update.lock().unwrap() = Some(pending.clone());
+        let mut request = Machine::request(); // The retry's requested tag must be ignored.
+        request.retry = Some(pending.id);
+        let run =
+            block_on(UpdateComfy::new(m.deps()).execute(request, CancelToken::new())).unwrap();
+        assert_eq!(run.target, frozen);
+        assert_eq!(run.phase, Complete);
+        assert_eq!(m.env.count("runtime_fetch"), 0);
+        assert_eq!(m.env.count("runtime_freeze"), 0);
+        assert_eq!(m.env.count("runtime_apply"), applies);
+        if applies > 0 {
+            assert_eq!(
+                m.applied.lock().unwrap().as_slice(),
+                std::slice::from_ref(&frozen)
+            );
+        }
+        assert_eq!(m.revision.lock().unwrap().commit, frozen.commit);
+        assert_eq!(m.revision.lock().unwrap().branch, frozen.branch);
+        assert_eq!(m.env.count("verify_final"), 1);
+        assert_eq!(m.env.env("selected").state(), EnvState::Verified);
+    }
+    // A fresh same-SHA attached release must also establish the latest-commit placement.
+    let m = Machine::new();
+    *m.revision.lock().unwrap() = Revision {
+        commit: "b".repeat(40),
+        tag: Some("v2".into()),
+        branch: Some("release/v2.0".into()),
+    };
+    block_on(UpdateComfy::new(m.deps()).execute(latest_commit_request(), CancelToken::new()))
+        .unwrap();
+    assert_eq!(m.env.count("runtime_apply"), 1);
+    assert_eq!(m.revision.lock().unwrap().branch.as_deref(), Some("main"));
+
+    let m = Machine::new();
+    m.env.verify_final_fails.store(true, Ordering::SeqCst);
+    assert!(
+        block_on(UpdateComfy::new(m.deps()).execute(latest_commit_request(), CancelToken::new()))
+            .is_err()
+    );
+    assert!(matches!(
+        block_on(StartComfy::new(m.deps()).execute()),
+        Err(RuntimeError::RecoveryRequired(_))
+    ));
+    let pending = m.update.lock().unwrap().clone().unwrap();
+    let mut request = Machine::request();
+    request.retry = Some(pending.id.clone());
+    m.revision.lock().unwrap().commit = "d".repeat(40);
+    assert!(matches!(
+        block_on(UpdateComfy::new(m.deps()).execute(request.clone(), CancelToken::new())),
+        Err(RuntimeError::RecoveryRequired(_))
+    ));
+    assert_eq!(m.env.count("runtime_apply"), 1);
+    m.revision.lock().unwrap().commit = pending.target.commit.clone();
+    m.env.verify_final_fails.store(false, Ordering::SeqCst);
+    let done = block_on(UpdateComfy::new(m.deps()).execute(request, CancelToken::new())).unwrap();
+    assert_eq!(done.target, pending.target);
+    assert_eq!(done.phase, Complete);
+    assert_eq!(m.env.count("runtime_fetch"), 1);
+    assert_eq!(m.env.count("runtime_freeze"), 1);
+    assert_eq!(m.env.count("runtime_apply"), 1);
+    assert_eq!(m.env.count("verify_final"), 2);
+    assert_eq!(m.env.env("selected").state(), EnvState::Verified);
 }

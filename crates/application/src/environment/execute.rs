@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use domain::custom_nodes::{InstallConsent, NodeSource};
 use domain::environment::{
     AcceleratorSource, DistName, Eligibility, EnvState, NewEnvironment, PinSet, PythonEnvironment,
     SetupMode, evaluate,
@@ -43,6 +44,10 @@ enum StepOutcome {
     Warning(String),
     NothingToRepair,
 }
+
+/// Prepare/commit passes the curated step makes when the request carries the review-page
+/// consent, so plans that keep going stale cannot loop forever.
+const MAX_CURATED_PASSES: usize = 3;
 
 const CURATED_DAMAGE_MESSAGE: &str = "The published node no longer matches its reviewed install or its candidate dependencies failed. Retry setup to repair it; this step cannot be skipped.";
 
@@ -1078,11 +1083,21 @@ impl Execution {
             }
         };
         if self.run.manager_consent.as_deref() != Some(resolved.commit.as_str()) {
-            return Err(ProvisionError::ConsentRequired(
-                super::model::ConsentRequest {
-                    source: resolved.url.clone(),
-                    commit: resolved.commit.clone(),
-                },
+            if !self.run.request.third_party_consent {
+                return Err(ProvisionError::ConsentRequired(
+                    super::model::ConsentRequest {
+                        source: resolved.url.clone(),
+                        commit: resolved.commit.clone(),
+                    },
+                ));
+            }
+            self.run.manager_consent = Some(resolved.commit.clone());
+            self.save_run()
+                .await
+                .map_err(|_| failed("the run could not be saved"))?;
+            ctx.log(format!(
+                "ComfyUI-Manager {} at commit {} was approved on the setup review page.",
+                resolved.url, resolved.commit
             ));
         }
         let requirement_files = deps.source.install_manager(&root, &resolved, &ctx).await?;
@@ -1100,9 +1115,11 @@ impl Execution {
     }
 
     /// Installs the selected curated nodes into the candidate environment through the node
-    /// workflow, before the final verification and the activation. Every node is prepared at its
-    /// exact catalog commit, then the run pauses for the user's exact consent to each reviewed
-    /// plan, and only then are the plans committed one after another.
+    /// workflow, before the final verification and the activation. Every node is prepared at the
+    /// latest commit of its repository's default branch. Then the run pauses for the user's
+    /// exact consent to each reviewed plan, unless the request carries the review-stage consent:
+    /// that consent is turned into one decision per plan, and the plans are committed one after
+    /// another.
     async fn curated_nodes(
         &mut self,
         lease: &mut dyn MaintenanceLease,
@@ -1115,8 +1132,14 @@ impl Execution {
         let ctx = self.ctx(StepId::CuratedNodes);
         let catalog = self.deps.curated.list();
         let nodes = self.nodes.clone();
-        let decisions = self.deps.active_runs.take_decisions(&self.run.id);
+        let mut decisions = self.deps.active_runs.take_decisions(&self.run.id);
+        let auto = self.run.request.third_party_consent;
+        let mut passes = 0;
         loop {
+            if auto && passes >= MAX_CURATED_PASSES {
+                return Err(failed("The curated node plans kept changing. Retry setup."));
+            }
+            passes += 1;
             self.prepare_curated(&catalog, &ctx, lease).await?;
             let prepared: Vec<usize> = (0..self.run.curated.len())
                 .filter(|&index| self.run.curated[index].status == CuratedStatus::Prepared)
@@ -1127,6 +1150,28 @@ impl Execution {
             let reviews = nodes
                 .pending(&self.run.id)
                 .map_err(|error| self.node_failure(error))?;
+            if auto {
+                // Review-page consent answers each current review, including its current hook.
+                for &index in &prepared {
+                    let Some(review) = reviews
+                        .iter()
+                        .find(|review| Some(&review.id) == self.run.curated[index].plan.as_ref())
+                    else {
+                        continue;
+                    };
+                    if !review.protected_changes.is_empty() {
+                        continue;
+                    }
+                    decisions.retain(|decision| decision.consent.plan_id != review.id);
+                    for warning in &review.warnings {
+                        ctx.log(format!(
+                            "{}: {warning} (acknowledged on the setup review page).",
+                            review.name
+                        ));
+                    }
+                    decisions.push(setup_review_decision(review));
+                }
+            }
             // Nothing is installed until every reviewed plan has its own exact decision.
             let covered = |plan: &Option<String>| {
                 reviews
@@ -1153,12 +1198,17 @@ impl Execution {
                 else {
                     continue;
                 };
-                let name = reviews
-                    .iter()
-                    .find(|review| review.id == plan)
-                    .map(|review| review.name.clone());
-                if let Some(name) = &name {
-                    ctx.log(format!("Installing {name}."));
+                if let Some(review) = reviews.iter().find(|review| review.id == plan) {
+                    if let NodeSource::Git {
+                        repository, commit, ..
+                    } = &review.source
+                    {
+                        ctx.log(format!(
+                            "{}: installing from {repository} at commit {commit}.",
+                            review.name
+                        ));
+                    }
+                    ctx.log(format!("Installing {}.", review.name));
                 }
                 match nodes
                     .commit(&self.run.id, &plan, decision, &ctx, lease)
@@ -1208,8 +1258,8 @@ impl Execution {
         }
     }
 
-    /// Prepares every node that has no live reviewed plan. A node that is already installed at
-    /// its exact commit with successful candidate dependencies is recognised, not fetched again.
+    /// Prepares every node that has no live reviewed plan. A node that is already installed from
+    /// its repository with successful candidate dependencies is recognised, not fetched again.
     async fn prepare_curated(
         &mut self,
         catalog: &[CuratedNodeSpec],
@@ -1278,9 +1328,8 @@ impl Execution {
                     .await);
             }
             ctx.log(format!(
-                "Preparing {} at commit {}.",
-                spec.name,
-                short(&spec.commit)
+                "Preparing {} from the latest commit of its default branch.",
+                spec.name
             ));
             let review = match nodes.prepare(&self.run.id, &spec, ctx, lease).await {
                 Ok(review) => review,
@@ -1288,12 +1337,27 @@ impl Execution {
                     return Err(self.curated_failure(index, error).await);
                 }
             };
+            if let NodeSource::Git {
+                repository,
+                commit,
+                branch,
+            } = &review.source
+            {
+                ctx.log(format!(
+                    "{}: {} from {} at commit {}.",
+                    spec.name,
+                    branch.as_deref().unwrap_or("default branch"),
+                    repository,
+                    commit
+                ));
+            }
             let entry = &mut self.run.curated[index];
             entry.status = CuratedStatus::Prepared;
             entry.plan = Some(review.id);
             entry.message = review
-                .hook_digest
-                .is_some()
+                .warnings
+                .iter()
+                .any(|warning| warning == SETUP_HOOK_WARNING)
                 .then(|| format!("{}: {SETUP_HOOK_WARNING}", review.name));
             // The plan is also the journal operation, so it is on record before the next node.
             self.save_curated().await?;
@@ -1509,6 +1573,25 @@ fn covers(decision: &CommitDecision, review: &PlanReview) -> bool {
         && consent.execute_node_code
         && (review.warnings.is_empty() || consent.acknowledge_warnings)
         && decision.protected_changes.is_empty()
+}
+
+/// The decision a review-page consent stands for: node code runs and the plan's warnings are
+/// acknowledged and its hook runs if present. Source builds, remembered trust and protected
+/// package changes stay refused. It is bound to the current plan.
+fn setup_review_decision(review: &PlanReview) -> CommitDecision {
+    CommitDecision {
+        consent: InstallConsent {
+            plan_id: review.id.clone(),
+            binding: review.binding.clone(),
+            execute_node_code: true,
+            run_install_py: review.has_install_py,
+            allow_source_builds: false,
+            acknowledge_warnings: true,
+            remember_source: false,
+            remember_install_py: false,
+        },
+        protected_changes: Vec::new(),
+    }
 }
 
 /// The run waits for the user to answer the curated node reviews.

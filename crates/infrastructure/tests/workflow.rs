@@ -564,6 +564,7 @@ impl Machine {
             clean_cache: false,
             confirm_adopted_changes: false,
             allow_source_builds: false,
+            third_party_consent: false,
         }
     }
 

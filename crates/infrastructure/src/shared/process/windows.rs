@@ -24,7 +24,8 @@ use windows_sys::Win32::{
     },
 };
 
-/// Remove the current directory from the default DLL search for this process and its children.
+/// Remove cwd from the default DLL search for this process only;
+/// Windows does not pass it to children (residual 6).
 pub(super) fn initialize_dll_policy() -> io::Result<()> {
     static POLICY: std::sync::OnceLock<Result<(), i32>> = std::sync::OnceLock::new();
     match POLICY.get_or_init(|| {

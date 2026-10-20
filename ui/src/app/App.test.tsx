@@ -144,7 +144,8 @@ async function startFirstRun() {
   fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
   await screen.findByRole('radio', { name: /Python 3.13/ })
   fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
-  expect(checkbox(/Curated Pack/).getAttribute('aria-checked')).toBe('true')
+  expect(checkbox(/Curated Pack/).getAttribute('aria-checked')).toBe('false')
+  fireEvent.click(checkbox(/Curated Pack/))
   fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
   fireEvent.click(screen.getByRole('button', { name: 'Start setup' }))
   return screen.findByRole('dialog')
@@ -179,9 +180,7 @@ beforeEach(() => {
     id: 'curated-pack',
     name: 'Curated Pack',
     repository,
-    branch: 'main',
-    commit: 'a'.repeat(40),
-    provenance: 'Pinned catalog fixture',
+    provenance: 'Latest default-branch fixture',
     unavailable: null,
   }])
   vi.mocked(gateway.pickFolder).mockResolvedValue(null)
@@ -208,12 +207,13 @@ it('curated_selection_does_not_authorize_execution', async () => {
       pythonSource: { kind: 'managed' },
       profileId: 'default',
       comfyuiRef: { kind: 'latest' },
-      installManager: false,
+      installManager: true,
       accelerators: [],
       curatedNodes: ['curated-pack'],
       cleanCache: false,
       confirmAdoptedChanges: false,
       allowSourceBuilds: false,
+      thirdPartyConsent: true,
     },
   }, expect.any(Function))
   expect(within(dialog).getByText(detachedWarning)).toBeTruthy()
@@ -368,6 +368,7 @@ it('rebuild_shows_preserved_data_and_owned_replacement', async () => {
         cleanCache: false,
         confirmAdoptedChanges: false,
         allowSourceBuilds: false,
+        thirdPartyConsent: false,
       },
     }, expect.any(Function)))
     resetScreen()

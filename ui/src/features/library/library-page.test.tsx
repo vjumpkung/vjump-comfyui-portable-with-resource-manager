@@ -410,3 +410,13 @@ it('refetches the list when the backend announces a change', async () => {
   expect(await screen.findByText('new.pt')).toBeTruthy()
   expect(screen.queryByText('old.pt')).toBeNull()
 })
+
+it('model_table_active_row_keeps_readable_contrast', async () => {
+  mount(snapshot([model({ name: 'a.pt' }), model({ name: 'b.pt' })]))
+  fireEvent.click(await screen.findByRole('row', { name: /a\.pt/ }))
+  // No brand fill behind table text: the active row is muted with an accent bar.
+  const active = row('a.pt')
+  expect(active.classList.contains('bg-muted')).toBe(true)
+  expect(active.classList.contains('bg-accent')).toBe(false)
+  expect(row('b.pt').classList.contains('bg-accent')).toBe(false)
+})

@@ -16,18 +16,27 @@ use domain::{
     environment::{EnvState, SetupMode},
 };
 
-/// The source a prepared curated plan must resolve to: the catalog repository at its exact
-/// commit, detached like every pinned Git install.
-fn expected_source(entry: &CuratedNodeSpec) -> NodeSource {
-    let repository = entry.repository.trim_end_matches('/');
-    NodeSource::Git {
-        repository: repository
-            .strip_suffix(".git")
-            .unwrap_or(repository)
-            .to_owned(),
-        commit: entry.commit.clone(),
-        branch: None,
-    }
+/// The repository a prepared curated plan must resolve to: the catalog repository in the form
+/// a Git node source records it.
+fn expected_repository(entry: &CuratedNodeSpec) -> String {
+    normalize_repository(&entry.repository).to_owned()
+}
+
+fn normalize_repository(repository: &str) -> &str {
+    let repository = repository.trim_end_matches('/');
+    repository.strip_suffix(".git").unwrap_or(repository)
+}
+
+/// Whether `source` is a resolved head of the catalog repository: any branch, and a full
+/// lowercase commit hash.
+fn is_curated_source(source: &NodeSource, entry: &CuratedNodeSpec) -> bool {
+    matches!(
+        source,
+        NodeSource::Git { repository, commit, .. }
+            if *repository == expected_repository(entry)
+                && commit.len() == 40
+                && commit.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    )
 }
 
 fn prepare_error(error: NodeAppError) -> SetupNodeError {
@@ -40,6 +49,59 @@ fn prepare_error(error: NodeAppError) -> SetupNodeError {
 }
 
 impl NodeService {
+    /// Derive the content exception only from the persisted review-page consent and selection.
+    pub(crate) async fn setup_prepare_policy(
+        &self,
+        run: &RunId,
+        request: &PrepareRequest,
+    ) -> Result<NodePreparePolicy, NodeAppError> {
+        let run = self.setup_run(run).await?;
+        if !run.request.third_party_consent {
+            return Ok(NodePreparePolicy::Strict);
+        }
+        let PrepareRequest::Git {
+            repository,
+            reference: None,
+        } = request
+        else {
+            return Err(NodeAppError::InvalidRequest);
+        };
+        if !self.deps.environment.curated.list().iter().any(|entry| {
+            run.request.curated_nodes.contains(&entry.id)
+                && normalize_repository(repository) == expected_repository(entry)
+        }) {
+            return Err(NodeAppError::InvalidRequest);
+        }
+        Ok(NodePreparePolicy::ConsentedFirstRun)
+    }
+
+    pub(crate) async fn revalidate_setup_policy(
+        &self,
+        run: &RunId,
+        source: &NodeSource,
+    ) -> Result<(), NodeAppError> {
+        let NodeSource::Git { repository, .. } = source else {
+            return Err(NodeAppError::StalePlan);
+        };
+        let policy = self
+            .setup_prepare_policy(
+                run,
+                &PrepareRequest::Git {
+                    repository: repository.clone(),
+                    reference: None,
+                },
+            )
+            .await
+            .map_err(|error| match error {
+                NodeAppError::InvalidRequest => NodeAppError::StalePlan,
+                other => other,
+            })?;
+        if policy != NodePreparePolicy::ConsentedFirstRun {
+            return Err(NodeAppError::StalePlan);
+        }
+        Ok(())
+    }
+
     /// The persisted first run a setup operation belongs to.
     async fn setup_run(&self, run: &RunId) -> Result<ProvisioningRun, NodeAppError> {
         let run = self
@@ -134,9 +196,8 @@ impl NodeService {
             .await
     }
 
-    /// Commits a setup plan. Whatever the decision says, setup never runs `install.py`, never
-    /// builds from source and never remembers trust; warnings still need the user's exact
-    /// acknowledgement.
+    /// Commits a setup plan. Hooks require persisted first-run consent; setup never builds
+    /// from source or remembers trust. Warnings still need the user's exact acknowledgement.
     pub async fn commit_for_setup_held(
         &self,
         run: &RunId,
@@ -145,7 +206,9 @@ impl NodeService {
         ctx: &NodeContext,
         lease: &mut dyn MaintenanceLease,
     ) -> Result<NodeOutcome, NodeAppError> {
-        decision.consent.run_install_py = false;
+        if !self.setup_run(run).await?.request.third_party_consent {
+            decision.consent.run_install_py = false;
+        }
         decision.consent.remember_install_py = false;
         decision.consent.remember_source = false;
         decision.consent.allow_source_builds = false;
@@ -225,7 +288,7 @@ impl SetupNodes for NodeService {
     ) -> Result<PlanReview, SetupNodeError> {
         let request = PrepareRequest::Git {
             repository: entry.repository.clone(),
-            reference: Some(entry.commit.clone()),
+            reference: None,
         };
         let node_ctx = NodeContext {
             cancel: ctx.cancel.clone(),
@@ -235,11 +298,11 @@ impl SetupNodes for NodeService {
             .prepare_for_setup_held(run, request, &node_ctx, lease)
             .await
             .map_err(prepare_error)?;
-        if review.source != expected_source(entry) {
+        if !is_curated_source(&review.source, entry) {
             // The plan can never be committed: drop it and its staging.
             let _ = self.discard_plan(&review.id).await;
             return Err(SetupNodeError::NotApplied(
-                "The repository did not resolve to the curated commit.".into(),
+                "The repository did not resolve to the curated repository's default branch.".into(),
             ));
         }
         Ok(review)
@@ -317,12 +380,16 @@ impl SetupNodes for NodeService {
         if !same_location(&root, &run.request.install_root) {
             return Ok(false);
         }
-        let expected = expected_source(entry);
+        let repository = expected_repository(entry);
         let stored = self.deps.store.nodes().await.map_err(prepare_error)?;
-        let Some(node) = stored
-            .into_iter()
-            .find(|node| !node.conflict && !node.single_file && node.source == expected)
-        else {
+        let Some(node) = stored.into_iter().find(|node| {
+            !node.conflict
+                && !node.single_file
+                && matches!(
+                    &node.source,
+                    NodeSource::Git { repository: recorded, .. } if *recorded == repository
+                )
+        }) else {
             return Ok(false);
         };
         // The record only counts while the files on disk still are the recorded tree.

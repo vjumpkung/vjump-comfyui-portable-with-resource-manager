@@ -100,6 +100,7 @@ Long paths, model names and URLs wrap with `break-words [overflow-wrap:anywhere]
   - wrapper: `overflow-x-auto rounded-lg border bg-card`;
   - header: cyan `bg-brand-cyan text-[#2a313a]`;
   - zebra rows `even:bg-muted/45`, hover rows `hover:bg-muted`;
+  - Active row: `bg-muted` with a 3px accent inset bar (`shadow-[inset_3px_0_0_var(--accent)]`); checked rows `bg-muted/60`. Never put a brand fill behind table text (contrast).
   - columns for size, hash and version use mono;
   - lists over 200 rows are virtualized.
 - **Status chips [desktop].** These use the chip style. Each one MUST include a text label and a Lucide icon, never color alone.

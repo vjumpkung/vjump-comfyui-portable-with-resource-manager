@@ -2,9 +2,9 @@
   "schema_version": 2,
   "id": "win-py312-torch2100-cu130",
   "revision": 2,
-  "label": "Python 3.12, PyTorch 2.10.0, CUDA 13.0 (compatibility)",
+  "label": "Python 3.12, PyTorch 2.10.0, CUDA 13.0",
   "status": "stable",
-  "recommended": false,
+  "recommended": true,
   "os": "windows",
   "python": "3.12.15",
   "torch": {

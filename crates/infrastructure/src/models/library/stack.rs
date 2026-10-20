@@ -31,7 +31,9 @@ pub struct LibraryStack {
 
 impl LibraryStack {
     /// `locks` is the same registry the download stack publishes through; its durable
-    /// destination reservations are supplied by the download repository.
+    /// destination reservations are supplied by the download repository. Without
+    /// `create_default_root` nothing is created under `ComfyUI/` and the roots stay empty until a
+    /// later refresh finds the folder.
     pub fn open(
         root: &Path,
         db: Db,
@@ -39,11 +41,14 @@ impl LibraryStack {
         locks: Arc<PathLocks>,
         extra: Arc<dyn ExtraModelPaths>,
         downloads: Arc<SqliteDownloads>,
+        create_default_root: bool,
     ) -> Result<Self> {
-        let roots = Arc::new(
+        let roots = if create_default_root {
             LibraryRoots::new(root, extra, locks.clone())
-                .map_err(|_| LibraryError(LibraryErrorCode::Io))?,
-        );
+        } else {
+            LibraryRoots::deferred(root, extra, locks.clone())
+        };
+        let roots = Arc::new(roots.map_err(|_| LibraryError(LibraryErrorCode::Io))?);
         locks.set_reservations(downloads);
         let catalog = Arc::new(SqliteCatalog {
             db: db.clone(),

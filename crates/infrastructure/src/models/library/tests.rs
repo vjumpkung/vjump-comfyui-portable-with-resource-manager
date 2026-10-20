@@ -76,6 +76,7 @@ impl Fx {
             Arc::new(PathLocks::default()),
             Arc::new(Extras(extras)),
             Arc::new(SqliteDownloads { db: db.clone() }),
+            true,
         )
         .unwrap();
         Self {
@@ -876,4 +877,37 @@ async fn library_shutdown_drops_the_watcher_and_a_new_run_rescans_and_watches() 
         );
         fx.write("checkpoints/second.safetensors", b"2");
     }
+}
+
+#[tokio::test]
+async fn deferred_library_roots_register_comfyui_models_once_it_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let install = dir.path().join("install ไทย");
+    fs::create_dir_all(&install).unwrap();
+    let roots = super::roots::LibraryRoots::deferred(
+        &install,
+        Arc::new(Extras(Vec::new())),
+        Arc::new(PathLocks::default()),
+    )
+    .unwrap();
+    assert!(roots.infos().is_empty());
+    assert!(roots.specs().is_empty());
+    assert!(!install.join("ComfyUI").exists());
+
+    // Until ComfyUI exists the default root is reported missing and nothing is created.
+    let warnings = roots.refresh().await;
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].code, ScanWarningCode::RootMissing);
+    assert_eq!(warnings[0].root_id.as_deref(), Some("models"));
+    assert!(roots.infos().is_empty());
+    assert!(!install.join("ComfyUI").exists());
+
+    // The setup clone creates the folder; the next refresh registers it.
+    fs::create_dir_all(install.join("ComfyUI").join("models")).unwrap();
+    assert!(roots.refresh().await.is_empty());
+    let infos = roots.infos();
+    assert_eq!(infos.len(), 1);
+    assert_eq!(infos[0].id, "models");
+    assert_eq!(infos[0].state, RootState::Ready);
+    assert_eq!(roots.specs().len(), 1);
 }

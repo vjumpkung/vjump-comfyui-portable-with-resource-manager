@@ -4,7 +4,7 @@
   "revision": 1,
   "label": "Python 3.13, PyTorch 2.14.1, CUDA 13.0",
   "status": "stable",
-  "recommended": true,
+  "recommended": false,
   "os": "windows",
   "python": "3.13.16",
   "torch": {

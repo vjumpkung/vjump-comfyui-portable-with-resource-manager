@@ -12,6 +12,7 @@ use application::environment::{
     Checkout, ComfyRef, ComfySource, ProvisionError, RequirementFiles, ResolvedGit, StepContext,
 };
 use async_trait::async_trait;
+use domain::comfy_runtime::CheckoutPlacement;
 use serde::Deserialize;
 
 use super::{
@@ -25,6 +26,7 @@ use crate::shared::{
     process::{CommandSpec, RunLimits},
 };
 
+pub(crate) mod placement;
 mod publish;
 
 #[derive(Debug, Clone)]
@@ -301,26 +303,88 @@ impl GitSource {
             .arg(url)
             .arg(stage);
         run_step(&clone, ctx, &limits).await?;
-        let checkout = match &resolved.branch {
-            Some(branch) => self.git_command(layout)?.arg("-C").arg(stage).args([
-                "checkout",
-                "-B",
-                branch.as_str(),
-                "--track",
-                &format!("origin/{branch}"),
-            ]),
-            None => self.git_command(layout)?.arg("-C").arg(stage).args([
-                "checkout",
-                "--detach",
-                resolved.commit.as_str(),
-            ]),
-        };
-        run_step(&checkout, ctx, &limits).await?;
+        match &resolved.branch {
+            Some(branch) => {
+                let checkout = self.git_command(layout)?.arg("-C").arg(stage).args([
+                    "checkout",
+                    "-B",
+                    branch.as_str(),
+                    "--track",
+                    &format!("origin/{branch}"),
+                ]);
+                run_step(&checkout, ctx, &limits).await?;
+            }
+            None => {
+                self.checkout_commit(
+                    layout,
+                    stage,
+                    &resolved.commit,
+                    Some(resolved.reference.as_str()),
+                    ctx,
+                    &limits,
+                )
+                .await?;
+            }
+        }
         let head = self.head_commit(layout, stage, ctx).await?;
         if resolved.branch.is_none() && head != resolved.commit {
             return Err(failed(
                 "The checkout does not match the resolved commit, so it was discarded.",
             ));
+        }
+        Ok(())
+    }
+
+    /// Checks `commit` out on the remote's default branch, or on the release branch of `tag`,
+    /// when nothing local is lost, so that `git pull` works in the published checkout; otherwise
+    /// detached.
+    async fn checkout_commit(
+        &self,
+        layout: &Layout,
+        stage: &Path,
+        commit: &str,
+        tag: Option<&str>,
+        ctx: &StepContext,
+        limits: &RunLimits,
+    ) -> Result<(), ProvisionError> {
+        let probe = self
+            .git_command(layout)?
+            .arg("-C")
+            .arg(stage)
+            .retain(ctx.retained.clone());
+        let placement = placement::placement(
+            |args| probe.clone().args(args.iter().copied()),
+            commit,
+            tag,
+            &ctx.cancel,
+        )
+        .await
+        .map_err(|_| ProvisionError::Cancelled)?;
+        let checkout = self.git_command(layout)?.arg("-C").arg(stage);
+        match placement {
+            CheckoutPlacement::Branch(branch) => {
+                let attach = checkout
+                    .clone()
+                    .args(["checkout", "-B", branch.as_str(), commit]);
+                run_step(&attach, ctx, limits).await?;
+                let upstream = checkout.args([
+                    "branch",
+                    &format!("--set-upstream-to=origin/{branch}"),
+                    branch.as_str(),
+                ]);
+                match run_step(&upstream, ctx, limits).await {
+                    Err(ProvisionError::Cancelled) => return Err(ProvisionError::Cancelled),
+                    Err(_) => ctx.log(format!(
+                        "Warning: {branch} was not set to track origin/{branch}."
+                    )),
+                    Ok(_) => {}
+                }
+            }
+            CheckoutPlacement::Detached(reason) => {
+                ctx.log(format!("Checking out {commit} detached, because {reason}."));
+                let detach = checkout.args(["checkout", "--detach", commit]);
+                run_step(&detach, ctx, limits).await?;
+            }
         }
         Ok(())
     }

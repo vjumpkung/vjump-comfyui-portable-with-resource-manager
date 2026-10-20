@@ -178,6 +178,10 @@ impl From<EnvironmentAppError> for IpcError {
                 "curated_selection_invalid",
                 "Curated node ids must be unique, belong to the catalog and be chosen for a first run.",
             ),
+            E::ThirdPartyConsentInvalid => Self::new(
+                "third_party_consent_invalid",
+                "Third-party consent can only be given for a first-run setup.",
+            ),
             E::ProfileRevisionUnavailable => Self::new(
                 "profile_revision_unavailable",
                 "The recorded setup profile revision is unavailable.",
@@ -333,6 +337,9 @@ impl From<RuntimeError> for IpcError {
             ),
             RuntimeError::Cancelled => Self::new("cancelled", "The operation was cancelled."),
             RuntimeError::Failed(message) => Self::new("comfy_failed", &message),
+            RuntimeError::ExtraPathsRejected(message) => {
+                Self::new("extra_model_paths_invalid", &message)
+            }
         }
     }
 }
@@ -374,10 +381,34 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_extra_model_path_keeps_its_message_under_a_fixed_code() {
+        assert_eq!(
+            IpcError::from(RuntimeError::ExtraPathsRejected(
+                "Choose an absolute folder path on a local drive or network share.".into()
+            )),
+            IpcError::new(
+                "extra_model_paths_invalid",
+                "Choose an absolute folder path on a local drive or network share."
+            )
+        );
+    }
+
+    #[test]
     fn an_invalid_curated_selection_has_a_fixed_ipc_code() {
         assert_eq!(
             IpcError::from(EnvironmentAppError::CuratedSelectionInvalid).code,
             "curated_selection_invalid"
+        );
+    }
+
+    #[test]
+    fn invalid_third_party_consent_has_a_fixed_ipc_code_and_message() {
+        assert_eq!(
+            IpcError::from(EnvironmentAppError::ThirdPartyConsentInvalid),
+            IpcError::new(
+                "third_party_consent_invalid",
+                "Third-party consent can only be given for a first-run setup."
+            )
         );
     }
 }

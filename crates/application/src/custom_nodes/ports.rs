@@ -72,6 +72,7 @@ pub trait NodeFiles: Send + Sync {
         operation: &NodeId,
         request: &PrepareRequest,
         prior: Option<&InstalledNode>,
+        policy: NodePreparePolicy,
         ctx: &StepContext,
     ) -> Result<StagedNode, NodeAppError>;
     async fn snapshot(

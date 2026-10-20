@@ -11,9 +11,10 @@ use std::{
 
 use application::{
     comfy_runtime::{
-        ComfyRepository, ExtraModelPaths, GetComfyDiagnostics, GetComfyStatus, GetLaunchOptions,
-        LaunchPreflight, ListComfyVersions, NodeLifecycle, PortProbe, ReadExtraModelPaths,
-        RestartComfy, RuntimeDeps, RuntimeError, RuntimeEvents, RuntimeStore, RuntimeSupervisor,
+        ComfyRepository, ExtraModelPaths, ExtraModelPathsWriter, GetComfyDiagnostics,
+        GetComfyStatus, GetLaunchOptions, LaunchPreflight, ListComfyVersions,
+        ManageExtraModelPaths, NodeLifecycle, PortProbe, ReadExtraModelPaths, RestartComfy,
+        RuntimeDeps, RuntimeError, RuntimeEvents, RuntimeStore, RuntimeSupervisor,
         SetLaunchOptions, StartComfy, StopComfy, UpdateComfy,
     },
     custom_nodes::{NodeContext, NodeRequirements, NodeService, PrepareRequest},
@@ -207,6 +208,7 @@ pub struct RuntimeAdapters {
     pub ports: Arc<dyn PortProbe>,
     pub preflight: Arc<dyn LaunchPreflight>,
     pub extra_paths: Arc<dyn ExtraModelPaths>,
+    pub extra_paths_writer: Arc<dyn ExtraModelPathsWriter>,
     pub hub: RuntimeLogHub,
 }
 
@@ -225,6 +227,7 @@ pub struct ComfyServices {
     pub(crate) versions: ListComfyVersions,
     pub(crate) update: UpdateComfy,
     pub(crate) extra_paths: ReadExtraModelPaths,
+    pub(crate) manage_extra_paths: ManageExtraModelPaths,
     pub(crate) diagnostics: GetComfyDiagnostics,
     pub(crate) subscriptions: Mutex<HashMap<u32, tauri::async_runtime::JoinHandle<()>>>,
 }
@@ -236,6 +239,8 @@ impl ComfyServices {
         nodes: Arc<dyn NodeLifecycle>,
     ) -> Self {
         let hub = adapters.hub;
+        let manage_extra_paths =
+            ManageExtraModelPaths::new(environment.root.clone(), adapters.extra_paths_writer);
         let deps = RuntimeDeps {
             environment,
             nodes,
@@ -259,6 +264,7 @@ impl ComfyServices {
             versions: ListComfyVersions::new(deps.clone()),
             update: UpdateComfy::new(deps.clone()),
             extra_paths: ReadExtraModelPaths::new(deps.clone()),
+            manage_extra_paths,
             diagnostics: GetComfyDiagnostics::new(deps, Arc::new(hub.clone())),
             hub,
             subscriptions: Mutex::default(),
@@ -983,6 +989,7 @@ impl AppState {
             ports: Arc::new(TcpPortProbe),
             preflight: Arc::new(PythonLaunchPreflight::new(verifier)),
             extra_paths: Arc::new(YamlExtraModelPaths),
+            extra_paths_writer: Arc::new(YamlExtraModelPaths),
             hub,
         };
         let saved = match settings.load().await {
@@ -990,6 +997,13 @@ impl AppState {
             Err(_) => Settings::default(),
         };
         let locks = path_locks();
+        // A root that was never set up has no ComfyUI yet. Setup clones it first, so nothing may
+        // be created under `ComfyUI/` before then; the app restarts once setup has finished.
+        let defer_models = matches!(manifest, ManifestState::Absent)
+            && matches!(
+                std::fs::symlink_metadata(resolved.root.join("ComfyUI")),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            );
         let downloads = DownloadStack::open_with_bandwidth(
             &resolved.root,
             download_db.clone(),
@@ -997,6 +1011,7 @@ impl AppState {
             saved.download_concurrency.get() as usize,
             locks.clone(),
             saved.bandwidth_cap_kib_s,
+            !defer_models,
         )
         .map_err(|error| format!("downloads could not be opened: {error}"))?;
         let library = LibraryStack::open(
@@ -1006,6 +1021,7 @@ impl AppState {
             locks,
             runtime.extra_paths.clone(),
             downloads.repository.clone(),
+            !defer_models,
         )
         .map_err(|error| format!("the model library could not be opened: {error}"))?;
         let nodes = node_adapters.bind(deps.clone(), IdGenerator::new_id(&RandomIds::default()));
@@ -1022,7 +1038,12 @@ impl AppState {
         // Interrupted renames and moves are finished before any download may publish.
         services.library.reconcile().await;
         // Reconcile interrupted node work and observe Manager/manual changes before commands.
-        services.nodes.reconcile().await;
+        // Setup reconciles under its own lease once ComfyUI exists.
+        if defer_models {
+            tracing::info!("custom node scan deferred until ComfyUI is installed");
+        } else {
+            services.nodes.reconcile().await;
+        }
         services.library.start();
         services.downloads.start();
         let mut state = Self::new(Ok(services), credentials, ingress, picker, paths.data_dir);

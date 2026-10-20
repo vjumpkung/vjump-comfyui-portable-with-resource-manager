@@ -225,6 +225,7 @@ async fn registry_archive_replacement_is_not_extracted() {
                     version: Some("1.0.0".into()),
                 },
                 None,
+                NodePreparePolicy::Strict,
                 &ctx()
             )
             .await,
@@ -261,6 +262,7 @@ async fn registry_create_new_refusal_preserves_existing_entries() {
                         version: Some("1.0.0".into()),
                     },
                     None,
+                    NodePreparePolicy::Strict,
                     &ctx()
                 )
                 .await,
@@ -293,6 +295,7 @@ async fn registry_download_cancellation_cleans_only_owned_entries() {
                     version: Some("1.0.0".into()),
                 },
                 None,
+                NodePreparePolicy::Strict,
                 &step
             )
             .await,
@@ -683,7 +686,14 @@ async fn git_tree_depth_is_rejected_without_recursive_cleanup() {
     assert_eq!(
         g.fixture
             .files
-            .prepare(&g.fixture.root, &id, &g.request(None), None, &ctx())
+            .prepare(
+                &g.fixture.root,
+                &id,
+                &g.request(None),
+                None,
+                NodePreparePolicy::Strict,
+                &ctx()
+            )
             .await
             .unwrap_err(),
         NodeAppError::UnsafeSource
@@ -730,7 +740,14 @@ async fn fresh_git_checkouts_reject_shipped_pycache() {
             assert_eq!(
                 g.fixture
                     .files
-                    .prepare(&g.fixture.root, &id, &request, installed.as_ref(), &ctx())
+                    .prepare(
+                        &g.fixture.root,
+                        &id,
+                        &request,
+                        installed.as_ref(),
+                        NodePreparePolicy::Strict,
+                        &ctx()
+                    )
                     .await
                     .unwrap_err(),
                 NodeAppError::UnsafeSource
@@ -1190,6 +1207,118 @@ async fn exact_version_resolution_rejects_identity_and_version_mismatches() {
 // Registry install, update and hardened extraction
 // ---------------------------------------------------------------------------------------
 
+#[cfg(windows)]
+#[tokio::test]
+async fn registry_prepare_refuses_root_native_image_before_preview() {
+    for name in ["a.dll", "A.DLL", "c.Exe", "x.ſcr", ".dll", "folder.ocx/"] {
+        let fixture = Fixture::new().await;
+        fixture.registry_node(
+            "native-node",
+            "1.0.0",
+            zip_bytes(&[
+                ("__init__.py", b""),
+                ("requirements.txt", b"localpkg==1.0\n"),
+                (name, b""),
+            ]),
+        );
+        let result = fixture
+            .files
+            .prepare(
+                &fixture.root,
+                &node_id("root-native"),
+                &PrepareRequest::Registry {
+                    id: "native-node".into(),
+                    version: Some("1.0.0".into()),
+                },
+                None,
+                NodePreparePolicy::Strict,
+                &ctx(),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(NodeAppError::Failed(ref message)) if message == tree::ROOT_NATIVE_MESSAGE),
+            "{name}: {result:?}"
+        );
+        assert!(
+            fixture.owned().is_empty(),
+            "{name}: staging, zip and hoist removed"
+        );
+        assert!(!fixture.cn().join("native-node").exists());
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn registry_prepare_refuses_root_native_image_after_hoisting_single_root() {
+    let fixture = Fixture::new().await;
+    fixture.registry_node(
+        "native-node",
+        "1.0.0",
+        zip_bytes(&[
+            ("pack/__init__.py", b""),
+            ("pack/requirements.txt", b"localpkg==1.0\n"),
+            ("pack/x.dll", b"native"),
+        ]),
+    );
+    let result = fixture
+        .files
+        .prepare(
+            &fixture.root,
+            &node_id("hoisted-root-native"),
+            &PrepareRequest::Registry {
+                id: "native-node".into(),
+                version: Some("1.0.0".into()),
+            },
+            None,
+            NodePreparePolicy::Strict,
+            &ctx(),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(NodeAppError::Failed(ref message)) if message == tree::ROOT_NATIVE_MESSAGE),
+        "{result:?}"
+    );
+    assert!(fixture.owned().is_empty(), "staging, zip and hoist removed");
+}
+
+#[tokio::test]
+async fn registry_prepare_accepts_nested_native_image() {
+    let fixture = Fixture::new().await;
+    fixture.registry_node(
+        "nested-native",
+        "1.0.0",
+        zip_bytes(&[("__init__.py", b""), ("lib/x.dll", b"native")]),
+    );
+    let id = node_id("nested-native");
+    fixture
+        .files
+        .prepare(
+            &fixture.root,
+            &id,
+            &PrepareRequest::Registry {
+                id: "nested-native".into(),
+                version: Some("1.0.0".into()),
+            },
+            None,
+            NodePreparePolicy::Strict,
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .disabled()
+            .join(".vjump-staging-nested-native/lib/x.dll")
+            .is_file()
+    );
+    fixture
+        .files
+        .discard_staging(&fixture.root, &id)
+        .await
+        .unwrap();
+    assert!(fixture.owned().is_empty());
+}
+
 #[tokio::test]
 async fn a_registry_release_is_staged_published_and_recorded_with_provenance() {
     let fixture = Fixture::new().await;
@@ -1202,7 +1331,14 @@ async fn a_registry_release_is_staged_published_and_recorded_with_provenance() {
     };
     let staged = fixture
         .files
-        .prepare(&fixture.root, &op, &request, None, &ctx())
+        .prepare(
+            &fixture.root,
+            &op,
+            &request,
+            None,
+            NodePreparePolicy::Strict,
+            &ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(staged.name.as_str(), "good-node");
@@ -1267,7 +1403,14 @@ async fn a_registry_release_is_staged_published_and_recorded_with_provenance() {
     fixture.registry_node("good-node", "1.0.0", Fixture::good_zip());
     let again = fixture
         .files
-        .prepare(&fixture.root, &node_id("node-op2"), &request, None, &ctx())
+        .prepare(
+            &fixture.root,
+            &node_id("node-op2"),
+            &request,
+            None,
+            NodePreparePolicy::Strict,
+            &ctx(),
+        )
         .await;
     assert_eq!(again.unwrap_err(), NodeAppError::TargetExists);
     assert!(fixture.owned().is_empty());
@@ -1302,7 +1445,14 @@ async fn incompatible_registry_metadata_becomes_review_warnings() {
     };
     let staged = fixture
         .files
-        .prepare(&fixture.root, &node_id("node-warn"), &request, None, &ctx())
+        .prepare(
+            &fixture.root,
+            &node_id("node-warn"),
+            &request,
+            None,
+            NodePreparePolicy::Strict,
+            &ctx(),
+        )
         .await
         .unwrap();
     let text = staged.warnings.join("|");
@@ -1366,6 +1516,7 @@ async fn registry_detail_failures_abort_preparation() {
                     &node_id("node-detail"),
                     &request,
                     update.then_some(&prior),
+                    NodePreparePolicy::Strict,
                     &ctx(),
                 )
                 .await;
@@ -1418,6 +1569,7 @@ async fn registry_node_and_release_warnings_are_bound_to_review() {
             &node_id("node-warn-both"),
             &request,
             None,
+            NodePreparePolicy::Strict,
             &ctx(),
         )
         .await
@@ -1446,6 +1598,7 @@ async fn registry_node_and_release_warnings_are_bound_to_review() {
             &node_id("node-warn-repeat"),
             &request,
             None,
+            NodePreparePolicy::Strict,
             &ctx(),
         )
         .await
@@ -1467,6 +1620,7 @@ async fn registry_node_and_release_warnings_are_bound_to_review() {
                 &node_id("node-warn-refused"),
                 &request,
                 None,
+                NodePreparePolicy::Strict,
                 &ctx(),
             )
             .await
@@ -1486,6 +1640,7 @@ async fn registry_node_and_release_warnings_are_bound_to_review() {
             &node_id("node-warn-release"),
             &request,
             None,
+            NodePreparePolicy::Strict,
             &ctx(),
         )
         .await
@@ -1510,6 +1665,7 @@ async fn registry_node_and_release_warnings_are_bound_to_review() {
             &node_id("node-warn-node"),
             &request,
             None,
+            NodePreparePolicy::Strict,
             &ctx(),
         )
         .await
@@ -1605,6 +1761,7 @@ async fn registry_review_compatibility_is_exclusive_to_the_exact_release() {
                     version: Some("1.0.0".into()),
                 },
                 None,
+                NodePreparePolicy::Strict,
                 &ctx(),
             )
             .await
@@ -1695,7 +1852,14 @@ async fn malicious_archives_write_nothing_outside_owned_staging() {
         let op = node_id(&format!("node-evil{index}"));
         let result = fixture
             .files
-            .prepare(&fixture.root, &op, &request, None, &ctx())
+            .prepare(
+                &fixture.root,
+                &op,
+                &request,
+                None,
+                NodePreparePolicy::Strict,
+                &ctx(),
+            )
             .await;
         assert!(result.is_err(), "{label} must be rejected");
         // No owned leftovers, no node, nothing beside the install root's tree.
@@ -1756,7 +1920,14 @@ async fn oversize_downloads_and_insecure_transfer_urls_are_refused() {
     );
     let refused = fixture
         .files
-        .prepare(&fixture.root, &node_id("node-http"), &request, None, &ctx())
+        .prepare(
+            &fixture.root,
+            &node_id("node-http"),
+            &request,
+            None,
+            NodePreparePolicy::Strict,
+            &ctx(),
+        )
         .await;
     assert_eq!(refused.unwrap_err(), NodeAppError::UnsafeSource);
     // A truncated body is not accepted as an artifact.
@@ -1776,7 +1947,14 @@ async fn oversize_downloads_and_insecure_transfer_urls_are_refused() {
     );
     let truncated = fixture
         .files
-        .prepare(&fixture.root, &node_id("node-cut"), &request, None, &ctx())
+        .prepare(
+            &fixture.root,
+            &node_id("node-cut"),
+            &request,
+            None,
+            NodePreparePolicy::Strict,
+            &ctx(),
+        )
         .await;
     assert!(truncated.is_err());
     assert!(fixture.owned().is_empty());
@@ -1799,7 +1977,14 @@ async fn a_registry_update_stages_the_new_release_and_reports_up_to_date() {
     };
     let staged = fixture
         .files
-        .prepare(&fixture.root, &op, &request, Some(&prior), &ctx())
+        .prepare(
+            &fixture.root,
+            &op,
+            &request,
+            Some(&prior),
+            NodePreparePolicy::Strict,
+            &ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(staged.name.as_str(), "good-node");
@@ -1861,6 +2046,7 @@ async fn a_registry_update_stages_the_new_release_and_reports_up_to_date() {
             &node_id("node-upd2"),
             &request,
             Some(&current),
+            NodePreparePolicy::Strict,
             &ctx(),
         )
         .await;
@@ -1888,6 +2074,7 @@ async fn a_disabled_node_keeps_its_disabled_location_through_update() {
             &node_id("node-off"),
             &request,
             Some(&prior),
+            NodePreparePolicy::Strict,
             &ctx(),
         )
         .await
@@ -2993,6 +3180,7 @@ impl GitFixture {
                 &op,
                 &self.request(reference),
                 None,
+                NodePreparePolicy::Strict,
                 &ctx(),
             )
             .await
@@ -3032,6 +3220,7 @@ impl GitFixture {
                 &node_id(id),
                 &request,
                 Some(prior),
+                NodePreparePolicy::Strict,
                 &ctx(),
             )
             .await?;
@@ -3046,6 +3235,400 @@ impl GitFixture {
             OperationPhase::PublishIntent,
         ))
     }
+}
+
+#[tokio::test]
+async fn git_install_accepts_nested_native_image_and_root_scripts() {
+    let g = git_fixture(locate_git().expect("real Git is required")).await;
+    for name in ["check.bat", "x.ps1", "x.pyd", "lib/x.dll"] {
+        g.repo.commit(name, "fixture\n", name);
+    }
+    let installed = g.install("nested-native-install", None).await;
+    let live = g.fixture.cn().join(installed.name.as_str());
+    for name in ["check.bat", "x.ps1", "x.pyd", "lib/x.dll"] {
+        assert!(live.join(name).is_file(), "{name}");
+    }
+    assert!(g.fixture.owned().is_empty());
+}
+
+#[test]
+fn git_root_tree_admission_validates_exact_nul_delimited_names() {
+    use super::git::admit_root_tree;
+    assert_eq!(admit_root_tree(b""), Ok(()));
+    assert_eq!(admit_root_tree(b"node.py\0lib\0requirements.txt\0"), Ok(()));
+    for invalid in [
+        &b"\0"[..],
+        &b"node.py\0\0"[..],
+        &b"../x\0"[..],
+        &b"a/b\0"[..],
+        &b"CON\0"[..],
+        &b"bad\nname\0"[..],
+        &b"\xff\0"[..],
+    ] {
+        assert_eq!(
+            admit_root_tree(invalid),
+            Err(NodeAppError::UnsafeSource),
+            "{invalid:?}"
+        );
+    }
+    for unframed in [&b"node.py"[..], &b"node.py\0unfinished"[..]] {
+        assert_eq!(
+            admit_root_tree(unframed),
+            Err(NodeAppError::Failed(
+                "The repository tree could not be listed".into()
+            ))
+        );
+    }
+    for native in [
+        "x.dll",
+        "x.EXE",
+        "x.com",
+        "x.cpl",
+        "x.drv",
+        "x.ocx",
+        "x.ſcr",
+        "x.sys",
+        ".dll",
+        "token=ghp_abcdefghijklmnopqrstuvwxyz0123456789.dll",
+    ] {
+        assert_eq!(
+            admit_root_tree(format!("{native}\0").as_bytes()),
+            Err(NodeAppError::Failed(tree::ROOT_NATIVE_MESSAGE.into())),
+            "{native}"
+        );
+    }
+    assert_eq!(admit_root_tree(&b"x\0".repeat(tree::MAX_ENTRIES)), Ok(()));
+    assert_eq!(
+        admit_root_tree(&b"x\0".repeat(tree::MAX_ENTRIES + 1)),
+        Err(NodeAppError::UnsafeSource)
+    );
+}
+
+#[cfg(windows)]
+fn assert_native_admission_specs(
+    specs: &[crate::shared::process::CommandSpec],
+    commit: &str,
+    staging: &Path,
+) {
+    let listing = specs
+        .iter()
+        .position(|spec| spec.args.iter().any(|arg| arg == "ls-tree"))
+        .unwrap();
+    let cat_file = specs
+        .iter()
+        .position(|spec| spec.args.iter().any(|arg| arg == "cat-file"))
+        .unwrap();
+    assert!(cat_file < listing);
+    let spec = &specs[listing];
+    let args = spec
+        .args
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let index = args.iter().position(|arg| arg == "ls-tree").unwrap();
+    assert_eq!(
+        &args[index..],
+        ["ls-tree", "--full-tree", "-z", "--name-only", commit]
+    );
+    let cwd = spec.args.windows(2).find(|pair| pair[0] == "-C").unwrap();
+    assert_eq!(Path::new(&cwd[1]), staging);
+    assert!(
+        !specs
+            .iter()
+            .any(|spec| spec.args.iter().any(|arg| arg == "checkout")
+                && spec
+                    .args
+                    .windows(2)
+                    .any(|pair| pair[0] == "-C" && Path::new(&pair[1]) == staging)),
+        "staging must never be checked out"
+    );
+    assert!(specs.iter().all(|spec| !spec.retained.is_empty()));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn git_install_refuses_root_native_image_before_checkout() {
+    for name in ["payload.dll", "lib.dll/node.py"] {
+        let g = git_fixture(locate_git().expect("real Git is required")).await;
+        let commit = g.repo.commit(name, "fixture\n", "native entry");
+        let id = node_id("native-install");
+        let paths = super::paths::NodePaths::open(&g.fixture.root, true).unwrap();
+        let staging = super::paths::entry_path(&paths.staging(&id));
+        super::git::TEST_RELEASE_OWNERS.with(|flag| flag.set(true));
+        super::git::TEST_SPECS.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+        let result = g
+            .fixture
+            .files
+            .prepare(
+                &g.fixture.root,
+                &id,
+                &g.request(None),
+                None,
+                NodePreparePolicy::Strict,
+                &ctx(),
+            )
+            .await;
+        let specs = super::git::TEST_SPECS.with(|slot| slot.borrow_mut().take().unwrap());
+        super::git::TEST_RELEASE_OWNERS.with(|flag| flag.set(false));
+        assert_eq!(
+            result.unwrap_err(),
+            NodeAppError::Failed(tree::ROOT_NATIVE_MESSAGE.into())
+        );
+        assert_native_admission_specs(&specs, &commit, &staging);
+        assert!(!g.fixture.cn().join("ComfyUI-Remote").exists());
+        assert!(!staging.exists());
+        assert!(g.fixture.owned().is_empty());
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn git_update_refuses_root_native_image_in_frozen_target_before_checkout() {
+    for name in ["payload.dll", "lib.dll/node.py"] {
+        let g = git_fixture(locate_git().expect("real Git is required")).await;
+        let installed = g.install("safe-install", None).await;
+        let live = g.fixture.cn().join(installed.name.as_str());
+        let repo = Repo {
+            dir: live.clone(),
+            git: g.repo.git.clone(),
+        };
+        let head = repo.run(&["rev-parse", "HEAD"]);
+        let digest = tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap();
+        let target = g.repo.commit(name, "fixture\n", "native target");
+        let id = node_id("native-update");
+        let paths = super::paths::NodePaths::open(&g.fixture.root, true).unwrap();
+        let staging = super::paths::entry_path(&paths.staging(&id));
+        super::git::TEST_RELEASE_OWNERS.with(|flag| flag.set(true));
+        super::git::TEST_SPECS.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+        let result = g.update("native-update", &installed, Some(&target)).await;
+        let specs = super::git::TEST_SPECS.with(|slot| slot.borrow_mut().take().unwrap());
+        super::git::TEST_RELEASE_OWNERS.with(|flag| flag.set(false));
+        assert_eq!(
+            result.unwrap_err(),
+            NodeAppError::Failed(tree::ROOT_NATIVE_MESSAGE.into())
+        );
+        assert_native_admission_specs(&specs, &target, &staging);
+        assert!(!staging.exists());
+        assert!(g.fixture.owned().is_empty());
+        assert_eq!(repo.run(&["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap(),
+            digest
+        );
+        assert!(!live.join(name).exists());
+    }
+}
+
+#[tokio::test]
+async fn consented_setup_git_prepare_allows_content_findings_but_preserves_containment() {
+    for native in [false, true] {
+        if native && !cfg!(windows) {
+            continue;
+        }
+        for policy in [
+            NodePreparePolicy::Strict,
+            NodePreparePolicy::ConsentedFirstRun,
+        ] {
+            let g = git_fixture(locate_git().expect("real Git is required")).await;
+            if native {
+                g.repo
+                    .commit("lib.ſcr/node.py", "native directory\n", "native");
+                g.repo.commit("x.dll", "native file\n", "native file");
+            } else {
+                g.repo.commit("__pycache__/x.pyc", "cache\n", "cache");
+                g.repo
+                    .commit("sub/__PYCACHE__/y.pyc", "cache\n", "more cache");
+            }
+            let id = node_id("setup-policy");
+            let result = g
+                .fixture
+                .files
+                .prepare(&g.fixture.root, &id, &g.request(None), None, policy, &ctx())
+                .await;
+            if policy == NodePreparePolicy::Strict {
+                assert_eq!(
+                    result.unwrap_err(),
+                    if native {
+                        NodeAppError::Failed(tree::ROOT_NATIVE_MESSAGE.into())
+                    } else {
+                        NodeAppError::UnsafeSource
+                    }
+                );
+            } else {
+                let staged = result.unwrap();
+                assert_eq!(
+                    staged.warnings,
+                    [if native {
+                        tree::NATIVE_SETUP_WARNING
+                    } else {
+                        tree::CACHE_SETUP_WARNING
+                    }]
+                );
+                g.fixture
+                    .files
+                    .discard_staging(&g.fixture.root, &id)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+    for policy in [
+        NodePreparePolicy::Strict,
+        NodePreparePolicy::ConsentedFirstRun,
+    ] {
+        let g = git_fixture(locate_git().expect("real Git is required")).await;
+        g.repo.commit(
+            &format!("{}node.py", "d/".repeat(64)),
+            "too deep\n",
+            "excess depth",
+        );
+        assert_eq!(
+            g.fixture
+                .files
+                .prepare(
+                    &g.fixture.root,
+                    &node_id("deep-policy"),
+                    &g.request(None),
+                    None,
+                    policy,
+                    &ctx()
+                )
+                .await
+                .unwrap_err(),
+            NodeAppError::UnsafeSource
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let node = directory.path().join("node");
+        fs::create_dir(&node).unwrap();
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("sentinel"), b"external").unwrap();
+        let link = node.join("linked");
+        assert!(directory_link(&outside, &link));
+        assert_eq!(
+            tree::validate_fresh_git(&pin_absolute(&node).unwrap(), policy).unwrap_err(),
+            NodeAppError::UnsafeSource
+        );
+        assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"external");
+        remove_directory_link(&link);
+    }
+}
+
+#[tokio::test]
+async fn existing_node_with_root_native_image_still_scans_and_reports_status() {
+    let g = git_fixture(locate_git().expect("real Git is required")).await;
+    let installed = g.install("existing-native", None).await;
+    let live = g.fixture.cn().join(installed.name.as_str());
+    fs::write(live.join("x.dll"), b"user-placed native image").unwrap();
+    let nodes = g
+        .fixture
+        .files
+        .scan(&g.fixture.root, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert!(!nodes[0].conflict);
+    assert_eq!(nodes[0].dirty, Some(true));
+    let status = g
+        .fixture
+        .files
+        .git_status(&g.fixture.root, &nodes[0], Default::default())
+        .await
+        .unwrap();
+    assert!(status.state.dirty);
+    assert!(status.state.status.contains("x.dll"));
+}
+
+#[tokio::test]
+async fn git_specs_always_disable_system_and_global_config() {
+    let g = git_fixture(locate_git().expect("real Git is required")).await;
+    super::git::TEST_SPECS.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+    let id = node_id("config-policy");
+    g.fixture
+        .files
+        .prepare(
+            &g.fixture.root,
+            &id,
+            &g.request(None),
+            None,
+            NodePreparePolicy::Strict,
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    #[cfg(windows)]
+    super::git::TEST_SPECS.with(|slot| {
+        let borrowed = slot.borrow();
+        let specs = borrowed.as_ref().unwrap();
+        let listing = specs
+            .iter()
+            .position(|spec| spec.args.iter().any(|arg| arg == "ls-tree"))
+            .unwrap();
+        let checkout = specs
+            .iter()
+            .position(|spec| spec.args.iter().any(|arg| arg == "checkout"))
+            .unwrap();
+        assert!(
+            listing < checkout,
+            "production admission must precede checkout"
+        );
+    });
+    let paths = Arc::new(super::paths::NodePaths::open(&g.fixture.root, true).unwrap());
+    let directory = paths.disabled.child(&paths.staging(&id).1, false).unwrap();
+    let git = g
+        .fixture
+        .files
+        .git
+        .bound(paths.clone(), vec![directory.clone()], Default::default())
+        .unwrap();
+    git.read_raw(
+        &paths.root.anchored_path(),
+        &paths.hooks(),
+        &directory.anchored_path(),
+        &["ls-tree", "--full-tree", "-z", "--name-only", "HEAD"],
+        &CancelToken::new(),
+    )
+    .await
+    .unwrap();
+    let specs = super::git::TEST_SPECS.with(|slot| slot.borrow_mut().take().unwrap());
+    for command in ["clone", "-C", "config", "ls-tree"] {
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.args.iter().any(|arg| arg == command)),
+            "{command}"
+        );
+    }
+    for spec in &specs {
+        let value = |name: &str| {
+            spec.env
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value)
+                .unwrap_or_else(|| panic!("missing {name}"))
+        };
+        assert_eq!(value("GIT_CONFIG_NOSYSTEM"), "1");
+        let config = Path::new(value("GIT_CONFIG_GLOBAL"));
+        assert!(config.is_absolute());
+        assert_eq!(fs::read(config).unwrap(), b"");
+        assert!(!spec.retained.is_empty());
+        for name in [
+            "GIT_CONFIG_SYSTEM",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_COUNT",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+        ] {
+            assert!(!spec.env.iter().any(|(key, _)| key == name), "{name}");
+        }
+    }
+    drop((specs, git, directory, paths));
+    g.fixture
+        .files
+        .discard_staging(&g.fixture.root, &id)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -3098,6 +3681,7 @@ async fn git_install_resolves_one_immutable_commit_and_tracks_a_branch() {
             &node_id("node-g2"),
             &g.request(None),
             None,
+            NodePreparePolicy::Strict,
             &ctx(),
         )
         .await;
@@ -3116,7 +3700,14 @@ async fn git_staged_content_changes_invalidate_the_review() {
     let staged = g
         .fixture
         .files
-        .prepare(&g.fixture.root, &install_id, &g.request(None), None, &ctx())
+        .prepare(
+            &g.fixture.root,
+            &install_id,
+            &g.request(None),
+            None,
+            NodePreparePolicy::Strict,
+            &ctx(),
+        )
         .await
         .unwrap();
     let mut reviewed = node(staged.name.as_str(), staged.source, true);
@@ -3688,6 +4279,7 @@ async fn git_tags_and_commits_stay_detached_and_ambiguous_names_are_rejected() {
             &node_id("node-t1"),
             &g.request(Some("v1")),
             None,
+            NodePreparePolicy::Strict,
             &ctx(),
         )
         .await
@@ -3714,6 +4306,7 @@ async fn git_tags_and_commits_stay_detached_and_ambiguous_names_are_rejected() {
             &node_id("node-t2"),
             &g.request(Some(&first)),
             None,
+            NodePreparePolicy::Strict,
             &ctx(),
         )
         .await
@@ -3742,6 +4335,7 @@ async fn git_tags_and_commits_stay_detached_and_ambiguous_names_are_rejected() {
             &node_id("node-t3"),
             &g.request(Some("release")),
             None,
+            NodePreparePolicy::Strict,
             &ctx(),
         )
         .await;
@@ -3757,6 +4351,7 @@ async fn git_tags_and_commits_stay_detached_and_ambiguous_names_are_rejected() {
                 &node_id("node-t4"),
                 &g.request(Some(bad)),
                 None,
+                NodePreparePolicy::Strict,
                 &ctx(),
             )
             .await;
@@ -3823,7 +4418,14 @@ async fn git_urls_must_be_https_without_credentials_when_local_remotes_are_not_a
             reference: None,
         };
         let result = strict
-            .prepare(&fixture.root, &node_id("node-url"), &request, None, &ctx())
+            .prepare(
+                &fixture.root,
+                &node_id("node-url"),
+                &request,
+                None,
+                NodePreparePolicy::Strict,
+                &ctx(),
+            )
             .await;
         assert_eq!(result.unwrap_err(), NodeAppError::UnsafeSource, "{url}");
     }
@@ -4626,7 +5228,14 @@ async fn git_commands_retain_all_descriptor_owners() {
     let staged = g
         .fixture
         .files
-        .prepare(&g.fixture.root, &id, &g.request(None), None, &step)
+        .prepare(
+            &g.fixture.root,
+            &id,
+            &g.request(None),
+            None,
+            NodePreparePolicy::Strict,
+            &step,
+        )
         .await
         .unwrap();
     let install_specs = super::git::TEST_SPECS.with(|slot| slot.borrow_mut().take().unwrap());
@@ -4673,6 +5282,7 @@ async fn git_commands_retain_all_descriptor_owners() {
             &node_id("retained-update"),
             &request,
             Some(&installed),
+            NodePreparePolicy::Strict,
             &step,
         )
         .await
@@ -4816,7 +5426,14 @@ async fn linked_comfyui_and_disabled_parents_are_refused() {
         assert_eq!(
             fixture
                 .files
-                .prepare(&fixture.root, &op.id, &request, None, &ctx())
+                .prepare(
+                    &fixture.root,
+                    &op.id,
+                    &request,
+                    None,
+                    NodePreparePolicy::Strict,
+                    &ctx()
+                )
                 .await
                 .unwrap_err(),
             NodeAppError::UnsafeSource
@@ -5326,6 +5943,80 @@ async fn node_preview_never_executes_editable_build_backend() {
     );
     assert!(!sentinel.exists());
     assert_eq!(inventory(), before);
+}
+
+#[tokio::test]
+async fn node_preview_never_imports_python_modules_from_node_directory() {
+    use crate::environment::{
+        layout::{Layout, ensure_cache_dirs},
+        packages::UvPackages,
+    };
+    use application::environment::{GuardedRequirements, InstallSpec, PackageInstaller};
+    let Some(uv) = locate_tool("uv") else {
+        eprintln!("skipped: uv is not available");
+        return;
+    };
+    let python = locate_tool("python").expect("real Python is required");
+    let version = Command::new(&uv).arg("--version").output().unwrap();
+    assert!(version.status.success());
+    eprintln!(
+        "preview tool: {}",
+        String::from_utf8_lossy(&version.stdout).trim()
+    );
+    let fixture = Fixture::new().await;
+    let layout = Layout::new(&fixture.root);
+    assert!(!layout.cache_dir().join("uv").exists());
+    ensure_cache_dirs(&layout).unwrap();
+    fs::create_dir_all(layout.uv_dir()).unwrap();
+    fs::copy(uv, layout.uv_exe()).unwrap();
+    let venv = fixture.root.join("envs/preview-isolation");
+    make_venv(&python, &venv);
+    let wheel = wheel_bytes("localpkg", "1.0");
+    let node = write_node(
+        &fixture,
+        "preview-isolation",
+        &[
+            ("requirements.txt", b"./localpkg-1.0-py3-none-any.whl\n"),
+            ("localpkg-1.0-py3-none-any.whl", &wheel),
+        ],
+    );
+    for name in ["json", "platform", "sysconfig"] {
+        fs::write(
+            fixture.cn().join(node.name.as_str()).join(format!("{name}.py")),
+            format!(
+                "from pathlib import Path\nPath({:?}).write_text('imported')\nraise RuntimeError('node module imported before consent')\n",
+                fixture.root.join(format!("trap-{name}")).to_string_lossy()
+            ),
+        )
+        .unwrap();
+    }
+    let guard = fixture
+        .files
+        .pin_location(&fixture.root, &node, None)
+        .await
+        .unwrap();
+    let path = guard.directory().join("requirements.txt");
+    let spec = InstallSpec {
+        requirement_files: vec![path.clone()],
+        guarded: Some(GuardedRequirements {
+            path,
+            directory: guard.directory().to_owned(),
+            text: guard.requirements().unwrap(),
+            retained: guard.retained(),
+        }),
+        no_deps: true,
+        ..Default::default()
+    };
+    let preview = UvPackages::new()
+        .preview_install(&fixture.root, &venv, &spec, &ctx())
+        .await;
+    for name in ["json", "platform", "sysconfig"] {
+        assert!(
+            !fixture.root.join(format!("trap-{name}")).exists(),
+            "uv imported {name} from the node directory: {preview:?}"
+        );
+    }
+    preview.unwrap();
 }
 
 #[cfg(windows)]
