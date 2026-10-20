@@ -8,9 +8,13 @@ const commands = vi.hoisted(() => ({
   secretClear: vi.fn(),
   secretStatus: vi.fn(),
   setupRun: vi.fn(),
+  setupListCuratedNodes: vi.fn(),
+  setupOpenInstall: vi.fn(),
+  setupNewInstall: vi.fn(),
   envPipApply: vi.fn(),
   nodeOpenRepository: vi.fn(),
   nodeGitStatus: vi.fn(),
+  nodeSubscribe: vi.fn(),
   appUpdateStatus: vi.fn(),
   appUpdateCheck: vi.fn(),
   appUpdateInstall: vi.fn(),
@@ -25,11 +29,79 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }))
 
-import { gateway, IpcClientError } from './gateway'
+import { gateway, IpcClientError, type CommitInput, type SetupActionDto } from './gateway'
 
 describe('gateway', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+  })
+
+  it('setup_curated_catalog_takes_no_arguments', async () => {
+    const catalog = [{
+      id: 'curated', name: 'Curated node', repository: 'https://example.com/node',
+      branch: 'main', commit: 'a'.repeat(40), provenance: 'Pinned catalog entry',
+    }]
+    commands.setupListCuratedNodes.mockResolvedValue({ status: 'ok', data: catalog })
+    await expect(gateway.setupListCuratedNodes()).resolves.toBe(catalog)
+    expect(commands.setupListCuratedNodes).toHaveBeenCalledWith()
+  })
+
+  it('setup_root_recovery_sends_exact_paths', async () => {
+    const response = { restartRequired: true }
+    commands.setupOpenInstall.mockResolvedValue({ status: 'ok', data: response })
+    commands.setupNewInstall.mockResolvedValue({ status: 'ok', data: response })
+    await expect(gateway.setupOpenInstall('D:/Existing install')).resolves.toBe(response)
+    expect(commands.setupOpenInstall).toHaveBeenCalledWith('D:/Existing install')
+    await expect(gateway.setupNewInstall('E:/New install')).resolves.toBe(response)
+    expect(commands.setupNewInstall).toHaveBeenCalledWith('E:/New install')
+
+    commands.setupOpenInstall.mockResolvedValue({
+      status: 'error', error: { code: 'root_invalid', message: 'Choose a valid installation.' },
+    })
+    await expect(gateway.setupOpenInstall('D:/Invalid')).rejects.toMatchObject({
+      name: 'IpcClientError', code: 'root_invalid', message: 'Choose a valid installation.',
+    })
+  })
+
+  it('setup_run_forwards_accelerators_curated_selection_and_retry_decisions', async () => {
+    const started = { runId: 'run-1' }
+    commands.setupRun.mockResolvedValue({ status: 'ok', data: started })
+    const request = {
+      mode: 'first_run' as const,
+      pythonSource: { kind: 'managed' as const },
+      profileId: 'profile-1', comfyuiRef: { kind: 'latest' as const },
+      installManager: false, accelerators: ['sage', 'flash'], curatedNodes: ['curated'],
+      cleanCache: false, confirmAdoptedChanges: false, allowSourceBuilds: false,
+    }
+    await expect(gateway.setupRun({ kind: 'new', request }, vi.fn())).resolves.toBe(started)
+    expect(commands.setupRun).toHaveBeenLastCalledWith({ kind: 'new', request }, expect.anything())
+    const empty = { ...request, accelerators: [], curatedNodes: [] }
+    await gateway.setupRun({ kind: 'new', request: empty }, vi.fn())
+    expect(commands.setupRun).toHaveBeenLastCalledWith({ kind: 'new', request: empty }, expect.anything())
+
+    const decision: CommitInput = {
+      planId: 'plan-1', binding: 'exact-binding', executeNodeCode: true,
+      runInstallPy: false, acknowledgeWarnings: true, rememberSource: false,
+      rememberInstallPy: false, confirmedChanges: [],
+    }
+    const retry = {
+      kind: 'retry', runId: 'run-1', managerConsent: 'exact-manager-commit',
+      curatedDecisions: [decision],
+    } satisfies SetupActionDto
+    await gateway.setupRun(retry, vi.fn())
+    expect(commands.setupRun).toHaveBeenLastCalledWith(retry, expect.anything())
+  })
+
+  it('node_subscription_keeps_tauri_channel_inside_gateway', async () => {
+    commands.nodeSubscribe.mockResolvedValue({ status: 'ok', data: 42 })
+    const receive = vi.fn()
+    await expect(gateway.nodeSubscribe(receive)).resolves.toBe(42)
+    expect(commands.nodeSubscribe).toHaveBeenCalledTimes(1)
+    const [channel] = commands.nodeSubscribe.mock.calls[0] as [{ onmessage: (event: unknown) => void }]
+    expect(channel).not.toBe(receive)
+    const event = { kind: 'snapshot', operations: [] }
+    channel.onmessage(event)
+    expect(receive).toHaveBeenCalledWith(event)
   })
 
   it('node_repository_open_uses_generated_command', async () => {

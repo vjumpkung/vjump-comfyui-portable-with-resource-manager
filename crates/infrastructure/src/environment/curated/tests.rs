@@ -223,3 +223,75 @@ fn a_malformed_catalog_is_refused() {
         );
     }
 }
+
+#[test]
+fn bundled_catalog_marks_only_plaguekind_unavailable() {
+    let nodes = BundledCuratedNodes::load()
+        .expect("the bundled catalog must parse and validate")
+        .list();
+    let unavailable: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.unavailable.is_some())
+        .collect();
+    assert_eq!(unavailable.len(), 1);
+    let node = unavailable[0];
+    assert_eq!(node.id, "comfyui-plaguekind-nodes");
+    assert_eq!(node.commit, "d58d006a4ea32c25c06499f2ff104f0852a045a6");
+    let reason = node.unavailable.as_deref().unwrap();
+    assert!(reason.contains("__pycache__"), "{reason}");
+    // The entry keeps its place in the catalog order.
+    assert_eq!(
+        nodes.iter().position(|candidate| candidate.id == node.id),
+        Some(19)
+    );
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node.unavailable.is_none())
+            .count(),
+        21
+    );
+}
+
+#[test]
+fn catalog_rejects_blank_or_control_unavailable_reason() {
+    let good = "0123456789abcdef0123456789abcdef01234567";
+    let catalog = |reason: &str| {
+        format!(
+            r#"{{"schema_version":1,"provenance":"p","nodes":[{{"repository":"owner/Name","branch":"main","commit":"{good}","unavailable":{}}}]}}"#,
+            serde_json::to_string(reason).unwrap()
+        )
+    };
+    let ok = BundledCuratedNodes::parse(&catalog("needs a clean checkout")).unwrap();
+    assert_eq!(
+        ok.list()[0].unavailable.as_deref(),
+        Some("needs a clean checkout")
+    );
+    // A missing reason and a null one both leave the entry available.
+    let without = format!(
+        r#"{{"schema_version":1,"provenance":"p","nodes":[{{"repository":"owner/Name","branch":"main","commit":"{good}","unavailable":null}}]}}"#
+    );
+    assert_eq!(
+        BundledCuratedNodes::parse(&without).unwrap().list()[0].unavailable,
+        None
+    );
+    let too_long = "x".repeat(301);
+    for reason in [
+        "",
+        "   ",
+        " padded",
+        "padded ",
+        "line\nbreak",
+        "bell\u{7}",
+        "escape\u{1b}[0m",
+        "nul\u{0}",
+        too_long.as_str(),
+    ] {
+        assert_eq!(
+            BundledCuratedNodes::parse(&catalog(reason)).unwrap_err(),
+            CuratedError::Unavailable,
+            "{reason:?}"
+        );
+    }
+    assert!(BundledCuratedNodes::parse(&catalog(&"x".repeat(300))).is_ok());
+}

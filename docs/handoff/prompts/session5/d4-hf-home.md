@@ -1,0 +1,27 @@
+ROLE: coder (write-capable). Mechanically implement the advisor-approved plan below. Do not redesign or expand scope. If the plan is underspecified or conflicts with the code, stop that item and report the gap precisely instead of improvising.
+
+## Build environment and repository rules (mandatory)
+- WORKING COPY: `D:\vjump\vjump-comfyui-portable-with-resource-manager` (branch `feat/m0-skeleton`, HEAD `a4175d1`). Uncommitted working-copy changes are verified packages P0, I, D2, D3 (see `docs/handoff/patches/` and `docs/handoff/evidence/s5-*`): preserve them; never revert files you did not change for this package.
+- Read `AGENTS.md` and `docs/handoff/tooling/coder-env.md` first. Default MSVC toolchain from `rust-toolchain.toml`, default `target/`; do NOT set RUSTUP_TOOLCHAIN or CARGO_TARGET_DIR.
+- Memory: 32 GB machine, ~10 GB free. Use `-j 6`; targeted `-p infrastructure` runs with test filters while iterating; workspace-wide commands once at the end. Never run two cargo commands at once.
+- Rust: rustfmt, clippy `-D warnings`; match surrounding style and comment density. Normalize edited files to LF.
+- Do not commit, push, stash, reset, checkout, apply, clean or touch git history. Do not modify files outside the stated scope. Do not touch `D:\vjc-s5\` or kill `vjumpkung-comfyui-desktop` processes.
+
+## Problem (native finding, verified by main 2026-10-20, scenario 6)
+Every Hugging Face download through the default `hf` CLI engine fails on Windows. Public non-gated Xet file `stabilityai/sd-vae-ft-mse-original@629b3ad3030ce36e15e70c5db7d91df0d60c627f:vae-ft-mse-840000-ema-pruned.safetensors` (334,641,190 B, sha256 735e4c3a447a3255760d7f86845f09f937809baa529c17370d83e4c3758f3c75), no credential stored → job `failed` after ~1 s with document error `ToolRuntime`; UI "The Hugging Face tool reported an error."; the cause is logged nowhere. Reproduced outside the app with the pinned `tools/hf/Scripts/hf.exe` (hf 2.2.0) and exactly the app's environment (env cleared; `process::system_baseline()` — crates/infrastructure/src/shared/process.rs:664-700 — has no USERPROFILE/HOMEDRIVE/HOMEPATH; plus HF_HOME/HF_HUB_DISABLE_TELEMETRY/PYTHONNOUSERSITE/PYTHONUTF8/TMP/TEMP/TMPDIR from crates/infrastructure/src/models/acquisition/hf_engine.rs:56-72): exit 1, `huggingface_hub/cli/_completion.py:36 Path.home() / ".bashrc"` → `RuntimeError: Could not determine home directory.` With a normal user environment the same command downloads fine. `RunError::Failed { tail }` is only classified (hf_engine.rs:150, `classify_stderr` :220-240); the tail is dropped. Other children get the real profile via `tool_environment` (crates/infrastructure/src/environment/layout.rs:120-171) and work — leave them unchanged.
+
+## Approved plan (advisor stand-in ruling D4: GO; hf_engine.rs only)
+1. In `HfDownloadCommand::for_job` (hf_engine.rs): create `<root>/data/cache/hf/home` with `create_dir_all` exactly like the cache/temp folders (failure → `DownloadErrorCode::Disk`), and set BOTH `USERPROFILE` and `HOME` to that folder on all platforms. Add nothing else (no APPDATA). Never use the real profile (isolation, NFR-SEC-2: profile credential files such as `.netrc` or a cached HF token must not be readable).
+2. On `RunError::Failed { tail, .. }` where `classify_stderr` returns `ToolRuntime`, log a `tracing::warn!` built by a pure fn `runtime_failure_summary(tail: &[String]) -> String`: the last 20 lines, each cut to 500 chars, total ≤ 4 KiB, passed through the existing `logging::redact` (the keyring token is registered with the redactor when read — crates/infrastructure/src/settings/secrets.rs ~31/127/150 — and `hf_…` patterns are covered). The user-facing error and the job document stay code-only (NFR-SEC-1).
+3. Tests (exact names): `hf_spec_uses_an_app_owned_home` (USERPROFILE and HOME == `<root>/data/cache/hf/home`, the folder exists, neither equals the parent process value); `hf_runtime_failure_summary_is_bounded_and_redacted` (include a registered secret, an `hf_…` token, over-long and too many lines); ignored live test `real_hf_download_succeeds_without_user_profile_variables` (downloads the Xet file above through the real HfDownloadCommand spec with the pinned hf tool found via an env var like the other `VJ_REAL_HF_*` tests — reuse their conventions in hf_proxy tests — and asserts size + sha256; it is run explicitly by main).
+4. Docs (only these): `docs/DOCUMENTATION.md` downloads section: "The `hf` downloader runs with a private home folder (`data/cache/hf/home`), not your profile. It never reads profile credential files such as `.netrc` or a cached Hugging Face token; its only credential is the token stored in the OS keyring." and append one row to `docs/handoff/evidence/s3-residuals.md` (next free number): "(native) Before D4, every `hf` download failed on Windows (`Path.home()` without `USERPROFILE`), and the cause was not logged. Fixed in D4; native evidence pending."
+
+## Success criteria (run at the end; report exact counts)
+```
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -j 6 -- -D warnings
+cargo test -p infrastructure --locked -j 6 hf_
+cargo test --workspace --locked -j 6 --no-fail-fast
+node scripts/check-arch-deps.mjs
+```
+OUTPUT: per-file summary with file:line, key diffs, every command result with counts, deviations with reasons. Also write it to `docs/handoff/evidence/s5-d4-implementation.md`.

@@ -1742,6 +1742,32 @@ fn curated_selection_is_validated_and_listed_in_catalog_order() {
 }
 
 #[test]
+fn first_run_rejects_unavailable_curated_selection() {
+    let world = World::new();
+    world.curated.lock().unwrap()[1].unavailable = Some("ships compiled cache files".into());
+    // An unavailable entry is refused alone or beside an available one, and nothing is stored.
+    for ids in [vec!["beta"], vec!["alpha", "beta"]] {
+        assert!(
+            matches!(
+                register(&world, curated_request(&ids)),
+                Err(EnvironmentAppError::CuratedSelectionInvalid)
+            ),
+            "{ids:?}"
+        );
+        assert!(world.runs.lock().unwrap().is_empty());
+    }
+    // The available entries of the same catalog are still selectable.
+    let id = register(&world, curated_request(&["alpha"])).unwrap();
+    let listed: Vec<_> = world
+        .run(&id)
+        .curated
+        .iter()
+        .map(|entry| entry.id.clone())
+        .collect();
+    assert_eq!(listed, ["alpha"]);
+}
+
+#[test]
 fn curated_step_reviews_every_node_and_installs_only_with_exact_decisions() {
     let c = Curated::new();
     let id = c.register(&["alpha", "beta"]);

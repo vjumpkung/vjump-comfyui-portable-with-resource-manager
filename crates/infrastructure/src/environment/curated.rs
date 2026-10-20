@@ -10,6 +10,7 @@ use crate::custom_nodes::provenance::{repository_folder, validate_remote};
 
 const BUNDLED: &str = include_str!("data/curated_nodes.json");
 const SCHEMA_VERSION: u32 = 1;
+const MAX_UNAVAILABLE_BYTES: usize = 300;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,6 +18,9 @@ struct EntryDoc {
     repository: String,
     branch: String,
     commit: String,
+    /// Why the entry cannot be installed at its pinned commit; the entry stays listed but unselectable.
+    #[serde(default)]
+    unavailable: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +47,8 @@ pub enum CuratedError {
     Empty,
     #[error("two curated nodes have the same id")]
     Duplicate,
+    #[error("a curated node has an invalid unavailability reason")]
+    Unavailable,
 }
 
 /// `owner/name` with the characters GitHub allows, and no `.git` suffix.
@@ -61,6 +67,14 @@ fn valid_repository(repository: &str) -> bool {
         }
         None => false,
     }
+}
+
+/// A reason shown to the user: trimmed, not empty, short and free of control characters.
+fn valid_unavailable(reason: &str) -> bool {
+    !reason.is_empty()
+        && reason.len() <= MAX_UNAVAILABLE_BYTES
+        && reason == reason.trim()
+        && !reason.chars().any(char::is_control)
 }
 
 /// The catalog the app ships with. Ids derive from the repository names and are unique.
@@ -98,6 +112,13 @@ impl BundledCuratedNodes {
             {
                 return Err(CuratedError::Commit);
             }
+            if entry
+                .unavailable
+                .as_deref()
+                .is_some_and(|reason| !valid_unavailable(reason))
+            {
+                return Err(CuratedError::Unavailable);
+            }
             let url = format!("https://github.com/{}.git", entry.repository);
             // The node installs into the folder named after the repository.
             let name = validate_remote(&url, false)
@@ -114,6 +135,7 @@ impl BundledCuratedNodes {
                 branch: entry.branch,
                 commit: entry.commit,
                 provenance: doc.provenance.clone(),
+                unavailable: entry.unavailable,
             });
         }
         Ok(Self { nodes })

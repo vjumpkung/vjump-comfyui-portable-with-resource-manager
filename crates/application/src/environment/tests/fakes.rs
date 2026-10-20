@@ -84,6 +84,7 @@ pub fn curated_spec(id: &str, commit: char) -> CuratedNodeSpec {
         branch: "main".into(),
         commit: commit.to_string().repeat(40),
         provenance: "fixture".into(),
+        unavailable: None,
     }
 }
 

@@ -100,7 +100,8 @@
     {
       "repository": "PlagueKind/ComfyUI-PlagueKind-Nodes",
       "branch": "main",
-      "commit": "d58d006a4ea32c25c06499f2ff104f0852a045a6"
+      "commit": "d58d006a4ea32c25c06499f2ff104f0852a045a6",
+      "unavailable": "Not available at this pinned commit: the repository includes compiled Python cache files (__pycache__) that are not part of the reviewed source, so the app cannot install it safely."
     },
     {
       "repository": "Smirnov75/ComfyUI-mxToolkit",

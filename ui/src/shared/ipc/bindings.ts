@@ -153,6 +153,21 @@ export const commands = {
 };
 
 /* Types */
+export type AcceleratorOptionDto = {
+	id: string,
+	name: string,
+	defaultSelected: boolean,
+	provenance: string,
+};
+
+export type AcceleratorResultDto = {
+	id: string,
+	selected: boolean,
+	status: ComponentStatusDto,
+	importable: boolean | null,
+	message: string | null,
+};
+
 export type AppInfoDto = {
 	version: string,
 	dataDir: string,
@@ -227,6 +242,8 @@ export type CommitInput = {
 	confirmedChanges: PinChangeDto[],
 };
 
+export type ComponentStatusDto = "installed" | "failed" | "skipped";
+
 export type ConflictChoiceDto = { kind: "skip" } | { kind: "keep_both" } | { kind: "overwrite"; approved: FileIdentityDto | null };
 
 export type ConsentDto = {
@@ -272,6 +289,7 @@ export type CuratedNodeDto = {
 	branch: string,
 	commit: string,
 	provenance: string,
+	unavailable: string | null,
 };
 
 /**  The progress of one selected curated node. */
@@ -408,6 +426,7 @@ export type EnvironmentInfoDto = {
 	comfyuiReference: string | null,
 	comfyuiCommit: string | null,
 	accelerators: string[],
+	components: InstalledComponentsDto,
 };
 
 export type EnvironmentSummaryDto = {
@@ -477,6 +496,11 @@ export type ImportPackInput = {
 	value: string,
 };
 
+export type InstalledComponentsDto = {
+	manager: ManagerResultDto | null,
+	accelerators: AcceleratorResultDto[],
+};
+
 export type InstalledNodeDto = {
 	id: string,
 	name: string,
@@ -533,6 +557,13 @@ export type LogChunkDto = {
 	cursor: number | null,
 	sessionId: string,
 	text: string,
+};
+
+export type ManagerResultDto = {
+	selected: boolean,
+	status: ComponentStatusDto,
+	sourceCommit: string | null,
+	message: string | null,
 };
 
 export type ModelDetailsDto = {
@@ -793,6 +824,7 @@ export type ProfileDto = {
 	enabled: boolean,
 	reasons: ReasonDto[],
 	provenance: string[],
+	accelerators: AcceleratorOptionDto[],
 };
 
 export type ProfileStatusDto = "stable" | "experimental";
@@ -1023,6 +1055,7 @@ export type SetupRequestDto = {
 	profileId: string,
 	comfyuiRef: ComfyRefDto,
 	installManager: boolean,
+	accelerators: string[],
 	/**  Catalog ids of the curated nodes. Choosing them is not consent: each is reviewed first. */
 	curatedNodes: string[],
 	cleanCache: boolean,

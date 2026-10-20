@@ -114,10 +114,15 @@ export const gateway = {
     root: string | null = null,
     envPath: string | null = null,
   ) => unwrap(() => commands.setupListProfiles(root, envPath)),
+  setupListCuratedNodes: () => unwrap(() => commands.setupListCuratedNodes()),
   setupValidatePython: (source: PythonSourceDto) =>
     unwrap(() => commands.setupValidatePython(source)),
   setupSelectRoot: (path: string, draft: string | null) =>
     unwrap(() => commands.setupSelectRoot(path, draft)),
+  setupOpenInstall: (path: string) =>
+    unwrap(() => commands.setupOpenInstall(path)),
+  setupNewInstall: (path: string) =>
+    unwrap(() => commands.setupNewInstall(path)),
   setupRun: (action: SetupActionDto, onEvent: (event: SetupEventDto) => void) =>
     unwrap(() => {
       const channel = new Channel<SetupEventDto>()

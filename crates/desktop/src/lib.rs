@@ -10,10 +10,10 @@ pub mod updates;
 #[link(name = "resource", kind = "static")]
 unsafe extern "C" {}
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use infrastructure::shared::{clock::RandomIds, logging, paths::resolve_root};
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 
 pub use state::{AppState, RecoveryInfo, Services};
 
@@ -27,6 +27,8 @@ pub fn run() {
     let bindings = ipc::bindings::builder::<tauri::Wry>();
     let logging_guard: Arc<Mutex<Option<logging::LoggingGuard>>> = Arc::new(Mutex::new(None));
     let setup_guard = logging_guard.clone();
+    // Retain the coordinator (and any exit lease) through run_return and log flushing.
+    let close = Arc::new(OnceLock::new());
 
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -59,7 +61,7 @@ pub fn run() {
             .insert("updater".to_owned(), config.plugin_config());
     }
 
-    let app = builder
+    let builder = builder
         .invoke_handler(bindings.invoke_handler())
         .on_window_event(|window, event| {
             if window.label() == MANAGER_WINDOW
@@ -67,8 +69,12 @@ pub fn run() {
             {
                 app_lifecycle::on_manager_close_requested(window.app_handle(), api);
             }
-        })
-        .setup(move |app| {
+        });
+    let code = run_with_runtime(
+        builder,
+        context,
+        close.clone(),
+        move |app| {
             let picker = Arc::new(picker::DialogPicker::new(app.handle().clone()));
             // The install root is resolved before anything is opened: debug override, the
             // bootstrap pointer, then the platform default. An unusable pointer never falls
@@ -120,36 +126,10 @@ pub fn run() {
                 )),
                 Arc::new(RandomIds::default()),
             )));
-            app.manage(state);
-            app_lifecycle::spawn_runtime_watch(app.handle().clone());
-            Ok(())
-        })
-        .build(context)
-        .expect("error while building the application");
-
-    // Retain the coordinator (and any exit lease) through run_return and log flushing.
-    let _close = app.state::<AppState>().close.clone();
-    let code = app.run_return(|app, event| {
-        // The last window closing must not end a retained background runtime.
-        if let RunEvent::Exit = event {
-            // Running transfers are paused and cleaned up before the process ends.
-            let state = app.state::<AppState>();
-            tauri::async_runtime::block_on(state.shutdown_downloads());
-            tauri::async_runtime::block_on(state.shutdown_library());
-        }
-        if let RunEvent::ExitRequested {
-            code: None, api, ..
-        } = event
-        {
-            api.prevent_exit();
-            if !app_lifecycle::keep_core_alive(app) {
-                tauri::async_runtime::spawn(app_lifecycle::perform(
-                    app.clone(),
-                    application::comfy_runtime::CloseAction::Exit,
-                ));
-            }
-        }
-    });
+            Ok(state)
+        },
+        on_run_event,
+    );
     // Dropping the guard flushes the non-blocking log writer.
     drop(
         logging_guard
@@ -159,3 +139,55 @@ pub fn run() {
     );
     std::process::exit(code);
 }
+
+fn run_with_runtime<R: tauri::Runtime>(
+    builder: tauri::Builder<R>,
+    context: tauri::Context<R>,
+    close: Arc<OnceLock<Arc<app_lifecycle::CloseCoordinator>>>,
+    state_factory: impl FnOnce(&mut tauri::App<R>) -> Result<AppState, Box<dyn std::error::Error>>
+    + Send
+    + 'static,
+    on_event: impl FnMut(&AppHandle<R>, RunEvent) + 'static,
+) -> i32 {
+    let app = builder
+        .setup(move |app| {
+            let state = state_factory(app)?;
+            let _ = close.set(state.close.clone());
+            app.manage(state);
+            app_lifecycle::spawn_runtime_watch(app.handle().clone());
+            tracing::info!("application setup finished");
+            Ok(())
+        })
+        .build(context)
+        .expect("error while building the application");
+    app.run_return(on_event)
+}
+
+fn on_run_event<R: tauri::Runtime>(app: &AppHandle<R>, event: RunEvent) {
+    // The last window closing must not end a retained background runtime.
+    if let RunEvent::Exit = event
+        && let Some(state) = app.try_state::<AppState>()
+    {
+        // Running transfers are paused and cleaned up before the process ends.
+        tauri::async_runtime::block_on(state.shutdown_downloads());
+        tauri::async_runtime::block_on(state.shutdown_library());
+        tracing::info!("application shutdown finished");
+    }
+    if let RunEvent::ExitRequested {
+        code: None, api, ..
+    } = event
+        && app.try_state::<AppState>().is_some()
+    {
+        api.prevent_exit();
+        if !app_lifecycle::keep_core_alive(app) {
+            tauri::async_runtime::spawn(app_lifecycle::perform(
+                app.clone(),
+                application::comfy_runtime::CloseAction::Exit,
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "startup_tests.rs"]
+mod startup_tests;

@@ -248,7 +248,10 @@ fn lifecycle_of<R: Runtime>(app: &AppHandle<R>) -> Option<Lifecycle> {
 
 /// True while the core must outlive its last window.
 pub fn keep_core_alive<R: Runtime>(app: &AppHandle<R>) -> bool {
-    app.state::<AppState>().close.headless()
+    let Some(state) = app.try_state::<AppState>() else {
+        return false;
+    };
+    state.close.headless()
         && !matches!(
             lifecycle_of(app),
             None | Some(Lifecycle::Stopped | Lifecycle::Crashed)
@@ -259,6 +262,9 @@ pub fn keep_core_alive<R: Runtime>(app: &AppHandle<R>) -> bool {
 /// decision runs outside the synchronous event handler.
 pub fn on_manager_close_requested<R: Runtime>(app: &AppHandle<R>, api: &tauri::CloseRequestApi) {
     api.prevent_close();
+    if app.try_state::<AppState>().is_none() {
+        return;
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let action = decide(&app).await;
@@ -336,8 +342,12 @@ pub async fn perform<R: Runtime>(app: AppHandle<R>, action: CloseAction) {
 
 /// Second launch: restores the manager window, which is absent in background mode.
 pub fn restore_manager<R: Runtime>(app: &AppHandle<R>) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let close = state.close.clone();
     if let Some(window) = app.get_webview_window(MANAGER_WINDOW) {
-        app.state::<AppState>().close.set_headless(false);
+        close.set_headless(false);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -358,7 +368,7 @@ pub fn restore_manager<R: Runtime>(app: &AppHandle<R>) {
         };
         match WebviewWindowBuilder::from_config(&app, &config).and_then(|builder| builder.build()) {
             Ok(window) => {
-                app.state::<AppState>().close.set_headless(false);
+                close.set_headless(false);
                 let _ = window.set_focus();
             }
             Err(error) => tracing::error!(%error, "the manager window could not be recreated"),
@@ -430,6 +440,28 @@ mod tests {
     };
     use infrastructure::shared::gate::TokioMaintenanceGate;
     use std::sync::{Arc, atomic::AtomicUsize};
+
+    #[test]
+    fn restore_manager_before_setup_is_safe_with_or_without_a_window() {
+        let app = tauri::test::mock_app();
+        assert!(app.try_state::<AppState>().is_none());
+        restore_manager(app.handle());
+        assert!(app.webview_windows().is_empty());
+
+        WebviewWindowBuilder::new(&app, MANAGER_WINDOW, Default::default())
+            .build()
+            .unwrap();
+        restore_manager(app.handle());
+        assert_eq!(app.webview_windows().len(), 1);
+        assert!(app.try_state::<AppState>().is_none());
+    }
+
+    #[test]
+    fn keep_core_alive_before_setup_is_false() {
+        let app = tauri::test::mock_app();
+        assert!(app.try_state::<AppState>().is_none());
+        assert!(!keep_core_alive(app.handle()));
+    }
 
     struct Supervisor {
         gate: TokioMaintenanceGate,

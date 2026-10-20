@@ -73,6 +73,7 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
                         "profileId": host_profile(),
                         "comfyuiRef": { "kind": "latest" },
                         "installManager": false,
+                        "accelerators": [],
                         "curatedNodes": [],
                         "cleanCache": false,
                         "confirmAdoptedChanges": false,
@@ -751,7 +752,14 @@ fn body_bytes(body: &tauri::ipc::InvokeResponseBody) -> Vec<u8> {
 fn recovery_handlers_keep_root_selection_diagnostics_and_pickers_available() {
     use application::environment::{RootInfo, RootSource};
     use desktop::RecoveryInfo;
-    for code in ["root_missing", "rebuild_required"] {
+    for code in ["root_missing", "root_inaccessible", "rebuild_required"] {
+        // setup_status retains the specific reason; normal-service commands use
+        // IpcError::recovery, which maps inaccessible roots to recovery_required.
+        let recovery_code = if code == "root_inaccessible" {
+            "recovery_required"
+        } else {
+            code
+        };
         let recorded = std::env::temp_dir().join("recorded-missing-install");
         let app = build_app_with(Options {
             recovery: Some(RecoveryInfo {
@@ -777,6 +785,7 @@ fn recovery_handlers_keep_root_selection_diagnostics_and_pickers_available() {
             ("app_diagnostics", json!({})),
             ("app_copy_diagnostics", json!({})),
             ("pick_folder", json!({ "title": null })),
+            ("pick_file", json!({ "title": null, "extensions": [] })),
         ] {
             let before = app.calls.count();
             let response = get_ipc_response(&window, request(cmd, local_url(), body));
@@ -788,6 +797,25 @@ fn recovery_handlers_keep_root_selection_diagnostics_and_pickers_available() {
                 );
             }
         }
+        let updater = get_ipc_response(
+            &window,
+            request("app_update_status", local_url(), json!({})),
+        )
+        .unwrap();
+        let updater: Value = serde_json::from_slice(&body_bytes(&updater)).unwrap();
+        assert_eq!(updater["configured"], false);
+        for (cmd, body, expected_code) in [
+            ("app_update_check", json!({}), "updater_not_configured"),
+            (
+                "app_update_install",
+                json!({ "updateId": "update-unknown", "onEvent": "__CHANNEL__:6" }),
+                recovery_code,
+            ),
+            ("setup_list_curated_nodes", json!({}), recovery_code),
+        ] {
+            let error = get_ipc_response(&window, request(cmd, local_url(), body)).unwrap_err();
+            assert_eq!(error["code"], expected_code, "{code}/{cmd}");
+        }
         let status =
             get_ipc_response(&window, request("setup_status", local_url(), json!({}))).unwrap();
         let status: Value = serde_json::from_slice(&body_bytes(&status)).unwrap();
@@ -795,7 +823,7 @@ fn recovery_handlers_keep_root_selection_diagnostics_and_pickers_available() {
         assert_eq!(status["installRoot"], recorded.display().to_string());
         let error =
             get_ipc_response(&window, request("settings_get", local_url(), json!({}))).unwrap_err();
-        assert_eq!(error["code"], code);
+        assert_eq!(error["code"], recovery_code);
         for label in [COMFYUI_WINDOW, "untrusted"] {
             let other =
                 tauri::WebviewWindowBuilder::new(&app.app, label, tauri::WebviewUrl::default())

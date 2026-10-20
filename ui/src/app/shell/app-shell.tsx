@@ -19,7 +19,7 @@ import {
 } from '@/shared/ipc/gateway'
 import { EmptyState } from '@/shared/ui/empty-state'
 
-import { NAV_ITEMS, type NavId } from './nav'
+import { type NavId } from './nav'
 import { Sidebar } from './sidebar'
 import { TopBar } from './top-bar'
 
@@ -98,16 +98,7 @@ function Page({
     return (
       <EnvironmentPage status={status} onSetup={onSetup} onResume={onResume} />
     )
-  const item = NAV_ITEMS.find((candidate) => candidate.id === active)
-  return (
-    <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-        {item?.label}
-      </h1>
-      <EmptyState title="Coming in a later milestone" />
-      <CloseRequestDialog />
-    </div>
-  )
+  return <EmptyState title="Page unavailable" />
 }
 
 export function AppShell({ status, onSetup, onResume }: PageActions) {

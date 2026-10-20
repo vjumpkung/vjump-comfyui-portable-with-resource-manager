@@ -4,12 +4,12 @@
 use std::path::PathBuf;
 
 use application::environment::{
-    ApplyOutcome, BlockedFeature, CheckId, ComfyRef, CuratedNodeSpec, CuratedProgress,
-    CuratedStatus, EnvironmentInfo, EnvironmentSummary, FailureKind, InstalledPackage,
-    PackageOperation, PackagePlan, PlanResolution, ProfileOffer, ProvisioningRun,
-    PythonSourceInput, PythonValidationReport, RecoveryReason, RunId, RunOutcome, RunStatus,
-    SetupAction, SetupEvent, SetupPhase, SetupRequest, SetupStatus, StepFailure, StepId,
-    StepStatus, ValidationTarget,
+    AcceleratorResult, ApplyOutcome, BlockedFeature, CheckId, ComfyRef, ComponentStatus,
+    CuratedNodeSpec, CuratedProgress, CuratedStatus, EnvironmentInfo, EnvironmentSummary,
+    FailureKind, InstalledComponents, InstalledPackage, ManagerResult, PackageOperation,
+    PackagePlan, PlanResolution, ProfileOffer, ProvisioningRun, PythonSourceInput,
+    PythonValidationReport, RecoveryReason, RunId, RunOutcome, RunStatus, SetupAction, SetupEvent,
+    SetupPhase, SetupRequest, SetupStatus, StepFailure, StepId, StepStatus, ValidationTarget,
 };
 use domain::environment::{
     Eligibility, EnvState, GpuProbe, HardwareObservation, IneligibleReason, OsKind, Ownership,
@@ -345,6 +345,7 @@ pub struct CuratedNodeDto {
     pub branch: String,
     pub commit: String,
     pub provenance: String,
+    pub unavailable: Option<String>,
 }
 
 impl From<&CuratedNodeSpec> for CuratedNodeDto {
@@ -356,6 +357,7 @@ impl From<&CuratedNodeSpec> for CuratedNodeDto {
             branch: value.branch.clone(),
             commit: value.commit.clone(),
             provenance: value.provenance.clone(),
+            unavailable: value.unavailable.clone(),
         }
     }
 }
@@ -521,7 +523,7 @@ fn recovery_message(reason: RecoveryReason) -> &'static str {
             "install.json was written by a newer version of this app. Update the app."
         }
         RecoveryReason::ManifestMissing => {
-            "install.json is missing although an environment is recorded. Restore the file; a guided rebuild arrives in a later milestone."
+            "install.json is missing although an environment is recorded. Restore the matching manifest from a backup before continuing."
         }
         RecoveryReason::ManifestMismatch => {
             "install.json and the app database disagree about the active environment. Nothing was changed."
@@ -701,6 +703,15 @@ pub enum ProfileStatusDto {
     Experimental,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceleratorOptionDto {
+    pub id: String,
+    pub name: String,
+    pub default_selected: bool,
+    pub provenance: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileDto {
@@ -720,6 +731,7 @@ pub struct ProfileDto {
     pub enabled: bool,
     pub reasons: Vec<ReasonDto>,
     pub provenance: Vec<String>,
+    pub accelerators: Vec<AcceleratorOptionDto>,
 }
 
 impl From<&ProfileOffer> for ProfileDto {
@@ -763,6 +775,16 @@ impl From<&ProfileOffer> for ProfileDto {
             enabled,
             reasons,
             provenance: profile.provenance.clone(),
+            accelerators: profile
+                .accelerators
+                .iter()
+                .map(|option| AcceleratorOptionDto {
+                    id: option.id.clone(),
+                    name: option.name.clone(),
+                    default_selected: option.default_selected,
+                    provenance: option.provenance.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -894,6 +916,7 @@ pub struct SetupRequestDto {
     pub profile_id: String,
     pub comfyui_ref: ComfyRefDto,
     pub install_manager: bool,
+    pub accelerators: Vec<String>,
     /// Catalog ids of the curated nodes. Choosing them is not consent: each is reviewed first.
     pub curated_nodes: Vec<String>,
     pub clean_cache: bool,
@@ -931,7 +954,7 @@ impl SetupActionDto {
                 profile_id: request.profile_id,
                 comfyui_ref: request.comfyui_ref.into(),
                 install_manager: request.install_manager,
-                accelerators: Vec::new(),
+                accelerators: request.accelerators,
                 curated_nodes: request.curated_nodes,
                 clean_cache: request.clean_cache,
                 confirm_adopted_changes: request.confirm_adopted_changes,
@@ -1080,6 +1103,86 @@ pub struct RootSelectionDto {
 
 // ---------------------------------------------------------------------------- environment
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ComponentStatusDto {
+    Installed,
+    Failed,
+    Skipped,
+}
+
+impl From<ComponentStatus> for ComponentStatusDto {
+    fn from(value: ComponentStatus) -> Self {
+        match value {
+            ComponentStatus::Installed => Self::Installed,
+            ComponentStatus::Failed => Self::Failed,
+            ComponentStatus::Skipped => Self::Skipped,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceleratorResultDto {
+    pub id: String,
+    pub selected: bool,
+    pub status: ComponentStatusDto,
+    pub importable: Option<bool>,
+    pub message: Option<String>,
+}
+
+impl From<&AcceleratorResult> for AcceleratorResultDto {
+    fn from(value: &AcceleratorResult) -> Self {
+        Self {
+            id: value.id.clone(),
+            selected: value.selected,
+            status: value.status.into(),
+            importable: value.importable,
+            message: value.message.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagerResultDto {
+    pub selected: bool,
+    pub status: ComponentStatusDto,
+    pub source_commit: Option<String>,
+    pub message: Option<String>,
+}
+
+impl From<&ManagerResult> for ManagerResultDto {
+    fn from(value: &ManagerResult) -> Self {
+        Self {
+            selected: value.selected,
+            status: value.status.into(),
+            source_commit: value.source_commit.clone(),
+            message: value.message.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledComponentsDto {
+    pub manager: Option<ManagerResultDto>,
+    pub accelerators: Vec<AcceleratorResultDto>,
+}
+
+impl From<&InstalledComponents> for InstalledComponentsDto {
+    fn from(value: &InstalledComponents) -> Self {
+        Self {
+            manager: value.manager.as_ref().map(ManagerResultDto::from),
+            accelerators: value
+                .accelerators
+                .iter()
+                .map(AcceleratorResultDto::from)
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentInfoDto {
@@ -1091,6 +1194,7 @@ pub struct EnvironmentInfoDto {
     pub comfyui_reference: Option<String>,
     pub comfyui_commit: Option<String>,
     pub accelerators: Vec<String>,
+    pub components: InstalledComponentsDto,
 }
 
 impl From<&EnvironmentInfo> for EnvironmentInfoDto {
@@ -1104,6 +1208,7 @@ impl From<&EnvironmentInfo> for EnvironmentInfoDto {
             comfyui_reference: info.comfyui_reference.clone(),
             comfyui_commit: info.comfyui_commit.clone(),
             accelerators: info.accelerators.clone(),
+            components: InstalledComponentsDto::from(&info.components),
         }
     }
 }
@@ -1412,6 +1517,7 @@ mod tests {
             profile_id: "profile".into(),
             comfyui_ref: ComfyRefDto::Latest,
             install_manager: false,
+            accelerators: Vec::new(),
             curated_nodes: vec!["comfyui-kjnodes".into()],
             clean_cache: false,
             confirm_adopted_changes: false,
@@ -1450,6 +1556,161 @@ mod tests {
         assert!(curated_decisions[0].consent.acknowledge_warnings);
         // Source builds are never part of a decision.
         assert!(!curated_decisions[0].consent.allow_source_builds);
+    }
+
+    #[test]
+    fn profile_options_preserve_component_labels_defaults_and_provenance() {
+        let mut profile = run(Vec::new()).profile;
+        profile.status = ProfileStatus::Stable;
+        let option = |id: &str, name: &str, default_selected, provenance: &str| {
+            domain::environment::AcceleratorSpec {
+                id: id.into(),
+                name: name.into(),
+                modules: vec![id.into()],
+                source: domain::environment::AcceleratorSource::Packages {
+                    requirements: vec![id.into()],
+                },
+                no_deps: true,
+                default_selected,
+                non_fatal: true,
+                provenance: provenance.into(),
+            }
+        };
+        profile.accelerators = vec![
+            option(
+                "zeta",
+                "Authored option (experimental)",
+                false,
+                "No app validation.",
+            ),
+            option(
+                "alpha",
+                "Authored default",
+                true,
+                "Exact authored provenance.",
+            ),
+        ];
+        let mut offer = ProfileOffer {
+            profile,
+            eligibility: Eligibility::Eligible,
+        };
+        let dto = ProfileDto::from(&offer);
+        assert_eq!(dto.status, ProfileStatusDto::Stable);
+        assert_eq!(
+            serde_json::to_value(dto.accelerators).unwrap(),
+            serde_json::json!([
+                { "id": "zeta", "name": "Authored option (experimental)",
+                  "defaultSelected": false, "provenance": "No app validation." },
+                { "id": "alpha", "name": "Authored default",
+                  "defaultSelected": true, "provenance": "Exact authored provenance." },
+            ])
+        );
+        offer.profile.accelerators.clear();
+        assert!(ProfileDto::from(&offer).accelerators.is_empty());
+    }
+
+    #[test]
+    fn setup_request_forwards_explicit_accelerators() {
+        for selected in [vec!["zeta".to_owned(), "alpha".to_owned()], Vec::new()] {
+            let request = SetupRequestDto {
+                mode: SetupModeDto::FirstRun,
+                python_source: PythonSourceDto::Managed,
+                profile_id: "profile".into(),
+                comfyui_ref: ComfyRefDto::Latest,
+                install_manager: false,
+                accelerators: selected.clone(),
+                curated_nodes: Vec::new(),
+                clean_cache: false,
+                confirm_adopted_changes: false,
+                allow_source_builds: false,
+            };
+            let SetupAction::New(request) = SetupActionDto::New { request }
+                .into_application(std::path::Path::new("root"))
+                .unwrap()
+            else {
+                panic!("a new run converts");
+            };
+            assert_eq!(request.accelerators, selected);
+        }
+    }
+
+    #[test]
+    fn environment_info_preserves_stored_component_results() {
+        let profile = run(Vec::new()).profile;
+        let mut info = EnvironmentInfo {
+            env: EnvironmentSummary {
+                id: EnvId::new("env-1").unwrap(),
+                path: PathBuf::from("env"),
+                ownership: Ownership::AppOwned,
+                source: PythonSourceKind::Managed,
+                python_version: profile.python,
+                profile_id: profile.id,
+                profile_revision: profile.revision,
+                state: EnvState::Verified,
+                pins: PinSet::new(),
+                verification: None,
+            },
+            profile_label: Some("Profile".into()),
+            cuda_variant: None,
+            torch_version: None,
+            triton_version: None,
+            comfyui_reference: None,
+            comfyui_commit: None,
+            accelerators: vec!["legacy-summary".into()],
+            components: InstalledComponents {
+                manager: Some(ManagerResult {
+                    selected: true,
+                    status: ComponentStatus::Installed,
+                    source_commit: Some("exact-manager-commit".into()),
+                    message: Some("Manager metadata".into()),
+                }),
+                accelerators: vec![
+                    AcceleratorResult {
+                        id: "installed".into(),
+                        selected: true,
+                        status: ComponentStatus::Installed,
+                        importable: Some(true),
+                        message: Some("Import passed".into()),
+                    },
+                    AcceleratorResult {
+                        id: "failed".into(),
+                        selected: true,
+                        status: ComponentStatus::Failed,
+                        importable: Some(false),
+                        message: Some("Import failed".into()),
+                    },
+                    AcceleratorResult {
+                        id: "skipped".into(),
+                        selected: false,
+                        status: ComponentStatus::Skipped,
+                        importable: None,
+                        message: None,
+                    },
+                ],
+            },
+        };
+        let dto = EnvironmentInfoDto::from(&info);
+        assert_eq!(dto.accelerators, ["legacy-summary"]);
+        assert_eq!(
+            serde_json::to_value(dto.components).unwrap(),
+            serde_json::json!({
+                "manager": { "selected": true, "status": "installed",
+                    "sourceCommit": "exact-manager-commit", "message": "Manager metadata" },
+                "accelerators": [
+                    { "id": "installed", "selected": true, "status": "installed",
+                      "importable": true, "message": "Import passed" },
+                    { "id": "failed", "selected": true, "status": "failed",
+                      "importable": false, "message": "Import failed" },
+                    { "id": "skipped", "selected": false, "status": "skipped",
+                      "importable": null, "message": null },
+                ]
+            })
+        );
+        info.components = InstalledComponents::default();
+        assert_eq!(
+            serde_json::to_value(EnvironmentInfoDto::from(&info).components).unwrap(),
+            serde_json::json!({ "manager": null, "accelerators": [] })
+        );
     }
 
     #[test]

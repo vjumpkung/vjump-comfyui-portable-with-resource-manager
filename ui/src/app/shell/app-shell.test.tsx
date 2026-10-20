@@ -66,11 +66,13 @@ afterEach(cleanup)
 it('custom_nodes_navigation_renders_the_feature', () => {
   mount()
   expect(screen.getByText('Custom Nodes feature')).toBeTruthy()
-  expect(screen.queryByText('Coming in a later milestone')).toBeNull()
   // The shell hands the feature the maintenance flag and the live runtime status.
   expect(screen.getByText('busy:false runtime:running actions:false')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Open ComfyUI stub' }))
   expect(screen.getByText('ComfyUI page')).toBeTruthy()
+  expect(screen.queryByText('Custom Nodes feature')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Overview' }))
+  expect(screen.getByText('Overview page')).toBeTruthy()
 })
 
 it('reports_setup_in_progress_as_maintenance_busy', () => {

@@ -6,6 +6,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -34,6 +35,7 @@ beforeEach(() => {
     comfyuiReference: 'v1',
     comfyuiCommit: 'abcdef',
     accelerators: [],
+    components: { manager: null, accelerators: [] },
   })
   vi.mocked(gateway.envPackages).mockResolvedValue(
     Array.from({ length: 250 }, (_, index) => ({
@@ -85,6 +87,43 @@ it('keeps RepairRequired honest even when environment detail cache is older', as
   )
   fireEvent.click(screen.getByRole('button', { name: 'Repair environment' }))
   expect(onSetup).toHaveBeenCalledWith('repair')
+})
+
+it('environment_page_shows_stored_accelerator_results', async () => {
+  const info = await gateway.envInfo()
+  vi.mocked(gateway.envInfo).mockResolvedValue({
+    ...info,
+    accelerators: ['reported-summary'],
+    components: {
+      manager: null,
+      accelerators: [
+        { id: 'installed-option', selected: true, status: 'installed', importable: true, message: 'Import check passed.' },
+        { id: 'failed-option', selected: true, status: 'failed', importable: false, message: 'Missing dependency.' },
+        { id: 'skipped-option', selected: false, status: 'skipped', importable: null, message: 'Not selected.' },
+      ],
+    },
+  })
+  const { unmount } = mount()
+  await screen.findByText('installed-option')
+  expect(screen.getByText('reported-summary')).toBeTruthy()
+  const result = (id: string) => within(screen.getByText(id).closest('li')!)
+  expect(result('installed-option').getByText('Yes')).toBeTruthy()
+  expect(result('installed-option').getByText('installed')).toBeTruthy()
+  expect(result('installed-option').getByText('Passed')).toBeTruthy()
+  expect(result('installed-option').getByText('Import check passed.')).toBeTruthy()
+  expect(result('failed-option').getByText('failed')).toBeTruthy()
+  expect(result('failed-option').getByText('Failed')).toBeTruthy()
+  expect(result('failed-option').getByText('Missing dependency.')).toBeTruthy()
+  expect(result('skipped-option').getByText('No')).toBeTruthy()
+  expect(result('skipped-option').getByText('skipped')).toBeTruthy()
+  expect(result('skipped-option').getByText('Untested')).toBeTruthy()
+  expect(result('skipped-option').getByText('Not selected.')).toBeTruthy()
+  unmount()
+
+  vi.mocked(gateway.envInfo).mockResolvedValue(info)
+  mount()
+  await screen.findByText('No recorded accelerator outcomes')
+  expect(screen.getByText(/This does not establish which accelerators are installed/)).toBeTruthy()
 })
 
 it('blocks selected-env deletion and requires exact ID confirmation for inactive deletion', async () => {

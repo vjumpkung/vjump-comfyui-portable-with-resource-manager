@@ -27,6 +27,7 @@ import {
   DialogTitle,
 } from '@/shared/ui/dialog'
 import { ErrorNotice } from '@/shared/ui/feedback'
+import { EmptyState } from '@/shared/ui/empty-state'
 import {
   Field,
   FieldDescription,
@@ -256,6 +257,51 @@ export function EnvironmentPage({
           </CardContent>
         </Card>
       )}
+      {info.data && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Stored accelerator results</CardTitle>
+            <CardDescription>
+              Recorded setup outcomes. Import checks are not run by this page.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {info.data.components.accelerators.length === 0 ? (
+              <EmptyState
+                title="No recorded accelerator outcomes"
+                description="Older metadata may not record optional components. This does not establish which accelerators are installed."
+              />
+            ) : (
+              <ul className="flex flex-col gap-4">
+                {info.data.components.accelerators.map((result) => (
+                  <li key={result.id} className="flex flex-col gap-2 text-sm">
+                    <p className="break-all font-mono">{result.id}</p>
+                    <dl className="grid gap-2 sm:grid-cols-3">
+                      <div>
+                        <dt>Selected</dt>
+                        <dd>{result.selected ? 'Yes' : 'No'}</dd>
+                      </div>
+                      <div>
+                        <dt>Install status</dt>
+                        <dd>{label(result.status)}</dd>
+                      </div>
+                      <div>
+                        <dt>Import result</dt>
+                        <dd>
+                          {result.importable === null
+                            ? 'Untested'
+                            : result.importable ? 'Passed' : 'Failed'}
+                        </dd>
+                      </div>
+                    </dl>
+                    {result.message && <p className="break-words">{result.message}</p>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      )}
       <Card>
         <CardHeader>
           <CardTitle>Installed packages</CardTitle>
@@ -342,8 +388,8 @@ export function EnvironmentPage({
           <CardTitle>Re-setup</CardTitle>
           <CardDescription>
             All modes retain the previous environment until you explicitly
-            delete it. ComfyUI must be stopped; M1 cannot stop externally
-            started processes for you.
+            delete it. Stop ComfyUI before continuing. If you started it outside
+            this app, stop that external process yourself.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -378,9 +424,8 @@ export function EnvironmentPage({
             <Info />
             <AlertTitle>Delete by recorded environment ID</AlertTitle>
             <AlertDescription>
-              The M1 API exposes the selected environment and latest run, but
-              does not list retained environments. Use the ID recorded in an
-              earlier setup. Review the exact ID below before deletion.
+              Enter the inactive environment ID recorded by an earlier setup.
+              Review the exact ID below before deletion.
             </AlertDescription>
           </Alert>
           <FieldGroup>

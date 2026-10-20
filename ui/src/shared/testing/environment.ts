@@ -40,6 +40,7 @@ export const profile: ProfileDto = {
   enabled: true,
   reasons: [],
   provenance: ['Verified fixture'],
+  accelerators: [],
 }
 
 export const run: RunSnapshotDto = {

@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Check, FolderOpen, Info, RefreshCw } from 'lucide-react'
 
 import {
@@ -35,7 +35,12 @@ import { Skeleton } from '@/shared/ui/skeleton'
 import { RadioGroup, RadioGroupItem } from '@/shared/ui/radio-group'
 import { StatusBadge } from '@/shared/ui/status-badge'
 import { ToggleGroup, ToggleGroupItem } from '@/shared/ui/toggle-group'
-import { modeLabels, profileReasons, readDraft } from './model'
+import {
+  modeLabels,
+  profileReasons,
+  readDraft,
+  type CuratedReviewProps,
+} from './model'
 import { RunProgress } from './run-progress'
 import { useSetupRun } from './use-setup-run'
 
@@ -54,12 +59,14 @@ export function SetupWizard({
   resume = false,
   onClose,
   refresh,
+  renderCuratedReview,
 }: {
   status: SetupStatusDto
   mode: SetupModeDto
   resume?: boolean
   onClose: () => void
   refresh: () => void
+  renderCuratedReview: (props: CuratedReviewProps) => ReactNode
 }) {
   const [draft] = useState(() => readDraft(status.draft))
   const [stage, setStage] = useState(mode === 'first_run' ? 0 : 1)
@@ -89,6 +96,11 @@ export function SetupWizard({
     draft.installManager ?? false,
   )
   const [cleanCache, setCleanCache] = useState(draft.cleanCache ?? false)
+  const [acceleratorSelection, setAcceleratorSelection] = useState<{
+    profileId: string
+    ids: string[]
+  } | null>(null)
+  const [curatedSelection, setCuratedSelection] = useState<string[] | null>(null)
   const [adoptedConfirmed, setAdoptedConfirmed] = useState(false)
   const [showRun, setShowRun] = useState(resume)
   const [dismissedRun, setDismissedRun] = useState<string | null>(null)
@@ -144,6 +156,15 @@ export function SetupWizard({
     queryFn: () => gateway.setupListProfiles(null, customEnv),
     enabled: stage >= 1 && !showRun,
   })
+  const curated = useQuery({
+    queryKey: ['setup-curated-nodes'],
+    queryFn: () => gateway.setupListCuratedNodes(),
+    enabled: mode === 'first_run' && !showRun,
+  })
+  if (curated.data && curatedSelection === null)
+    setCuratedSelection(
+      curated.data.filter((entry) => entry.unavailable === null).map((entry) => entry.id),
+    )
   const offers = profiles.data ?? []
   const eligible = offers.filter(
     (profile) =>
@@ -153,6 +174,17 @@ export function SetupWizard({
     offers.find((profile) => profile.id === profileId) ??
     eligible.find((profile) => profile.recommended) ??
     eligible[0]
+  if (chosen && acceleratorSelection?.profileId !== chosen.id)
+    setAcceleratorSelection({
+      profileId: chosen.id,
+      ids: chosen.accelerators
+        .filter((option) => option.defaultSelected)
+        .map((option) => option.id),
+    })
+  const accelerators =
+    acceleratorSelection?.profileId === chosen?.id
+      ? (acceleratorSelection?.ids ?? [])
+      : []
   const profileOK =
     !!chosen &&
     profileReasons(chosen, mode, status.activeEnv, report).length === 0
@@ -160,7 +192,11 @@ export function SetupWizard({
     source.kind === 'managed' ||
     (!!report?.usable &&
       (report.target !== 'existing_venv' || adoptedConfirmed))
-  const optionsOK = mode !== 'first_run' || !useTag || tag.trim().length > 0
+  const optionsOK =
+    mode !== 'first_run' ||
+    ((!useTag || tag.trim().length > 0) &&
+      curated.isSuccess &&
+      curatedSelection !== null)
   const ready =
     profileOK &&
     pythonOK &&
@@ -189,6 +225,7 @@ export function SetupWizard({
           run={status.run}
           controller={controller}
           refresh={refresh}
+          renderCuratedReview={renderCuratedReview}
           onDone={
             status.activeEnv
               ? onClose
@@ -231,7 +268,7 @@ export function SetupWizard({
           <Info />
           <AlertTitle>Re-setup preserves user data</AlertTitle>
           <AlertDescription>
-            ComfyUI must be stopped before starting. M1 checks for running
+            ComfyUI must be stopped before starting. Setup checks for running
             processes; stop an external ComfyUI process yourself. The current
             checkout is retained. Repair verifies first and creates a
             replacement only if needed. Models, user files and custom node
@@ -668,29 +705,73 @@ export function SetupWizard({
               ) : (
                 <p>
                   The existing ComfyUI checkout and recorded commit are
-                  retained. Updating ComfyUI is a later milestone.
+                  retained. ComfyUI updates are available separately.
                 </p>
               )}
               <FieldSet>
                 <FieldLegend>Optional components</FieldLegend>
                 <FieldGroup>
-                  <Field orientation="horizontal">
-                    <Checkbox
-                      id="manager"
-                      checked={installManager}
-                      onCheckedChange={(value) =>
-                        setInstallManager(value === true)
-                      }
-                    />
-                    <FieldLabel htmlFor="manager">
-                      Install ComfyUI-Manager (off by default)
-                    </FieldLabel>
-                  </Field>
-                  <FieldDescription>
-                    If selected, setup pauses for consent after resolving the
-                    exact Manager source and commit, before installing its
-                    dependencies.
-                  </FieldDescription>
+                  {mode === 'repair' ? (
+                    <p>
+                      Repair retains the recorded Manager and accelerator choices.
+                    </p>
+                  ) : (
+                    <>
+                      <Field orientation="horizontal">
+                        <Checkbox
+                          id="manager"
+                          checked={installManager}
+                          onCheckedChange={(value) =>
+                            setInstallManager(value === true)
+                          }
+                        />
+                        <FieldLabel htmlFor="manager">
+                          Install ComfyUI-Manager (off by default)
+                        </FieldLabel>
+                      </Field>
+                      <FieldDescription>
+                        If selected, setup pauses for consent after resolving the
+                        exact Manager source and commit, before installing its
+                        dependencies.
+                      </FieldDescription>
+                      <FieldSet>
+                        <FieldLegend>Accelerators</FieldLegend>
+                        <FieldDescription>
+                          Options belong to the selected profile. Read each
+                          option’s provenance before selecting it.
+                        </FieldDescription>
+                        <FieldGroup>
+                          {chosen?.accelerators.map((option) => (
+                            <Field key={option.id}>
+                              <Field orientation="horizontal">
+                                <Checkbox
+                                  id={`accelerator-${option.id}`}
+                                  checked={accelerators.includes(option.id)}
+                                  onCheckedChange={(checked) =>
+                                    setAcceleratorSelection({
+                                      profileId: chosen.id,
+                                      ids: checked === true
+                                        ? [...accelerators, option.id]
+                                        : accelerators.filter((id) => id !== option.id),
+                                    })
+                                  }
+                                />
+                                <FieldLabel htmlFor={`accelerator-${option.id}`}>
+                                  {option.name}
+                                </FieldLabel>
+                              </Field>
+                              <FieldDescription className="break-words">
+                                {option.provenance}
+                              </FieldDescription>
+                            </Field>
+                          ))}
+                          {chosen?.accelerators.length === 0 && (
+                            <p>This profile offers no optional accelerators.</p>
+                          )}
+                        </FieldGroup>
+                      </FieldSet>
+                    </>
+                  )}
                   <Field orientation="horizontal">
                     <Checkbox
                       id="clean-cache"
@@ -703,15 +784,52 @@ export function SetupWizard({
                   </Field>
                 </FieldGroup>
               </FieldSet>
-              <Alert>
-                <Info />
-                <AlertTitle>M1 scope</AlertTitle>
-                <AlertDescription>
-                  Optional accelerators and curated custom node packs are
-                  deferred. Source-distribution builds are disabled. Runtime
-                  Start / Stop controls arrive in M2.
-                </AlertDescription>
-              </Alert>
+              {mode === 'first_run' && (
+                <FieldSet>
+                  <FieldLegend>Curated custom nodes</FieldLegend>
+                  <FieldDescription>
+                    Selection is not execution consent. Earlier setup steps run
+                    first; every actual curated plan is reviewed before any
+                    curated node is committed. Setup never runs install.py.
+                  </FieldDescription>
+                  {curated.isPending && <p role="status">Loading curated catalog…</p>}
+                  {curated.isError && (
+                    <ErrorNotice error={curated.error} retry={() => { void curated.refetch() }} />
+                  )}
+                  <FieldGroup>
+                    {curated.data?.map((entry) => (
+                      <Field key={entry.id}>
+                        <Field orientation="horizontal">
+                          <Checkbox
+                            id={`curated-${entry.id}`}
+                            checked={entry.unavailable === null
+                              && (curatedSelection?.includes(entry.id) ?? false)}
+                            disabled={entry.unavailable !== null}
+                            onCheckedChange={(checked) =>
+                              setCuratedSelection((current) => checked === true
+                                ? [...(current ?? []), entry.id]
+                                : (current ?? []).filter((id) => id !== entry.id))
+                            }
+                          />
+                          <FieldLabel htmlFor={`curated-${entry.id}`}>
+                            {entry.name}
+                          </FieldLabel>
+                        </Field>
+                        <FieldDescription className="break-all font-mono">
+                          {entry.repository} · branch {entry.branch} (informational)
+                          {' '}· pinned commit {entry.commit.slice(0, 12)}
+                        </FieldDescription>
+                        {entry.unavailable !== null && (
+                          <FieldDescription>Unavailable: {entry.unavailable}</FieldDescription>
+                        )}
+                      </Field>
+                    ))}
+                    {curated.isSuccess && curated.data.length === 0 && (
+                      <p>No curated custom nodes are available.</p>
+                    )}
+                  </FieldGroup>
+                </FieldSet>
+              )}
             </FieldGroup>
           )}
           {stage === 5 && (
@@ -750,18 +868,30 @@ export function SetupWizard({
                 <div>
                   <dt>Manager / cache clean</dt>
                   <dd>
-                    {installManager
+                    {mode === 'repair' ? 'Recorded component choices retained' : installManager
                       ? 'Manager selected; consent still required'
                       : 'Manager off'}{' '}
                     / {cleanCache ? 'Clean cache' : 'Keep cache'}
                   </dd>
                 </div>
+                <div>
+                  <dt>Accelerators</dt>
+                  <dd>{mode === 'repair' ? 'Recorded choices retained' : chosen?.accelerators
+                    .filter((option) => accelerators.includes(option.id))
+                    .map((option) => option.name).join(', ') || 'None selected'}</dd>
+                </div>
+                {mode === 'first_run' && <div>
+                  <dt>Curated custom nodes</dt>
+                  <dd>{curated.data?.filter((entry) => curatedSelection?.includes(entry.id))
+                    .map((entry) => entry.name).join(', ') || 'None selected'}</dd>
+                </div>}
               </dl>
               <p>
                 The backend rechecks free space and compatibility immediately
                 before work. Package operations are serialized and require
                 ComfyUI to be stopped.
               </p>
+              {mode === 'first_run' && <p>Curated selection is not execution consent. Earlier setup steps run first; every actual curated plan must be reviewed before any curated node is committed.</p>}
               {!ready && (
                 <Alert variant="destructive">
                   <AlertTitle>Setup is not ready</AlertTitle>
@@ -840,7 +970,8 @@ export function SetupWizard({
                             ? { kind: 'tag', value: tag.trim() }
                             : { kind: 'latest' },
                       installManager,
-                      curatedNodes: [],
+                      accelerators: mode === 'repair' ? [] : accelerators,
+                      curatedNodes: mode === 'first_run' ? curatedSelection ?? [] : [],
                       cleanCache,
                       confirmAdoptedChanges: adoptedConfirmed,
                       allowSourceBuilds: false,

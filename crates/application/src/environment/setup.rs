@@ -289,8 +289,9 @@ impl StartSetup {
         Ok(run_id)
     }
 
-    /// Validates the curated selection and lists it in catalog order. A selection is not consent:
-    /// the nodes are reviewed and confirmed when the run reaches them.
+    /// Validates the curated selection and lists it in catalog order; an unavailable entry cannot
+    /// be selected. A selection is not consent: the nodes are reviewed and confirmed when the run
+    /// reaches them.
     fn curated_progress(
         &self,
         request: &SetupRequest,
@@ -301,10 +302,12 @@ impl StartSetup {
         let catalog = self.deps.curated.list();
         let mut selected = std::collections::HashSet::new();
         if request.mode != SetupMode::FirstRun
-            || request
-                .curated_nodes
-                .iter()
-                .any(|id| !selected.insert(id) || !catalog.iter().any(|entry| &entry.id == id))
+            || request.curated_nodes.iter().any(|id| {
+                !selected.insert(id)
+                    || !catalog
+                        .iter()
+                        .any(|entry| &entry.id == id && entry.unavailable.is_none())
+            })
         {
             return Err(EnvironmentAppError::CuratedSelectionInvalid);
         }

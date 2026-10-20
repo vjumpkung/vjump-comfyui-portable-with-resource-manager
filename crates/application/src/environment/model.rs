@@ -478,6 +478,9 @@ pub struct CuratedNodeSpec {
     pub branch: String,
     pub commit: String,
     pub provenance: String,
+    /// Why this entry cannot be installed at its pinned commit. It stays listed but cannot be
+    /// selected.
+    pub unavailable: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

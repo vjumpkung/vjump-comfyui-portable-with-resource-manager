@@ -18,10 +18,11 @@ import {
   type Consent,
 } from './model'
 
-function PlanConsent({ plan, value, onChange }: {
+function PlanConsent({ plan, value, onChange, allowRememberSource }: {
   plan: PlanReviewDto
   value: Consent
   onChange: (value: Consent) => void
+  allowRememberSource: boolean
 }) {
   const prefix = useId()
   const namespace = hasTrustNamespace(plan.source)
@@ -87,14 +88,14 @@ function PlanConsent({ plan, value, onChange }: {
       {plan.hasInstallPy && check('hook', 'Run the root install.py script with the selected Python environment')}
       {plan.warnings.length > 0 && check('warnings', 'I acknowledge all displayed warnings')}
       {plan.protectedChanges.length > 0 && check('pins', 'I approve exactly these protected-package changes')}
-      {namespace && check('remember', 'Remember this source as trusted')}
-      {namespace && plan.hasInstallPy && value.hook && value.remember &&
+      {allowRememberSource && namespace && check('remember', 'Remember this source as trusted')}
+      {allowRememberSource && namespace && plan.hasInstallPy && value.hook && value.remember &&
         check('rememberHook', 'Also remember permission to run install.py for this source')}
     </FieldGroup>
   </FieldSet>
 }
 
-interface ReviewProps {
+export interface ReviewDialogProps {
   plans: PlanReviewDto[]
   busy: boolean
   onCommit: (items: CommitInput[]) => void
@@ -102,16 +103,22 @@ interface ReviewProps {
   onCancel: (() => void) | null
   /** A failure to show inside the dialog, because the page behind a modal is not reachable. */
   notice?: ReactNode
+  title?: string
+  commitLabel?: string
+  closeLabel?: string
+  allowRememberSource?: boolean
 }
 
 /** All consent lives here; the session is keyed by the reviewed plans, so it never outlives them. */
-function ReviewSession({ plans, busy, onCommit, onClose, onCancel, notice }: ReviewProps) {
+function ReviewSession({ plans, busy, onCommit, onClose, onCancel, notice,
+  title, commitLabel = 'Apply reviewed plans', closeLabel = 'Discard plans',
+  allowRememberSource = true }: ReviewDialogProps) {
   const [consents, setConsents] = useState<Record<string, Consent>>({})
   const consentOf = (plan: PlanReviewDto) => consents[plan.id] ?? EMPTY_CONSENT
   const ready = plans.length > 0 && plans.every((plan) => canCommit(plan, consentOf(plan)))
   return <>
     <DialogHeader>
-      <DialogTitle>Review {plans.length > 1 ? `${plans.length} node updates` : 'custom node plan'}</DialogTitle>
+      <DialogTitle>{title ?? `Review ${plans.length > 1 ? `${plans.length} node updates` : 'custom node plan'}`}</DialogTitle>
       <DialogDescription>
         Custom nodes, Python dependencies and install scripts execute third-party code. A venv is not a sandbox.
         Confirm only sources you trust. Dependency changes cannot be rolled back; a failure requires environment repair.
@@ -119,27 +126,28 @@ function ReviewSession({ plans, busy, onCommit, onClose, onCancel, notice }: Rev
     </DialogHeader>
     {notice}
     <fieldset disabled={busy} className="flex min-w-0 flex-col gap-6">
-      {plans.map((plan) => <PlanConsent key={reviewKey(plan)} plan={plan} value={consentOf(plan)}
+      {plans.map((plan) => <PlanConsent key={reviewKey(plan)} plan={plan} value={consentOf(plan)} allowRememberSource={allowRememberSource}
         onChange={(value) => setConsents((current) => ({ ...current, [plan.id]: value }))} />)}
     </fieldset>
     <DialogFooter>
       {busy && onCancel && <Button variant="outline" onClick={onCancel}>Request cancellation</Button>}
-      <Button variant="outline" disabled={busy} onClick={onClose}>Discard plans</Button>
-      <Button disabled={busy || !ready} onClick={() => onCommit(plans.map((plan) => decision(plan, consentOf(plan))))}>
-        {busy ? 'Applying and verifying…' : 'Apply reviewed plans'}
+      <Button variant="outline" disabled={busy} onClick={onClose}>{closeLabel}</Button>
+      <Button disabled={busy || !ready} onClick={() => onCommit(plans.map((plan) => decision(plan,
+        allowRememberSource ? consentOf(plan) : { ...consentOf(plan), remember: false, rememberHook: false })))}>
+        {busy ? 'Applying and verifying…' : commitLabel}
       </Button>
     </DialogFooter>
   </>
 }
 
-export function ReviewDialog({ plans, busy, onCommit, onClose, onCancel, notice }: ReviewProps) {
+export function ReviewDialog(props: ReviewDialogProps) {
+  const { plans, busy, onClose, allowRememberSource = true } = props
   // A changed plan ID or binding starts a new session: consent never carries over, and does not
   // return when an earlier binding reappears.
-  const session = JSON.stringify(plans.map(reviewKey))
+  const session = JSON.stringify([allowRememberSource, plans.map(reviewKey)])
   return <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose() }}>
     <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl" showCloseButton={!busy}>
-      <ReviewSession key={session} plans={plans} busy={busy} onCommit={onCommit}
-        onClose={onClose} onCancel={onCancel} notice={notice} />
+      <ReviewSession key={session} {...props} />
     </DialogContent>
   </Dialog>
 }

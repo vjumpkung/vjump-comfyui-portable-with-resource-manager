@@ -149,3 +149,25 @@ it('offers trust only when the source has a namespace', () => {
   fireEvent.click(box(/install\.py script/))
   expect(screen.queryByRole('checkbox', { name: /remember permission to run install\.py/ })).toBeNull()
 })
+
+it('setup_review_hides_trust_memory_and_keeps_decisions_unremembered', () => {
+  render(<ReviewDialog plans={[plan({ warnings: ['Pinned checkout is detached'] })]}
+    busy={false} onCommit={onCommit} onClose={onClose} onCancel={null}
+    title="Review curated setup nodes" commitLabel="Approve and retry setup"
+    closeLabel="Back to setup" allowRememberSource={false} />)
+  expect(screen.getByRole('heading', { name: 'Review curated setup nodes' })).toBeTruthy()
+  expect(screen.queryByRole('checkbox', { name: /Remember/ })).toBeNull()
+  expect(checked(/execute third-party code/)).toBe(false)
+  expect(checked(/acknowledge all displayed warnings/)).toBe(false)
+  fireEvent.click(box(/execute third-party code/))
+  const approve = screen.getByRole<HTMLButtonElement>('button', { name: 'Approve and retry setup' })
+  expect(approve.disabled).toBe(true)
+  fireEvent.click(box(/acknowledge all displayed warnings/))
+  fireEvent.click(approve)
+  expect(onCommit).toHaveBeenCalledWith([expect.objectContaining({
+    executeNodeCode: true, acknowledgeWarnings: true,
+    rememberSource: false, rememberInstallPy: false, runInstallPy: false,
+  })])
+  fireEvent.click(screen.getByRole('button', { name: 'Back to setup' }))
+  expect(onClose).toHaveBeenCalledTimes(1)
+})

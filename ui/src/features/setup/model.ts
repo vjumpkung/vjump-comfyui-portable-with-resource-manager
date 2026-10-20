@@ -1,5 +1,9 @@
+import type { ReactNode } from 'react'
+
 import type {
+  CommitInput,
   EnvironmentSummaryDto,
+  PlanReviewDto,
   ProfileDto,
   PythonSourceDto,
   PythonValidationDto,
@@ -69,7 +73,7 @@ export function profileReasons(
 export function canSkip(run: RunSnapshotDto): boolean {
   return (
     run.status === 'failed' &&
-    !!run.failure &&
+    run.failure?.canSkip === true &&
     run.steps.some(
       (step) =>
         step.step === run.failure?.step &&
@@ -77,6 +81,16 @@ export function canSkip(run: RunSnapshotDto): boolean {
         step.status === 'failed',
     )
   )
+}
+
+/** App composition supplies the review UI without coupling setup to another feature. */
+export type CuratedReviewProps = {
+  plans: PlanReviewDto[]
+  busy: boolean
+  onCommit: (items: CommitInput[]) => void
+  onClose: () => void
+  onCancel: (() => void) | null
+  notice?: ReactNode
 }
 
 export type WizardDraft = {

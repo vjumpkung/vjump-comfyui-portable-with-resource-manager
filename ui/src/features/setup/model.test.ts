@@ -29,6 +29,7 @@ describe('setup policies', () => {
   it('allows skip only for the exact failed optional step, never required or best effort', () => {
     expect(canSkip(run)).toBe(true)
     expect(canSkip({ ...run, status: 'running' })).toBe(false)
+    expect(canSkip({ ...run, failure: { ...run.failure!, canSkip: false } })).toBe(false)
     for (const policy of ['required', 'best_effort'] as const)
       expect(
         canSkip({
