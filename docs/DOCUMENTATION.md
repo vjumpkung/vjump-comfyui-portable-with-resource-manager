@@ -99,7 +99,7 @@ A complete first run on the recommended Windows profile with ComfyUI-Manager and
 
 ### Install root
 
-The install root is the folder that will hold ComfyUI, the Python environments, the bundled tools and the application's data. The default is `%LOCALAPPDATA%\vjumpkung-comfyui` on Windows and `~/.local/share/vjumpkung-comfyui` on Linux. Choose a short path with no unusual permissions. You can change the install root only here, or later by running setup again.
+The install root is the folder that will hold ComfyUI, the Python environments, the bundled tools and the application's data. The default is `%LOCALAPPDATA%\vjumpkung-comfyui` on Windows and `~/.local/share/vjumpkung-comfyui` on Linux. Choose a short path with no unusual permissions. You can change the install root only here, or later by running setup again. If you save a different folder, the wizard offers **Restart now**, which restarts the application on the new install root with your settings and wizard choices carried over.
 
 ### Hardware check and profile gating
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-setup-restart"
+description = "Enables the setup_restart command without any pre-configured scope."
+commands.allow = ["setup_restart"]
+
+[[permission]]
+identifier = "deny-setup-restart"
+description = "Denies the setup_restart command without any pre-configured scope."
+commands.deny = ["setup_restart"]

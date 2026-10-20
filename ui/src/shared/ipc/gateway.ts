@@ -123,6 +123,7 @@ export const gateway = {
     unwrap(() => commands.setupOpenInstall(path)),
   setupNewInstall: (path: string) =>
     unwrap(() => commands.setupNewInstall(path)),
+  setupRestart: () => unwrap(() => commands.setupRestart()),
   setupRun: (action: SetupActionDto, onEvent: (event: SetupEventDto) => void) =>
     unwrap(() => {
       const channel = new Channel<SetupEventDto>()

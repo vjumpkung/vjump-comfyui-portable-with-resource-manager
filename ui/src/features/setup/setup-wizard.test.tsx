@@ -24,6 +24,7 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
     setupListCuratedNodes: vi.fn(),
     setupValidatePython: vi.fn(),
     setupSelectRoot: vi.fn(),
+    setupRestart: vi.fn(),
     setupRun: vi.fn(),
     setupCancel: vi.fn(),
     pickFolder: vi.fn(),
@@ -83,6 +84,7 @@ describe('setup wizard', () => {
     vi.mocked(gateway.setupSelectRoot).mockResolvedValue({
       restartRequired: true,
     })
+    vi.mocked(gateway.setupRestart).mockResolvedValue(null)
     mount()
     fireEvent.change(screen.getByLabelText('Install root'), {
       target: { value: 'E:/Comfy' },
@@ -97,6 +99,13 @@ describe('setup wizard', () => {
       screen.getByRole('button', { name: 'Save install root' }),
     ).toHaveProperty('disabled', true)
     expect(gateway.setupRun).not.toHaveBeenCalled()
+    expect(gateway.setupRestart).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Restart now' }))
+    const restarting = await screen.findByRole('button', {
+      name: 'Restarting…',
+    })
+    expect(restarting).toHaveProperty('disabled', true)
+    expect(gateway.setupRestart).toHaveBeenCalledTimes(1)
   })
   it('disables incompatible profiles and shows their reasons', async () => {
     vi.mocked(gateway.setupListProfiles).mockResolvedValue([

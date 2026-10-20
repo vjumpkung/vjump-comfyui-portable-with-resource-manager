@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 
@@ -723,6 +723,8 @@ pub struct AppState {
     pub(crate) picker: Arc<dyn FilePicker>,
     pub(crate) data_dir: PathBuf,
     pub(crate) close: Arc<CloseCoordinator>,
+    /// A saved install-root change only takes effect after a restart.
+    root_switched: AtomicBool,
     shell: OnceLock<Arc<dyn ShellActions>>,
     updater: OnceLock<Arc<dyn AppUpdater>>,
     clipboard: OnceLock<Arc<dyn Clipboard>>,
@@ -753,6 +755,7 @@ impl AppState {
             picker,
             data_dir,
             close: Arc::new(CloseCoordinator::default()),
+            root_switched: AtomicBool::new(false),
             shell: OnceLock::new(),
             updater: OnceLock::new(),
             clipboard: OnceLock::new(),
@@ -834,6 +837,16 @@ impl AppState {
         self.shell
             .get()
             .ok_or_else(|| IpcError::new("window_unavailable", "The window system is not ready."))
+    }
+
+    /// Records that a new install root was saved and waits for a restart.
+    pub(crate) fn mark_root_switched(&self) {
+        self.root_switched.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether a saved install-root change is waiting for a restart.
+    pub(crate) fn root_switched(&self) -> bool {
+        self.root_switched.load(Ordering::SeqCst)
     }
 
     /// Pauses the download queue and waits for transfer cleanup. A no-op in recovery mode.

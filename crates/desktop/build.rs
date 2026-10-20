@@ -19,6 +19,7 @@ fn main() {
             "setup_select_root",
             "setup_open_install",
             "setup_new_install",
+            "setup_restart",
             "setup_run",
             "setup_cancel",
             "env_info",

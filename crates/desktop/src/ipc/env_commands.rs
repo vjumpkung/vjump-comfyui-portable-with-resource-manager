@@ -156,6 +156,7 @@ pub async fn setup_select_root(
         .select_root
         .execute(PathBuf::from(path), draft)
         .await?;
+    state.mark_root_switched();
     Ok(RootSelectionDto {
         restart_required: true,
     })
@@ -258,6 +259,20 @@ pub async fn setup_new_install(
     Ok(RootSelectionDto {
         restart_required: true,
     })
+}
+
+/// Applies a saved install-root change: the new root's database and logging open at startup.
+#[tauri::command]
+#[specta::specta]
+pub async fn setup_restart(state: State<'_, AppState>) -> Result<(), IpcError> {
+    if !state.root_switched() {
+        return Err(IpcError::new(
+            "restart_not_required",
+            "No install root change is waiting for a restart.",
+        ));
+    }
+    state.shell()?.request_restart();
+    Ok(())
 }
 
 #[tauri::command]

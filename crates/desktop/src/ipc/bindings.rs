@@ -25,6 +25,7 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
             env_commands::setup_select_root,
             env_commands::setup_open_install,
             env_commands::setup_new_install,
+            env_commands::setup_restart,
             env_commands::setup_run,
             env_commands::setup_cancel,
             env_commands::env_info,

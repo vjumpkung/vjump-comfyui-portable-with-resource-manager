@@ -128,6 +128,7 @@ export function SetupWizard({
         }),
       ),
   })
+  const restartApp = useMutation({ mutationFn: () => gateway.setupRestart() })
   const picker = useMutation({
     mutationFn: (kind: 'root' | 'python') =>
       kind === 'root' || source.kind === 'customVenv'
@@ -350,12 +351,22 @@ export function SetupWizard({
                   <Check />
                   <AlertTitle>Restart required</AlertTitle>
                   <AlertDescription>
-                    Close and reopen the desktop app to use {root.trim()}.
-                    Settings and the wizard draft have been transferred. Setup
-                    cannot start in this session.
+                    Restart the app to use {root.trim()}. Settings and the
+                    wizard draft have been transferred. Setup cannot start in
+                    this session.
+                    <Button
+                      size="sm"
+                      disabled={restartApp.isPending || restartApp.isSuccess}
+                      onClick={() => restartApp.mutate()}
+                    >
+                      {restartApp.isPending || restartApp.isSuccess
+                        ? 'Restarting…'
+                        : 'Restart now'}
+                    </Button>
                   </AlertDescription>
                 </Alert>
               )}
+              {restartApp.isError && <ErrorNotice error={restartApp.error} />}
               {rootSelection.isError && (
                 <ErrorNotice error={rootSelection.error} />
               )}

@@ -20,6 +20,8 @@ export const commands = {
 	setupSelectRoot: (path: string, draft: string | null) => typedError<RootSelectionDto, IpcError>(__TAURI_INVOKE("setup_select_root", { path, draft })),
 	setupOpenInstall: (path: string) => typedError<RootSelectionDto, IpcError>(__TAURI_INVOKE("setup_open_install", { path })),
 	setupNewInstall: (path: string) => typedError<RootSelectionDto, IpcError>(__TAURI_INVOKE("setup_new_install", { path })),
+	/**  Applies a saved install-root change: the new root's database and logging open at startup. */
+	setupRestart: () => typedError<null, IpcError>(__TAURI_INVOKE("setup_restart")),
 	setupRun: (action: SetupActionDto, onEvent: Channel<SetupEventDto>) => typedError<SetupStartedDto, IpcError>(__TAURI_INVOKE("setup_run", { action, onEvent })),
 	setupCancel: (runId: string) => typedError<null, IpcError>(__TAURI_INVOKE("setup_cancel", { runId })),
 	envInfo: () => typedError<EnvironmentInfoDto, IpcError>(__TAURI_INVOKE("env_info")),

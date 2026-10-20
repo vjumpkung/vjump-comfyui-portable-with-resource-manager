@@ -21,6 +21,7 @@
     "allow-setup-select-root",
     "allow-setup-open-install",
     "allow-setup-new-install",
+    "allow-setup-restart",
     "allow-setup-run",
     "allow-setup-cancel",
     "allow-env-info",

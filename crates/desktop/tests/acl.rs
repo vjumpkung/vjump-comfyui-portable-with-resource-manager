@@ -412,6 +412,7 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
             json!({ "path": new_root.display().to_string() }),
             Success,
         ),
+        ("setup_restart", json!({}), Success),
     ]
 }
 
@@ -511,6 +512,29 @@ fn manager_window_with_local_origin_can_invoke_all_commands() {
             "manager/local: `{cmd}` must reach an application port"
         );
     }
+}
+
+#[test]
+fn setup_restart_requires_a_saved_root_change() {
+    let app = build_app();
+    let window = manager_window(&app);
+    let call = |cmd: &str, body: Value| get_ipc_response(&window, request(cmd, local_url(), body));
+
+    let before = app.calls.count();
+    let error = call("setup_restart", json!({})).unwrap_err();
+    assert_eq!(error["code"], "restart_not_required");
+    assert_eq!(app.calls.count(), before, "no restart without a change");
+
+    let new_root = app.root.parent().unwrap().join("chosen root");
+    call(
+        "setup_select_root",
+        json!({ "path": new_root.display().to_string(), "draft": "{}" }),
+    )
+    .unwrap();
+
+    let before = app.calls.count();
+    call("setup_restart", json!({})).unwrap();
+    assert_eq!(app.calls.count(), before + 1, "exactly one restart request");
 }
 
 #[test]
