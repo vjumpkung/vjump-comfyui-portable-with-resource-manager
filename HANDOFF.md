@@ -192,7 +192,7 @@ Reference material:
 | Tokens only in the OS keyring; delete → Recycle Bin/trash; ComfyUI-Manager optional; ticked by default in first-run setup; curated nodes unticked by default (owner, 2026-10-20) | Advisor | FR-SET-1, FR-MODEL-3, FR-NODE-10 |
 | **HF downloads default to the `hf` CLI**; pause/resume restarts from 0 for that engine | User | FR-DL-3/3a/3b |
 | Design system = vjump.dev adapted; UI copy English only | User | DESIGN.md, NFR-UX-2 |
-| CI workflows stay **disabled** (owner commit `chore: disable ci (temp)`); run checks locally | User | `.github/workflows/*` |
+| CI workflows **re-enabled** by the owner (2026-10-21); release bundles build only on a version change; hosted validation pending; still run checks locally | User | `.github/workflows/*` |
 | Updater key custody, Authenticode, project license, final icons = **owner decisions**; updater stays inert without build-time config; no license added | Owner | IMPLEMENTATION_STATUS |
 | **Commit only when the user asks**; checkpoints are patch files | User | working agreement |
 

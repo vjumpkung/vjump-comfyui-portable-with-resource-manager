@@ -27,7 +27,7 @@ Run from the repository root. Use the Rust toolchain in `rust-toolchain.toml` an
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: lint Rust.
 - `node scripts/check-arch-deps.mjs`: validate dependency boundaries.
 
-CI workflows are currently disabled; run relevant checks locally.
+CI (`.github/workflows/ci.yml`) runs these checks on every push and pull request; still run relevant checks locally. `.github/workflows/release.yml` builds draft release bundles only when `version` in `crates/desktop/tauri.conf.json` changes on the default branch.
 
 ## Coding Style & Naming Conventions
 

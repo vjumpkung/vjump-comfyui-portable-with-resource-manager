@@ -162,7 +162,7 @@ Gate IDs refer to [Release gates](#release-gates).
 | NFR-UX-2 | — | English copy; Thai glyphs | — | S5-NATIVE-WIN-N6-001, N15 (Thai renders on Windows) | PARTIAL | Thai on WebKitGTK | G01 | Engineering |
 | NFR-UX-3 | — | Bundled fonts, offline, both themes, both webviews | Build embeds assets | Custom-protocol builds ran (no dev server); release `.deb`/AppImage rendered under WebKitGTK (S7-NATIVE-LINUX-L3…L8) | PARTIAL | Offline and both-theme audit; WebKitGTK on a desktop | G01, G07 | Engineering |
 | NFR-UX-4 | — | WCAG AA, keyboard, 200 % zoom | None | Not audited | OPEN | Audit | G07 | Engineering |
-| NFR-MAINT-1 | — | Architecture, boundaries, binding drift in CI | `check-arch-deps` 10/10 + OK, ESLint boundaries, bindings drift test | — | OWNER DECISION | Checks pass locally; CI workflows disabled by the owner | G10 | Owner |
+| NFR-MAINT-1 | — | Architecture, boundaries, binding drift in CI | `check-arch-deps` 10/10 + OK, ESLint boundaries, bindings drift test | — | OPEN | Checks pass locally; CI re-enabled by the owner on 2026-10-21, hosted run pending | G10 | Engineering |
 | NFR-MAINT-2 | — | New provider through ports | Port structure (`SourceResolver`, `Downloader`) | — | PARTIAL | Structural only; no test | — | Engineering |
 | NFR-MAINT-3 | — | Domain/application without Tauri, network, DB, GPU | `check-arch-deps` allow-lists; domain 48 and application 215 tests run without them | — | PASS | — | — | — |
 | NFR-MAINT-4 | — | Coverage domain ≥ 90 %, application ≥ 80 % | Not measured for this tree | — | OPEN | `cargo llvm-cov` run | G06 | Engineering |
@@ -209,7 +209,7 @@ Gate IDs refer to [Release gates](#release-gates).
 | S14 Crash recovery | a. Kill during download → paused, resumable | OPEN | OPEN | — | G05 |
 | S14 | b. Kill during node install → staging cleaned, `custom_nodes/` unchanged | OPEN | OPEN | — | G05 |
 | S15 Architecture guard | a. Forbidden edge or cross-feature import fails the check | PASS (local) | PASS (repository-level check; its result does not depend on the OS) | S6-AUTO-WIN-002, S6-AUTO-WIN-008 | — |
-| S15 | b. The guard runs in CI | OWNER DECISION (CI disabled) | OWNER DECISION | — | Owner (G10) |
+| S15 | b. The guard runs in CI | OPEN (CI re-enabled 2026-10-21; hosted run pending) | OPEN | — | Engineering (G10) |
 | S16 Maintenance race | a. Start waits or is refused during a node install | OPEN (automated only) | OPEN | — | G05 |
 | S16 | b. Unlocked rename while ComfyUI runs | PASS | OPEN | S5-NATIVE-WIN-N6-001 | G01 |
 | S17 Failed dependency install | `repair_required`, Repair restores with torch unchanged | OPEN (automated only) | OPEN | — | G05 |
@@ -403,6 +403,6 @@ Source: [s3-residuals.md](handoff/evidence/s3-residuals.md).
 | G07 Performance and UX audit | NFR-PERF-1..3, NFR-UX-3/4 not measured | Timing measurements; offline, both-theme, keyboard and 200 % zoom audit | Engineering |
 | G08 Security and robustness residuals | R19, R21, R28 open | Native accelerator run or removal; containment evidence or a fix for R21; verification of R28 | Engineering, advisor |
 | G09 License and icons | No license; placeholder icons | Owner chooses a license and final icons | Owner decision |
-| G10 CI | Workflows disabled | Owner re-enables CI or confirms local checks | Owner decision |
+| G10 CI | Workflows re-enabled by the owner on 2026-10-21; no hosted run yet | A green hosted CI run on Windows and Ubuntu | Engineering |
 
-The verdict stays **NO-GO** while any of G01–G05 is open. G06–G08 must also close before a release is called accepted. G09 and G10 are owner decisions and do not change the evidence above.
+The verdict stays **NO-GO** while any of G01–G05 is open. G06–G08 must also close before a release is called accepted. G09 is an owner decision and G10 awaits a hosted CI run; neither changes the evidence above.

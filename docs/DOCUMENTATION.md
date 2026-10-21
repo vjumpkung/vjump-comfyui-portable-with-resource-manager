@@ -808,7 +808,7 @@ ui/
   package.json               pnpm 10.24.0 and scripts
 docs/                        REQUIREMENTS, DESIGN, ADRs, IMPLEMENTATION_STATUS, handoff/
 scripts/                     tauri.mjs, check-arch-deps.mjs (+ test and fixtures)
-.github/workflows/           ci.yml, release.yml (both disabled)
+.github/workflows/           ci.yml, release.yml
 ```
 
 ## 15. Toolchain setup
@@ -816,7 +816,7 @@ scripts/                     tauri.mjs, check-arch-deps.mjs (+ test and fixtures
 ### Common
 
 - Rust: install `rustup`. The toolchain in `rust-toolchain.toml` (`1.99.0`, with rustfmt and clippy) is selected automatically.
-- Node.js and pnpm: pnpm `10.24.0` is pinned by `packageManager` in `ui/package.json`. No Node version is pinned (the disabled workflows reference Node 24). Enable Corepack or install the pinned pnpm.
+- Node.js and pnpm: pnpm `10.24.0` is pinned by `packageManager` in `ui/package.json`. No Node version is pinned (the workflows use Node 24). Enable Corepack or install the pinned pnpm.
 - Git, for the tests that use real repositories.
 
 ### Windows (MSVC, default)
@@ -836,7 +836,7 @@ Use only when MSVC is unavailable. It needs the `1.99.0-x86_64-pc-windows-gnu` t
 
 ### Linux
 
-Install the Tauri build prerequisites (as in the disabled release workflow):
+Install the Tauri build prerequisites (as in the release workflow):
 
 ```bash
 sudo apt-get install -y \
@@ -1035,7 +1035,7 @@ Build with `pnpm -C ui tauri build` (about 12 minutes on Windows). The wrapper `
 
 The last build (2026-10-20, from the final session-6 checkpoint) exited 0 and produced the NSIS installer (9,336,453 bytes) and the MSI (13,340,672 bytes); their SHA-256 values are in [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md#snapshot). Both installers and the release executable are unsigned (`NotSigned`), and the release executable reserves an 8 MiB main-thread stack. The installers have **not** been run, and the release executable has not been launched. Linux bundles need a Linux host and have not been built.
 
-**Updater.** The updater is inactive unless both `VJUMP_UPDATER_PUBKEY` and `VJUMP_UPDATER_ENDPOINT` are supplied at build time. The release workflow (disabled) also reads `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from secrets, and passes the updater overlay only when a signing key exists. It fails early if a key is present but the public key or endpoint is missing. Key custody belongs to the owner. Never substitute a generated development key in a release.
+**Updater.** The updater is inactive unless both `VJUMP_UPDATER_PUBKEY` and `VJUMP_UPDATER_ENDPOINT` are supplied at build time. The release workflow also reads `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from secrets, and passes the updater overlay only when a signing key exists. It fails early if a key is present but the public key or endpoint is missing. Key custody belongs to the owner. Never substitute a generated development key in a release.
 
 **Updater design.** `tauri-plugin-updater` `=2.14.0` and `tauri-plugin-clipboard-manager` `=2.5.0` are pinned in the workspace `Cargo.toml` and `Cargo.lock`. The updater plugin is registered only when both build-time variables are present and valid; `crates/desktop/build.rs` re-runs when either changes. The commands `app_update_status`, `app_update_check` and `app_update_install` stay registered, and absent configuration returns a controlled refusal ("This build has no signed update source configured."). Installing takes the maintenance gate, verifies that ComfyUI (including a headless instance) is stopped, and installs only the offer the user reviewed, identified by the `updateId` of that offer. Downloads and the model library are quiesced and the log is flushed before the installer runs. No webview has an updater or clipboard plugin permission. These rules are covered by automated tests (for example `invalid_signature_never_invokes_installer`, `update_install_requires_the_reviewed_offer`); no signed update has been built, published or installed.
 
@@ -1043,7 +1043,18 @@ The last build (2026-10-20, from the final session-6 checkpoint) exited 0 and pr
 
 ## 25. Continuous integration status
 
-Both workflow files, `.github/workflows/ci.yml` and `.github/workflows/release.yml`, are **commented out** (owner commit `chore: disable ci (temp)`). Do not re-enable them without the owner's decision. All checks are run locally with the commands in [section 16](#16-build-run-test-and-lint). The commented workflows document the intended CI: lint, test and bundle on Windows and Ubuntu.
+The owner authorized re-enabling CI on 2026-10-21; hosted validation is pending.
+
+`.github/workflows/ci.yml` runs on every push and pull request. It runs the UI lint, typecheck, tests and build, Rust fmt, clippy and tests, the desktop build and the architecture checks on Windows and Ubuntu 24.04, plus the domain (90 %) and application (80 %) coverage thresholds.
+
+`.github/workflows/release.yml` builds the Windows and Linux bundles and attaches them to a draft GitHub release `v<version>`. It runs only on the default branch and only when a push changes `version` in `crates/desktop/tauri.conf.json`; other pushes, and tag pushes, do not build bundles. The two platforms build one after the other so they share one draft.
+
+To cut a release:
+
+1. Set the same new version in `crates/desktop/tauri.conf.json`, `Cargo.toml` (`[workspace.package]`) and `ui/package.json`, and refresh `Cargo.lock` (for example with `cargo check --workspace`).
+2. Push to the default branch. When the draft `v<version>` is complete, publish it on GitHub.
+
+A version that already has a published release is skipped. A manual run (`workflow_dispatch`) on the default branch builds the current version when it has no release yet (for example the first release) or rebuilds its draft from the same commit. If a draft belongs to an older commit, re-run that commit's original workflow run instead. Linux bundles are built on Ubuntu 22.04 for glibc compatibility; GitHub retires that runner on 2027-04-17.
 
 ## 26. Coding conventions
 

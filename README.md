@@ -117,7 +117,7 @@ node scripts/check-arch-deps.mjs         # dependency boundaries
 
 ### Full check list
 
-Run these before reporting work as done. CI workflows are disabled by the owner, so the checks run locally.
+Run these before reporting work as done. CI runs the same checks on every push and pull request.
 
 ```bash
 pnpm -C ui install --frozen-lockfile && pnpm -C ui lint && pnpm -C ui typecheck && VITEST_MAX_WORKERS=2 pnpm -C ui test && pnpm -C ui build
