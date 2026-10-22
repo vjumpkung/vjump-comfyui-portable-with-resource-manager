@@ -371,10 +371,10 @@ impl FromStr for SetupMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::environment::profile::fixtures::profile;
+    use crate::environment::{pins::DistName, profile::fixtures::profile};
 
-    fn environment(id: &str, ownership: Ownership) -> PythonEnvironment {
-        PythonEnvironment::provisioning(NewEnvironment {
+    fn new_environment(id: &str, ownership: Ownership) -> NewEnvironment {
+        NewEnvironment {
             id: EnvId::new(id).unwrap(),
             path: PathBuf::from("envs").join(id),
             ownership,
@@ -385,7 +385,11 @@ mod tests {
             profile_revision: 1,
             authorized_location: PathBuf::from("envs").join(id),
             now: "2026-10-16T00:00:00Z".into(),
-        })
+        }
+    }
+
+    fn environment(id: &str, ownership: Ownership) -> PythonEnvironment {
+        PythonEnvironment::provisioning(new_environment(id, ownership))
     }
 
     fn verified(id: &str, ownership: Ownership) -> PythonEnvironment {
@@ -511,5 +515,131 @@ mod tests {
                 .check(Some(&active), &same_minor)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn ids_expose_and_display_their_value() {
+        let id = EnvId::new("env-0a1b").unwrap();
+        assert_eq!(id.as_str(), "env-0a1b");
+        assert_eq!(id.to_string(), "env-0a1b");
+    }
+
+    #[test]
+    fn ownership_round_trips_and_rejects_unknown() {
+        for (ownership, text) in [
+            (Ownership::AppOwned, "app_owned"),
+            (Ownership::Adopted, "adopted"),
+        ] {
+            assert_eq!(ownership.as_str(), text);
+            assert_eq!(text.parse::<Ownership>(), Ok(ownership));
+        }
+        assert_eq!(
+            "AppOwned".parse::<Ownership>(),
+            Err(EnvironmentError::InvalidOwnership)
+        );
+        assert_eq!(
+            "".parse::<Ownership>(),
+            Err(EnvironmentError::InvalidOwnership)
+        );
+    }
+
+    #[test]
+    fn env_state_round_trips_and_rejects_unknown() {
+        for (state, text) in [
+            (EnvState::Provisioning, "provisioning"),
+            (EnvState::Verified, "verified"),
+            (EnvState::Failed, "failed"),
+            (EnvState::RepairRequired, "repair_required"),
+        ] {
+            assert_eq!(state.as_str(), text);
+            assert_eq!(text.parse::<EnvState>(), Ok(state));
+        }
+        assert_eq!(
+            "repairRequired".parse::<EnvState>(),
+            Err(EnvironmentError::InvalidEnvState)
+        );
+    }
+
+    #[test]
+    fn python_source_kind_round_trips_and_rejects_unknown() {
+        for (source, text) in [
+            (PythonSourceKind::Managed, "managed"),
+            (PythonSourceKind::CustomVenv, "custom_venv"),
+            (PythonSourceKind::CustomInterpreter, "custom_interpreter"),
+        ] {
+            assert_eq!(source.as_str(), text);
+            assert_eq!(text.parse::<PythonSourceKind>(), Ok(source));
+        }
+        assert_eq!(
+            "conda".parse::<PythonSourceKind>(),
+            Err(EnvironmentError::InvalidPythonSource)
+        );
+    }
+
+    #[test]
+    fn setup_mode_round_trips_and_rejects_unknown() {
+        for (mode, text) in [
+            (SetupMode::FirstRun, "first_run"),
+            (SetupMode::Repair, "repair"),
+            (SetupMode::ChangeTorch, "change_torch"),
+            (SetupMode::ChangePython, "change_python"),
+            (SetupMode::SwitchVenv, "switch_venv"),
+            (SetupMode::Rebuild, "rebuild"),
+        ] {
+            assert_eq!(mode.as_str(), text);
+            assert_eq!(text.parse::<SetupMode>(), Ok(mode));
+        }
+        assert_eq!(
+            "reinstall".parse::<SetupMode>(),
+            Err(EnvironmentError::InvalidSetupMode)
+        );
+    }
+
+    #[test]
+    fn restore_keeps_stored_state_without_running_transitions() {
+        let mut pins = PinSet::new();
+        pins.insert(DistName::new("torch").unwrap(), "2.14.1+cu130");
+        let restored = PythonEnvironment::restore(
+            new_environment("old", Ownership::Adopted),
+            EnvState::RepairRequired,
+            pins.clone(),
+            Some("torch drifted".into()),
+            "2026-01-02T03:04:05Z".into(),
+        );
+        assert_eq!(restored.state(), EnvState::RepairRequired);
+        assert_eq!(restored.pins, pins);
+        assert_eq!(restored.verification.as_deref(), Some("torch drifted"));
+        assert_eq!(restored.created_at, "2026-01-02T03:04:05Z");
+        assert_eq!(restored.updated_at, "2026-10-16T00:00:00Z");
+        assert_eq!(restored.id.as_str(), "old");
+        assert_eq!(restored.ownership, Ownership::Adopted);
+    }
+
+    #[test]
+    fn restore_without_verification_leaves_it_unset() {
+        let restored = PythonEnvironment::restore(
+            new_environment("failed", Ownership::AppOwned),
+            EnvState::Failed,
+            PinSet::new(),
+            None,
+            "2026-01-02T03:04:05Z".into(),
+        );
+        assert_eq!(restored.state(), EnvState::Failed);
+        assert!(restored.pins.is_empty());
+        assert_eq!(restored.verification, None);
+    }
+
+    #[test]
+    fn recording_pins_replaces_them_and_touches_only_the_update_time() {
+        let mut env = verified("a", Ownership::AppOwned);
+        let created_at = env.created_at.clone();
+        let mut pins = PinSet::new();
+        pins.insert(DistName::new("torch").unwrap(), "2.15.0");
+        env.record_pins(pins.clone(), "later");
+        assert_eq!(env.pins, pins);
+        assert_eq!(env.updated_at, "later");
+        assert_eq!(env.created_at, created_at);
+        assert_eq!(env.state(), EnvState::Verified);
+        assert_eq!(env.verification.as_deref(), Some("ok"));
     }
 }

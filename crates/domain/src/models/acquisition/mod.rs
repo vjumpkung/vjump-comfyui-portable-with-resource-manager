@@ -348,4 +348,270 @@ mod tests {
         assert!(job(DownloadEngine::Gdown).restart_from_zero());
         assert!(!job(DownloadEngine::Native).restart_from_zero());
     }
+    #[test]
+    fn the_effective_engine_decides_whether_a_job_restarts_from_zero() {
+        let mut fell_back = job(DownloadEngine::HfCli);
+        fell_back.effective_engine = DownloadEngine::Native;
+        assert!(!fell_back.restart_from_zero());
+        let mut switched = job(DownloadEngine::Native);
+        switched.effective_engine = DownloadEngine::Gdown;
+        assert!(switched.restart_from_zero());
+    }
+    #[test]
+    fn repo_types_name_themselves_in_singular_and_plural() {
+        for (repo_type, singular, plural) in [
+            (RepoType::Model, "model", "models"),
+            (RepoType::Dataset, "dataset", "datasets"),
+            (RepoType::Space, "space", "spaces"),
+        ] {
+            assert_eq!(repo_type.singular(), singular);
+            assert_eq!(repo_type.plural(), plural);
+        }
+    }
+    #[test]
+    fn only_unfinished_states_are_active() {
+        for state in [
+            DownloadState::Queued,
+            DownloadState::Resolving,
+            DownloadState::Downloading,
+            DownloadState::Verifying,
+            DownloadState::Paused,
+        ] {
+            assert!(state.active(), "{}", state.as_str());
+        }
+        for state in [
+            DownloadState::Completed,
+            DownloadState::Failed,
+            DownloadState::Cancelled,
+        ] {
+            assert!(!state.active(), "{}", state.as_str());
+        }
+    }
+    #[test]
+    fn download_states_have_stable_names() {
+        for (state, name) in [
+            (DownloadState::Queued, "queued"),
+            (DownloadState::Resolving, "resolving"),
+            (DownloadState::Downloading, "downloading"),
+            (DownloadState::Verifying, "verifying"),
+            (DownloadState::Paused, "paused"),
+            (DownloadState::Completed, "completed"),
+            (DownloadState::Failed, "failed"),
+            (DownloadState::Cancelled, "cancelled"),
+        ] {
+            assert_eq!(state.as_str(), name);
+        }
+    }
+    #[test]
+    fn known_and_estimated_sizes_report_bytes_and_unknown_does_not() {
+        assert_eq!(DownloadSize::Exact(5).bytes(), Some(5));
+        assert_eq!(DownloadSize::Estimated(7).bytes(), Some(7));
+        assert_eq!(DownloadSize::Unknown.bytes(), None);
+    }
+    fn destination(subdirectory: &str, filename: &str) -> Destination {
+        Destination {
+            root_id: "Root-1".into(),
+            category: ModelCategory::new("checkpoints").unwrap(),
+            subdirectory: RelativeModelPath::new(subdirectory).unwrap(),
+            filename: SafeFileName::new(filename).unwrap(),
+        }
+    }
+    #[test]
+    fn destination_path_is_category_subdirectory_and_filename() {
+        assert_eq!(
+            destination("sdxl/base", "Model.safetensors")
+                .relative_path()
+                .as_string(),
+            "checkpoints/sdxl/base/Model.safetensors"
+        );
+        assert_eq!(
+            destination("", "Model.safetensors")
+                .relative_path()
+                .as_string(),
+            "checkpoints/Model.safetensors"
+        );
+    }
+    #[test]
+    fn reservation_keys_are_root_scoped_and_case_insensitive() {
+        assert_eq!(
+            destination("SDXL", "Model.safetensors").reservation_key(),
+            "Root-1:checkpoints/sdxl/model.safetensors"
+        );
+        assert_eq!(
+            destination("sdxl", "MODEL.safetensors").reservation_key(),
+            destination("SDXL", "model.safetensors").reservation_key()
+        );
+        let mut other_root = destination("sdxl", "model.safetensors");
+        other_root.root_id = "Root-2".into();
+        assert_ne!(
+            other_root.reservation_key(),
+            destination("sdxl", "model.safetensors").reservation_key()
+        );
+    }
+    #[test]
+    fn signed_url_expiry_is_resolved_again_once() {
+        for retries in [0, 3, 255] {
+            assert_eq!(
+                retry_action(DownloadErrorCode::SignedUrlExpired, retries, false),
+                RetryAction::ReResolve
+            );
+        }
+        assert_eq!(
+            retry_action(DownloadErrorCode::SignedUrlExpired, 0, true),
+            RetryAction::Fatal
+        );
+    }
+    #[test]
+    fn service_errors_back_off_exponentially_then_give_up() {
+        for (retries, delay) in [(0, 1), (1, 2), (2, 4)] {
+            assert_eq!(
+                retry_action(DownloadErrorCode::Service, retries, false),
+                RetryAction::RetryAfter(delay)
+            );
+        }
+        assert_eq!(
+            retry_action(DownloadErrorCode::Service, 3, false),
+            RetryAction::Fatal
+        );
+    }
+    #[test]
+    fn other_errors_are_never_retried() {
+        for code in [
+            DownloadErrorCode::InvalidToken,
+            DownloadErrorCode::Disk,
+            DownloadErrorCode::HashMismatch,
+            DownloadErrorCode::NotFound,
+        ] {
+            assert_eq!(retry_action(code, 0, false), RetryAction::Fatal);
+            assert_eq!(retry_action(code, 0, true), RetryAction::Fatal);
+        }
+    }
+    fn job_in(state: DownloadState) -> DownloadJob {
+        let mut value = job(DownloadEngine::Native);
+        value.state = state;
+        value
+    }
+    fn publication() -> PublicationIntent {
+        PublicationIntent {
+            phase: FinalizePhase::Verified,
+            staged_key: "staged".into(),
+            staged_identity: FileIdentity {
+                size: 1,
+                modified_ns: 1,
+                platform_id: "id".into(),
+                digest: None,
+            },
+            digest: Sha256::new(&"a".repeat(64)).unwrap(),
+            external_verified: false,
+            backup_name: SafeFileName::new("a.bak").unwrap(),
+            published_identity: None,
+        }
+    }
+    #[test]
+    fn a_job_advances_through_the_download_pipeline() {
+        let mut job = job_in(DownloadState::Queued);
+        for next in [
+            DownloadState::Resolving,
+            DownloadState::Downloading,
+            DownloadState::Verifying,
+            DownloadState::Completed,
+        ] {
+            assert_eq!(job.transition(next), Ok(()));
+            assert_eq!(job.state, next);
+        }
+    }
+    #[test]
+    fn paused_and_failed_jobs_can_be_queued_again() {
+        for state in [DownloadState::Paused, DownloadState::Failed] {
+            let mut job = job_in(state);
+            assert_eq!(job.transition(DownloadState::Queued), Ok(()));
+            assert_eq!(job.state, DownloadState::Queued);
+        }
+    }
+    #[test]
+    fn any_active_job_can_pause_fail_or_cancel() {
+        for from in [
+            DownloadState::Queued,
+            DownloadState::Resolving,
+            DownloadState::Downloading,
+            DownloadState::Verifying,
+            DownloadState::Paused,
+        ] {
+            for next in [
+                DownloadState::Paused,
+                DownloadState::Failed,
+                DownloadState::Cancelled,
+            ] {
+                let mut job = job_in(from);
+                assert_eq!(job.transition(next), Ok(()), "{from:?} -> {next:?}");
+                assert_eq!(job.state, next);
+            }
+        }
+    }
+    #[test]
+    fn finished_jobs_reject_transitions_and_keep_their_state() {
+        let all = [
+            DownloadState::Queued,
+            DownloadState::Resolving,
+            DownloadState::Downloading,
+            DownloadState::Verifying,
+            DownloadState::Paused,
+            DownloadState::Completed,
+            DownloadState::Failed,
+            DownloadState::Cancelled,
+        ];
+        for from in [DownloadState::Completed, DownloadState::Cancelled] {
+            for next in all {
+                let mut job = job_in(from);
+                assert_eq!(
+                    job.transition(next),
+                    Err(DownloadErrorCode::InvalidTransition),
+                    "{from:?} -> {next:?}"
+                );
+                assert_eq!(job.state, from);
+            }
+        }
+        for next in all.into_iter().filter(|s| *s != DownloadState::Queued) {
+            let mut job = job_in(DownloadState::Failed);
+            assert_eq!(
+                job.transition(next),
+                Err(DownloadErrorCode::InvalidTransition),
+                "Failed -> {next:?}"
+            );
+            assert_eq!(job.state, DownloadState::Failed);
+        }
+    }
+    #[test]
+    fn pipeline_stages_cannot_be_skipped_or_reversed() {
+        for (from, next) in [
+            (DownloadState::Queued, DownloadState::Downloading),
+            (DownloadState::Queued, DownloadState::Completed),
+            (DownloadState::Resolving, DownloadState::Verifying),
+            (DownloadState::Downloading, DownloadState::Completed),
+            (DownloadState::Downloading, DownloadState::Queued),
+            (DownloadState::Verifying, DownloadState::Downloading),
+            (DownloadState::Paused, DownloadState::Downloading),
+        ] {
+            let mut job = job_in(from);
+            assert_eq!(
+                job.transition(next),
+                Err(DownloadErrorCode::InvalidTransition),
+                "{from:?} -> {next:?}"
+            );
+            assert_eq!(job.state, from);
+        }
+    }
+    #[test]
+    fn a_job_with_a_publication_cannot_be_cancelled_but_can_still_pause_or_fail() {
+        let mut job = job_in(DownloadState::Verifying);
+        job.publication = Some(publication());
+        assert_eq!(
+            job.transition(DownloadState::Cancelled),
+            Err(DownloadErrorCode::InvalidTransition)
+        );
+        assert_eq!(job.state, DownloadState::Verifying);
+        assert_eq!(job.transition(DownloadState::Paused), Ok(()));
+        assert_eq!(job.transition(DownloadState::Failed), Ok(()));
+        assert_eq!(job.state, DownloadState::Failed);
+    }
 }

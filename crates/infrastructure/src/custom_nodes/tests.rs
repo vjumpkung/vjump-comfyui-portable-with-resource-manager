@@ -127,6 +127,8 @@ async fn startup_scaffold_from_real_creators_is_absent_and_clones() {
         .platform_id;
 
     let remote = Repo::new(directory.path(), &git, "local remote");
+    // Git for Windows' system core.autocrlf=true must not rewrite the checkout.
+    remote.commit(".gitattributes", "* -text\n", "attributes");
     remote.commit("models/checkpoints/README.md", "models\n", "models");
     remote.commit("custom_nodes/example.py", "# example\n", "nodes");
     let commit = remote.commit("README.md", "ComfyUI\n", "top level");
@@ -5848,8 +5850,10 @@ async fn node_preview_never_executes_editable_build_backend() {
     use application::environment::{
         GuardedRequirements, InstallSpec, PackageInstaller, ProvisionError,
     };
-    let python = locate_tool("python").expect("real Python is required");
-    let uv = locate_tool("uv").expect("real uv is required");
+    let (Some(uv), Some(python)) = (locate_tool("uv"), locate_tool("python")) else {
+        eprintln!("skipped: uv and python are required");
+        return;
+    };
     let version = Command::new(&uv).arg("--version").output().unwrap();
     assert!(version.status.success());
     eprintln!(
