@@ -614,9 +614,18 @@ struct ScriptedEngine {
     active: std::sync::atomic::AtomicUsize,
     peak: std::sync::atomic::AtomicUsize,
     delay: std::time::Duration,
+    /// Each transfer waits, at most 5 s, until this many transfers have overlapped.
+    overlap: usize,
 }
 impl ScriptedEngine {
     fn new(staging: Arc<StagingArea>, error: Option<DownloadErrorCode>) -> Arc<Self> {
+        Self::overlapping(staging, error, 1)
+    }
+    fn overlapping(
+        staging: Arc<StagingArea>,
+        error: Option<DownloadErrorCode>,
+        overlap: usize,
+    ) -> Arc<Self> {
         Arc::new(Self {
             staging,
             error,
@@ -624,6 +633,7 @@ impl ScriptedEngine {
             active: 0.into(),
             peak: 0.into(),
             delay: std::time::Duration::from_millis(50),
+            overlap,
         })
     }
 }
@@ -639,6 +649,12 @@ impl Downloader for ScriptedEngine {
         self.calls.fetch_add(1, SeqCst);
         let active = self.active.fetch_add(1, SeqCst) + 1;
         self.peak.fetch_max(active, SeqCst);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while self.peak.load(SeqCst) < self.overlap {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
         tokio::select! {_=tokio::time::sleep(self.delay)=>{},_=super::native_engine::cancelled(&cancel)=>{self.active.fetch_sub(1,SeqCst);return Err(DownloadErrorCode::Cancelled.into());}}
         self.active.fetch_sub(1, SeqCst);
         if let Some(error) = self.error {
@@ -732,7 +748,8 @@ async fn supervisor_limits_admissions_and_only_falls_back_on_spawn_failure() {
                 .id,
         );
     }
-    let native = ScriptedEngine::new(f.staging.clone(), None);
+    // Hold transfers until two overlap so a slow runner cannot serialize them.
+    let native = ScriptedEngine::overlapping(f.staging.clone(), None, 2);
     let supervisor = super::supervisor::DownloadSupervisor::new(
         f.repository.clone(),
         f.files.clone(),
