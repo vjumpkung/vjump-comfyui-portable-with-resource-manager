@@ -3,6 +3,7 @@ import { Pause, Play, RotateCw, X } from 'lucide-react'
 import { useState, type KeyboardEvent } from 'react'
 import { toast } from 'sonner'
 
+import { useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type ConflictChoiceDto,
@@ -66,6 +67,7 @@ function Row({
   onOpenSettings: () => void
   onResolve: (job: DownloadJobDto) => void
 }) {
+  const { t } = useTranslation()
   const pause = useJobAction((id: string) => gateway.dlPause(id))
   const resume = useJobAction((id: string) => gateway.dlResume(id, null))
   const cancel = useJobAction((id: string) => gateway.dlCancel(id))
@@ -111,19 +113,19 @@ function Row({
           <div className="flex flex-col gap-1">
             <Progress
               value={value ?? 0}
-              aria-label={`Progress of ${label}`}
+              aria-label={t('downloads.progressOf', { filename: label })}
               className={cn(job.state === 'paused' && '[&>div]:bg-brand-pink')}
             />
             <p className="font-mono text-xs text-muted-foreground">
               {job.finalizing
-                ? 'Verifying and publishing'
+                ? t('downloads.finalizing')
                 : progressText(job, progress)}
             </p>
           </div>
         ) : null}
         {job.state === 'queued' && job.retryCount > 0 ? (
           <p className="font-mono text-xs text-muted-foreground">
-            Retrying after a network error (attempt {job.retryCount + 1})
+            {t('downloads.retryAttempt', { attempt: job.retryCount + 1 })}
           </p>
         ) : null}
         {job.error && job.state !== 'completed' ? (
@@ -131,14 +133,14 @@ function Row({
             <p className="text-xs text-destructive">{job.error.message}</p>
             {CREDENTIAL_CODES.includes(job.error.code) ? (
               <Button variant="outline" size="xs" onClick={onOpenSettings}>
-                Open Settings
+                {t('common.openSettings')}
               </Button>
             ) : null}
           </div>
         ) : null}
         {job.state === 'paused' && job.restartsFromZero && !job.finalizing ? (
           <p className="text-xs text-muted-foreground">
-            Resuming restarts this download from 0%.
+            {t('downloads.resumeRestartHint')}
           </p>
         ) : null}
       </TableCell>
@@ -148,11 +150,11 @@ function Row({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label={`Pause ${label}`}
+              aria-label={t('downloads.pauseFile', { filename: label })}
               title={
                 job.restartsFromZero
-                  ? 'Pause (this download will restart from 0%)'
-                  : 'Pause'
+                  ? t('downloads.pauseRestart')
+                  : t('common.pause')
               }
               disabled={busy}
               onClick={() => pause.mutate(job.id)}
@@ -168,17 +170,17 @@ function Row({
                 disabled={busy}
                 onClick={() => onResolve(job)}
               >
-                Resolve conflict
+                {t('downloads.resolveConflict')}
               </Button>
             ) : (
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label={`Resume ${label}`}
+                aria-label={t('downloads.resumeFile', { filename: label })}
                 title={
                   job.restartsFromZero
-                    ? 'Resume (restarts from 0%)'
-                    : 'Resume'
+                    ? t('downloads.resumeRestart')
+                    : t('common.resume')
                 }
                 disabled={busy}
                 onClick={() => resume.mutate(job.id)}
@@ -191,8 +193,8 @@ function Row({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label={`Retry ${label}`}
-              title="Retry"
+              aria-label={t('downloads.retryFile', { filename: label })}
+              title={t('common.retry')}
               disabled={busy}
               onClick={() => retry.mutate(job.id)}
             >
@@ -203,8 +205,8 @@ function Row({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label={`Cancel ${label}`}
-              title="Cancel"
+              aria-label={t('downloads.cancelFile', { filename: label })}
+              title={t('common.cancel')}
               disabled={busy}
               onClick={() => cancel.mutate(job.id)}
             >
@@ -219,6 +221,7 @@ function Row({
 
 /** The queue and history. Past 200 rows only the visible window is rendered. */
 export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
+  const { t } = useTranslation()
   const [scrollTop, setScrollTop] = useState(0)
   const [conflictId, setConflictId] = useState<string | null>(null)
   // Derived from the live list so a refreshed prompt carries the newest observed identity.
@@ -284,11 +287,11 @@ export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
         <Table>
           <TableHeader>
             <TableRow className="bg-brand-cyan text-[#2a313a] hover:bg-brand-cyan">
-              <TableHead className="text-[#2a313a]">Download</TableHead>
-              <TableHead className="text-[#2a313a]">Status</TableHead>
-              <TableHead className="text-[#2a313a]">Progress</TableHead>
+              <TableHead className="text-[#2a313a]">{t('common.download')}</TableHead>
+              <TableHead className="text-[#2a313a]">{t('common.status')}</TableHead>
+              <TableHead className="text-[#2a313a]">{t('common.progress')}</TableHead>
               <TableHead className="text-right text-[#2a313a]">
-                Actions
+                {t('common.actions')}
               </TableHead>
             </TableRow>
           </TableHeader>
@@ -316,16 +319,16 @@ export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
       </div>
       {conflictJob ? (
         <ChoiceDialog
-          title="A file with this name appeared"
-          description={`${conflictJob.destination.relativePath} now exists, so the finished download was held back.`}
-          note="Overwrite moves the existing file to the Recycle Bin or Trash; it is not deleted permanently."
+          title={t('downloads.fileAppeared')}
+          description={t('downloads.finishedConflict', { path: conflictJob.destination.relativePath })}
+          note={t('downloads.overwriteDisclosure')}
           busy={decide.isPending || abandon.isPending}
           choices={[
-            { id: 'cancel', label: 'Cancel download' },
-            { id: 'keep_both', label: 'Keep both' },
+            { id: 'cancel', label: t('downloads.cancelDownload') },
+            { id: 'keep_both', label: t('downloads.keepBoth') },
             {
               id: 'overwrite',
-              label: 'Overwrite (move old to Recycle Bin)',
+              label: t('downloads.overwrite'),
               variant: 'destructive',
             },
           ]}

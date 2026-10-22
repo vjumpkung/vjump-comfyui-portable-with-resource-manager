@@ -35,6 +35,7 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
                     "hfEngine": "native",
                     "closeBehavior": "ask",
                     "theme": "dark",
+                    "language": "en",
                     "registryCacheTtl": 6,
                     "bandwidthCapKibS": null
                 }
@@ -511,6 +512,36 @@ fn manager_window_with_local_origin_can_invoke_all_commands() {
             app.calls.count() > before || matches!(expect, Expect::HandlerError),
             "manager/local: `{cmd}` must reach an application port"
         );
+    }
+}
+
+#[test]
+fn settings_language_round_trips_through_ipc() {
+    let app = build_app();
+    let window = manager_window(&app);
+    let call = |cmd: &str, body: Value| get_ipc_response(&window, request(cmd, local_url(), body));
+
+    for language in ["th", "en"] {
+        let response = call(
+            "settings_set",
+            json!({
+                "input": {
+                    "downloadConcurrency": 4,
+                    "hfEngine": "native",
+                    "closeBehavior": "ask",
+                    "theme": "dark",
+                    "language": language,
+                    "registryCacheTtl": 6,
+                    "bandwidthCapKibS": null
+                }
+            }),
+        )
+        .unwrap();
+        let saved: Value = response.deserialize().unwrap();
+        assert_eq!(saved["language"], language);
+        let response = call("settings_get", json!({})).unwrap();
+        let loaded: Value = response.deserialize().unwrap();
+        assert_eq!(loaded, saved);
     }
 }
 

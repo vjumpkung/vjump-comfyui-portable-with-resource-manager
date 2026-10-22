@@ -131,6 +131,7 @@ async fn moved_rebuild(original_present: bool) {
         HfEngine::Native,
         CloseBehavior::StopComfy,
         Theme::Dark,
+        Language::Th,
         21,
         Some(1024),
     )

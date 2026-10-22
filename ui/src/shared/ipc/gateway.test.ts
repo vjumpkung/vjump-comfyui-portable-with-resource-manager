@@ -208,6 +208,7 @@ describe('gateway', () => {
         hfEngine: 'hf_cli',
         closeBehavior: 'ask',
         theme: 'system',
+        language: 'en',
         registryCacheTtl: 6,
         bandwidthCapKibS: null,
       })

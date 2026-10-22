@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useId, useState } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import { gateway, IpcClientError, type InstalledNodeDto, type NodeGitStatusDto } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
@@ -32,31 +33,32 @@ export function useGitStatus(nodeId: string, enabled = true) {
 }
 
 export function GitStatusView({ status }: { status: NodeGitStatusDto }) {
+  const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-2">
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs sm:grid-cols-4">
         <div>
-          <dt className="text-muted-foreground">Branch</dt>
-          <dd>{status.branch ?? 'detached'}</dd>
+          <dt className="text-muted-foreground">{t('customNodes.branch')}</dt>
+          <dd>{status.branch ?? t('customNodes.detached')}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">Commit</dt>
+          <dt className="text-muted-foreground">{t('customNodes.commit')}</dt>
           <dd className="break-all">{status.commit.slice(0, 12)}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">Upstream</dt>
-          <dd>{status.hasUpstream ? 'Selected' : 'None'}</dd>
+          <dt className="text-muted-foreground">{t('customNodes.upstream')}</dt>
+          <dd>{status.hasUpstream ? t('customNodes.update.selected') : t('common.none')}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">Ahead / behind</dt>
+          <dt className="text-muted-foreground">{t('customNodes.aheadBehind')}</dt>
           <dd>{status.ahead ?? '—'} / {status.behind ?? '—'}</dd>
         </div>
       </dl>
       <pre
-        aria-label="Git status"
+        aria-label={t('customNodes.gitStatus')}
         className="max-h-40 overflow-auto rounded-md border bg-muted p-2 font-mono text-xs whitespace-pre-wrap break-all"
       >
-        {status.status.trim() === '' ? 'Clean working tree' : status.status}
+        {status.status.trim() === '' ? t('customNodes.update.cleanTree') : status.status}
       </pre>
     </div>
   )
@@ -68,6 +70,7 @@ export function UpdateDialog({ node, onPrepare, onClose }: {
   onPrepare: (reference: string | null) => void
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   const prefix = useId()
   const isGit = node.source.kind === 'git'
   const git = useGitStatus(node.id, isGit)
@@ -81,42 +84,42 @@ export function UpdateDialog({ node, onPrepare, onClose }: {
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Update {node.name}</DialogTitle>
+          <DialogTitle>{t('customNodes.updateName', { name: node.name })}</DialogTitle>
           <DialogDescription>
             {isGit
-              ? 'The repository is inspected first. Nothing is fetched or changed until you review the exact plan.'
-              : 'The latest registry release is resolved once and shown in the review.'}
+              ? t('customNodes.update.gitHint')
+              : t('customNodes.update.registryHint')}
           </DialogDescription>
         </DialogHeader>
         {isGit && git.isPending && (
-          <p role="status" className="text-sm text-muted-foreground">Inspecting the repository…</p>
+          <p role="status" className="text-sm text-muted-foreground">{t('customNodes.inspecting')}</p>
         )}
         {isGit && git.isError && (
           <Alert variant="destructive">
-            <AlertTitle>The repository could not be inspected</AlertTitle>
+            <AlertTitle>{t('customNodes.inspectionError')}</AlertTitle>
             <AlertDescription>
               {errorMessage(git.error)}{' '}
               {git.error instanceof IpcClientError && failureKind(git.error.code) === 'git_unavailable'
-                ? FAILURE_GUIDANCE.git_unavailable
+                ? t(FAILURE_GUIDANCE.git_unavailable)
                 : ''}
-              <Button variant="outline" size="sm" onClick={() => void git.refetch()}>Inspect again</Button>
+              <Button variant="outline" size="sm" onClick={() => void git.refetch()}>{t('customNodes.inspectAgain')}</Button>
             </AlertDescription>
           </Alert>
         )}
         {git.data && <GitStatusView status={git.data} />}
         {check && check.refusals.length > 0 && (
           <Alert variant="destructive">
-            <AlertTitle>This repository will not be updated</AlertTitle>
+            <AlertTitle>{t('customNodes.refusedTitle')}</AlertTitle>
             <AlertDescription>
               <ul>{check.refusals.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-              Resolve this manually in the node folder, then inspect again.
-              <Button variant="outline" size="sm" onClick={() => void git.refetch()}>Inspect again</Button>
+              {t('customNodes.resolveHint')}
+              <Button variant="outline" size="sm" onClick={() => void git.refetch()}>{t('customNodes.inspectAgain')}</Button>
             </AlertDescription>
           </Alert>
         )}
         {check?.needsReference && check.refusals.length === 0 && (
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor={`${prefix}-reference`}>Branch, tag or commit (required)</Label>
+            <Label htmlFor={`${prefix}-reference`}>{t('customNodes.targetRequired')}</Label>
             <Input
               id={`${prefix}-reference`}
               className="font-mono"
@@ -124,13 +127,13 @@ export function UpdateDialog({ node, onPrepare, onClose }: {
               onChange={(event) => setReference(event.target.value)}
             />
             <p className="text-xs text-muted-foreground">
-              This repository is detached or has no selected upstream, so an explicit target is required.
+              {t('customNodes.targetHint')}
             </p>
           </div>
         )}
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button disabled={blocked} onClick={() => onPrepare(target || null)}>Prepare update</Button>
+          <Button variant="outline" onClick={onClose}>{t('common.cancel')}</Button>
+          <Button disabled={blocked} onClick={() => onPrepare(target || null)}>{t('customNodes.prepareUpdate')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

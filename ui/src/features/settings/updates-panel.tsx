@@ -3,6 +3,7 @@ import { Download, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type UpdateOfferDto,
@@ -25,18 +26,18 @@ const MIB = 1024 * 1024
 
 const mib = (bytes: number | null) => ((bytes ?? 0) / MIB).toFixed(1)
 
-function describeProgress(progress: UpdateProgressDto): string {
+function describeProgress(progress: UpdateProgressDto, t: typeof translate): string {
   switch (progress.kind) {
     case 'downloading':
       return progress.totalBytes
-        ? `Downloading ${mib(progress.downloadedBytes)} of ${mib(progress.totalBytes)} MiB`
-        : `Downloading ${mib(progress.downloadedBytes)} MiB`
+        ? t('settings.updates.downloadingTotal', { downloaded: mib(progress.downloadedBytes), total: mib(progress.totalBytes) })
+        : t('settings.updates.downloading', { downloaded: mib(progress.downloadedBytes) })
     case 'installing':
-      return 'Installing the update'
+      return t('settings.updates.installing')
     case 'restarting':
-      return 'Restarting the app'
+      return t('settings.updates.restarting')
     case 'failed':
-      return 'The update failed'
+      return t('settings.updates.failed')
   }
 }
 
@@ -59,13 +60,14 @@ function Offer({
   blocked: boolean
   onInstall: () => void
 }) {
+  const { t } = useTranslation()
   const value = progress ? percent(progress) : null
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
-        <p className="text-sm font-semibold">Version {offer.version} is available</p>
+        <p className="text-sm font-semibold">{t('settings.updates.available', { version: offer.version })}</p>
         {offer.date && (
-          <p className="text-xs text-muted-foreground">Released {offer.date}</p>
+          <p className="text-xs text-muted-foreground">{t('settings.updates.released', { date: offer.date })}</p>
         )}
       </div>
       {offer.notes && (
@@ -74,19 +76,18 @@ function Offer({
         </pre>
       )}
       <p className="text-xs text-muted-foreground">
-        ComfyUI and other maintenance work must be stopped. The app restarts
-        after the update is installed.
+        {t('settings.updates.installHint')}
       </p>
       {progress && (
         <div className="flex flex-col gap-2" aria-live="polite">
-          <p className="text-sm">{describeProgress(progress)}</p>
+          <p className="text-sm">{describeProgress(progress, t)}</p>
           {value !== null && <Progress value={value} />}
         </div>
       )}
       <div>
         <Button disabled={installing || blocked} onClick={onInstall}>
           <Download aria-hidden="true" />
-          Install and restart
+          {t('settings.updates.installRestart')}
         </Button>
       </div>
     </div>
@@ -99,6 +100,7 @@ export function UpdatesPanel({
   /** A setup run is in progress; installing is refused until it ends. */
   maintenanceBusy?: boolean
 }) {
+  const { t } = useTranslation()
   const status = useQuery({
     queryKey: ['app-update-status'],
     queryFn: () => gateway.appUpdateStatus(),
@@ -125,18 +127,17 @@ export function UpdatesPanel({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>App updates</CardTitle>
+        <CardTitle>{t('settings.updates.title')}</CardTitle>
         <CardDescription>
           {status.data
-            ? `Installed version ${status.data.currentVersion}.`
-            : 'Signed updates for this app.'}
+            ? t('settings.updates.installed', { version: status.data.currentVersion })
+            : t('settings.updates.signedHint')}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {status.data && !configured && (
           <p className="text-sm text-muted-foreground">
-            This build has no update source configured, so it cannot update
-            itself.
+            {t('settings.updates.unconfigured')}
           </p>
         )}
         {configured && (
@@ -148,12 +149,12 @@ export function UpdatesPanel({
                 onClick={() => check.mutate()}
               >
                 <RefreshCw aria-hidden="true" />
-                Check for updates
+                {t('settings.updates.check')}
               </Button>
             </div>
             {check.isSuccess && offer === null && (
               <p className="text-sm text-muted-foreground">
-                You are up to date.
+                {t('settings.updates.upToDate')}
               </p>
             )}
             {offer && (
@@ -167,7 +168,7 @@ export function UpdatesPanel({
             )}
             {install.isError && (
               <Alert variant="destructive">
-                <AlertTitle>The update was not installed</AlertTitle>
+                <AlertTitle>{t('settings.updates.notInstalled')}</AlertTitle>
                 <AlertDescription>{errorMessage(install.error)}</AlertDescription>
               </Alert>
             )}

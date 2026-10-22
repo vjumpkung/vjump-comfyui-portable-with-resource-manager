@@ -42,9 +42,9 @@ export function guessProvider(url: string): ProviderGuess | null {
   return 'direct'
 }
 
-export const PROVIDER_LABELS: Record<ProviderGuess, string> = {
+export const PROVIDER_LABELS = {
   civitai: 'CivitAI',
   huggingface: 'Hugging Face',
   google_drive: 'Google Drive',
-  direct: 'Direct link',
-}
+  direct: 'downloads.directLink',
+} as const satisfies Record<ProviderGuess, string>

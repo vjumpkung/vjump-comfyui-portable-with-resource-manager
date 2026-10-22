@@ -1,6 +1,7 @@
 import { useCallback, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 
+import { useTranslation } from '@/shared/i18n'
 import { IpcClientError } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
 import { Button } from '@/shared/ui/button'
@@ -84,6 +85,7 @@ export function LockedDialog({
   onStopAndRetry: () => void
   onCancel: () => void
 }) {
+  const { t } = useTranslation()
   return (
     <Dialog
       open
@@ -93,21 +95,20 @@ export function LockedDialog({
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>The file is in use</DialogTitle>
+          <DialogTitle>{t('library.locked.title')}</DialogTitle>
           <DialogDescription>
-            Another program has the file open, so nothing was changed. Close that
-            program and retry, or stop ComfyUI first if it is holding the file.
+            {t('library.locked.hint')}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" disabled={busy} onClick={onCancel}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button variant="outline" disabled={busy} onClick={onRetry}>
-            Retry
+            {t('common.retry')}
           </Button>
           <Button disabled={busy} onClick={onStopAndRetry}>
-            Stop ComfyUI and retry
+            {t('common.stopRetry')}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -1,6 +1,7 @@
 import { TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import type { ModelEntryDto } from '@/shared/ipc/gateway'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
@@ -30,6 +31,7 @@ interface Props {
 
 /** Renames within the same folder; a changed extension needs an explicit acknowledgement. */
 export function RenameDialog({ model, onClose, onSubmit }: Props) {
+  const { t } = useTranslation()
   const [name, setName] = useState(model.name)
   const [acknowledged, setAcknowledged] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -58,10 +60,9 @@ export function RenameDialog({ model, onClose, onSubmit }: Props) {
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Rename model</DialogTitle>
+          <DialogTitle>{t('library.rename.title')}</DialogTitle>
           <DialogDescription>
-            The file stays in its folder. Preview, CivitAI and JSON files that
-            share its name are renamed with it.
+            {t('library.rename.hint')}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -72,7 +73,7 @@ export function RenameDialog({ model, onClose, onSubmit }: Props) {
           }}
         >
           <div className="flex flex-col gap-2">
-            <Label htmlFor="rename-input">New name</Label>
+            <Label htmlFor="rename-input">{t('library.rename.newName')}</Label>
             <Input
               id="rename-input"
               value={name}
@@ -87,10 +88,9 @@ export function RenameDialog({ model, onClose, onSubmit }: Props) {
           {changedExtension && trimmed !== '' ? (
             <Alert variant="destructive">
               <TriangleAlert aria-hidden="true" />
-              <AlertTitle>The file extension changes</AlertTitle>
+              <AlertTitle>{t('library.rename.extensionTitle')}</AlertTitle>
               <AlertDescription>
-                ComfyUI may stop recognizing the model. Change it only if you are
-                sure.
+                {t('library.rename.extensionHint')}
                 <span className="mt-2 flex items-center gap-2">
                   <Checkbox
                     id="rename-extension-ack"
@@ -98,7 +98,7 @@ export function RenameDialog({ model, onClose, onSubmit }: Props) {
                     onCheckedChange={(checked) => setAcknowledged(checked === true)}
                   />
                   <Label htmlFor="rename-extension-ack">
-                    Change the extension anyway
+                    {t('library.rename.extensionAck')}
                   </Label>
                 </span>
               </AlertDescription>
@@ -106,10 +106,10 @@ export function RenameDialog({ model, onClose, onSubmit }: Props) {
           ) : null}
           <DialogFooter>
             <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button type="submit" disabled={!ready || busy}>
-              Rename
+              {t('common.rename')}
             </Button>
           </DialogFooter>
         </form>

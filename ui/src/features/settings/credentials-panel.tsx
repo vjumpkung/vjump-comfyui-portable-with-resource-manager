@@ -3,6 +3,7 @@ import { KeyRound, ShieldAlert } from 'lucide-react'
 import { useRef, useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type CredentialKindDto,
@@ -24,20 +25,28 @@ const KINDS: readonly { kind: CredentialKindDto; label: string }[] = [
   { kind: 'huggingFace', label: 'Hugging Face' },
 ]
 
-const TEST_RESULTS: Record<CredentialTestResultDto, string> = {
-  valid: 'Token accepted',
-  invalid: 'Token rejected or lacks access',
-  absent: 'No token to test',
-  backend_unavailable: 'Credential storage unavailable',
-  backend_locked: 'Credential storage locked',
-  network_failure: 'Could not reach the provider',
-}
+const TEST_RESULTS = {
+  valid: 'settings.credentials.valid',
+  invalid: 'settings.credentials.invalid',
+  absent: 'settings.credentials.absent',
+  backend_unavailable: 'settings.credentials.unavailable',
+  backend_locked: 'settings.credentials.locked',
+  network_failure: 'settings.credentials.network',
+} as const satisfies Record<CredentialTestResultDto, keyof typeof import('@/shared/i18n/translations.json').en>
+
+const TEST_TOASTS = {
+  invalid: 'settings.credentials.invalidToast',
+  absent: 'settings.credentials.absentToast',
+  backend_unavailable: 'settings.credentials.unavailableToast',
+  backend_locked: 'settings.credentials.lockedToast',
+  network_failure: 'settings.credentials.networkToast',
+} as const satisfies Record<Exclude<CredentialTestResultDto, 'valid'>, keyof typeof import('@/shared/i18n/translations.json').en>
 
 function describeTest(status: CredentialStatusDto | undefined): string | null {
   const test = status?.lastTest
   if (!test) return null
   const when = new Date((test.testedAt ?? 0) * 1000).toLocaleString()
-  return `${TEST_RESULTS[test.result]} · tested ${when}`
+  return translate('settings.credentials.tested', { result: translate(TEST_RESULTS[test.result]), when })
 }
 
 function CredentialRow({
@@ -49,13 +58,14 @@ function CredentialRow({
   label: string
   status: CredentialStatusDto | undefined
 }) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const clear = useClearCredential()
   const test = useMutation({
     mutationFn: () => gateway.secretTest(kind),
     onSuccess: (result) => {
-      if (result.result === 'valid') toast.success(`${label} token accepted.`)
-      else toast.error(TEST_RESULTS[result.result] + '.')
+      if (result.result === 'valid') toast.success(translate('settings.credentials.acceptedToast', { provider: label }))
+      else toast.error(translate(TEST_TOASTS[result.result]))
     },
     onError: (error) => toast.error(errorMessage(error)),
     onSettled: () =>
@@ -76,7 +86,7 @@ function CredentialRow({
     setSaving(true)
     try {
       await gateway.secretSet(kind, value)
-      toast.success(`${label} token saved.`)
+      toast.success(translate('settings.credentials.savedToast', { provider: label }))
     } catch (error) {
       toast.error(errorMessage(error))
     } finally {
@@ -92,17 +102,17 @@ function CredentialRow({
       <div className="flex flex-wrap items-center gap-2">
         <KeyRound className="size-4 text-muted-foreground" aria-hidden="true" />
         <Label htmlFor={inputId} className="text-sm font-semibold">
-          {label} token
+          {t('settings.credentials.tokenLabel', { provider: label })}
         </Label>
         <Badge
           variant={isSet ? 'default' : 'outline'}
           className="font-mono text-[9px] uppercase tracking-widest"
         >
-          {status ? (isSet ? 'Set' : 'Not set') : '...'}
+          {status ? (isSet ? t('settings.credentials.set') : t('settings.credentials.notSet')) : '...'}
         </Badge>
         {status ? (
           <span className="font-mono text-xs text-muted-foreground">
-            {status.backend === 'keyring' ? 'OS keyring' : 'Session only'}
+            {status.backend === 'keyring' ? t('settings.credentials.keyring') : t('settings.credentials.session')}
           </span>
         ) : null}
       </div>
@@ -118,11 +128,11 @@ function CredentialRow({
           name={inputId}
           autoComplete="off"
           spellCheck={false}
-          placeholder={isSet ? 'Enter a new token to replace it' : 'Paste token'}
+          placeholder={isSet ? t('settings.credentials.replace') : t('settings.credentials.paste')}
           className="max-w-md flex-1"
         />
         <Button type="submit" disabled={saving}>
-          Set
+          {t('settings.credentials.setAction')}
         </Button>
         <Button
           type="button"
@@ -130,7 +140,7 @@ function CredentialRow({
           disabled={!isSet || test.isPending}
           onClick={() => test.mutate()}
         >
-          {test.isPending ? 'Testing...' : 'Test'}
+          {test.isPending ? t('settings.credentials.testing') : t('settings.credentials.test')}
         </Button>
         <Button
           type="button"
@@ -138,12 +148,12 @@ function CredentialRow({
           disabled={!isSet || clear.isPending}
           onClick={() =>
             clear.mutate(kind, {
-              onSuccess: () => toast.success(`${label} token cleared.`),
+              onSuccess: () => toast.success(translate('settings.credentials.clearedToast', { provider: label })),
               onError: (error) => toast.error(errorMessage(error)),
             })
           }
         >
-          Clear
+          {t('settings.credentials.clear')}
         </Button>
       </form>
       {describeTest(status) ? (
@@ -156,6 +166,7 @@ function CredentialRow({
 }
 
 export function CredentialsPanel() {
+  const { t } = useTranslation()
   const civitAi = useCredentialStatus('civitAi')
   const huggingFace = useCredentialStatus('huggingFace')
   const statuses = { civitAi: civitAi.data, huggingFace: huggingFace.data }
@@ -165,10 +176,9 @@ export function CredentialsPanel() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg font-bold tracking-tight">Access tokens</CardTitle>
+        <CardTitle className="text-lg font-bold tracking-tight">{t('settings.credentials.title')}</CardTitle>
         <CardDescription>
-          Tokens are stored in the OS keyring and are never written to the database or logs.
-          Test checks a saved token with the provider and shows only whether it is accepted.
+          {t('settings.credentials.hint')}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
@@ -179,8 +189,7 @@ export function CredentialsPanel() {
           >
             <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
             <p>
-              The OS keyring is unavailable, so tokens are kept in memory for this session only and
-              will be forgotten when the app closes.
+              {t('settings.credentials.sessionHint')}
             </p>
           </div>
         ) : null}

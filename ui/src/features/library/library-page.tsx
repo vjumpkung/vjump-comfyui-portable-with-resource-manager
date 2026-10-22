@@ -3,6 +3,7 @@ import { Boxes, LoaderCircle, RefreshCw, Search, TriangleAlert } from 'lucide-re
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type ModelEntryDto,
@@ -57,6 +58,7 @@ interface Props {
 }
 
 export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
+  const { t } = useTranslation()
   const library = useLibrary(store)
   const guard = useGuarded(onStopComfy)
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
@@ -103,7 +105,7 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
     try {
       await store.rescan()
     } catch {
-      toast.error('The library could not be scanned.')
+      toast.error(translate('library.scanFailed'))
     }
   }
 
@@ -124,12 +126,10 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
       if (outcome.kind === 'sidecars_exist') {
         setDialog({ kind: 'replace', model })
       } else if (outcome.kind === 'not_identified') {
-        toast.info('This file is not known to CivitAI.')
+        toast.info(translate('library.notIdentified'))
       } else {
         toast.success(
-          `Identified as ${outcome.version.modelName}${
-            outcome.preview === 'written' ? '' : ' (no preview image saved)'
-          }.`,
+          translate(outcome.preview === 'written' ? 'library.identified' : 'library.identifiedNoPreview', { name: outcome.version.modelName }),
         )
       }
       void store.refresh()
@@ -146,22 +146,20 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-            Models
+            {t('library.title')}
           </h1>
           <p className="font-mono text-xs text-muted-foreground">
-            {all.length} models
-            {all.length > 0
-              ? ` · ${formatBytes(all.reduce((sum, m) => sum + (m.size ?? 0), 0))}`
-              : ''}
-            {selectedVisible.length > 0
-              ? ` · ${selectedVisible.length} selected`
-              : ''}
+            {all.length === 0
+              ? t('library.summaryEmpty', { count: all.length })
+              : selectedVisible.length > 0
+                ? t('library.summarySelected', { count: all.length, size: formatBytes(all.reduce((sum, m) => sum + (m.size ?? 0), 0)), selected: selectedVisible.length })
+                : t('library.summary', { count: all.length, size: formatBytes(all.reduce((sum, m) => sum + (m.size ?? 0), 0)) })}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           {selectedVisible.length > 0 ? (
             <Button variant="outline" onClick={askDelete}>
-              Delete {selectedVisible.length} selected
+              {t('library.deleteSelected', { count: selectedVisible.length })}
             </Button>
           ) : null}
           <Button variant="outline" disabled={scanning} onClick={() => void rescan()}>
@@ -170,7 +168,7 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
             ) : (
               <RefreshCw aria-hidden="true" />
             )}
-            Rescan
+            {t('library.rescan')}
           </Button>
         </div>
       </div>
@@ -178,40 +176,34 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
       {status && status.watcher !== 'native' ? (
         <Alert>
           <TriangleAlert aria-hidden="true" />
-          <AlertTitle>File watching is degraded</AlertTitle>
+          <AlertTitle>{t('library.watcher.title')}</AlertTitle>
           <AlertDescription>
-            {status.watcher === 'polling'
-              ? 'Changes are checked every 30 seconds.'
-              : 'Changes are not detected automatically.'}{' '}
-            Files changed outside this app may appear late. Use Rescan to refresh
-            now.
+            {t(status.watcher === 'polling' ? 'library.watcher.polling' : 'library.watcher.disabled')}
           </AlertDescription>
         </Alert>
       ) : null}
       {needsRecovery ? (
         <Alert variant="destructive">
           <TriangleAlert aria-hidden="true" />
-          <AlertTitle>An earlier rename or move is unfinished</AlertTitle>
+          <AlertTitle>{t('library.recovery.title')}</AlertTitle>
           <AlertDescription>
-            Files involved are locked against new changes. Rescan to retry the
-            recovery.
+            {t('library.recovery.hint')}
           </AlertDescription>
         </Alert>
       ) : null}
       {unavailableRoots.length > 0 ? (
         <Alert>
           <TriangleAlert aria-hidden="true" />
-          <AlertTitle>Some model folders are unavailable</AlertTitle>
+          <AlertTitle>{t('library.unavailable.title')}</AlertTitle>
           <AlertDescription>
-            {unavailableRoots.map((root) => root.label).join(', ')}. Their models
-            stay listed until the folder is back.
+            {t('library.unavailable.hint', { folders: unavailableRoots.map((root) => root.label).join(', ') })}
           </AlertDescription>
         </Alert>
       ) : null}
       {warnings.length > 0 ? (
         <details className="text-sm text-muted-foreground">
           <summary className="cursor-pointer">
-            {warnings.length} scan {warnings.length === 1 ? 'warning' : 'warnings'}
+            {t('library.scanWarnings', { count: warnings.length })}
           </summary>
           <ul className="mt-2 flex flex-col gap-1 font-mono text-xs">
             {warnings.slice(0, 50).map((warning, index) => (
@@ -230,20 +222,20 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
             aria-hidden="true"
           />
           <Input
-            aria-label="Search models"
-            placeholder="Search by name, folder or category"
+            aria-label={t('library.search')}
+            placeholder={t('library.searchHint')}
             className="pl-8"
             value={filters.search}
             onChange={(event) => patch({ search: event.target.value })}
           />
         </div>
         <select
-          aria-label="Category"
+          aria-label={t('common.category')}
           className={SELECT_CLASS}
           value={filters.category}
           onChange={(event) => patch({ category: event.target.value })}
         >
-          <option value="all">All categories</option>
+          <option value="all">{t('library.allCategories')}</option>
           {categories.map((category) => (
             <option key={category} value={category}>
               {category}
@@ -252,12 +244,12 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
         </select>
         {roots.length > 1 ? (
           <select
-            aria-label="Model folder"
+            aria-label={t('library.modelFolder')}
             className={SELECT_CLASS}
             value={filters.root}
             onChange={(event) => patch({ root: event.target.value })}
           >
-            <option value="all">All folders</option>
+            <option value="all">{t('library.allFolders')}</option>
             {roots.map((root) => (
               <option key={root.id} value={root.id}>
                 {root.label}
@@ -266,37 +258,37 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
           </select>
         ) : null}
         <select
-          aria-label="Sort by"
+          aria-label={t('library.sortBy')}
           className={SELECT_CLASS}
           value={filters.sort}
           onChange={(event) => patch({ sort: event.target.value as SortKey })}
         >
-          <option value="name">Name</option>
-          <option value="category">Category</option>
-          <option value="size">Size</option>
-          <option value="modified">Modified</option>
+          <option value="name">{t('common.name')}</option>
+          <option value="category">{t('common.category')}</option>
+          <option value="size">{t('common.size')}</option>
+          <option value="modified">{t('library.modified')}</option>
         </select>
         <Button
           variant="outline"
-          aria-label={filters.descending ? 'Descending' : 'Ascending'}
+          aria-label={filters.descending ? t('library.descending') : t('library.ascending')}
           onClick={() => patch({ descending: !filters.descending })}
         >
-          {filters.descending ? 'Descending' : 'Ascending'}
+          {filters.descending ? t('library.descending') : t('library.ascending')}
         </Button>
       </div>
 
       {library.snapshot === null ? (
         <p role="status" className="text-sm text-muted-foreground">
-          Loading the model library...
+          {t('library.loading')}
         </p>
       ) : all.length === 0 ? (
         <EmptyState
           icon={<Boxes className="size-8" aria-hidden="true" />}
-          title="No models found"
-          description="Downloaded models and files in your ComfyUI model folders appear here."
+          title={t('library.empty')}
+          description={t('library.emptyHint')}
         />
       ) : visible.length === 0 ? (
-        <EmptyState title="No models match" description="Change the search or filters." />
+        <EmptyState title={t('library.noMatch')} description={t('library.changeFilters')} />
       ) : (
         <div
           className={cn(
@@ -389,15 +381,14 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
         <Dialog open onOpenChange={(open) => !open && setDialog(null)}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Replace existing metadata?</DialogTitle>
+              <DialogTitle>{t('library.replace.title')}</DialogTitle>
               <DialogDescription>
-                {dialog.model.name} already has a CivitAI info or preview file.
-                Replacing overwrites them with the data CivitAI returned now.
+                {t('library.replace.hint', { name: dialog.model.name })}
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
               <Button variant="outline" onClick={() => setDialog(null)}>
-                Keep existing
+                {t('library.replace.keep')}
               </Button>
               <Button
                 onClick={() => {
@@ -406,7 +397,7 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
                   void identify(model, true)
                 }}
               >
-                Replace
+                {t('library.replace.replace')}
               </Button>
             </DialogFooter>
           </DialogContent>

@@ -35,6 +35,7 @@ fn input() -> UpdateSettingsInput {
         hf_engine: "native".into(),
         close_behavior: "keep_running_headless".into(),
         theme: "dark".into(),
+        language: "th".into(),
         registry_cache_ttl: 24,
         bandwidth_cap_kib_s: Some(512),
     }
@@ -60,7 +61,7 @@ fn invalid_inputs_do_not_save() {
     block_on(async {
         let repository = Arc::new(FakeRepository::default());
         let update = UpdateSettings::new(repository.clone());
-        for field in 0..6 {
+        for field in 0..7 {
             let mut invalid = input();
             match field {
                 0 => invalid.download_concurrency = 0,
@@ -68,7 +69,8 @@ fn invalid_inputs_do_not_save() {
                 2 => invalid.bandwidth_cap_kib_s = Some(0),
                 3 => invalid.hf_engine = "unknown".into(),
                 4 => invalid.close_behavior = "unknown".into(),
-                _ => invalid.theme = "unknown".into(),
+                5 => invalid.theme = "unknown".into(),
+                _ => invalid.language = "unknown".into(),
             }
             assert!(matches!(
                 update.execute(invalid).await,
@@ -76,6 +78,26 @@ fn invalid_inputs_do_not_save() {
             ));
         }
         assert_eq!(*repository.saves.lock().unwrap(), 0);
+    });
+}
+
+#[test]
+fn language_round_trips_through_settings_repository() {
+    block_on(async {
+        let repository = Arc::new(FakeRepository::default());
+        let update = UpdateSettings::new(repository.clone());
+        let get = GetSettings::new(repository.clone());
+        for language in [
+            domain::settings::Language::En,
+            domain::settings::Language::Th,
+        ] {
+            let mut input = input();
+            input.language = language.as_str().into();
+            let updated = update.execute(input).await.unwrap();
+            assert_eq!(updated.language, language);
+            assert_eq!(get.execute().await.unwrap(), updated);
+        }
+        assert_eq!(*repository.saves.lock().unwrap(), 2);
     });
 }
 

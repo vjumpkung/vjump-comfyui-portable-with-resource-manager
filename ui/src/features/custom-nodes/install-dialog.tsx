@@ -1,5 +1,6 @@
 import { useId, useState } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import type { RegistryNodeDto } from '@/shared/ipc/gateway'
 import { Alert, AlertDescription } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
@@ -29,6 +30,7 @@ export function InstallDialog({ target, onPrepare, onClose }: {
   onPrepare: (preparation: NodePreparation) => void
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   const prefix = useId()
   const node = target.kind === 'registry' ? target.node : null
   const [source, setSource] = useState<'registry' | 'git'>(target.kind)
@@ -38,7 +40,7 @@ export function InstallDialog({ target, onPrepare, onClose }: {
   const [touched, setTouched] = useState(false)
 
   const repositoryError = source === 'git' && !HTTPS_URL.test(repository.trim())
-    ? 'Enter an https:// repository URL.'
+    ? t('customNodes.install.repositoryError')
     : null
 
   function submit() {
@@ -55,16 +57,16 @@ export function InstallDialog({ target, onPrepare, onClose }: {
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{node ? `Install ${node.name}` : 'Install from a Git repository'}</DialogTitle>
+          <DialogTitle>{node ? t('customNodes.installName', { name: node.name }) : t('customNodes.install.gitTitle')}</DialogTitle>
           <DialogDescription>
-            This prepares an exact plan for review. Nothing is installed or executed until you confirm it.
+            {t('customNodes.install.hint')}
           </DialogDescription>
         </DialogHeader>
         {node && (node.flagged || node.deprecated) && (
           <Alert>
             <AlertDescription>
-              The registry flags this node as {[node.flagged && 'flagged', node.deprecated && 'deprecated'].filter(Boolean).join(' and ')}.
-              The review lists every warning.
+              {t(node.flagged && node.deprecated ? 'customNodes.install.flaggedDeprecated'
+                : node.flagged ? 'customNodes.install.flagged' : 'customNodes.install.deprecated')}
             </AlertDescription>
           </Alert>
         )}
@@ -74,38 +76,38 @@ export function InstallDialog({ target, onPrepare, onClose }: {
         >
           {node && node.repository !== null && (
             <RadioGroup
-              aria-label="Install source"
+              aria-label={t('customNodes.install.source')}
               value={source}
               onValueChange={(value) => setSource(value === 'git' ? 'git' : 'registry')}
             >
               <div className="flex items-center gap-2">
                 <RadioGroupItem id={`${prefix}-registry`} value="registry" />
-                <Label htmlFor={`${prefix}-registry`}>Registry release</Label>
+                <Label htmlFor={`${prefix}-registry`}>{t('customNodes.install.registryRelease')}</Label>
               </div>
               <div className="flex items-center gap-2">
                 <RadioGroupItem id={`${prefix}-git`} value="git" />
-                <Label htmlFor={`${prefix}-git`}>Git repository</Label>
+                <Label htmlFor={`${prefix}-git`}>{t('customNodes.install.gitRepository')}</Label>
               </div>
             </RadioGroup>
           )}
           {source === 'registry' && node ? (
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor={`${prefix}-version`}>Version (optional)</Label>
+              <Label htmlFor={`${prefix}-version`}>{t('customNodes.install.version')}</Label>
               <Input
                 id={`${prefix}-version`}
                 className="font-mono"
-                placeholder={node.latestVersion ?? 'Latest release'}
+                placeholder={node.latestVersion ?? t('setup.latestRelease')}
                 value={version}
                 onChange={(event) => setVersion(event.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                Leave empty for the latest release. It is resolved once and shown in the review.
+                {t('customNodes.install.latestHint')}
               </p>
             </div>
           ) : (
             <>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor={`${prefix}-repository`}>Repository URL</Label>
+                <Label htmlFor={`${prefix}-repository`}>{t('customNodes.install.repositoryUrl')}</Label>
                 <Input
                   id={`${prefix}-repository`}
                   className="font-mono"
@@ -119,11 +121,11 @@ export function InstallDialog({ target, onPrepare, onClose }: {
                 )}
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor={`${prefix}-reference`}>Branch, tag or commit (optional)</Label>
+                <Label htmlFor={`${prefix}-reference`}>{t('customNodes.install.reference')}</Label>
                 <Input
                   id={`${prefix}-reference`}
                   className="font-mono"
-                  placeholder="Default branch"
+                  placeholder={t('customNodes.install.defaultBranch')}
                   value={reference}
                   onChange={(event) => setReference(event.target.value)}
                 />
@@ -131,8 +133,8 @@ export function InstallDialog({ target, onPrepare, onClose }: {
             </>
           )}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit">Prepare review</Button>
+            <Button type="button" variant="outline" onClick={onClose}>{t('common.cancel')}</Button>
+            <Button type="submit">{t('customNodes.install.prepare')}</Button>
           </DialogFooter>
         </form>
       </DialogContent>

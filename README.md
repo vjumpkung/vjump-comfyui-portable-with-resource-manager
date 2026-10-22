@@ -35,7 +35,7 @@ The application is a Rust program built on **Tauri 2**. Its whole interface is a
 | Model downloads | A persistent queue for CivitAI, Hugging Face, Google Drive and direct HTTPS links with progress, pause, resume, retry, de-duplication, name-conflict handling, SHA-256 verification where the provider supplies a hash, a shared bandwidth cap, and `resource_list` import and export. Hugging Face downloads use the pinned `hf` CLI by default (Xet support), with a private home folder. Google Drive downloads use the pinned `gdown` library in its own hash-locked environment (pause restarts from 0%). |
 | Model library | Scans `ComfyUI/models` and the paths in `extra_model_paths.yaml`. Search, filter, rename, move, delete (to the Recycle Bin or Trash) and identify models on CivitAI. |
 | Custom nodes | Browse the Comfy Registry or install from any HTTPS Git URL, with an exact-source review and consent before any third-party code runs. An approved `install.py` runs before the reviewed `requirements.txt`. Update, update all, enable, disable and uninstall, with recovery after interrupted operations. |
-| Settings | Download concurrency, bandwidth cap, Hugging Face engine (`hf` CLI or native), close behaviour, theme, registry cache lifetime, CivitAI and Hugging Face tokens held in the OS keyring, app updates and redacted diagnostics. |
+| Settings | Download concurrency, bandwidth cap, Hugging Face engine (`hf` CLI or native), close behaviour, theme, interface language (English/Thai), registry cache lifetime, CivitAI and Hugging Face tokens held in the OS keyring, app updates and redacted diagnostics. |
 
 ## Release 1 scope and requirements
 
@@ -48,9 +48,9 @@ The application is a Rust program built on **Tauri 2**. Its whole interface is a
 | Defaults | Windows: Python 3.12.15, PyTorch 2.10.0 with CUDA 13.0 (`win-py312-torch2100-cu130`). Linux: Python 3.13.16, PyTorch 2.14.1 with CUDA 13.0. CUDA 12.6 profiles exist for older drivers, and Python 3.14 profiles are experimental. ComfyUI: the latest release by default, or the latest commit on `master`, or a specific tag. |
 | Driver and GPU | The wizard disables any profile that your driver or GPU architecture cannot run, and shows the reason. All bundled profiles require compute capability 8.0 or newer. |
 | Disk | The wizard checks free space against the selected profile's budget and blocks the install if it is too low. The recommended Windows profile budgets 17 GiB (6 GiB environment, 7 GiB other, 4 GiB margin); this estimate is not calibrated. |
-| Interface language | English only |
+| Interface language | English and Thai (switch on the first setup step or in Settings) |
 
-Not in scope for release 1: more than one ComfyUI install at a time, a hosted or multi-user service, remote access to the manager, and localisation.
+Not in scope for release 1: more than one ComfyUI install at a time, a hosted or multi-user service, and remote access to the manager.
 
 ## Project status
 

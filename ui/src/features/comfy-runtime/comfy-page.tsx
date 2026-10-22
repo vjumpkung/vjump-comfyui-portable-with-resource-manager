@@ -9,6 +9,7 @@ import {
 import { lazy, Suspense, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type ComfyStatusDto,
@@ -49,15 +50,15 @@ const StreamLogView = lazy(() =>
   })),
 )
 
-const FAILURE_TITLES: Record<RuntimeFailureDto['kind'], string> = {
-  spawn: 'ComfyUI could not be launched',
-  exit_before_ready: 'ComfyUI exited before it was ready',
-  readiness_timeout: 'ComfyUI did not become ready in time',
-  unexpected_exit: 'ComfyUI stopped unexpectedly',
-  termination: 'ComfyUI could not be fully stopped',
-  cancelled: 'The start was cancelled',
-  persistence: 'ComfyUI runtime state could not be saved',
-}
+const FAILURE_TITLE_KEYS = {
+  spawn: 'runtime.failure.spawn',
+  exit_before_ready: 'runtime.failure.exitBeforeReady',
+  readiness_timeout: 'runtime.failure.timeout',
+  unexpected_exit: 'runtime.failure.unexpectedExit',
+  termination: 'runtime.failure.termination',
+  cancelled: 'runtime.failure.cancelled',
+  persistence: 'runtime.failure.persistence',
+} as const satisfies Record<RuntimeFailureDto['kind'], keyof typeof import('@/shared/i18n/translations.json').en>
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -73,18 +74,18 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function FailureNotice({ failure }: { failure: RuntimeFailureDto }) {
+  const { t } = useTranslation()
   return (
     <Alert variant="destructive">
       <TriangleAlert />
-      <AlertTitle>{FAILURE_TITLES[failure.kind]}</AlertTitle>
+      <AlertTitle>{t(FAILURE_TITLE_KEYS[failure.kind])}</AlertTitle>
       <AlertDescription>
         <p>
           {failure.message}
-          {failure.exitCode !== null ? ` (exit code ${failure.exitCode})` : ''}
+          {failure.exitCode !== null ? t('runtime.failure.exitCode', { code: failure.exitCode }) : ''}
         </p>
         <p>
-          Check the log below, change the launch options if needed, then start
-          again.
+          {t('runtime.failure.hint')}
         </p>
       </AlertDescription>
     </Alert>
@@ -92,25 +93,27 @@ function FailureNotice({ failure }: { failure: RuntimeFailureDto }) {
 }
 
 function StatusDetails({ status }: { status: ComfyStatusDto }) {
+  const { t } = useTranslation()
   const session = status.session
   return (
     <dl className="flex flex-col gap-2">
-      <Row label="Address">
+      <Row label={t('runtime.address')}>
         {status.origin ??
           (session
-            ? `port ${session.options.port}${session.options.listenLan ? ' (all interfaces)' : ''}`
+            ? t(session.options.listenLan ? 'runtime.portAll' : 'runtime.port', { port: session.options.port })
             : '-')}
       </Row>
-      <Row label="Process">{session?.pid ?? '-'}</Row>
-      <Row label="Version">
+      <Row label={t('runtime.process')}>{session?.pid ?? '-'}</Row>
+      <Row label={t('common.version')}>
         {session ? describeRevision(session.revision) : '-'}
       </Row>
-      <Row label="Started">{session?.startedAt ?? '-'}</Row>
+      <Row label={t('runtime.started')}>{session?.startedAt ?? '-'}</Row>
     </dl>
   )
 }
 
 export function ComfyPage() {
+  const { t } = useTranslation()
   const client = useQueryClient()
   const runtime = useRuntime()
   const { start, restart, stop } = useRuntimeActions()
@@ -167,10 +170,10 @@ export function ComfyPage() {
     onSuccess: (result) => {
       if (result.copied) {
         setDiagnosticsFallback(null)
-        toast.success('Diagnostics copied to the clipboard.')
+        toast.success(translate('runtime.diagnosticsCopied'))
       } else {
         setDiagnosticsFallback(result.text)
-        toast.error('The clipboard is unavailable. Select the report below.')
+        toast.error(translate('runtime.clipboardUnavailable'))
       }
     },
     onError,
@@ -183,18 +186,18 @@ export function ComfyPage() {
           ComfyUI
         </h1>
         <p className="text-sm font-medium leading-relaxed text-muted-foreground">
-          Start, stop and watch the local ComfyUI server.
+          {t('runtime.description')}
         </p>
       </header>
 
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-3 text-lg font-bold tracking-tight">
-            Status <LifecycleBadge lifecycle={lifecycle} />
+            {t('common.status')} <LifecycleBadge lifecycle={lifecycle} />
           </CardTitle>
           <CardDescription>
             {status?.pendingOperation ??
-              'ComfyUI runs from this installation and stops with the app unless you keep it in the background.'}
+              t('runtime.statusHint')}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -204,7 +207,7 @@ export function ComfyPage() {
           {status?.recovery ? (
             <Alert variant="destructive">
               <TriangleAlert />
-              <AlertTitle>Recovery required</AlertTitle>
+              <AlertTitle>{t('runtime.recovery')}</AlertTitle>
               <AlertDescription>{status.recovery}</AlertDescription>
             </Alert>
           ) : null}
@@ -217,7 +220,7 @@ export function ComfyPage() {
                 onClick={() => stop.mutate(undefined, { onError })}
               >
                 <Square aria-hidden="true" />
-                Stop
+                {t('common.stop')}
               </Button>
             ) : (
               <Button
@@ -227,7 +230,7 @@ export function ComfyPage() {
                 }
               >
                 <Play aria-hidden="true" />
-                {lifecycle === 'crashed' ? 'Retry start' : 'Start'}
+                {lifecycle === 'crashed' ? t('runtime.retryStart') : t('common.start')}
               </Button>
             )}
             <Button
@@ -238,7 +241,7 @@ export function ComfyPage() {
               }
             >
               <RotateCw aria-hidden="true" />
-              Restart
+              {t('common.restart')}
             </Button>
             <Button
               variant="outline"
@@ -246,7 +249,7 @@ export function ComfyPage() {
               onClick={() => open.mutate()}
             >
               <ExternalLink aria-hidden="true" />
-              Open ComfyUI
+              {t('runtime.open')}
             </Button>
             <Button
               variant="outline"
@@ -254,7 +257,7 @@ export function ComfyPage() {
               onClick={() => openBrowser.mutate()}
             >
               <ExternalLink aria-hidden="true" />
-              Open in system browser
+              {t('runtime.openBrowser')}
             </Button>
           </div>
         </CardContent>
@@ -263,16 +266,15 @@ export function ComfyPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg font-bold tracking-tight">
-            Log
+            {t('runtime.log')}
           </CardTitle>
           <CardDescription>
-            Live, redacted output. The full per-session log files are kept on
-            disk.
+            {t('runtime.logHint')}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <Suspense fallback={<Skeleton className="h-80" />}>
-            <StreamLogView text={runtime.log} label="ComfyUI log" />
+            <StreamLogView text={runtime.log} label={t('runtime.comfyLog')} />
           </Suspense>
           <div className="flex gap-2">
             <Button
@@ -280,7 +282,7 @@ export function ComfyPage() {
               size="sm"
               onClick={() => runtimeStore.clearLog()}
             >
-              Clear view
+              {t('runtime.clearView')}
             </Button>
             <Button
               variant="outline"
@@ -288,13 +290,13 @@ export function ComfyPage() {
               disabled={copyDiagnostics.isPending}
               onClick={() => copyDiagnostics.mutate()}
             >
-              Copy diagnostics
+              {t('runtime.copyDiagnostics')}
             </Button>
           </div>
           {diagnosticsFallback !== null && (
             <textarea
               readOnly
-              aria-label="Diagnostics report"
+              aria-label={t('runtime.diagnosticsReport')}
               value={diagnosticsFallback}
               rows={12}
               onFocus={(event) => event.currentTarget.select()}
@@ -317,11 +319,11 @@ export function ComfyPage() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Port {conflict?.requested} is in use</DialogTitle>
+            <DialogTitle>{t('runtime.portInUse', { port: conflict?.requested ?? '' })}</DialogTitle>
             <DialogDescription>
               {conflict?.suggested
-                ? `Another program is listening on port ${conflict.requested}. Use port ${conflict.suggested} instead? It will be saved as your launch port.`
-                : `Another program is listening on port ${conflict?.requested} and no free port was found after it. Choose a port in the launch options.`}
+                ? t('runtime.portSuggestion', { requested: conflict.requested, suggested: conflict.suggested })
+                : t('runtime.noFreePort', { port: conflict?.requested ?? '' })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -330,14 +332,14 @@ export function ComfyPage() {
               disabled={acceptPort.isPending}
               onClick={() => setConflict(null)}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             {conflict?.suggested ? (
               <Button
                 disabled={acceptPort.isPending}
                 onClick={() => acceptPort.mutate(conflict.suggested!)}
               >
-                Use port {conflict.suggested}
+                {t('runtime.usePort', { port: conflict.suggested })}
               </Button>
             ) : null}
           </DialogFooter>

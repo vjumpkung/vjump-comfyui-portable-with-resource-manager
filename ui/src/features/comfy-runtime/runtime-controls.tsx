@@ -1,6 +1,7 @@
 import { Play, Square } from 'lucide-react'
 import { toast } from 'sonner'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import { errorMessage } from '@/shared/lib/display'
 import { Button } from '@/shared/ui/button'
 
@@ -9,6 +10,7 @@ import { useRuntime, useRuntimeActions } from './use-runtime'
 
 /** Live status chip and Start/Stop button for the top bar. */
 export function RuntimeControls() {
+  const { t } = useTranslation()
   const runtime = useRuntime()
   const { start, stop } = useRuntimeActions()
   const lifecycle = runtime.status?.lifecycle
@@ -19,7 +21,7 @@ export function RuntimeControls() {
       onSuccess: (result) => {
         if (result.kind === 'port_conflict') {
           toast.error(
-            `Port ${result.requested} is in use. Open the ComfyUI page to choose another port.`,
+            translate('runtime.controls.portConflict', { port: result.requested }),
           )
         }
       },
@@ -42,7 +44,7 @@ export function RuntimeControls() {
           }
         >
           <Square aria-hidden="true" />
-          Stop
+          {t('common.stop')}
         </Button>
       ) : (
         <Button
@@ -53,7 +55,7 @@ export function RuntimeControls() {
           onClick={onStart}
         >
           <Play aria-hidden="true" />
-          Start
+          {t('common.start')}
         </Button>
       )}
     </div>

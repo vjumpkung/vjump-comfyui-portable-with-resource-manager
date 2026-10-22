@@ -159,7 +159,7 @@ Gate IDs refer to [Release gates](#release-gates).
 | NFR-PERF-2 | — | 2,000-file cached scan < 2 s | None | Not measured | OPEN | Measurement | G07 | Engineering |
 | NFR-PERF-3 | — | Throughput ≥ 90 % of `curl` | None | Not measured | OPEN | Measurement | G07 | Engineering |
 | NFR-UX-1 | — | DESIGN.md followed | Component Vitest | N3, N4 (overflow and contrast fixes) | PARTIAL | Full audit | G07 | Engineering |
-| NFR-UX-2 | — | English copy; Thai glyphs | — | S5-NATIVE-WIN-N6-001, N15 (Thai renders on Windows) | PARTIAL | Thai on WebKitGTK | G01 | Engineering |
+| NFR-UX-2 | — | English + Thai UI; first-step/Settings selection, persisted, default English; English backend diagnostics/logs; Thai glyphs | Catalog parity test; settings/wizard language tests (execution evidence pending) | S5-NATIVE-WIN-N6-001, N15 (Thai renders on Windows) | PARTIAL | Thai layout at 960px and 200 % zoom, both themes, WebView2 and WebKitGTK: not yet checked natively | G01, G07 | Engineering: record automated evidence and native visual checks |
 | NFR-UX-3 | — | Bundled fonts, offline, both themes, both webviews | Build embeds assets | Custom-protocol builds ran (no dev server); release `.deb`/AppImage rendered under WebKitGTK (S7-NATIVE-LINUX-L3…L8) | PARTIAL | Offline and both-theme audit; WebKitGTK on a desktop | G01, G07 | Engineering |
 | NFR-UX-4 | — | WCAG AA, keyboard, 200 % zoom | None | Not audited | OPEN | Audit | G07 | Engineering |
 | NFR-MAINT-1 | — | Architecture, boundaries, binding drift in CI | `check-arch-deps` 10/10 + OK, ESLint boundaries, bindings drift test | — | OPEN | Checks pass locally; CI re-enabled by the owner on 2026-10-21, hosted run pending | G10 | Engineering |

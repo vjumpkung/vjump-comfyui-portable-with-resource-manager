@@ -9,28 +9,28 @@ import {
   type NodeOutcomeDto,
   type PlanReviewDto,
 } from '@/shared/ipc/gateway'
-import { errorMessage } from '@/shared/lib/display'
 
 import {
   failureKind,
   newRequestId,
-  preparationLabel,
+  type ActionContext,
   type FailureKind,
   type NodePreparation,
+  type NodeText,
 } from './model'
 import { NODE_KEY, refreshNodeState } from './use-nodes'
 
 /** What is running. Every kind but `direct` has a key that `nodeCancel` accepts. */
 export type Busy =
-  | { kind: 'prepare'; requestId: string; label: string }
-  | { kind: 'commit'; planId: string; label: string }
-  | { kind: 'direct'; label: string }
+  | { kind: 'prepare'; requestId: string; context: ActionContext }
+  | { kind: 'commit'; planId: string; context: ActionContext }
+  | { kind: 'direct'; context: ActionContext }
 
 export interface ActionFailure {
   code: string
-  message: string
+  message: string | NodeText
   kind: FailureKind
-  context: string
+  context: ActionContext
   /** Set for node-specific failures so the actual Git status can be shown. */
   nodeId: string | null
   /** Repeats exactly the refused request; null when repeating makes no sense. */
@@ -40,15 +40,15 @@ export interface ActionFailure {
 }
 
 export interface ActionNotice {
-  message: string
+  message: NodeText | { count: number }
   /** A retained backup could not be moved to the Recycle Bin or Trash yet. */
   cleanupPending: boolean
 }
 
-function toError(error: unknown): IpcClientError {
+function toError(error: unknown): { code: string; message: string | NodeText } {
   return error instanceof IpcClientError
     ? error
-    : new IpcClientError('other', errorMessage(error))
+    : { code: 'other', message: { key: 'common.operationError' } }
 }
 
 export function prepareNode(preparation: NodePreparation, requestId: string): Promise<PlanReviewDto> {
@@ -65,13 +65,13 @@ export function prepareNode(preparation: NodePreparation, requestId: string): Pr
 }
 
 const PLAN_VERB = {
-  install: 'Installed',
-  update: 'Updated',
-  retry_dependencies: 'Retried the dependencies of',
-  enable: 'Enabled',
-  disable: 'Disabled',
-  uninstall: 'Uninstalled',
-} as const
+  install: 'customNodes.result.installed',
+  update: 'customNodes.result.updated',
+  retry_dependencies: 'customNodes.result.retried',
+  enable: 'customNodes.result.enabled',
+  disable: 'customNodes.result.disabled',
+  uninstall: 'customNodes.result.uninstalled',
+} as const satisfies Record<PlanReviewDto['kind'], NodeText['key']>
 
 /** A refusal before anything ran: the review can be kept and the same request repeated. */
 const KEEP_REVIEW: readonly FailureKind[] = ['consent', 'comfyui_running', 'busy']
@@ -99,7 +99,7 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
 
   function fail(
     error: unknown,
-    context: string,
+    context: ActionContext,
     extra: Partial<Pick<ActionFailure, 'nodeId' | 'retry' | 'prepare'>> = {},
   ): ActionFailure {
     const ipc = toError(error)
@@ -134,27 +134,27 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
     settle()
   }
 
-  function succeed(message: string, outcome: NodeOutcomeDto | null) {
+  function succeed(message: NodeText, outcome: NodeOutcomeDto | null) {
     setNotice({ message, cleanupPending: outcome?.cleanupPending ?? false })
     setRestartOffered(true)
   }
 
   async function prepare(preparation: NodePreparation): Promise<void> {
     const requestId = newRequestId()
-    const label = preparationLabel(preparation)
-    if (!begin({ kind: 'prepare', requestId, label })) return
+    const context: ActionContext = { kind: 'prepare', preparation }
+    if (!begin({ kind: 'prepare', requestId, context })) return
     try {
       const plan = await prepareNode(preparation, requestId)
       if (cancelled.current) {
         // An explicit cancellation raced with a successful preparation: discard what came back.
         await gateway.nodeCancel(plan.id).catch(() => undefined)
-        setNotice({ message: 'Preparation was cancelled and the prepared plan was discarded.', cleanupPending: false })
+        setNotice({ message: { key: 'customNodes.result.preparationCancelled' }, cleanupPending: false })
       } else {
         preparations.current.set(plan.id, preparation)
         setReview([plan])
       }
     } catch (error) {
-      fail(error, `Preparing ${label}`, {
+      fail(error, context, {
         nodeId: 'nodeId' in preparation ? preparation.nodeId : null,
         retry: () => prepare(preparation),
         prepare: preparation,
@@ -168,14 +168,15 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
     const item = items[0]
     const plan = review?.find((candidate) => candidate.id === item?.planId)
     if (!item || !plan) return
-    if (!begin({ kind: 'commit', planId: plan.id, label: plan.name })) return
+    const context: ActionContext = { kind: 'apply', name: plan.name }
+    if (!begin({ kind: 'commit', planId: plan.id, context })) return
     try {
       const outcome = await gateway.nodeCommit(item)
       setReview(null)
       preparations.current.delete(plan.id)
-      succeed(`${PLAN_VERB[plan.kind]} ${plan.name}.`, outcome)
+      succeed({ key: PLAN_VERB[plan.kind], values: { name: plan.name } }, outcome)
     } catch (error) {
-      const value = fail(error, `Applying ${plan.name}`, {
+      const value = fail(error, context, {
         retry: () => commit(items),
         prepare: preparations.current.get(plan.id) ?? null,
       })
@@ -211,18 +212,17 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
   }
 
   async function direct(
-    label: string,
-    context: string,
+    context: ActionContext,
     work: () => Promise<NodeOutcomeDto>,
-    message: string,
+    message: NodeText,
     node: InstalledNodeDto,
   ): Promise<void> {
-    if (!begin({ kind: 'direct', label })) return
+    if (!begin({ kind: 'direct', context })) return
     try {
       const outcome = await work()
       succeed(message, outcome)
     } catch (error) {
-      fail(error, context, { nodeId: node.id, retry: () => direct(label, context, work, message, node) })
+      fail(error, context, { nodeId: node.id, retry: () => direct(context, work, message, node) })
     } finally {
       end()
     }
@@ -231,20 +231,18 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
   function toggle(node: InstalledNodeDto): Promise<void> {
     const enabled = !node.enabled
     return direct(
-      `${enabled ? 'Enabling' : 'Disabling'} ${node.name}`,
-      `${enabled ? 'Enabling' : 'Disabling'} ${node.name}`,
+      { kind: enabled ? 'enable' : 'disable', name: node.name },
       () => gateway.nodeSetEnabled({ nodeId: node.id, enabled }),
-      `${enabled ? 'Enabled' : 'Disabled'} ${node.name}.`,
+      { key: enabled ? PLAN_VERB.enable : PLAN_VERB.disable, values: { name: node.name } },
       node,
     )
   }
 
   function uninstall(node: InstalledNodeDto): Promise<void> {
     return direct(
-      `Uninstalling ${node.name}`,
-      `Uninstalling ${node.name}`,
+      { kind: 'uninstall', name: node.name },
       () => gateway.nodeUninstall(node.id),
-      `Uninstalled ${node.name}.`,
+      { key: PLAN_VERB.uninstall, values: { name: node.name } },
       node,
     )
   }
@@ -272,7 +270,7 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
     try {
       await stopComfy()
     } catch (error) {
-      fail(error, 'Stopping ComfyUI')
+      fail(error, { kind: 'stop' })
       return
     } finally {
       setStopping(false)
@@ -304,8 +302,8 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
     dismissFailure: () => setFailure(null),
     dismissNotice: () => setNotice(null),
     finishRestartOffer: () => setRestartOffered(false),
-    noteResult: (message: string) => {
-      setNotice({ message, cleanupPending: false })
+    noteResult: (count: number) => {
+      setNotice({ message: { count }, cleanupPending: false })
       setRestartOffered(true)
     },
   }

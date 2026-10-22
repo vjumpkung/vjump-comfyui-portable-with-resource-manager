@@ -16,6 +16,8 @@ pub enum SettingsError {
     InvalidCloseBehavior,
     #[error("unknown theme")]
     InvalidTheme,
+    #[error("unknown language")]
+    InvalidLanguage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +152,34 @@ impl FromStr for Theme {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    #[default]
+    En,
+    Th,
+}
+
+impl Language {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::En => "en",
+            Self::Th => "th",
+        }
+    }
+}
+
+impl FromStr for Language {
+    type Err = SettingsError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "en" => Ok(Self::En),
+            "th" => Ok(Self::Th),
+            _ => Err(SettingsError::InvalidLanguage),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CredentialKind {
     CivitAi,
@@ -162,6 +192,7 @@ pub struct Settings {
     pub hf_engine: HfEngine,
     pub close_behavior: CloseBehavior,
     pub theme: Theme,
+    pub language: Language,
     pub registry_cache_ttl: TtlHours,
     pub bandwidth_cap_kib_s: Option<NonZeroU32>,
 }
@@ -172,6 +203,7 @@ impl Settings {
         hf_engine: HfEngine,
         close_behavior: CloseBehavior,
         theme: Theme,
+        language: Language,
         registry_cache_ttl: u32,
         bandwidth_cap_kib_s: Option<u32>,
     ) -> Result<Self, SettingsError> {
@@ -180,6 +212,7 @@ impl Settings {
             hf_engine,
             close_behavior,
             theme,
+            language,
             registry_cache_ttl: TtlHours::new(registry_cache_ttl)?,
             bandwidth_cap_kib_s: bandwidth_cap_kib_s
                 .map(|value| NonZeroU32::new(value).ok_or(SettingsError::InvalidBandwidthCap))
@@ -199,6 +232,7 @@ mod tests {
         assert_eq!(settings.hf_engine, HfEngine::HfCli);
         assert_eq!(settings.close_behavior, CloseBehavior::Ask);
         assert_eq!(settings.theme, Theme::System);
+        assert_eq!(settings.language, Language::En);
         assert_eq!(settings.registry_cache_ttl.get(), 6);
         assert_eq!(settings.bandwidth_cap_kib_s, None);
     }
@@ -217,6 +251,7 @@ mod tests {
                 HfEngine::Native,
                 CloseBehavior::Ask,
                 Theme::Dark,
+                Language::En,
                 1,
                 Some(0)
             ),
@@ -227,6 +262,7 @@ mod tests {
             HfEngine::Native,
             CloseBehavior::StopComfy,
             Theme::Light,
+            Language::Th,
             u32::MAX,
             Some(u32::MAX),
         )
@@ -258,5 +294,19 @@ mod tests {
             Err(SettingsError::InvalidCloseBehavior)
         );
         assert_eq!("unknown".parse::<Theme>(), Err(SettingsError::InvalidTheme));
+    }
+
+    #[test]
+    fn language_values_round_trip_and_reject_unknown_values() {
+        for (language, value) in [(Language::En, "en"), (Language::Th, "th")] {
+            assert_eq!(language.as_str(), value);
+            assert_eq!(value.parse(), Ok(language));
+        }
+        for value in ["unknown", "EN", ""] {
+            assert_eq!(
+                value.parse::<Language>(),
+                Err(SettingsError::InvalidLanguage)
+            );
+        }
     }
 }

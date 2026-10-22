@@ -17,6 +17,7 @@ import {
   type SetupModeDto,
   type SetupStatusDto,
 } from '@/shared/ipc/gateway'
+import { useTranslation } from '@/shared/i18n'
 import { EmptyState } from '@/shared/ui/empty-state'
 
 import { type NavId } from './nav'
@@ -74,6 +75,7 @@ function Page({
   onOpenSettings,
   onOpenComfy,
 }: PageActions & Navigation & { active: NavId }) {
+  const { t } = useTranslation()
   if (active === 'overview') return <OverviewPage />
   if (active === 'comfyui') return <ComfyPage />
   if (active === 'downloads')
@@ -98,7 +100,7 @@ function Page({
     return (
       <EnvironmentPage status={status} onSetup={onSetup} onResume={onResume} />
     )
-  return <EmptyState title="Page unavailable" />
+  return <EmptyState title={t('app.pageUnavailable')} />
 }
 
 export function AppShell({ status, onSetup, onResume }: PageActions) {

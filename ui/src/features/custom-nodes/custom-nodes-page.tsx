@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { LoaderCircle, Puzzle, Search, TriangleAlert, Wrench } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import type {
   ComfyStatusDto,
   InstalledNodeDto,
@@ -18,7 +19,9 @@ import { FailureNotice } from './failure-notice'
 import { InstallDialog, type InstallTarget } from './install-dialog'
 import { InstalledTable } from './installed-table'
 import {
+  actionContextLabel,
   DEFAULT_NODE_FILTERS,
+  nodeText,
   filterNodes,
   isUpdateCandidate,
   repairActive,
@@ -67,6 +70,7 @@ export function CustomNodesPage({
   onRestartComfy,
   onOpenComfy,
 }: CustomNodesPageProps) {
+  const { t } = useTranslation()
   const client = useQueryClient()
   const nodes = useNodes()
   const actions = useNodeActions({ stopComfy: onStopComfy })
@@ -83,7 +87,7 @@ export function CustomNodesPage({
 
   const list = nodes.data
   const all = useMemo(() => list?.nodes ?? [], [list])
-  const visible = useMemo(() => filterNodes(all, filters), [all, filters])
+  const visible = filterNodes(all, filters)
   const currentId = repairActive(visible, activeId)
   const active = visible.find((node) => node.id === currentId) ?? null
   const selectedNodes = all.filter((node) => selected.has(node.id))
@@ -96,11 +100,11 @@ export function CustomNodesPage({
   const lifecycle = runtime?.lifecycle
   const comfyRunning = lifecycle === 'running' || lifecycle === 'starting'
   const installDisabledReason = maintenanceBusy
-    ? 'Environment setup is running.'
+    ? t('customNodes.setupRunningReason')
     : repairRequired
-      ? 'Installs are disabled until the environment is repaired.'
+      ? t('customNodes.repairInstallReason')
       : actions.working
-        ? 'Another request is running.'
+        ? t('customNodes.anotherRequest')
         : null
 
   const updateScope = selectedNodes.length > 0 ? selectedNodes : all.filter(isUpdateCandidate)
@@ -127,7 +131,7 @@ export function CustomNodesPage({
     try {
       await onStopComfy()
     } catch (error) {
-      actions.report(error, 'Stopping ComfyUI')
+      actions.report(error, { kind: 'stop' })
     }
   }
 
@@ -143,7 +147,7 @@ export function CustomNodesPage({
       }
     } catch (error) {
       setRestart({ kind: 'idle' })
-      actions.report(error, 'Restarting ComfyUI', { retry: restartComfy })
+      actions.report(error, { kind: 'restart' }, { retry: restartComfy })
     }
     refreshNodeState(client)
   }
@@ -167,10 +171,11 @@ export function CustomNodesPage({
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">Custom Nodes</h1>
+          <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">{t('nav.customNodes')}</h1>
           <p className="font-mono text-xs text-muted-foreground">
-            {all.length} installed · {all.filter((node) => !node.enabled).length} disabled
-            {selectedNodes.length > 0 ? ` · ${selectedNodes.length} selected` : ''}
+            {selectedNodes.length > 0
+              ? t('customNodes.summarySelected', { count: selectedNodes.length, installed: all.length, disabled: all.filter((node) => !node.enabled).length })
+              : t('customNodes.summary', { count: all.length, installed: all.length, disabled: all.filter((node) => !node.enabled).length })}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -179,7 +184,7 @@ export function CustomNodesPage({
             aria-pressed={registryOpen}
             onClick={() => setRegistryOpen((open) => !open)}
           >
-            {registryOpen ? 'Hide Registry' : 'Browse Registry'}
+            {registryOpen ? t('customNodes.hideRegistry') : t('customNodes.browseRegistry')}
           </Button>
           <Button
             variant="outline"
@@ -187,10 +192,10 @@ export function CustomNodesPage({
             title={installDisabledReason ?? undefined}
             onClick={() => setInstallTarget({ kind: 'git' })}
           >
-            Install from Git
+            {t('customNodes.installGit')}
           </Button>
           <Button variant="outline" disabled={updateAllBlocked} onClick={() => setUpdateAll(updateScope)}>
-            {selectedNodes.length > 0 ? 'Update selected' : 'Update all'} ({updateCount})
+            {selectedNodes.length > 0 ? t('customNodes.updateSelected') : t('common.updateAll')} ({updateCount})
           </Button>
         </div>
       </div>
@@ -198,30 +203,28 @@ export function CustomNodesPage({
       {maintenanceBusy && (
         <Alert>
           <LoaderCircle className="animate-spin" aria-hidden="true" />
-          <AlertTitle>Environment setup is running</AlertTitle>
-          <AlertDescription>Custom node changes are paused until it finishes.</AlertDescription>
+          <AlertTitle>{t('customNodes.setupRunning')}</AlertTitle>
+          <AlertDescription>{t('customNodes.setupPausedHint')}</AlertDescription>
         </Alert>
       )}
       {repairRequired && (
         <Alert variant="destructive">
           <Wrench aria-hidden="true" />
-          <AlertTitle>This environment needs repair</AlertTitle>
+          <AlertTitle>{t('customNodes.repairTitle')}</AlertTitle>
           <AlertDescription>
-            Installs and updates are disabled until Repair succeeds. Retrying dependencies,
-            enabling, disabling and uninstalling stay available. A successful retry does not
-            clear this notice by itself.
-            <Button variant="outline" size="sm" onClick={onRepair}>Repair environment</Button>
+            {t('customNodes.repairHint')}
+            <Button variant="outline" size="sm" onClick={onRepair}>{t('setup.mode.repair')}</Button>
           </AlertDescription>
         </Alert>
       )}
       {comfyRunning && (
         <Alert>
           <TriangleAlert aria-hidden="true" />
-          <AlertTitle>ComfyUI is running</AlertTitle>
+          <AlertTitle>{t('customNodes.comfyRunning')}</AlertTitle>
           <AlertDescription>
-            Node changes need ComfyUI stopped. Stopping it also rescans the node folders.
+            {t('customNodes.stopHint')}
             <Button variant="outline" size="sm" disabled={runtimeBusy} onClick={() => void stopRunning()}>
-              Stop ComfyUI
+              {t('customNodes.stopComfy')}
             </Button>
           </AlertDescription>
         </Alert>
@@ -230,10 +233,10 @@ export function CustomNodesPage({
       {pendingReviews.length > 0 && !actions.review && updateAll === null && actions.busy === null && (
         <Alert>
           <AlertTitle>
-            {pendingReviews.length === 1 ? 'A prepared plan is waiting for review' : `${pendingReviews.length} prepared plans are waiting for review`}
+            {t('customNodes.waitingReview', { count: pendingReviews.length })}
           </AlertTitle>
           <AlertDescription>
-            Nothing runs until you confirm. Resuming starts with every confirmation unchecked.
+            {t('customNodes.resumeHint')}
             <ul className="mt-2 flex flex-col gap-2">
               {pendingReviews.map((plan) => (
                 <li key={plan.id} className="flex flex-wrap items-center gap-2">
@@ -241,10 +244,10 @@ export function CustomNodesPage({
                     {plan.name} · {sourceLabel(plan.source)}
                   </span>
                   <Button size="sm" disabled={paused} onClick={() => actions.resume(plan)}>
-                    Resume review
+                    {t('customNodes.resumeReview')}
                   </Button>
                   <Button variant="ghost" size="sm" disabled={paused} onClick={() => void actions.discard([plan])}>
-                    Discard
+                    {t('customNodes.discard')}
                   </Button>
                 </li>
               ))}
@@ -257,19 +260,17 @@ export function CustomNodesPage({
         <Alert role="status">
           <LoaderCircle className="animate-spin" aria-hidden="true" />
           <AlertTitle>
-            {actions.busy.kind === 'prepare' ? `Preparing ${actions.busy.label}…`
-              : actions.busy.kind === 'commit' ? `Applying ${actions.busy.label}…`
-                : `${actions.busy.label}…`}
+            {t('customNodes.busy', { context: actionContextLabel(actions.busy.context) })}
           </AlertTitle>
           <AlertDescription>
             {actions.cancelRequested
-              ? 'Cancellation requested. Waiting for the operation to stop.'
+              ? t('customNodes.cancelRequested')
               : actions.busy.kind === 'direct'
-                ? 'This step cannot be cancelled.'
-                : 'Closing this page does not stop the work.'}
+                ? t('customNodes.cannotCancel')
+                : t('customNodes.closingHint')}
             {actions.busy.kind === 'prepare' && (
               <Button variant="outline" size="sm" disabled={actions.cancelRequested} onClick={actions.requestCancel}>
-                Cancel preparation
+                {t('customNodes.cancelPreparation')}
               </Button>
             )}
           </AlertDescription>
@@ -278,11 +279,12 @@ export function CustomNodesPage({
       {!actions.review && failureNotice}
       {actions.notice && (
         <Alert role="status">
-          <AlertTitle>{actions.notice.message}</AlertTitle>
+          <AlertTitle>{'count' in actions.notice.message
+            ? t('customNodes.updatedCount', { count: actions.notice.message.count })
+            : nodeText(actions.notice.message)}</AlertTitle>
           {actions.notice.cleanupPending && (
             <AlertDescription>
-              A retained backup could not be moved to the Recycle Bin or Trash yet. The change itself
-              finished; cleanup is retried on the next rescan.
+              {t('customNodes.cleanupHint')}
             </AlertDescription>
           )}
         </Alert>
@@ -290,25 +292,25 @@ export function CustomNodesPage({
       {offerRestart && (
         <Alert role="status">
           <AlertTitle>
-            {restart.kind === 'started' ? 'ComfyUI was restarted'
-              : restart.kind === 'port_conflict' ? `Port ${restart.requested} is in use, so ComfyUI was not started`
-                : restart.kind === 'working' ? 'Restarting ComfyUI…'
-                  : 'Restart ComfyUI to load the changes'}
+            {restart.kind === 'started' ? t('customNodes.restarted')
+              : restart.kind === 'port_conflict' ? t('customNodes.portInUse', { port: restart.requested })
+                : restart.kind === 'working' ? t('customNodes.restarting')
+                  : t('customNodes.restartHint')}
           </AlertTitle>
           <AlertDescription>
             {restart.kind === 'port_conflict' && (
               <>
-                {restart.suggested !== null ? `Port ${restart.suggested} is free, but it is not used automatically. ` : ''}
-                Choose a port in the ComfyUI launch options.
-                <Button variant="outline" size="sm" onClick={onOpenComfy}>Open ComfyUI launch options</Button>
+                {restart.suggested !== null ? t('customNodes.portFree', { port: restart.suggested }) : ''}
+                {t('customNodes.choosePort')}
+                <Button variant="outline" size="sm" onClick={onOpenComfy}>{t('customNodes.openLaunchOptions')}</Button>
               </>
             )}
             {restart.kind === 'idle' && (canRestart
-              ? <Button size="sm" onClick={() => void restartComfy()}>Restart ComfyUI</Button>
-              : 'Restart is unavailable until the environment is healthy and no operation blocks launch.')}
+              ? <Button size="sm" onClick={() => void restartComfy()}>{t('customNodes.restartComfy')}</Button>
+              : t('customNodes.restartUnavailable'))}
             {(restart.kind === 'started' || restart.kind === 'port_conflict' || restart.kind === 'idle') && (
               <Button variant="ghost" size="sm" onClick={() => { setRestart({ kind: 'idle' }); actions.finishRestartOffer() }}>
-                Dismiss
+                {t('common.dismiss')}
               </Button>
             )}
           </AlertDescription>
@@ -322,7 +324,7 @@ export function CustomNodesPage({
         />
       )}
 
-      <section aria-label="Installed custom nodes" className="flex flex-col gap-4">
+      <section aria-label={t('customNodes.installed')} className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-56 flex-1">
             <Search
@@ -330,47 +332,47 @@ export function CustomNodesPage({
               aria-hidden="true"
             />
             <Input
-              aria-label="Search installed nodes"
-              placeholder="Search by name or source"
+              aria-label={t('customNodes.searchInstalled')}
+              placeholder={t('customNodes.searchHint')}
               className="pl-8"
               value={filters.text}
               onChange={(event) => patchFilters({ text: event.target.value })}
             />
           </div>
           <select
-            aria-label="Source kind"
+            aria-label={t('customNodes.sourceKind')}
             className={SELECT_CLASS}
             value={filters.source}
             onChange={(event) => patchFilters({ source: event.target.value as SourceFilter })}
           >
-            <option value="all">All sources</option>
-            <option value="registry">Registry</option>
+            <option value="all">{t('customNodes.allSources')}</option>
+            <option value="registry">{t('customNodes.source.registry')}</option>
             <option value="git">Git</option>
-            <option value="manual">Manual</option>
+            <option value="manual">{t('customNodes.source.manual')}</option>
           </select>
           <select
-            aria-label="Enabled state"
+            aria-label={t('customNodes.enabledState')}
             className={SELECT_CLASS}
             value={filters.enabled}
             onChange={(event) => patchFilters({ enabled: event.target.value as EnabledFilter })}
           >
-            <option value="all">Enabled and disabled</option>
-            <option value="enabled">Enabled only</option>
-            <option value="disabled">Disabled only</option>
+            <option value="all">{t('customNodes.bothStates')}</option>
+            <option value="enabled">{t('customNodes.enabledOnly')}</option>
+            <option value="disabled">{t('customNodes.disabledOnly')}</option>
           </select>
         </div>
         {nodes.isPending ? (
-          <p role="status" className="text-sm text-muted-foreground">Loading custom nodes…</p>
+          <p role="status" className="text-sm text-muted-foreground">{t('customNodes.loading')}</p>
         ) : nodes.isError && !list ? (
           <ErrorNotice error={nodes.error} retry={() => void nodes.refetch()} />
         ) : all.length === 0 ? (
           <EmptyState
             icon={<Puzzle className="size-8" aria-hidden="true" />}
-            title="No custom nodes installed"
-            description="Browse the Comfy Registry or install from a Git repository."
+            title={t('customNodes.emptyTitle')}
+            description={t('customNodes.emptyHint')}
           />
         ) : visible.length === 0 ? (
-          <EmptyState title="No nodes match" description="Change the search or filters." />
+          <EmptyState title={t('customNodes.noMatch')} description={t('customNodes.changeFilters')} />
         ) : (
           <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="min-w-0 overflow-x-auto">
@@ -462,7 +464,7 @@ export function CustomNodesPage({
           onSettled={(updated) => {
             refreshNodeState(client)
             if (updated > 0) {
-              actions.noteResult(`Updated ${updated} ${updated === 1 ? 'node' : 'nodes'}.`)
+              actions.noteResult(updated)
               setSelected(new Set())
             }
           }}

@@ -1,3 +1,4 @@
+import { useTranslation } from '@/shared/i18n'
 import type { InstalledNodeDto } from '@/shared/ipc/gateway'
 import { Button } from '@/shared/ui/button'
 import {
@@ -21,22 +22,23 @@ export function ConfirmDialog({ node, action, busy, onConfirm, onClose }: {
   onConfirm: () => void
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   const trash = trashName()
   const copy = {
     enable: {
-      title: `Enable ${node.name}?`,
-      body: `Moves the folder out of custom_nodes/.disabled back into custom_nodes. Resulting state: enabled. ComfyUI loads it at its next start.`,
-      confirm: 'Enable node',
+      title: t('customNodes.confirm.enableTitle', { name: node.name }),
+      body: t('customNodes.confirm.enableBody'),
+      confirm: t('customNodes.confirm.enable'),
     },
     disable: {
-      title: `Disable ${node.name}?`,
-      body: `Moves the folder into custom_nodes/.disabled. Resulting state: disabled. ComfyUI stops loading it; nothing is deleted.`,
-      confirm: 'Disable node',
+      title: t('customNodes.confirm.disableTitle', { name: node.name }),
+      body: t('customNodes.confirm.disableBody'),
+      confirm: t('customNodes.confirm.disable'),
     },
     uninstall: {
-      title: `Uninstall ${node.name}?`,
-      body: `Moves the folder to the ${trash}. Python packages that were installed for it remain in the shared environment; they are not removed. Nothing is deleted permanently.`,
-      confirm: 'Uninstall node',
+      title: t('customNodes.confirm.uninstallTitle', { name: node.name }),
+      body: t('customNodes.confirm.uninstallBody', { trash }),
+      confirm: t('customNodes.confirm.uninstall'),
     },
   }[action]
   return (
@@ -47,9 +49,9 @@ export function ConfirmDialog({ node, action, busy, onConfirm, onClose }: {
           <DialogDescription>{copy.body}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" disabled={busy} onClick={onClose}>Cancel</Button>
+          <Button variant="outline" disabled={busy} onClick={onClose}>{t('common.cancel')}</Button>
           <Button variant={action === 'uninstall' ? 'destructive' : 'default'} disabled={busy} onClick={onConfirm}>
-            {busy ? 'Working…' : copy.confirm}
+            {busy ? t('customNodes.confirm.working') : copy.confirm}
           </Button>
         </DialogFooter>
       </DialogContent>

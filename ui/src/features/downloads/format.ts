@@ -1,3 +1,4 @@
+import { t } from '@/shared/i18n'
 import type { DownloadJobDto, ProgressDto, SizeDto } from '@/shared/ipc/gateway'
 
 const UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB'] as const
@@ -14,7 +15,7 @@ export function formatBytes(value: number | null): string {
 }
 
 export function formatSize(size: SizeDto): string {
-  if (size.bytes === null) return 'Unknown size'
+  if (size.bytes === null) return t('downloads.unknownSize')
   return `${size.kind === 'estimated' ? '~' : ''}${formatBytes(size.bytes)}`
 }
 
@@ -24,14 +25,14 @@ export function formatSpeed(bytesPerSecond: number | null): string {
 }
 
 export function formatEta(seconds: number | null): string {
-  if (seconds === null || !Number.isFinite(seconds)) return 'ETA unknown'
+  if (seconds === null || !Number.isFinite(seconds)) return t('downloads.etaUnknown')
   const total = Math.max(0, Math.round(seconds))
   const hours = Math.floor(total / 3600)
   const minutes = Math.floor((total % 3600) / 60)
   const rest = total % 60
-  if (hours > 0) return `${hours}h ${minutes}m left`
-  if (minutes > 0) return `${minutes}m ${rest}s left`
-  return `${rest}s left`
+  if (hours > 0) return t('downloads.etaHours', { hours, minutes })
+  if (minutes > 0) return t('downloads.etaMinutes', { minutes, seconds: rest })
+  return t('downloads.etaSeconds', { seconds: rest })
 }
 
 /** Percent complete, or null when the total size is unknown. */
@@ -60,6 +61,6 @@ export function progressText(
     parts.push(formatSpeed(progress.bytesPerSecond))
     parts.push(formatEta(progress.etaSeconds))
   }
-  if (job.estimated && job.state === 'downloading') parts.push('estimated')
+  if (job.estimated && job.state === 'downloading') parts.push(t('downloads.estimated'))
   return parts.join(' · ')
 }

@@ -1,21 +1,24 @@
 import { Moon, Sun } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { useSettings, useUpdateSettings } from '@/features/settings'
+import { useSettings, useSettingsSavePending, useUpdateSettings } from '@/features/settings'
+import { t as translate, useTranslation } from '@/shared/i18n'
 import { IpcClientError } from '@/shared/ipc/gateway'
 import { useTheme } from '@/shared/lib/theme'
 import { Button } from '@/shared/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip'
 
 export function ThemeToggle() {
+  const { t } = useTranslation()
   const { resolved, setSetting } = useTheme()
   const settings = useSettings()
   const update = useUpdateSettings()
+  const pending = useSettingsSavePending()
   const next = resolved === 'dark' ? 'light' : 'dark'
-  const label = `Switch to ${next} theme`
+  const label = t(next === 'light' ? 'shell.switchToLight' : 'shell.switchToDark')
 
   function toggle() {
-    if (!settings.data) return
+    if (!settings.data || pending) return
     const previous = settings.data.theme
     setSetting(next)
     update.mutate(
@@ -23,7 +26,7 @@ export function ThemeToggle() {
       {
         onError: (error) => {
           setSetting(previous)
-          toast.error(error instanceof IpcClientError ? error.message : 'Could not save the theme.')
+          toast.error(error instanceof IpcClientError ? error.message : translate('shell.themeSaveError'))
         },
       },
     )
@@ -36,7 +39,7 @@ export function ThemeToggle() {
           variant="ghost"
           size="icon"
           aria-label={label}
-          disabled={!settings.data || update.isPending}
+          disabled={!settings.data || pending}
           onClick={toggle}
         >
           {resolved === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}

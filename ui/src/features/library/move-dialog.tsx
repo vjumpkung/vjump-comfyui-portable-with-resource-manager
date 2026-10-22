@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import type { ModelEntryDto, RootDto } from '@/shared/ipc/gateway'
 import { Button } from '@/shared/ui/button'
 import {
@@ -28,6 +29,7 @@ function currentDirectory(model: ModelEntryDto): string {
 
 /** Moves the model and its metadata files to another folder or root (same name). */
 export function MoveDialog({ model, roots, categories, onClose, onSubmit }: Props) {
+  const { t } = useTranslation()
   const usable = roots.filter((root) => root.state === 'ready')
   const [rootId, setRootId] = useState(model.location.rootId)
   const [directory, setDirectory] = useState(currentDirectory(model))
@@ -58,10 +60,9 @@ export function MoveDialog({ model, roots, categories, onClose, onSubmit }: Prop
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Move model</DialogTitle>
+          <DialogTitle>{t('library.move.title')}</DialogTitle>
           <DialogDescription>
-            Moves {model.name} and its metadata files. Nothing is overwritten;
-            missing folders are created.
+            {t('library.move.hint', { name: model.name })}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -72,7 +73,7 @@ export function MoveDialog({ model, roots, categories, onClose, onSubmit }: Prop
           }}
         >
           <div className="flex flex-col gap-2">
-            <Label htmlFor="move-root">Model folder</Label>
+            <Label htmlFor="move-root">{t('library.modelFolder')}</Label>
             <select
               id="move-root"
               value={rootId}
@@ -88,7 +89,7 @@ export function MoveDialog({ model, roots, categories, onClose, onSubmit }: Prop
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="move-directory">
-              {needsCategory ? 'Category and sub-folder' : 'Sub-folder'}
+              {needsCategory ? t('library.move.categorySubfolder') : t('library.move.subfolder')}
             </Label>
             <Input
               id="move-directory"
@@ -106,16 +107,16 @@ export function MoveDialog({ model, roots, categories, onClose, onSubmit }: Prop
             ) : null}
             <p className="text-xs text-muted-foreground">
               {needsCategory
-                ? 'The first part is the category folder, for example loras/characters.'
-                : `This folder is fixed to the ${root?.category ?? ''} category.`}
+                ? t('library.move.categoryHint')
+                : t('library.move.fixedCategory', { category: root?.category ?? '' })}
             </p>
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button type="submit" disabled={!ready || busy}>
-              Move
+              {t('common.move')}
             </Button>
           </DialogFooter>
         </form>

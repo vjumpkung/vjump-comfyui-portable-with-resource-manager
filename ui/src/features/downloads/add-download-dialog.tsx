@@ -2,6 +2,7 @@ import { useMutation } from '@tanstack/react-query'
 import { Link2, LoaderCircle } from 'lucide-react'
 import { useState } from 'react'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import {
   gateway,
   IpcClientError,
@@ -47,6 +48,7 @@ function initialSelection(resolution: ResolutionDto): Set<number> {
 
 /** URL or repository in, one job per selected file out. */
 export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) {
+  const { t } = useTranslation()
   const [url, setUrl] = useState('')
   const [httpConfirmed, setHttpConfirmed] = useState(false)
   const [resolution, setResolution] = useState<ResolutionDto | null>(null)
@@ -124,9 +126,9 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
     >
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Add download</DialogTitle>
+          <DialogTitle>{t('downloads.add')}</DialogTitle>
           <DialogDescription>
-            Paste a CivitAI, Hugging Face, Google Drive or direct https link.
+            {t('downloads.linkHint')}
           </DialogDescription>
         </DialogHeader>
 
@@ -138,7 +140,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
               resolve.mutate()
           }}
         >
-          <Label htmlFor="download-url">Link</Label>
+          <Label htmlFor="download-url">{t('downloads.link')}</Label>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <Link2
@@ -173,7 +175,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
                   aria-hidden="true"
                 />
               ) : null}
-              Look up
+              {t('downloads.lookUp')}
             </Button>
           </div>
           {provider ? (
@@ -181,7 +183,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
               variant="outline"
               className="w-fit font-mono text-[9px] uppercase tracking-widest"
             >
-              {PROVIDER_LABELS[provider]}
+              {provider === 'direct' ? t(PROVIDER_LABELS.direct) : PROVIDER_LABELS[provider]}
             </Badge>
           ) : null}
           {plainHttp ? (
@@ -192,7 +194,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
                 onCheckedChange={(value) => setHttpConfirmed(value === true)}
               />
               <Label htmlFor="http-confirmed" className="text-sm">
-                This link is not encrypted (http). Download it anyway.
+                {t('downloads.httpConsent')}
               </Label>
             </div>
           ) : null}
@@ -211,7 +213,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
                     onOpenSettings()
                   }}
                 >
-                  Open Settings
+                  {t('common.openSettings')}
                 </Button>
               ) : null}
             </AlertDescription>
@@ -224,13 +226,13 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
               <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-2">
                   <p className="font-mono text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Files ({selected.size} of {files.length} selected)
+                    {t('downloads.filesSelected', { count: selected.size, total: files.length })}
                   </p>
                   {files.length > 8 ? (
                     <Input
-                      aria-label="Filter files"
+                      aria-label={t('downloads.filterFiles')}
                       className="h-8 max-w-48"
-                      placeholder="Filter"
+                      placeholder={t('common.filter')}
                       value={filter}
                       onChange={(event) => setFilter(event.target.value)}
                     />
@@ -254,8 +256,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
                         className="flex min-w-0 flex-1 flex-col items-start gap-0.5"
                       >
                         <span className="text-sm font-semibold break-words [overflow-wrap:anywhere]">
-                          {file.filename}
-                          {file.primary ? ' (primary)' : ''}
+                          {file.primary ? t('downloads.primaryFile', { filename: file.filename }) : file.filename}
                         </span>
                         <span className="font-mono text-xs font-normal text-muted-foreground">
                           {formatSize(file.size)}
@@ -270,7 +271,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
                 <span className="font-semibold">{files[0].filename}</span>{' '}
                 <span className="font-mono text-xs text-muted-foreground">
                   {formatSize(files[0].size)}
-                  {files[0].sha256 ? ' · checksum published' : ' · unverified'}
+                  {' · '}{files[0].sha256 ? t('downloads.checksumPublished') : t('status.unverified')}
                 </span>
               </p>
             ) : null}
@@ -290,7 +291,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
             {single ? (
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="download-filename">
-                  File name (optional)
+                  {t('downloads.optionalFilename')}
                 </Label>
                 <Input
                   id="download-filename"
@@ -308,15 +309,15 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             disabled={!ready || submitting}
             onClick={() => void submit()}
           >
             {selected.size > 1
-              ? `Download ${selected.size} files (${formatTotal(totalBytes)})`
-              : 'Download'}
+              ? t('downloads.downloadFiles', { count: selected.size, size: formatTotal(totalBytes) })
+              : t('common.download')}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -325,5 +326,5 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
 }
 
 function formatTotal(bytes: number): string {
-  return bytes > 0 ? formatSize({ kind: 'exact', bytes }) : 'size unknown'
+  return bytes > 0 ? formatSize({ kind: 'exact', bytes }) : translate('downloads.sizeUnknownLowercase')
 }

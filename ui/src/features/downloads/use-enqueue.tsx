@@ -1,6 +1,7 @@
 import { useCallback, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type DestinationDto,
@@ -35,6 +36,7 @@ export interface EnqueueFlow {
  * outcomes. Every decision re-queues exactly the affected item.
  */
 export function useEnqueue(onOpenSettings: () => void): EnqueueFlow {
+  const { t } = useTranslation()
   const [queue, setQueue] = useState<Prompt[]>([])
   const [busy, setBusy] = useState(false)
 
@@ -56,7 +58,7 @@ export function useEnqueue(onOpenSettings: () => void): EnqueueFlow {
             queued += 1
             break
           case 'duplicate':
-            toast.info('That download is already in the queue.')
+            toast.info(translate('downloads.duplicate'))
             break
           case 'already_downloaded':
             next.push({
@@ -78,7 +80,7 @@ export function useEnqueue(onOpenSettings: () => void): EnqueueFlow {
           case 'invalid':
             toast.error(outcome.error.message, {
               action: CREDENTIAL_CODES.includes(outcome.error.code)
-                ? { label: 'Open Settings', onClick: onOpenSettings }
+                ? { label: translate('common.openSettings'), onClick: onOpenSettings }
                 : undefined,
             })
             break
@@ -86,7 +88,7 @@ export function useEnqueue(onOpenSettings: () => void): EnqueueFlow {
       })
       if (queued > 0) {
         toast.success(
-          queued === 1 ? 'Download queued.' : `${queued} downloads queued.`,
+          translate('downloads.queued', { count: queued }),
         )
       }
       if (next.length > 0) setQueue((current) => [...current, ...next])
@@ -123,12 +125,12 @@ export function useEnqueue(onOpenSettings: () => void): EnqueueFlow {
   if (prompt?.kind === 'already') {
     dialog = (
       <ChoiceDialog
-        title="Already downloaded"
-        description={`A file with the same checksum is already in your model folders (${prompt.destination.relativePath}).`}
+        title={t('downloads.alreadyDownloaded')}
+        description={t('downloads.sameChecksum', { path: prompt.destination.relativePath })}
         busy={busy}
         choices={[
-          { id: 'skip', label: 'Skip' },
-          { id: 'again', label: 'Download again', variant: 'default' },
+          { id: 'skip', label: t('common.skip') },
+          { id: 'again', label: t('downloads.again'), variant: 'default' },
         ]}
         onChoose={(choice) => void choose(prompt, choice)}
         onDismiss={settle}
@@ -137,20 +139,20 @@ export function useEnqueue(onOpenSettings: () => void): EnqueueFlow {
   } else if (prompt?.kind === 'conflict') {
     dialog = (
       <ChoiceDialog
-        title="A file with this name exists"
-        description={`${prompt.destination.relativePath} already exists.`}
+        title={t('downloads.nameExists')}
+        description={t('downloads.pathExists', { path: prompt.destination.relativePath })}
         busy={busy}
         note={
           prompt.current
-            ? 'Overwrite moves the existing file to the Recycle Bin or Trash; it is not deleted permanently.'
-            : 'Another download is already using this name, so it cannot be overwritten.'
+            ? t('downloads.overwriteDisclosure')
+            : t('downloads.nameInUse')
         }
         choices={[
-          { id: 'skip', label: 'Skip' },
-          { id: 'keep_both', label: 'Keep both' },
+          { id: 'skip', label: t('common.skip') },
+          { id: 'keep_both', label: t('downloads.keepBoth') },
           {
             id: 'overwrite',
-            label: 'Overwrite (move old to Recycle Bin)',
+            label: t('downloads.overwrite'),
             variant: 'destructive',
             disabled: prompt.current === null,
           },

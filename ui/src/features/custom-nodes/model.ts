@@ -1,3 +1,4 @@
+import { t } from '@/shared/i18n'
 import type {
   CommitInput,
   InstalledNodeDto,
@@ -5,6 +6,39 @@ import type {
   NodeSourceDto,
   PlanReviewDto,
 } from '@/shared/ipc/gateway'
+
+export type NodeTextKey = Exclude<keyof typeof import('@/shared/i18n/translations.json').en, `${string}_one` | `${string}_other`>
+
+/** Manager copy is stored as keys and data; strings here are backend diagnostics. */
+export interface NodeText {
+  key: NodeTextKey
+  values?: Readonly<Record<string, string | number>>
+}
+
+export function nodeText(value: NodeText | string): string {
+  return typeof value === 'string' ? value : t(value.key, value.values)
+}
+
+export type ActionContext =
+  | { kind: 'prepare'; preparation: NodePreparation }
+  | { kind: 'apply' | 'enable' | 'disable' | 'uninstall'; name: string }
+  | { kind: 'stop' | 'restart' }
+
+const ACTION_KEYS = {
+  prepare: 'customNodes.action.preparing',
+  apply: 'customNodes.action.applying',
+  enable: 'customNodes.action.enabling',
+  disable: 'customNodes.action.disabling',
+  uninstall: 'customNodes.action.uninstalling',
+  stop: 'customNodes.action.stopping',
+  restart: 'customNodes.action.restarting',
+} as const satisfies Record<ActionContext['kind'], NodeTextKey>
+
+export function actionContextLabel(context: ActionContext): string {
+  const name = context.kind === 'prepare' ? preparationLabel(context.preparation)
+    : 'name' in context ? context.name : ''
+  return t(ACTION_KEYS[context.kind], { name })
+}
 
 /** Lists longer than this render only the visible window. */
 export const VIRTUALIZE_AFTER = 200
@@ -16,7 +50,7 @@ export function sourceLabel(source: NodeSourceDto): string {
   switch (source.kind) {
     case 'registry': return `${source.id}@${source.version}`
     case 'git': return `${source.repository}@${source.commit}`
-    case 'manual': return 'Manual / unmanaged'
+    case 'manual': return t('customNodes.manualSource')
   }
 }
 
@@ -92,33 +126,43 @@ export function decision(plan: PlanReviewDto, consent: Consent): CommitInput {
 }
 
 /** Why an update cannot start, or null. Backend preparation rechecks everything. */
-export function updateUnavailableReason(
+export function updateUnavailableKey(
   node: InstalledNodeDto,
   repairRequired: boolean,
-): string | null {
-  if (repairRequired) return 'Updates are disabled until the environment is repaired.'
-  if (node.singleFile) return 'Single-file nodes have no source to update from.'
-  if (node.source.kind === 'manual') return 'Manually installed nodes have no source to update from.'
-  if (node.conflict) return 'The files on disk disagree with the stored record.'
-  if (node.dirty === true) return 'The repository has local changes.'
+): NodeTextKey | null {
+  if (repairRequired) return 'customNodes.reason.repairFirst'
+  if (node.singleFile) return 'customNodes.reason.singleFileUpdate'
+  if (node.source.kind === 'manual') return 'customNodes.reason.manualUpdate'
+  if (node.conflict) return 'customNodes.reason.diskConflict'
+  if (node.dirty === true) return 'customNodes.reason.localChanges'
   return null
+}
+
+export function updateUnavailableReason(node: InstalledNodeDto, repairRequired: boolean): string | null {
+  const key = updateUnavailableKey(node, repairRequired)
+  return key === null ? null : t(key)
+}
+
+export function retryUnavailableReason(node: InstalledNodeDto): string | null {
+  const key = retryUnavailableKey(node)
+  return key === null ? null : t(key)
 }
 
 /** Unknown Git health (`dirty === null`) stays a candidate: status inspection decides. */
 export function isUpdateCandidate(node: InstalledNodeDto): boolean {
-  return updateUnavailableReason(node, false) === null
+  return updateUnavailableKey(node, false) === null
 }
 
-export function retryUnavailableReason(node: InstalledNodeDto): string | null {
-  if (node.singleFile) return 'Single-file nodes have no dependencies to install.'
-  if (node.conflict) return 'The files on disk disagree with the stored record.'
-  if (node.dependencies === 'ok') return 'The dependencies are already installed.'
+export function retryUnavailableKey(node: InstalledNodeDto): NodeTextKey | null {
+  if (node.singleFile) return 'customNodes.reason.singleFileDependencies'
+  if (node.conflict) return 'customNodes.reason.diskConflict'
+  if (node.dependencies === 'ok') return 'customNodes.reason.dependenciesInstalled'
   return null
 }
 
 /** Directory nodes whose dependencies failed or never ran, including manual directories. */
 export function canRetryDependencies(node: InstalledNodeDto): boolean {
-  return retryUnavailableReason(node) === null
+  return retryUnavailableKey(node) === null
 }
 
 export type NodePreparation =
@@ -131,8 +175,8 @@ export function preparationLabel(preparation: NodePreparation): string {
   switch (preparation.kind) {
     case 'registry': return preparation.id
     case 'git': return preparation.repository
-    case 'update': return 'the update'
-    case 'retry': return 'the dependency retry'
+    case 'update': return t('customNodes.preparation.update')
+    case 'retry': return t('customNodes.preparation.retry')
   }
 }
 
@@ -204,7 +248,7 @@ export function nodeVersion(node: InstalledNodeDto): string {
 }
 
 export function nodeBranch(node: InstalledNodeDto): string {
-  return node.source.kind === 'git' ? node.source.branch ?? 'detached' : '—'
+  return node.source.kind === 'git' ? node.source.branch ?? t('customNodes.detached') : '—'
 }
 
 export type GitHealth = 'clean' | 'dirty' | 'unknown' | 'not_git'
@@ -231,32 +275,37 @@ export interface GitCheck {
 }
 
 export function checkGitStatus(status: NodeGitStatusDto): GitCheck {
-  const refusals: string[] = []
-  if (status.dirty) refusals.push('The repository has local changes.')
-  if (status.unfinishedOperation) {
-    refusals.push('A merge, rebase or other Git operation is unfinished.')
-  }
-  if ((status.ahead ?? 0) > 0 && (status.behind ?? 0) > 0) {
-    refusals.push('The branch has diverged from its upstream.')
-  }
+  const refusals = gitRefusalKeys(status).map((key) => t(key))
   return {
     refusals,
     needsReference: status.branch === null || !status.hasUpstream,
   }
 }
 
-export const NEEDS_TARGET_SKIP = 'Update individually with an explicit target.'
+export function gitRefusalKeys(status: NodeGitStatusDto): NodeTextKey[] {
+  const refusals: NodeTextKey[] = []
+  if (status.dirty) refusals.push('customNodes.reason.localChanges')
+  if (status.unfinishedOperation) {
+    refusals.push('customNodes.reason.unfinishedGit')
+  }
+  if ((status.ahead ?? 0) > 0 && (status.behind ?? 0) > 0) {
+    refusals.push('customNodes.reason.diverged')
+  }
+  return refusals
+}
+
+export const NEEDS_TARGET_SKIP = 'customNodes.reason.needsTarget'
 
 export function formatCount(value: number | null): string {
   return value === null ? '—' : new Intl.NumberFormat('en-US').format(value)
 }
 
 export function unknownText(value: string | null | undefined): string {
-  return value === null || value === undefined || value.trim() === '' ? 'Unknown' : value
+  return value === null || value === undefined || value.trim() === '' ? t('common.unknownValue') : value
 }
 
 export function formatList(values: readonly string[] | null): string {
-  return values === null || values.length === 0 ? 'Unknown' : values.join(', ')
+  return values === null || values.length === 0 ? t('common.unknownValue') : values.join(', ')
 }
 
 export function formatFetched(value: string): string {
@@ -267,8 +316,8 @@ export function formatFetched(value: string): string {
 /** `Recycle Bin` on Windows, `Trash` elsewhere. */
 export function trashName(): string {
   return typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent)
-    ? 'Recycle Bin'
-    : 'Trash'
+    ? t('customNodes.recycleBin')
+    : t('customNodes.trash')
 }
 
 export type FailureKind =
@@ -313,19 +362,19 @@ export function failureKind(code: string): FailureKind {
   }
 }
 
-export const FAILURE_GUIDANCE: Record<FailureKind, string> = {
-  comfyui_running: 'ComfyUI is running and holds the node folders. Stop it, then the request is repeated.',
-  busy: 'Another maintenance or custom node operation is running. Wait for it to finish, then try again. Nothing else was stopped.',
-  stale: 'The reviewed plan is no longer current and its confirmations were discarded. Prepare it again to review the new plan.',
-  consent: 'The confirmations do not cover this exact plan. Check the required boxes and apply again.',
-  git_refused: 'The repository was not changed. Resolve local changes or divergence manually in the node folder, or update with an explicit target.',
-  git_unavailable: 'Git is not available. On Windows, complete tool setup from the Environment page; on Linux, install Git and try again.',
-  up_to_date: 'Nothing was changed.',
-  dependencies: 'Dependency health was refreshed. Read the operation log, retry dependencies when the node is eligible, or repair the environment.',
-  recovery: 'An interrupted node operation or a failed rescan must be resolved. Rescan to finish recovery.',
-  registry_refused: 'The registry refused the request. This is not an offline cache; adjust the search or try again later.',
-  refusal: 'Nothing was changed and there is no automatic override.',
-  uncertain: 'The outcome is uncertain. State was refreshed; check the node list and operations before repeating the action.',
-  cancelled: 'Cancellation was requested. Health and operation state were refreshed; a cancellation after dependency changes can still require Repair.',
-  other: '',
-}
+export const FAILURE_GUIDANCE = {
+  comfyui_running: 'customNodes.guidance.comfyuiRunning',
+  busy: 'customNodes.guidance.busy',
+  stale: 'customNodes.guidance.stale',
+  consent: 'customNodes.guidance.consent',
+  git_refused: 'customNodes.guidance.gitRefused',
+  git_unavailable: 'customNodes.guidance.gitUnavailable',
+  up_to_date: 'customNodes.guidance.upToDate',
+  dependencies: 'customNodes.guidance.dependencies',
+  recovery: 'customNodes.guidance.recovery',
+  registry_refused: 'customNodes.guidance.registryRefused',
+  refusal: 'customNodes.guidance.refusal',
+  uncertain: 'customNodes.guidance.uncertain',
+  cancelled: 'customNodes.guidance.cancelled',
+  other: null,
+} as const satisfies Record<FailureKind, NodeTextKey | null>

@@ -1,3 +1,5 @@
+import { t } from '@/shared/i18n'
+
 import type { ReactNode } from 'react'
 
 import type {
@@ -11,14 +13,14 @@ import type {
   SetupModeDto,
 } from '@/shared/ipc/gateway'
 
-export const modeLabels: Record<SetupModeDto, string> = {
-  first_run: 'Set up ComfyUI',
-  repair: 'Repair environment',
-  change_torch: 'Change torch / CUDA',
-  change_python: 'Change Python',
-  switch_venv: 'Switch to custom venv',
-  rebuild: 'Rebuild environment',
-}
+export const modeLabels = {
+  first_run: 'setup.mode.firstRun',
+  repair: 'setup.mode.repair',
+  change_torch: 'setup.mode.changeTorch',
+  change_python: 'setup.mode.changePython',
+  switch_venv: 'setup.mode.switchVenv',
+  rebuild: 'setup.mode.rebuild',
+} as const satisfies Record<SetupModeDto, keyof typeof import('@/shared/i18n/translations.json').en>
 
 export function minor(version: string): string {
   return version.split('.').slice(0, 2).join('.')
@@ -32,14 +34,14 @@ export function profileReasons(
 ): string[] {
   const reasons = profile.reasons.map((reason) => reason.message)
   if (!profile.enabled && !reasons.length)
-    reasons.push('This profile is unavailable on this machine.')
+    reasons.push(t('setup.profileUnavailable'))
   if (
     active &&
     ['repair', 'change_torch'].includes(mode) &&
     minor(active.pythonVersion) !== minor(profile.python)
   ) {
     reasons.push(
-      'This mode requires the selected environment’s Python minor version.',
+      t('setup.profilePythonRequired'),
     )
   }
   if (
@@ -47,7 +49,7 @@ export function profileReasons(
     mode === 'change_python' &&
     minor(active.pythonVersion) === minor(profile.python)
   ) {
-    reasons.push('Choose a different Python minor version for this mode.')
+    reasons.push(t('setup.profileDifferentPython'))
   }
   if (
     validation?.pythonVersion &&
@@ -55,7 +57,7 @@ export function profileReasons(
     minor(validation.pythonVersion) !== minor(profile.python)
   ) {
     reasons.push(
-      `The validated interpreter uses Python ${minor(validation.pythonVersion)}.`,
+      t('setup.validatedInterpreter', { version: minor(validation.pythonVersion) }),
     )
   }
   if (
@@ -64,7 +66,7 @@ export function profileReasons(
     )
   ) {
     reasons.push(
-      'This profile requires Triton; fix the failed Python development-file checks.',
+      t('setup.profileTritonRequired'),
     )
   }
   return reasons

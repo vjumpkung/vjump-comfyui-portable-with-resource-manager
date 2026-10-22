@@ -32,7 +32,7 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
   },
 }))
 
-function mount(status = setupStatus, mode: SetupModeDto = 'first_run') {
+function mount(status = setupStatus, mode: SetupModeDto = 'first_run', preferencesPending = false) {
   const client = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -47,6 +47,7 @@ function mount(status = setupStatus, mode: SetupModeDto = 'first_run') {
         onClose={vi.fn()}
         refresh={vi.fn()}
         renderCuratedReview={() => null}
+        preferencesPending={preferencesPending}
       />
     </QueryClientProvider>,
   ), client }
@@ -80,6 +81,17 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('setup wizard', () => {
+  it('pending_preferences_disable_stage_zero_continue_and_save_root', () => {
+    mount(setupStatus, 'first_run', true)
+    expect(screen.getByRole('button', { name: 'Continue' })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(screen.getByLabelText('Install root')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Install root'), { target: { value: 'E:/Comfy' } })
+    expect(screen.getByRole('button', { name: 'Save install root' })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: 'Save install root' }))
+    expect(gateway.setupSelectRoot).not.toHaveBeenCalled()
+  })
+
   it('saves a changed root and blocks setup until restart', async () => {
     vi.mocked(gateway.setupSelectRoot).mockResolvedValue({
       restartRequired: true,

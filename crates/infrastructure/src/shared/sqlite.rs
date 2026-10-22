@@ -28,6 +28,7 @@ pub fn migrations() -> Migrations<'static> {
             "../../migrations/007_environment_components.sql"
         )),
         M::up(include_str!("../../migrations/008_install_relocation.sql")),
+        M::up(include_str!("../../migrations/009_settings_language.sql")),
     ])
 }
 
@@ -102,6 +103,10 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use application::settings::SettingsRepository;
+    use domain::settings::{CloseBehavior, HfEngine, Language, Settings, Theme};
+
+    use crate::settings::sqlite::SqliteSettingsRepository;
 
     #[tokio::test]
     async fn upgrades_an_m0_database_without_losing_settings() {
@@ -127,7 +132,7 @@ mod tests {
             let version: u32 = connection
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 8);
+            assert_eq!(version, 9);
             let theme: String = connection
                 .query_row(
                     "SELECT value FROM settings WHERE key = 'theme'",
@@ -151,6 +156,79 @@ mod tests {
         drop(db);
         // Reopening an up-to-date database is a no-op.
         Db::open(&path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn upgrades_pre_language_settings_with_english_and_preserves_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("app.db");
+        {
+            let mut connection = Connection::open(&path).unwrap();
+            migrations().to_version(&mut connection, 8).unwrap();
+            for (key, value) in [
+                ("download_concurrency", "7"),
+                ("hf_engine", "native"),
+                ("close_behavior", "keep_running_headless"),
+                ("theme", "dark"),
+                ("registry_cache_ttl", "24"),
+                ("bandwidth_cap_kib_s", "1024"),
+            ] {
+                connection
+                    .execute(
+                        "INSERT INTO settings(key, value, updated_at) VALUES (?1, ?2, 't')",
+                        rusqlite::params![key, value],
+                    )
+                    .unwrap();
+            }
+        }
+        let repository = SqliteSettingsRepository::new(Db::open(&path).await.unwrap());
+        let expected = Settings::new(
+            7,
+            HfEngine::Native,
+            CloseBehavior::KeepRunningHeadless,
+            Theme::Dark,
+            Language::En,
+            24,
+            Some(1024),
+        )
+        .unwrap();
+        assert_eq!(repository.load().await.unwrap(), Some(expected));
+    }
+
+    #[tokio::test]
+    async fn language_migration_keeps_an_empty_database_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("app.db");
+        {
+            let mut connection = Connection::open(&path).unwrap();
+            migrations().to_version(&mut connection, 8).unwrap();
+        }
+        let repository = SqliteSettingsRepository::new(Db::open(&path).await.unwrap());
+        assert_eq!(repository.load().await.unwrap(), None);
+    }
+
+    #[test]
+    fn language_migration_preserves_existing_thai_on_reapplication() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        migrations().to_version(&mut connection, 8).unwrap();
+        connection
+            .execute(
+                "INSERT INTO settings(key, value, updated_at) VALUES ('language', 'th', 't')",
+                [],
+            )
+            .unwrap();
+        migrations().to_latest(&mut connection).unwrap();
+        connection
+            .execute_batch(include_str!("../../migrations/009_settings_language.sql"))
+            .unwrap();
+        let language: String = connection
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'language'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(language, "th");
     }
 
     #[tokio::test]

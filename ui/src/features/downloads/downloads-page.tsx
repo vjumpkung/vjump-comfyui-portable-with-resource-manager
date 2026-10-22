@@ -1,6 +1,7 @@
 import { Download, FileDown, FileUp, Plus } from 'lucide-react'
 import { useState } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import { Button } from '@/shared/ui/button'
 import { EmptyState } from '@/shared/ui/empty-state'
 
@@ -19,6 +20,7 @@ export function DownloadsPage({
 }: {
   onOpenSettings: () => void
 }) {
+  const { t } = useTranslation()
   const { jobs, progress, connected } = useDownloads()
   const [dialog, setDialog] = useState<Dialog>(null)
   const flow = useEnqueue(onOpenSettings)
@@ -30,39 +32,39 @@ export function DownloadsPage({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-            Downloads
+            {t('nav.downloads')}
           </h1>
           <p className="font-mono text-xs text-muted-foreground">
-            {active} active · {list.length} total
+            {t('downloads.counts', { active, total: list.length })}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => setDialog('import')}>
             <FileUp aria-hidden="true" />
-            Import pack
+            {t('downloads.import')}
           </Button>
           <Button variant="outline" onClick={() => setDialog('export')}>
             <FileDown aria-hidden="true" />
-            Export list
+            {t('downloads.export')}
           </Button>
           <Button onClick={() => setDialog('add')}>
             <Plus aria-hidden="true" />
-            Add download
+            {t('downloads.add')}
           </Button>
         </div>
       </div>
 
       {!connected ? (
         <p role="status" className="text-sm text-muted-foreground">
-          Connecting to the download service...
+          {t('downloads.connecting')}
         </p>
       ) : null}
 
       {list.length === 0 ? (
         <EmptyState
           icon={<Download className="size-8" aria-hidden="true" />}
-          title="No downloads yet"
-          description="Add a CivitAI, Hugging Face, Google Drive or direct link, or import a resource pack."
+          title={t('downloads.emptyTitle')}
+          description={t('downloads.emptyHint')}
         />
       ) : (
         <QueueTable

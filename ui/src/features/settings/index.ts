@@ -1,2 +1,2 @@
 export { SettingsPage } from './settings-page'
-export { useSettings, useUpdateSettings } from './queries'
+export { useSettings, useUpdateSettings, useSettingsSavePending } from './queries'

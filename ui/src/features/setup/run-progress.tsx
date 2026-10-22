@@ -1,6 +1,7 @@
 import { Fragment, lazy, Suspense, useState, type ReactNode } from 'react'
 import { Check, RefreshCw } from 'lucide-react'
 
+import { useTranslation } from '@/shared/i18n'
 import type { CommitInput, RunSnapshotDto } from '@/shared/ipc/gateway'
 import { bytes } from '@/shared/lib/display'
 import { Alert, AlertTitle, AlertDescription } from '@/shared/ui/alert'
@@ -19,6 +20,30 @@ import { Progress } from '@/shared/ui/progress'
 import { StatusBadge } from '@/shared/ui/status-badge'
 import { canSkip, type CuratedReviewProps } from './model'
 import type { useSetupRun } from './use-setup-run'
+
+// Stable StepId values and English labels from application/environment/model.rs.
+const STEP_LABELS = {
+  preflight: 'setup.steps.preflight',
+  tools: 'setup.steps.tools',
+  python_venv: 'setup.steps.pythonVenv',
+  seed: 'setup.steps.seed',
+  clone_comfyui: 'setup.steps.cloneComfyui',
+  install_torch: 'setup.steps.installTorch',
+  verify_torch: 'setup.steps.verifyTorch',
+  triton: 'setup.steps.triton',
+  accelerators: 'setup.steps.accelerators',
+  comfy_requirements: 'setup.steps.comfyRequirements',
+  manager: 'setup.installManager',
+  curated_nodes: 'setup.steps.curatedNodes',
+  final_verify: 'setup.steps.finalVerify',
+  cache_clean: 'setup.steps.cacheClean',
+} as const satisfies Record<string, keyof typeof import('@/shared/i18n/translations.json').en>
+
+const POLICY_LABELS = {
+  required: 'setup.run.required',
+  optional: 'setup.run.optional',
+  best_effort: 'setup.run.bestEffort',
+} as const satisfies Record<RunSnapshotDto['steps'][number]['policy'], keyof typeof import('@/shared/i18n/translations.json').en>
 
 const LogView = lazy(() =>
   import('@/shared/ui/log-view').then((module) => ({
@@ -39,6 +64,7 @@ export function RunProgress({
   onDone?: () => void
   renderCuratedReview: (props: CuratedReviewProps) => ReactNode
 }) {
+  const { t } = useTranslation()
   const { action, cancel, lines, progress, finished } = controller
   const [consent, setConsent] = useState<string | null>(null)
   const reviewKey = JSON.stringify([run?.id, run?.curatedReviews.map((plan) => [plan.id, plan.binding])])
@@ -50,7 +76,7 @@ export function RunProgress({
   if (review.key !== reviewKey)
     setReview({ key: reviewKey, open: true, decisions: null })
   if (!run || (action.data && action.data.runId !== run.id))
-    return <p role="status">Loading the registered run…</p>
+    return <p role="status">{t('setup.run.loading')}</p>
   const busy = run.status === 'registered' || run.status === 'running'
   const retryable = run.status === 'failed' || run.status === 'interrupted'
   const failure = run.failure
@@ -78,17 +104,16 @@ export function RunProgress({
       <Card>
         <CardHeader>
           <CardTitle>
-            Installation progress <StatusBadge status={run.status} />
+            {t('setup.run.progress')} <StatusBadge status={run.status} />
           </CardTitle>
           <CardDescription>
-            Run {run.id} · target {run.targetEnvId}. Cancellation completes
-            after process cleanup.
+            {t('setup.run.description', { id: run.id, target: run.targetEnvId })}
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Progress value={percentage} aria-label="Setup steps completed" />
+          <Progress value={percentage} aria-label={t('setup.run.completedLabel')} />
           <p className="font-mono text-xs">
-            {completed} / {run.steps.length} steps complete
+            {t('setup.run.stepsComplete', { count: completed, total: run.steps.length })}
           </p>
           {progress?.runId === run.id && (
             <p className="font-mono text-xs">
@@ -104,9 +129,14 @@ export function RunProgress({
               >
                 <div>
                   <span className="font-mono text-xs">{step.number}. </span>
-                  {step.label}
+                  {Object.hasOwn(STEP_LABELS, step.step)
+                    ? t(STEP_LABELS[step.step as keyof typeof STEP_LABELS])
+                    : step.label}
                   <p className="text-xs text-muted-foreground">
-                    {step.policy} · attempt {step.attempts}
+                    {t('setup.run.attempt', {
+                      policy: Object.hasOwn(POLICY_LABELS, step.policy) ? t(POLICY_LABELS[step.policy]) : step.policy,
+                      attempts: step.attempts,
+                    })}
                     {step.message ? ` · ${step.message}` : ''}
                   </p>
                 </div>
@@ -114,8 +144,8 @@ export function RunProgress({
               </li>
             ))}
           </ol>
-          {run.curated.length > 0 && <section aria-label="Curated node progress">
-            <h2 className="font-bold">Curated custom nodes</h2>
+          {run.curated.length > 0 && <section aria-label={t('setup.run.curatedProgress')}>
+            <h2 className="font-bold">{t('setup.curatedNodes')}</h2>
             <ul className="flex flex-col gap-3">
               {run.curated.map((entry) => <li key={entry.id}>
                 <span className="break-all font-mono">{entry.id}</span>{' '}
@@ -126,12 +156,14 @@ export function RunProgress({
           </section>}
           {failure && (
             <Alert variant="destructive">
-              <AlertTitle>Step failed: {failure.step}</AlertTitle>
+              <AlertTitle>{t('setup.run.stepFailed', { step: failure.step })}</AlertTitle>
               <AlertDescription>
                 <p>{failure.message}</p>
                 <p className="break-all font-mono">
-                  Command: {failure.command ?? 'Not available'} · exit code:{' '}
-                  {failure.exitCode ?? 'Not available'}
+                  {t('setup.run.command', {
+                    command: failure.command ?? t('common.notAvailable'),
+                    code: failure.exitCode ?? t('common.notAvailable'),
+                  })}
                 </p>
                 {failure.tail.length > 0 && (
                   <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">
@@ -144,12 +176,11 @@ export function RunProgress({
           {sourceConsent && (
             <Alert>
               <AlertTitle>
-                Allow code from this exact Manager source?
+                {t('setup.run.managerSourceConsent')}
               </AlertTitle>
               <AlertDescription>
                 <p>
-                  Installing dependencies can execute code from this repository.
-                  Confirm only if you trust this exact source and commit.
+                  {t('setup.run.managerSourceHint')}
                 </p>
                 <p className="break-all font-mono">
                   {sourceConsent.source}
@@ -165,8 +196,7 @@ export function RunProgress({
                     }
                   />
                   <FieldLabel htmlFor="manager-consent">
-                    I trust this source and approve code execution at this
-                    commit
+                    {t('setup.run.trustCommit')}
                   </FieldLabel>
                 </Field>
               </AlertDescription>
@@ -174,32 +204,31 @@ export function RunProgress({
           )}
           {finished?.runId === run.id && finished.outcome === 'error' && (
             <Alert variant="destructive">
-              <AlertTitle>The workflow could not run</AlertTitle>
+              <AlertTitle>{t('setup.run.workflowError')}</AlertTitle>
               <AlertDescription>
-                Refresh its persisted status before retrying. It may have been
-                blocked by maintenance or runtime preflight.
+                {t('setup.run.workflowErrorHint')}
               </AlertDescription>
             </Alert>
           )}
           {action.isError && <ErrorNotice error={action.error} />}
           {cancel.isError && <ErrorNotice error={cancel.error} />}
           {curatedPause && !liveReviews && <Alert>
-            <AlertTitle>Fresh curated reviews are required</AlertTitle>
+            <AlertTitle>{t('setup.run.freshReviews')}</AlertTitle>
             <AlertDescription>
-              Reviews and approvals exist only in the current session. After a backend restart, Retry prepares fresh reviews; approve those exact plans before execution can continue.
+              {t('setup.run.freshReviewsHint')}
             </AlertDescription>
           </Alert>}
           <div className="flex flex-wrap gap-2">
             {liveReviews && <Button variant="outline" disabled={pending}
               onClick={() => setReview((current) => ({ ...current, open: true }))}>
-              Review curated plans
+              {t('setup.run.reviewPlans')}
             </Button>}
             {retryable && (
               <Button
                 disabled={pending || (!!sourceConsent && !approved) || (liveReviews && !curatedApproved)}
                 onClick={() => retry(liveReviews ? review.decisions! : [])}
               >
-                Retry same run
+                {t('setup.run.retry')}
               </Button>
             )}
             {canSkip(run) && (
@@ -214,7 +243,7 @@ export function RunProgress({
                   })
                 }
               >
-                Skip optional step
+                {t('setup.run.skipOptional')}
               </Button>
             )}
             {(busy || retryable) && (
@@ -224,52 +253,49 @@ export function RunProgress({
                 onClick={() => cancel.mutate(run.id)}
               >
                 {busy && (cancel.isPending || cancel.isSuccess)
-                  ? 'Cancelling and cleaning up…'
-                  : 'Abort setup'}
+                  ? t('setup.run.cancelling')
+                  : t('setup.run.abort')}
               </Button>
             )}
             <Button variant="outline" onClick={refresh}>
               <RefreshCw data-icon="inline-start" />
-              Reconnect status
+              {t('setup.run.reconnect')}
             </Button>
             {!busy && onDone && (
               <Button variant="outline" onClick={onDone}>
                 <Check data-icon="inline-start" />
                 {run.status === 'succeeded'
-                  ? 'Continue'
-                  : 'Back to environment'}
+                  ? t('common.continue')
+                  : t('setup.run.backEnvironment')}
               </Button>
             )}
           </div>
           {run.status === 'cancelled' && (
             <p>
-              Setup was cancelled. Start a new setup to try again; the partial
-              environment is not active.
+              {t('setup.run.cancelledHint')}
             </p>
           )}
           {run.status === 'succeeded' && (
             <p role="status">
-              Verification finished. The selected environment is ready.
+              {t('setup.run.verified')}
             </p>
           )}
           {run.status === 'succeeded' && run.mode === 'first_run' && (
             <p role="status">
-              Setup finished. Restarting the app to open the new installation…
+              {t('setup.run.restarting')}
             </p>
           )}
         </CardContent>
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle>Setup log</CardTitle>
+          <CardTitle>{t('setup.run.log')}</CardTitle>
           <CardDescription>
-            Sanitized live output from this UI session (last 500 lines).
-            Reconnection restores step status and failure details; earlier
-            output remains in the backend’s per-run log file.
+            {t('setup.run.logHint')}
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Suspense fallback={<p role="status">Loading log viewer…</p>}>
+          <Suspense fallback={<p role="status">{t('setup.run.loadingLog')}</p>}>
             <LogView lines={lines} />
           </Suspense>
         </CardContent>

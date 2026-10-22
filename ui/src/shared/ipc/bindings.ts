@@ -515,6 +515,8 @@ export type IpcError = {
 	message: string,
 };
 
+export type LanguageDto = "en" | "th";
+
 export type LaunchOptionsDto = {
 	port: number,
 	vram: VramModeDto,
@@ -1023,6 +1025,7 @@ export type SettingsDto = {
 	hfEngine: HfEngineDto,
 	closeBehavior: CloseBehaviorDto,
 	theme: ThemeDto,
+	language: LanguageDto,
 	registryCacheTtl: number,
 	bandwidthCapKibS: number | null,
 };
@@ -1175,6 +1178,7 @@ export type UpdateSettingsDto = {
 	hfEngine: HfEngineDto,
 	closeBehavior: CloseBehaviorDto,
 	theme: ThemeDto,
+	language: LanguageDto,
 	registryCacheTtl: number,
 	bandwidthCapKibS: number | null,
 };

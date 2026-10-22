@@ -21,7 +21,7 @@ use domain::{
         HardwareObservation, OsKind, PinSet, PythonEnvironment, PythonVersion, SetupMode,
         VerifyExpectations,
     },
-    settings::{CloseBehavior, HfEngine, Settings, Theme},
+    settings::{CloseBehavior, HfEngine, Language, Settings, Theme},
 };
 use infrastructure::{
     custom_nodes::stack::{NodeAdapters, NodeOptions},
@@ -846,6 +846,7 @@ async fn choosing_another_root_carries_settings_and_draft_to_the_restarted_app()
         HfEngine::Native,
         CloseBehavior::StopComfy,
         Theme::Dark,
+        Language::Th,
         24,
         Some(4096),
     )

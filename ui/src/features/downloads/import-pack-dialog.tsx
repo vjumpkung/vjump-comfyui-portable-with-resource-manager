@@ -2,6 +2,7 @@ import { useMutation } from '@tanstack/react-query'
 import { LoaderCircle } from 'lucide-react'
 import { useRef, useState } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type EnqueueItemInput,
@@ -37,6 +38,7 @@ function rowFile(row: PackPreviewRowDto, choice: number | undefined) {
 
 /** Preview of a resource list or pack index: sizes first, deselect, then queue. */
 export function ImportPackDialog({ onClose, onSubmit }: Props) {
+  const { t } = useTranslation()
   const [url, setUrl] = useState('')
   const [text, setText] = useState('')
   const [rows, setRows] = useState<PackPreviewRowDto[] | null>(null)
@@ -109,16 +111,15 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
     >
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Import resource pack</DialogTitle>
+          <DialogTitle>{t('downloads.importTitle')}</DialogTitle>
           <DialogDescription>
-            Load a resource list ([{'{'}name, url, type{'}'}]) or a pack index,
-            check the sizes, and queue what you want.
+            {t('downloads.importHint')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="pack-url">From a link (https)</Label>
+            <Label htmlFor="pack-url">{t('downloads.fromLink')}</Label>
             <Input
               id="pack-url"
               autoComplete="off"
@@ -131,7 +132,7 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="pack-file">Or from a file</Label>
+            <Label htmlFor="pack-file">{t('downloads.fromFile')}</Label>
             <Input
               id="pack-file"
               ref={fileInput}
@@ -158,7 +159,7 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
                 aria-hidden="true"
               />
             ) : null}
-            Preview
+            {t('downloads.preview')}
           </Button>
         </div>
 
@@ -170,7 +171,7 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
 
         {rows ? (
           <ul
-            aria-label="Pack contents"
+            aria-label={t('downloads.packContents')}
             className="max-h-80 divide-y overflow-y-auto rounded-lg border"
           >
             {rows.map((row, index) => {
@@ -180,7 +181,7 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
                 <li key={index} className="flex items-start gap-3 px-3 py-2">
                   <Checkbox
                     id={`pack-row-${index}`}
-                    aria-label={`Include ${row.name}`}
+                    aria-label={t('downloads.includeFile', { name: row.name })}
                     disabled={!file}
                     checked={!deselected.has(index) && !!file}
                     onCheckedChange={(value) =>
@@ -207,7 +208,7 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
                     ) : null}
                     {files.length > 1 ? (
                       <select
-                        aria-label={`File for ${row.name}`}
+                        aria-label={t('downloads.fileFor', { name: row.name })}
                         className="mt-1 h-8 w-full rounded-md border border-input bg-card px-2 text-xs"
                         value={file?.index ?? 0}
                         onChange={(event) =>
@@ -233,19 +234,17 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             disabled={queueable.length === 0 || submitting}
             onClick={() => void queue()}
           >
             {queueable.length > 0
-              ? `Queue ${queueable.length} (${
-                  totalBytes > 0
-                    ? formatSize({ kind: 'exact', bytes: totalBytes })
-                    : 'size unknown'
-                })`
-              : 'Queue'}
+              ? t('downloads.queueCount', { count: queueable.length, size: totalBytes > 0
+                  ? formatSize({ kind: 'exact', bytes: totalBytes })
+                  : t('downloads.sizeUnknownLowercase') })
+              : t('downloads.queue')}
           </Button>
         </DialogFooter>
       </DialogContent>

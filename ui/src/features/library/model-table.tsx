@@ -2,6 +2,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { Image as ImageIcon } from 'lucide-react'
 import { useEffect, useRef, type KeyboardEvent } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import type { ModelEntryDto } from '@/shared/ipc/gateway'
 import { cn } from '@/shared/lib/utils'
 import { Badge } from '@/shared/ui/badge'
@@ -42,6 +43,7 @@ export function ModelTable({
   onToggleAll,
   onDelete,
 }: Props) {
+  const { t } = useTranslation()
   const scroller = useRef<HTMLDivElement>(null)
   const pendingFocus = useRef<string | null>(null)
   const virtualize = models.length > VIRTUALIZE_AFTER
@@ -165,7 +167,7 @@ export function ModelTable({
           <Checkbox
             checked={isSelected}
             onCheckedChange={() => onToggle(key)}
-            aria-label={`Select ${model.name}`}
+            aria-label={t('library.table.select', { name: model.name })}
             tabIndex={-1}
           />
         </div>
@@ -176,7 +178,7 @@ export function ModelTable({
           {model.sidecars.preview ? (
             <ImageIcon
               className="size-3.5 shrink-0 text-muted-foreground"
-              aria-label="Has preview"
+              aria-label={t('library.table.preview')}
             />
           ) : null}
         </div>
@@ -206,7 +208,7 @@ export function ModelTable({
   return (
     <div
       role="grid"
-      aria-label="Models"
+      aria-label={t('library.title')}
       aria-rowcount={models.length + 1}
       aria-multiselectable="true"
       className="rounded-xl border"
@@ -223,15 +225,15 @@ export function ModelTable({
           <Checkbox
             checked={allSelected}
             onCheckedChange={onToggleAll}
-            aria-label="Select all"
+            aria-label={t('common.selectAll')}
           />
         </div>
-        <div role="columnheader">Name</div>
-        <div role="columnheader">Category</div>
-        <div role="columnheader">Subfolder</div>
-        <div role="columnheader">Size</div>
-        <div role="columnheader">Modified</div>
-        <div role="columnheader">Source</div>
+        <div role="columnheader">{t('common.name')}</div>
+        <div role="columnheader">{t('common.category')}</div>
+        <div role="columnheader">{t('library.table.subfolder')}</div>
+        <div role="columnheader">{t('common.size')}</div>
+        <div role="columnheader">{t('library.modified')}</div>
+        <div role="columnheader">{t('common.source')}</div>
       </div>
       <div
         ref={scroller}

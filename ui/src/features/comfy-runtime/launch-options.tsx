@@ -3,6 +3,7 @@ import { TriangleAlert } from 'lucide-react'
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { toast } from 'sonner'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type AttentionDto,
@@ -31,27 +32,27 @@ import { NativeSelect } from './native-select'
 import { comfyKeys } from './use-runtime'
 
 const VRAM = [
-  { value: 'auto', label: 'Automatic' },
-  { value: 'low', label: 'Low VRAM' },
-  { value: 'high', label: 'High VRAM' },
-  { value: 'no_vram', label: 'No VRAM (offload everything)' },
-] as const satisfies readonly { value: VramModeDto; label: string }[]
+  { value: 'auto', labelKey: 'runtime.launch.automatic' },
+  { value: 'low', labelKey: 'runtime.launch.lowVram' },
+  { value: 'high', labelKey: 'runtime.launch.highVram' },
+  { value: 'no_vram', labelKey: 'runtime.launch.noVram' },
+] as const satisfies readonly { value: VramModeDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
 
 const ATTENTION = [
-  { value: 'default', label: 'Default' },
-  { value: 'sage', label: 'SageAttention (needs it installed)' },
-  { value: 'flash', label: 'FlashAttention (needs it installed)' },
-  { value: 'pytorch', label: 'PyTorch cross attention' },
-  { value: 'split', label: 'Split cross attention' },
-  { value: 'quad', label: 'Quad cross attention' },
-] as const satisfies readonly { value: AttentionDto; label: string }[]
+  { value: 'default', labelKey: 'runtime.launch.default' },
+  { value: 'sage', labelKey: 'runtime.launch.sage' },
+  { value: 'flash', labelKey: 'runtime.launch.flash' },
+  { value: 'pytorch', labelKey: 'runtime.launch.pytorch' },
+  { value: 'split', labelKey: 'runtime.launch.split' },
+  { value: 'quad', labelKey: 'runtime.launch.quad' },
+] as const satisfies readonly { value: AttentionDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
 
 const PREVIEW = [
-  { value: 'auto', label: 'Automatic' },
-  { value: 'latent2_rgb', label: 'Latent to RGB' },
-  { value: 'taesd', label: 'TAESD' },
-  { value: 'none', label: 'None' },
-] as const satisfies readonly { value: PreviewMethodDto; label: string }[]
+  { value: 'auto', labelKey: 'runtime.launch.automatic' },
+  { value: 'latent2_rgb', labelKey: 'runtime.launch.latent' },
+  { value: 'taesd', labelKey: 'runtime.launch.taesd' },
+  { value: 'none', labelKey: 'common.none' },
+] as const satisfies readonly { value: PreviewMethodDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
 
 interface Draft {
   port: string
@@ -112,15 +113,16 @@ function Form({
   options: LaunchOptionsDto
   active: SessionDto | null
 }) {
+  const { t } = useTranslation()
   const client = useQueryClient()
   const [draft, setDraft] = useState<Draft>(() => toDraft(options))
-  const [portError, setPortError] = useState<string | null>(null)
+  const [portInvalid, setPortInvalid] = useState(false)
   const save = useMutation({
     mutationFn: (next: LaunchOptionsDto) => gateway.comfySetLaunchOptions(next),
     onSuccess: (saved) => {
       client.setQueryData(comfyKeys.launchOptions, saved)
       setDraft(toDraft(saved))
-      toast.success('Launch options saved. They apply on the next start.')
+      toast.success(translate('runtime.launch.saved'))
     },
     onError: (error) => toast.error(errorMessage(error)),
   })
@@ -135,10 +137,10 @@ function Form({
     const text = draft.port.trim()
     const port = /^\d+$/.test(text) ? Number(text) : 0
     if (port < 1 || port > 65535) {
-      setPortError('Enter a port between 1 and 65535.')
+      setPortInvalid(true)
       return
     }
-    setPortError(null)
+    setPortInvalid(false)
     save.mutate({
       port,
       vram: draft.vram,
@@ -154,49 +156,47 @@ function Form({
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       {active ? (
         <p className="text-xs text-muted-foreground">
-          The running session uses port {active.options.port}
-          {active.options.listenLan ? ' on all interfaces' : ' on loopback'}.
-          Changes apply on the next start.
+          {t(active.options.listenLan ? 'runtime.launch.activeAll' : 'runtime.launch.activeLoopback', { port: active.options.port })}
         </p>
       ) : null}
       <div className="grid gap-4 sm:grid-cols-2">
-        <Row id="launch-port" label="Port" hint="Default 8188.">
+        <Row id="launch-port" label={t('runtime.launch.port')} hint={t('runtime.launch.portHint')}>
           <Input
             id="launch-port"
             inputMode="numeric"
             value={draft.port}
-            aria-invalid={portError !== null}
+            aria-invalid={portInvalid}
             onChange={(event) => patch('port', event.target.value)}
           />
-          {portError ? (
-            <p className="text-xs text-destructive">{portError}</p>
+          {portInvalid ? (
+            <p className="text-xs text-destructive">{t('runtime.launch.portError')}</p>
           ) : null}
         </Row>
-        <Row id="launch-vram" label="VRAM mode">
+        <Row id="launch-vram" label={t('runtime.launch.vram')}>
           <NativeSelect
             id="launch-vram"
             value={draft.vram}
-            options={VRAM}
+            options={VRAM.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
             onChange={(value) => patch('vram', value)}
           />
         </Row>
         <Row
           id="launch-attention"
-          label="Attention backend"
-          hint="Start is refused if the selected backend is not installed."
+          label={t('runtime.launch.attention')}
+          hint={t('runtime.launch.attentionHint')}
         >
           <NativeSelect
             id="launch-attention"
             value={draft.attention}
-            options={ATTENTION}
+            options={ATTENTION.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
             onChange={(value) => patch('attention', value)}
           />
         </Row>
-        <Row id="launch-preview" label="Preview method">
+        <Row id="launch-preview" label={t('runtime.launch.preview')}>
           <NativeSelect
             id="launch-preview"
             value={draft.preview}
-            options={PREVIEW}
+            options={PREVIEW.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
             onChange={(value) => patch('preview', value)}
           />
         </Row>
@@ -210,7 +210,7 @@ function Form({
           }
         />
         <Label htmlFor="launch-manager">
-          Enable the built-in ComfyUI Manager
+          {t('runtime.launch.manager')}
         </Label>
       </div>
       <div className="flex items-center gap-2">
@@ -223,18 +223,16 @@ function Form({
           }}
         />
         <Label htmlFor="launch-lan">
-          Listen on the local network (not only this computer)
+          {t('runtime.launch.lan')}
         </Label>
       </div>
       {draft.listenLan ? (
         <Alert variant="destructive">
           <TriangleAlert />
-          <AlertTitle>Network exposure</AlertTitle>
+          <AlertTitle>{t('runtime.launch.exposure')}</AlertTitle>
           <AlertDescription>
             <p>
-              ComfyUI has no login. Anyone who can reach this computer on the
-              network can run workflows and read files ComfyUI serves. Enable
-              this only on a network you trust.
+              {t('runtime.launch.exposureHint')}
             </p>
             {!options.listenLan ? (
               <div className="flex items-center gap-2">
@@ -245,7 +243,7 @@ function Form({
                     patch('lanAcknowledged', checked === true)
                   }
                 />
-                <Label htmlFor="launch-lan-ack">I understand the risk</Label>
+                <Label htmlFor="launch-lan-ack">{t('runtime.launch.riskAck')}</Label>
               </div>
             ) : null}
           </AlertDescription>
@@ -253,8 +251,8 @@ function Form({
       ) : null}
       <Row
         id="launch-extra"
-        label="Extra arguments"
-        hint="One argument per line, for example --fast or --reserve-vram=2. Reserved options such as the port, listen address and model paths are rejected."
+        label={t('runtime.launch.extra')}
+        hint={t('runtime.launch.extraHint')}
       >
         <textarea
           id="launch-extra"
@@ -267,7 +265,7 @@ function Form({
       </Row>
       <div>
         <Button type="submit" disabled={save.isPending || lanBlocked}>
-          Save launch options
+          {t('runtime.launch.save')}
         </Button>
       </div>
     </form>
@@ -275,6 +273,7 @@ function Form({
 }
 
 export function LaunchOptionsCard({ active }: { active: SessionDto | null }) {
+  const { t } = useTranslation()
   const options = useQuery({
     queryKey: comfyKeys.launchOptions,
     queryFn: () => gateway.comfyGetLaunchOptions(),
@@ -283,10 +282,10 @@ export function LaunchOptionsCard({ active }: { active: SessionDto | null }) {
     <Card>
       <CardHeader>
         <CardTitle className="text-lg font-bold tracking-tight">
-          Launch options
+          {t('runtime.launch.title')}
         </CardTitle>
         <CardDescription>
-          Saved for this installation and applied on the next start.
+          {t('runtime.launch.hint')}
         </CardDescription>
       </CardHeader>
       <CardContent>

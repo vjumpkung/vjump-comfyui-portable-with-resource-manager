@@ -1,6 +1,7 @@
 import { Check, CircleX, LoaderCircle, TriangleAlert } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type DeleteOutcomeDto,
@@ -30,7 +31,7 @@ type Stage =
   | { kind: 'running'; permanent: boolean }
   | { kind: 'report'; report: DeleteReportDto; names: Map<string, string> }
   | { kind: 'confirm-permanent'; plan: DeletePlanDto }
-  | { kind: 'error'; message: string }
+  | { kind: 'error'; error: unknown }
 
 interface Props {
   locations: readonly ModelLocationDto[]
@@ -40,21 +41,18 @@ interface Props {
   onClose: () => void
 }
 
-const OUTCOME_TEXT: Record<DeleteOutcomeDto['kind'], string> = {
-  deleted: 'Deleted',
-  locked: 'In use by another program',
-  trash_failed: 'Could not be moved; nothing was deleted',
-  stale: 'Changed since it was listed; nothing was deleted',
-  missing: 'Already gone',
-  busy: 'A download or another operation is using it',
-  failed: 'Failed',
-}
+const OUTCOME_KEYS = {
+  deleted: 'library.delete.outcome.deleted',
+  locked: 'library.delete.outcome.locked',
+  trash_failed: 'library.delete.outcome.trashFailed',
+  stale: 'library.delete.outcome.stale',
+  missing: 'library.delete.outcome.missing',
+  busy: 'library.delete.outcome.busy',
+  failed: 'common.failed',
+} as const satisfies Record<DeleteOutcomeDto['kind'], keyof typeof import('@/shared/i18n/translations.json').en>
 
 function nameOf(plan: DeletePlanDto): Map<string, string> {
   return new Map(plan.items.map((item) => [keyOf(item.location), item.name]))
-}
-function count(n: number): string {
-  return `${n} ${n === 1 ? 'file' : 'files'}`
 }
 
 /**
@@ -62,6 +60,7 @@ function count(n: number): string {
  * separate permanent-delete confirmation for files the trash refused.
  */
 export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Props) {
+  const { t } = useTranslation()
   const [stage, setStage] = useState<Stage>({ kind: 'planning' })
   const [acknowledged, setAcknowledged] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -77,7 +76,7 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
         setStage({ kind: 'confirm', plan })
       })
       .catch((error: unknown) => {
-        if (live) setStage({ kind: 'error', message: errorMessage(error) })
+        if (live) setStage({ kind: 'error', error })
       })
     return () => {
       live = false
@@ -94,7 +93,7 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
         : await gateway.modelDelete(plan.id)
       setStage({ kind: 'report', report, names: names.current })
     } catch (error) {
-      setStage({ kind: 'error', message: errorMessage(error) })
+      setStage({ kind: 'error', error })
     } finally {
       onChanged()
     }
@@ -111,7 +110,7 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
       names.current = new Map([...names.current, ...nameOf(plan)])
       await execute(plan)
     } catch (error) {
-      setStage({ kind: 'error', message: errorMessage(error) })
+      setStage({ kind: 'error', error })
     } finally {
       setBusy(false)
     }
@@ -129,33 +128,31 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
         {stage.kind === 'planning' ? (
           <>
             <DialogHeader>
-              <DialogTitle>Delete models</DialogTitle>
-              <DialogDescription>Checking the selected files...</DialogDescription>
+              <DialogTitle>{t('library.delete.title')}</DialogTitle>
+              <DialogDescription>{t('library.delete.checking')}</DialogDescription>
             </DialogHeader>
-            <LoaderCircle className="animate-spin" aria-label="Loading" />
+            <LoaderCircle className="animate-spin" aria-label={t('common.loadingLabel')} />
           </>
         ) : null}
 
         {stage.kind === 'confirm' ? (
           <>
             <DialogHeader>
-              <DialogTitle>Delete {count(stage.plan.items.length)}?</DialogTitle>
+              <DialogTitle>{t('library.delete.confirm', { count: stage.plan.items.length })}</DialogTitle>
               <DialogDescription>
-                The models move to the {trash}, so you can restore them there.
-                Metadata files beside them are kept.
+                {t('library.delete.disclosure', { trash })}
               </DialogDescription>
             </DialogHeader>
             <FileList plan={stage.plan} />
             <DialogFooter>
               <Button variant="outline" onClick={onClose}>
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button
                 variant="destructive"
                 onClick={() => void execute(stage.plan)}
               >
-                Move {count(stage.plan.items.length)} (
-                {formatBytes(stage.plan.totalBytes)}) to {trash}
+                {t('library.delete.move', { count: stage.plan.items.length, size: formatBytes(stage.plan.totalBytes), trash })}
               </Button>
             </DialogFooter>
           </>
@@ -165,11 +162,11 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
           <>
             <DialogHeader>
               <DialogTitle>
-                {stage.permanent ? 'Deleting permanently' : `Moving to the ${trash}`}
+                {stage.permanent ? t('library.delete.permanently') : t('library.delete.moving', { trash })}
               </DialogTitle>
-              <DialogDescription>This can take a moment for large files.</DialogDescription>
+              <DialogDescription>{t('library.delete.largeFiles')}</DialogDescription>
             </DialogHeader>
-            <LoaderCircle className="animate-spin" aria-label="Working" />
+            <LoaderCircle className="animate-spin" aria-label={t('common.working')} />
           </>
         ) : null}
 
@@ -191,11 +188,10 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
           <>
             <DialogHeader>
               <DialogTitle>
-                Delete {count(stage.plan.items.length)} permanently?
+                {t('library.delete.confirmPermanent', { count: stage.plan.items.length })}
               </DialogTitle>
               <DialogDescription>
-                The {trash} could not take these files. Deleting them now frees{' '}
-                {formatBytes(stage.plan.totalBytes)} and cannot be undone.
+                {t('library.delete.permanentHint', { trash, size: formatBytes(stage.plan.totalBytes) })}
               </DialogDescription>
             </DialogHeader>
             <FileList plan={stage.plan} />
@@ -206,19 +202,19 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
                 onCheckedChange={(checked) => setAcknowledged(checked === true)}
               />
               <Label htmlFor="permanent-ack">
-                I understand this cannot be undone
+                {t('library.delete.acknowledge')}
               </Label>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={onClose}>
-                Keep the files
+                {t('library.delete.keep')}
               </Button>
               <Button
                 variant="destructive"
                 disabled={!acknowledged}
                 onClick={() => void execute(stage.plan)}
               >
-                Delete permanently ({formatBytes(stage.plan.totalBytes)})
+                {t('library.delete.permanentAction', { size: formatBytes(stage.plan.totalBytes) })}
               </Button>
             </DialogFooter>
           </>
@@ -227,12 +223,12 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
         {stage.kind === 'error' ? (
           <>
             <DialogHeader>
-              <DialogTitle>Delete failed</DialogTitle>
-              <DialogDescription>{stage.message}</DialogDescription>
+              <DialogTitle>{t('library.delete.failed')}</DialogTitle>
+              <DialogDescription>{errorMessage(stage.error)}</DialogDescription>
             </DialogHeader>
             <DialogFooter>
               <Button variant="outline" onClick={onClose}>
-                Close
+                {t('common.close')}
               </Button>
             </DialogFooter>
           </>
@@ -243,9 +239,10 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
 }
 
 function FileList({ plan }: { plan: DeletePlanDto }) {
+  const { t } = useTranslation()
   const shown = plan.items.slice(0, 8)
   return (
-    <ul className="flex max-h-48 flex-col gap-1 overflow-auto text-sm" aria-label="Files">
+    <ul className="flex max-h-48 flex-col gap-1 overflow-auto text-sm" aria-label={t('library.delete.files')}>
       {shown.map((item) => (
         <li key={keyOf(item.location)} className="flex justify-between gap-3">
           <span className="min-w-0 truncate" title={item.name}>
@@ -258,7 +255,7 @@ function FileList({ plan }: { plan: DeletePlanDto }) {
       ))}
       {plan.items.length > shown.length ? (
         <li className="text-muted-foreground">
-          and {plan.items.length - shown.length} more
+          {t('library.delete.more', { count: plan.items.length - shown.length })}
         </li>
       ) : null}
     </ul>
@@ -280,6 +277,7 @@ function Report({
   onRetry: (stopComfy: boolean) => void
   onPermanent: (plan: DeletePlanDto) => void
 }) {
+  const { t } = useTranslation()
   const deleted = report.results.filter((r) => r.outcome.kind === 'deleted').length
   const locked = report.results.filter((r) => r.outcome.kind === 'locked').length
   const trash = trashName()
@@ -287,13 +285,13 @@ function Report({
     <>
       <DialogHeader>
         <DialogTitle>
-          {deleted} of {count(report.results.length)} deleted
+          {t('library.delete.summary', { deleted, count: report.results.length })}
         </DialogTitle>
         <DialogDescription>
-          Each file is reported on its own; a failure never affects the others.
+          {t('library.delete.reportHint')}
         </DialogDescription>
       </DialogHeader>
-      <ul className="flex max-h-56 flex-col gap-1.5 overflow-auto text-sm" aria-label="Results">
+      <ul className="flex max-h-56 flex-col gap-1.5 overflow-auto text-sm" aria-label={t('library.delete.results')}>
         {report.results.map((result) => {
           const ok = result.outcome.kind === 'deleted'
           return (
@@ -309,7 +307,7 @@ function Report({
               <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">
                 {names.get(keyOf(result.location)) ?? result.location.path}
                 <span className="block text-xs text-muted-foreground">
-                  {OUTCOME_TEXT[result.outcome.kind]}
+                  {t(OUTCOME_KEYS[result.outcome.kind])}
                 </span>
               </span>
             </li>
@@ -320,11 +318,10 @@ function Report({
         <Alert variant="destructive">
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>
-            {count(report.permanentPlan.items.length)} could not go to the {trash}
+            {t('library.delete.trashFailed', { count: report.permanentPlan.items.length, trash })}
           </AlertTitle>
           <AlertDescription>
-            Nothing was deleted. You can delete them permanently, which needs a
-            separate confirmation.
+            {t('library.delete.retryHint')}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -332,10 +329,10 @@ function Report({
         {locked > 0 ? (
           <>
             <Button variant="outline" disabled={busy} onClick={() => onRetry(false)}>
-              Retry
+              {t('common.retry')}
             </Button>
             <Button variant="outline" disabled={busy} onClick={() => onRetry(true)}>
-              Stop ComfyUI and retry
+              {t('common.stopRetry')}
             </Button>
           </>
         ) : null}
@@ -345,11 +342,11 @@ function Report({
             disabled={busy}
             onClick={() => onPermanent(report.permanentPlan as DeletePlanDto)}
           >
-            Review permanent deletion
+            {t('library.delete.reviewPermanent')}
           </Button>
         ) : null}
         <Button disabled={busy} onClick={onClose}>
-          Done
+          {t('common.done')}
         </Button>
       </DialogFooter>
     </>

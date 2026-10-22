@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { toast } from 'sonner'
 
+import { LANGUAGES, setLanguage, t as translate, useTranslation, type Language } from '@/shared/i18n'
 import type {
   CloseBehaviorDto,
   HfEngineDto,
@@ -17,21 +18,21 @@ import { useSettings, useUpdateSettings } from './queries'
 import { SelectField } from './select-field'
 
 const HF_ENGINES = [
-  { value: 'hf_cli', label: 'hf CLI (default)' },
-  { value: 'native', label: 'Native downloader' },
-] as const satisfies readonly { value: HfEngineDto; label: string }[]
+  { value: 'hf_cli', labelKey: 'settings.engine.hfCli' },
+  { value: 'native', labelKey: 'settings.engine.native' },
+] as const satisfies readonly { value: HfEngineDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
 
 const CLOSE_BEHAVIORS = [
-  { value: 'ask', label: 'Ask every time' },
-  { value: 'stop_comfy', label: 'Stop ComfyUI and quit' },
-  { value: 'keep_running_headless', label: 'Keep ComfyUI running in the background' },
-] as const satisfies readonly { value: CloseBehaviorDto; label: string }[]
+  { value: 'ask', labelKey: 'settings.close.ask' },
+  { value: 'stop_comfy', labelKey: 'settings.close.stop' },
+  { value: 'keep_running_headless', labelKey: 'settings.close.background' },
+] as const satisfies readonly { value: CloseBehaviorDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
 
 const THEMES = [
-  { value: 'system', label: 'System' },
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' },
-] as const satisfies readonly { value: ThemeDto; label: string }[]
+  { value: 'system', labelKey: 'settings.theme.system' },
+  { value: 'light', labelKey: 'settings.theme.light' },
+  { value: 'dark', labelKey: 'settings.theme.dark' },
+] as const satisfies readonly { value: ThemeDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
 
 const U32_MAX = 4_294_967_295
 
@@ -40,11 +41,12 @@ interface Draft {
   hfEngine: HfEngineDto
   closeBehavior: CloseBehaviorDto
   theme: ThemeDto
+  language: Language
   registryCacheTtl: string
   bandwidthCap: string
 }
 
-type DraftErrors = Partial<Record<keyof Draft, string>>
+type DraftErrors = Partial<Record<keyof Draft, `settings.validation.${'concurrency' | 'ttl' | 'bandwidth'}`>>
 
 function toDraft(settings: SettingsDto): Draft {
   return {
@@ -52,6 +54,7 @@ function toDraft(settings: SettingsDto): Draft {
     hfEngine: settings.hfEngine,
     closeBehavior: settings.closeBehavior,
     theme: settings.theme,
+    language: settings.language,
     registryCacheTtl: String(settings.registryCacheTtl),
     bandwidthCap: settings.bandwidthCapKibS === null ? '' : String(settings.bandwidthCapKibS),
   }
@@ -85,6 +88,7 @@ function Field({
 }
 
 function SettingsFormFields({ settings }: { settings: SettingsDto }) {
+  const { t } = useTranslation()
   const [draft, setDraft] = useState<Draft>(() => toDraft(settings))
   const [errors, setErrors] = useState<DraftErrors>({})
   const update = useUpdateSettings()
@@ -102,13 +106,13 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
 
     const nextErrors: DraftErrors = {}
     if (concurrency === null) {
-      nextErrors.downloadConcurrency = 'Enter a whole number of 1 or more.'
+      nextErrors.downloadConcurrency = 'settings.validation.concurrency'
     }
     if (ttl === null) {
-      nextErrors.registryCacheTtl = 'Enter a whole number of hours, 1 or more.'
+      nextErrors.registryCacheTtl = 'settings.validation.ttl'
     }
     if (capText !== '' && cap === null) {
-      nextErrors.bandwidthCap = 'Enter KiB/s as 1 or more, or leave it empty.'
+      nextErrors.bandwidthCap = 'settings.validation.bandwidth'
     }
     setErrors(nextErrors)
     if (concurrency === null || ttl === null || (capText !== '' && cap === null)) return
@@ -119,11 +123,15 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
         hfEngine: draft.hfEngine,
         closeBehavior: draft.closeBehavior,
         theme: draft.theme,
+        language: draft.language,
         registryCacheTtl: ttl,
         bandwidthCapKibS: cap,
       },
       {
-        onSuccess: () => toast.success('Settings saved.'),
+        onSuccess: (saved) => {
+          setLanguage(saved.language)
+          toast.success(translate('settings.saved'))
+        },
         onError: (error) => toast.error(errorMessage(error)),
       },
     )
@@ -134,8 +142,8 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
       <div className="grid gap-5 md:grid-cols-2">
         <Field
           id="download-concurrency"
-          label="Parallel downloads"
-          error={errors.downloadConcurrency}
+          label={t('settings.concurrency')}
+          error={errors.downloadConcurrency && t(errors.downloadConcurrency)}
         >
           <Input
             id="download-concurrency"
@@ -145,34 +153,42 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
             aria-invalid={errors.downloadConcurrency ? true : undefined}
           />
         </Field>
-        <Field id="hf-engine" label="Hugging Face download engine">
+        <Field id="hf-engine" label={t('settings.hfEngine')}>
           <SelectField
             id="hf-engine"
             value={draft.hfEngine}
-            options={HF_ENGINES}
+            options={HF_ENGINES.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
             onChange={(value) => patch('hfEngine', value)}
           />
         </Field>
-        <Field id="close-behavior" label="When closing the window">
+        <Field id="close-behavior" label={t('settings.closeBehavior')}>
           <SelectField
             id="close-behavior"
             value={draft.closeBehavior}
-            options={CLOSE_BEHAVIORS}
+            options={CLOSE_BEHAVIORS.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
             onChange={(value) => patch('closeBehavior', value)}
           />
         </Field>
-        <Field id="theme" label="Theme">
+        <Field id="theme" label={t('settings.theme')}>
           <SelectField
             id="theme"
             value={draft.theme}
-            options={THEMES}
+            options={THEMES.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
             onChange={(value) => patch('theme', value)}
+          />
+        </Field>
+        <Field id="language" label={t('settings.language')}>
+          <SelectField
+            id="language"
+            value={draft.language}
+            options={LANGUAGES}
+            onChange={(value) => patch('language', value)}
           />
         </Field>
         <Field
           id="registry-ttl"
-          label="Registry cache lifetime (hours)"
-          error={errors.registryCacheTtl}
+          label={t('settings.registryTtl')}
+          error={errors.registryCacheTtl && t(errors.registryCacheTtl)}
         >
           <Input
             id="registry-ttl"
@@ -182,24 +198,24 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
             aria-invalid={errors.registryCacheTtl ? true : undefined}
           />
         </Field>
-        <Field id="bandwidth-cap" label="Bandwidth cap (KiB/s)" error={errors.bandwidthCap}>
+        <Field id="bandwidth-cap" label={t('settings.bandwidth')} error={errors.bandwidthCap && t(errors.bandwidthCap)}>
           <Input
             id="bandwidth-cap"
             inputMode="numeric"
-            placeholder="Unlimited"
+            placeholder={t('common.unlimited')}
             value={draft.bandwidthCap}
             onChange={(event) => patch('bandwidthCap', event.target.value)}
             aria-invalid={errors.bandwidthCap ? true : undefined}
             aria-describedby="bandwidth-cap-note"
           />
           <p id="bandwidth-cap-note" className="text-xs text-muted-foreground">
-            Shared by all downloads. Leave empty for unlimited speed.
+            {t('settings.bandwidthHint')}
           </p>
         </Field>
       </div>
       <div>
         <Button type="submit" disabled={update.isPending}>
-          Save settings
+          {t('settings.save')}
         </Button>
       </div>
     </form>
@@ -207,13 +223,14 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
 }
 
 export function SettingsForm() {
+  const { t } = useTranslation()
   const settings = useSettings()
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg font-bold tracking-tight">Preferences</CardTitle>
-        <CardDescription>Stored locally in the application database.</CardDescription>
+        <CardTitle className="text-lg font-bold tracking-tight">{t('settings.preferences')}</CardTitle>
+        <CardDescription>{t('settings.storageHint')}</CardDescription>
       </CardHeader>
       <CardContent>
         {settings.data ? (
@@ -222,7 +239,7 @@ export function SettingsForm() {
         ) : settings.isError ? (
           <p className="text-sm text-destructive">{errorMessage(settings.error)}</p>
         ) : (
-          <p className="text-sm text-muted-foreground">Loading settings...</p>
+          <p className="text-sm text-muted-foreground">{t('settings.loading')}</p>
         )}
       </CardContent>
     </Card>

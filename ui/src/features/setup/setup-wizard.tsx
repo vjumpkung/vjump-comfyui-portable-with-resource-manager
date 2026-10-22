@@ -2,11 +2,13 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useState, type ReactNode } from 'react'
 import { Check, FolderOpen, Info, RefreshCw } from 'lucide-react'
 
+import { useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type PythonSourceDto,
   type SetupModeDto,
   type SetupStatusDto,
+  type ValidationTargetDto,
 } from '@/shared/ipc/gateway'
 import { bytes } from '@/shared/lib/display'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
@@ -45,19 +47,20 @@ import {
 import { RunProgress } from './run-progress'
 import { useSetupRun } from './use-setup-run'
 
-const stages = [
-  'Install root',
-  'Hardware',
-  'Python source',
-  'Profile',
-  'Options',
-  'Review',
-]
-
 // Display only: the backend resolves and installs the real Manager source.
 const MANAGER_SOURCE = 'https://github.com/Comfy-Org/ComfyUI-Manager'
-const THIRD_PARTY_DISCLOSURE =
-  "Installing ComfyUI-Manager and selected custom nodes runs third-party code on this computer; a Python environment is not a sandbox. Setup installs the latest commit of each repository’s default branch. For selected custom nodes, setup allows shipped Python cache files and top-level native programs or libraries, runs install.py if present, then installs the reviewed requirements.txt. It does not ask again. Clicking Start setup confirms this."
+const THIRD_PARTY_DISCLOSURE = 'setup.thirdPartyDisclosure'
+const STAGES = [
+  'setup.installRoot', 'setup.hardware', 'setup.pythonSource',
+  'setup.profile', 'setup.options', 'setup.review',
+] as const satisfies readonly (keyof typeof import('@/shared/i18n/translations.json').en)[]
+
+const VALIDATION_TARGETS = {
+  empty_folder: 'setup.validationTarget.emptyFolder',
+  existing_venv: 'setup.validationTarget.existingVenv',
+  interpreter: 'setup.validationTarget.interpreter',
+  rejected: 'setup.validationTarget.rejected',
+} as const satisfies Record<ValidationTargetDto, keyof typeof import('@/shared/i18n/translations.json').en>
 
 export function SetupWizard({
   status,
@@ -66,6 +69,8 @@ export function SetupWizard({
   onClose,
   refresh,
   renderCuratedReview,
+  languageControl,
+  preferencesPending = false,
 }: {
   status: SetupStatusDto
   mode: SetupModeDto
@@ -73,7 +78,10 @@ export function SetupWizard({
   onClose: () => void
   refresh: () => void
   renderCuratedReview: (props: CuratedReviewProps) => ReactNode
+  languageControl?: (disabled: boolean) => ReactNode
+  preferencesPending?: boolean
 }) {
+  const { t } = useTranslation()
   const [draft] = useState(() => readDraft(status.draft))
   const [stage, setStage] = useState(mode === 'first_run' ? 0 : 1)
   const [root, setRoot] = useState(status.installRoot)
@@ -134,10 +142,10 @@ export function SetupWizard({
       kind === 'root' || source.kind === 'customVenv'
         ? gateway.pickFolder(
             kind === 'root'
-              ? 'Choose install root'
-              : 'Choose an existing venv or empty folder',
+              ? t('setup.chooseRoot')
+              : t('setup.chooseVenv'),
           )
-        : gateway.pickFile('Choose Python interpreter'),
+        : gateway.pickFile(t('setup.chooseInterpreter')),
     onSuccess: (path, kind) => {
       if (!path) return
       if (kind === 'root') setRoot(path)
@@ -242,7 +250,7 @@ export function SetupWizard({
     return (
       <div className="flex flex-col gap-6">
         <h1 className="text-2xl font-extrabold tracking-tighter">
-          {modeLabels[mode]}
+          {t(modeLabels[mode])}
         </h1>
         <RunProgress
           run={status.run}
@@ -267,21 +275,20 @@ export function SetupWizard({
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
       <header className="flex flex-col gap-2">
         <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-          {modeLabels[mode]}
+          {t(modeLabels[mode])}
         </h1>
         <p className="text-sm text-muted-foreground">
-          NVIDIA on Windows / Linux x64. Activation follows verification;
-          replacement environments are built alongside the selected one.
+          {t('setup.intro')}
         </p>
       </header>
       <ol
-        aria-label="Setup stages"
+        aria-label={t('setup.stages')}
         className="flex flex-wrap gap-3 font-mono text-xs"
       >
-        {stages.map((name, index) => (
+        {STAGES.map((name, index) => (
           <li key={name} aria-current={stage === index ? 'step' : undefined}>
             <Badge variant={stage === index ? 'secondary' : 'outline'}>
-              {index + 1}. {name}
+              {index + 1}. {t(name)}
             </Badge>
           </li>
         ))}
@@ -289,28 +296,25 @@ export function SetupWizard({
       {mode !== 'first_run' && (
         <Alert>
           <Info />
-          <AlertTitle>Re-setup preserves user data</AlertTitle>
+          <AlertTitle>{t('setup.preserveTitle')}</AlertTitle>
           <AlertDescription>
-            ComfyUI must be stopped before starting. Setup checks for running
-            processes; stop an external ComfyUI process yourself. The current
-            checkout is retained. Repair verifies first and creates a
-            replacement only if needed. Models, user files and custom node
-            folders are preserved.
+            {t('setup.preserveDescription')}
           </AlertDescription>
         </Alert>
       )}
       <Card>
         <CardHeader>
-          <CardTitle>{stages[stage]}</CardTitle>
+          <CardTitle>{t(STAGES[stage])}</CardTitle>
           <CardDescription>
-            Step {stage + 1} of {stages.length}
+            {t('setup.stepOf', { n: stage + 1, total: STAGES.length })}
           </CardDescription>
         </CardHeader>
         <CardContent>
           {stage === 0 && (
             <FieldGroup>
+              {languageControl?.(rootSelection.isPending || rootSelection.isSuccess)}
               <Field data-disabled={status.rootSource === 'debug_override'}>
-                <FieldLabel htmlFor="install-root">Install root</FieldLabel>
+                <FieldLabel htmlFor="install-root">{t('setup.installRoot')}</FieldLabel>
                 <div className="flex gap-2">
                   <Input
                     id="install-root"
@@ -332,36 +336,32 @@ export function SetupWizard({
                     onClick={() => picker.mutate('root')}
                   >
                     <FolderOpen data-icon="inline-start" />
-                    Browse
+                    {t('common.browse')}
                   </Button>
                 </div>
                 <FieldDescription>
-                  ComfyUI, app-owned environments, tools and data live here. A
-                  changed root takes effect after restarting the app.
+                  {t('setup.rootHint')}
                 </FieldDescription>
               </Field>
               {status.rootSource === 'debug_override' && (
                 <p>
-                  The debug environment override fixes this root. Remove the
-                  override outside the app to choose another location.
+                  {t('setup.debugRootHint')}
                 </p>
               )}
               {rootSelection.isSuccess && (
                 <Alert>
                   <Check />
-                  <AlertTitle>Restart required</AlertTitle>
+                  <AlertTitle>{t('setup.restartRequired')}</AlertTitle>
                   <AlertDescription>
-                    Restart the app to use {root.trim()}. Settings and the
-                    wizard draft have been transferred. Setup cannot start in
-                    this session.
+                    {t('setup.rootRestartHint', { root: root.trim() })}
                     <Button
                       size="sm"
                       disabled={restartApp.isPending || restartApp.isSuccess}
                       onClick={() => restartApp.mutate()}
                     >
                       {restartApp.isPending || restartApp.isSuccess
-                        ? 'Restarting…'
-                        : 'Restart now'}
+                        ? t('setup.restarting')
+                        : t('setup.restartNow')}
                     </Button>
                   </AlertDescription>
                 </Alert>
@@ -387,37 +387,37 @@ export function SetupWizard({
                 <>
                   <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
                     <div>
-                      <dt>Platform</dt>
+                      <dt>{t('setup.platform')}</dt>
                       <dd className="font-mono">
                         {hardware.data.os} · {hardware.data.osVersion}
                       </dd>
                     </div>
                     <div>
-                      <dt>NVIDIA detection</dt>
+                      <dt>{t('setup.nvidiaDetection')}</dt>
                       <dd>
                         {hardware.data.gpuStatus === 'unavailable'
-                          ? 'Probe unavailable — hardware is unknown'
+                          ? t('setup.probeUnavailable')
                           : hardware.data.gpuStatus === 'no_nvidia_gpu'
-                            ? 'No NVIDIA GPU detected'
-                            : 'Detected'}
+                            ? t('setup.noNvidia')
+                            : t('setup.detected')}
                       </dd>
                     </div>
                     <div>
-                      <dt>Driver / maximum CUDA</dt>
+                      <dt>{t('setup.driverCuda')}</dt>
                       <dd className="font-mono">
-                        {hardware.data.driverVersion ?? 'Unknown'} /{' '}
-                        {hardware.data.driverCuda ?? 'Unknown'}
+                        {hardware.data.driverVersion ?? t('common.unknownValue')} /{' '}
+                        {hardware.data.driverCuda ?? t('common.unknownValue')}
                       </dd>
                     </div>
                     <div>
-                      <dt>Install volume free</dt>
+                      <dt>{t('setup.installFree')}</dt>
                       <dd className="font-mono">
                         {bytes(hardware.data.installVolumeFreeBytes)}
                       </dd>
                     </div>
                     {hardware.data.envOnSeparateVolume && (
                       <div>
-                        <dt>Environment volume free</dt>
+                        <dt>{t('setup.environmentFree')}</dt>
                         <dd className="font-mono">
                           {bytes(hardware.data.envVolumeFreeBytes)}
                         </dd>
@@ -425,13 +425,13 @@ export function SetupWizard({
                     )}
                     {hardware.data.os === 'windows' && (
                       <div>
-                        <dt>Windows long paths</dt>
+                        <dt>{t('setup.longPaths')}</dt>
                         <dd>
                           {hardware.data.longPathsEnabled === null
-                            ? 'Unknown'
+                            ? t('common.unknownValue')
                             : hardware.data.longPathsEnabled
-                              ? 'Enabled'
-                              : 'Disabled — use a short install path or enable long paths in Windows'}
+                              ? t('common.enabled')
+                              : t('setup.longPathsDisabled')}
                         </dd>
                       </div>
                     )}
@@ -440,17 +440,15 @@ export function SetupWizard({
                     {hardware.data.gpus.map((gpu) => (
                       <li key={gpu.index} className="font-mono text-xs">
                         GPU {gpu.index}: {gpu.name} · CC{' '}
-                        {gpu.computeCapability ?? 'unknown'} ·{' '}
+                        {gpu.computeCapability ?? t('common.unknownLowercase')} ·{' '}
                         {gpu.vramMib === null
-                          ? 'unknown VRAM'
+                          ? t('setup.unknownVram')
                           : `${gpu.vramMib} MiB VRAM`}
                       </li>
                     ))}
                   </ul>
                   <p className="text-sm text-muted-foreground">
-                    All detected GPUs count toward eligibility. Unresolved
-                    compatibility or space estimates can disable a profile; the
-                    profile step shows each reason.
+                    {t('setup.hardwareHint')}
                   </p>
                   <Button
                     variant="outline"
@@ -461,7 +459,7 @@ export function SetupWizard({
                     }}
                   >
                     <RefreshCw data-icon="inline-start" />
-                    Check hardware again
+                    {t('setup.checkHardware')}
                   </Button>
                 </>
               )}
@@ -470,7 +468,7 @@ export function SetupWizard({
           {stage === 2 && (
             <FieldGroup>
               <Field>
-                <FieldLabel>Python source</FieldLabel>
+                <FieldLabel>{t('setup.pythonSource')}</FieldLabel>
                 <ToggleGroup
                   type="single"
                   variant="outline"
@@ -485,13 +483,13 @@ export function SetupWizard({
                       (sourceLocked && source.kind !== 'managed')
                     }
                   >
-                    App-managed
+                    {t('setup.appManaged')}
                   </ToggleGroupItem>
                   <ToggleGroupItem
                     value="customVenv"
                     disabled={sourceLocked && source.kind !== 'customVenv'}
                   >
-                    Custom venv
+                    {t('setup.customVenv')}
                   </ToggleGroupItem>
                   <ToggleGroupItem
                     value="customInterpreter"
@@ -500,16 +498,13 @@ export function SetupWizard({
                       (sourceLocked && source.kind !== 'customInterpreter')
                     }
                   >
-                    Custom interpreter
+                    {t('setup.customInterpreter')}
                   </ToggleGroupItem>
                 </ToggleGroup>
                 <FieldDescription>
-                  Managed Python uses the selected profile’s pinned version. An
-                  empty custom folder becomes app-owned; an existing venv is
-                  adopted and never deleted. A custom interpreter creates a new
-                  app-owned venv under envs/.
+                  {t('setup.pythonSourceHint')}
                   {sourceLocked &&
-                    ' Changing torch retains the Python source kind and minor version. Select the original custom interpreter again, or a separate custom venv target, when applicable.'}
+                    t('setup.sourceLockedHint')}
                 </FieldDescription>
               </Field>
               {source.kind !== 'managed' && (
@@ -517,8 +512,8 @@ export function SetupWizard({
                   <Field data-invalid={!!report && !report.usable}>
                     <FieldLabel htmlFor="python-path">
                       {source.kind === 'customVenv'
-                        ? 'Venv folder'
-                        : 'Python executable'}
+                        ? t('setup.venvFolder')
+                        : t('setup.pythonExecutable')}
                     </FieldLabel>
                     <div className="flex gap-2">
                       <Input
@@ -536,7 +531,7 @@ export function SetupWizard({
                         disabled={picker.isPending}
                         onClick={() => picker.mutate('python')}
                       >
-                        Browse
+                        {t('common.browse')}
                       </Button>
                     </div>
                   </Field>
@@ -545,7 +540,7 @@ export function SetupWizard({
                     disabled={!source.path.trim() || validation.isPending}
                     onClick={() => validation.mutate(source)}
                   >
-                    {validation.isPending ? 'Validating…' : 'Validate Python'}
+                    {validation.isPending ? t('setup.validating') : t('setup.validatePython')}
                   </Button>
                   {validation.isError && (
                     <ErrorNotice error={validation.error} />
@@ -554,8 +549,10 @@ export function SetupWizard({
                     <>
                       <p className="break-all font-mono text-xs">
                         {report.resolvedPath} · Python{' '}
-                        {report.pythonVersion ?? 'not created yet'} ·{' '}
-                        {report.target}
+                        {report.pythonVersion ?? t('setup.notCreated')} ·{' '}
+                        {Object.hasOwn(VALIDATION_TARGETS, report.target)
+                          ? t(VALIDATION_TARGETS[report.target])
+                          : report.target}
                       </p>
                       <ul className="flex flex-col gap-2">
                         {report.checks.map((check) => (
@@ -566,7 +563,7 @@ export function SetupWizard({
                             <span>
                               {check.detail}
                               {!check.passed && check.blocks.length > 0
-                                ? ` (blocks: ${check.blocks.join(', ')})`
+                                ? t('setup.blocks', { blocks: check.blocks.join(', ') })
                                 : ''}
                             </span>
                           </li>
@@ -574,12 +571,9 @@ export function SetupWizard({
                       </ul>
                       {report.target === 'existing_venv' && (
                         <FieldSet>
-                          <FieldLegend>Adopted environment consent</FieldLegend>
+                          <FieldLegend>{t('setup.adoptConsent')}</FieldLegend>
                           <FieldDescription>
-                            Setup will change packages in this exact venv. The
-                            app cannot roll back these changes and will never
-                            delete this folder. Choose a separate target when
-                            re-running setup.
+                            {t('setup.adoptHint')}
                           </FieldDescription>
                           <FieldGroup>
                             <Field orientation="horizontal">
@@ -591,8 +585,7 @@ export function SetupWizard({
                                 }
                               />
                               <FieldLabel htmlFor="adopt-consent">
-                                I approve modifying the adopted venv at{' '}
-                                {report.resolvedPath}
+                                {t('setup.approveAdopted', { path: report.resolvedPath })}
                               </FieldLabel>
                             </Field>
                           </FieldGroup>
@@ -616,15 +609,13 @@ export function SetupWizard({
                 />
               )}
               <FieldSet>
-                <FieldLegend>Setup profile</FieldLegend>
+                <FieldLegend>{t('setup.setupProfile')}</FieldLegend>
                 <FieldDescription>
-                  Profiles pin Python, torch, torchvision and Triton, plus
-                  torchaudio when a compatible build exists. Disabled profiles include the backend’s
-                  eligibility reasons.
+                  {t('setup.profileHint')}
                 </FieldDescription>
                 <FieldGroup>
                   <RadioGroup
-                    aria-label="Setup profile"
+                    aria-label={t('setup.setupProfile')}
                     value={chosen?.id ?? ''}
                     onValueChange={setProfileId}
                   >
@@ -645,9 +636,9 @@ export function SetupWizard({
                               disabled={disabled}
                             />
                             {profile.label}
-                            {profile.recommended && <Badge>Recommended</Badge>}
+                            {profile.recommended && <Badge>{t('setup.recommended')}</Badge>}
                             {profile.status === 'experimental' && (
-                              <Badge variant="outline">Experimental</Badge>
+                              <Badge variant="outline">{t('setup.experimental')}</Badge>
                             )}
                           </FieldLabel>
                           <FieldDescription>
@@ -657,13 +648,12 @@ export function SetupWizard({
                             <br />
                             {profile.torch.torchaudio
                               ? `torchaudio ${profile.torch.torchaudio}`
-                              : 'No compatible torchaudio build is available; audio nodes that require it need another profile.'}
+                              : t('setup.noTorchaudio')}
                             <br />
-                            Estimated peak:{' '}
-                            {bytes(profile.estimatedInstallBytes)}{' '}
-                            {profile.estimateCalibrated
-                              ? '(calibrated)'
-                              : '(not calibrated)'}
+                            {t('setup.estimatedPeak', {
+                              size: bytes(profile.estimatedInstallBytes),
+                              calibration: t(profile.estimateCalibrated ? 'setup.calibrated' : 'setup.notCalibrated'),
+                            })}
                           </FieldDescription>
                           {reasons.length > 0 && (
                             <ul className="list-inside list-disc text-sm text-muted-foreground">
@@ -674,7 +664,7 @@ export function SetupWizard({
                           )}
                           <details>
                             <summary className="text-xs">
-                              Compatibility evidence
+                              {t('setup.compatibilityEvidence')}
                             </summary>
                             <ul className="break-all font-mono text-xs">
                               {profile.provenance.map((entry) => (
@@ -690,8 +680,7 @@ export function SetupWizard({
               </FieldSet>
               {!profiles.isPending && offers.length === 0 && (
                 <p>
-                  No profiles were returned. Refresh hardware detection to try
-                  again.
+                  {t('setup.noProfiles')}
                 </p>
               )}
             </>
@@ -701,7 +690,7 @@ export function SetupWizard({
               {mode === 'first_run' ? (
                 <>
                   <Field>
-                    <FieldLabel>ComfyUI source</FieldLabel>
+                    <FieldLabel>{t('setup.comfySource')}</FieldLabel>
                     <ToggleGroup
                       type="single"
                       variant="outline"
@@ -716,24 +705,24 @@ export function SetupWizard({
                       }}
                     >
                       <ToggleGroupItem value="latest">
-                        Latest release
+                        {t('setup.latestRelease')}
                       </ToggleGroupItem>
                       <ToggleGroupItem value="master">
-                        Latest commit (master)
+                        {t('setup.latestMaster')}
                       </ToggleGroupItem>
                       <ToggleGroupItem value="tag">
-                        Specific tag
+                        {t('setup.specificTag')}
                       </ToggleGroupItem>
                     </ToggleGroup>
                     <FieldDescription>
                       {comfySource === 'master'
-                        ? "Installs the newest commit on ComfyUI's master branch (development code, may be less stable than a release). The checkout tracks origin/master, so `git pull` and the app's Fast-forward update it."
-                        : 'The backend resolves the release tag and commit once per run. Tag browsing is not available; enter the exact tag below.'}
+                        ? t('setup.masterHint')
+                        : t('setup.tagHint')}
                     </FieldDescription>
                   </Field>
                   {comfySource === 'tag' && (
                     <Field>
-                      <FieldLabel htmlFor="comfy-tag">ComfyUI tag</FieldLabel>
+                      <FieldLabel htmlFor="comfy-tag">{t('setup.comfyTag')}</FieldLabel>
                       <Input
                         id="comfy-tag"
                         value={tag}
@@ -745,16 +734,15 @@ export function SetupWizard({
                 </>
               ) : (
                 <p>
-                  The existing ComfyUI checkout and recorded commit are
-                  retained. ComfyUI updates are available separately.
+                  {t('setup.keepCheckoutHint')}
                 </p>
               )}
               <FieldSet>
-                <FieldLegend>Optional components</FieldLegend>
+                <FieldLegend>{t('setup.optionalComponents')}</FieldLegend>
                 <FieldGroup>
                   {mode === 'repair' ? (
                     <p>
-                      Repair retains the recorded Manager and accelerator choices.
+                      {t('setup.repairComponents')}
                     </p>
                   ) : (
                     <>
@@ -767,19 +755,18 @@ export function SetupWizard({
                           }
                         />
                         <FieldLabel htmlFor="manager">
-                          Install ComfyUI-Manager
+                          {t('setup.installManager')}
                         </FieldLabel>
                       </Field>
                       <FieldDescription>
                         {mode === 'first_run'
-                          ? 'Installed from the latest commit of its default branch; covered by the confirmation on the review step.'
-                          : 'If selected, setup pauses for consent after resolving the exact Manager source and commit, before installing its dependencies.'}
+                          ? t('setup.managerFirstRunHint')
+                          : t('setup.managerConsentHint')}
                       </FieldDescription>
                       <FieldSet>
-                        <FieldLegend>Accelerators</FieldLegend>
+                        <FieldLegend>{t('setup.accelerators')}</FieldLegend>
                         <FieldDescription>
-                          Options belong to the selected profile. Read each
-                          option’s provenance before selecting it.
+                          {t('setup.acceleratorsHint')}
                         </FieldDescription>
                         <FieldGroup>
                           {chosen?.accelerators.map((option) => (
@@ -807,7 +794,7 @@ export function SetupWizard({
                             </Field>
                           ))}
                           {chosen?.accelerators.length === 0 && (
-                            <p>This profile offers no optional accelerators.</p>
+                            <p>{t('setup.noAccelerators')}</p>
                           )}
                         </FieldGroup>
                       </FieldSet>
@@ -820,23 +807,18 @@ export function SetupWizard({
                       onCheckedChange={(value) => setCleanCache(value === true)}
                     />
                     <FieldLabel htmlFor="clean-cache">
-                      Clean package cache after setup
+                      {t('setup.cleanCacheAfter')}
                     </FieldLabel>
                   </Field>
                 </FieldGroup>
               </FieldSet>
               {mode === 'first_run' && (
                 <FieldSet>
-                  <FieldLegend>Curated custom nodes</FieldLegend>
+                  <FieldLegend>{t('setup.curatedNodes')}</FieldLegend>
                   <FieldDescription>
-                    Each entry installs the latest commit of its repository’s
-                    default branch and is covered by the confirmation on the
-                    review step. For selected custom nodes, setup allows shipped
-                    Python cache files and top-level native programs or libraries,
-                    runs install.py if present, then installs the reviewed
-                    requirements.txt without asking again.
+                    {t('setup.curatedHint')}
                   </FieldDescription>
-                  {curated.isPending && <p role="status">Loading curated catalog…</p>}
+                  {curated.isPending && <p role="status">{t('setup.loadingCurated')}</p>}
                   {curated.isError && (
                     <ErrorNotice error={curated.error} retry={() => { void curated.refetch() }} />
                   )}
@@ -860,15 +842,15 @@ export function SetupWizard({
                           </FieldLabel>
                         </Field>
                         <FieldDescription className="break-all font-mono">
-                          {entry.repository} · latest commit of the default branch
+                          {t('setup.curatedRepository', { repository: entry.repository })}
                         </FieldDescription>
                         {entry.unavailable !== null && (
-                          <FieldDescription>Unavailable: {entry.unavailable}</FieldDescription>
+                          <FieldDescription>{t('setup.curatedUnavailable', { reason: entry.unavailable })}</FieldDescription>
                         )}
                       </Field>
                     ))}
                     {curated.isSuccess && curated.data.length === 0 && (
-                      <p>No curated custom nodes are available.</p>
+                      <p>{t('setup.noCurated')}</p>
                     )}
                   </FieldGroup>
                 </FieldSet>
@@ -879,73 +861,71 @@ export function SetupWizard({
             <>
               <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
                 <div>
-                  <dt>Install root</dt>
+                  <dt>{t('setup.installRoot')}</dt>
                   <dd className="break-all font-mono">{status.installRoot}</dd>
                 </div>
                 <div>
-                  <dt>Mode</dt>
-                  <dd>{modeLabels[mode]}</dd>
+                  <dt>{t('setup.mode')}</dt>
+                  <dd>{t(modeLabels[mode])}</dd>
                 </div>
                 <div>
                   <dt>Python</dt>
                   <dd className="break-all font-mono">
                     {source.kind === 'managed'
-                      ? `App-managed ${chosen?.python ?? ''}`
+                      ? t('setup.managedVersion', { version: chosen?.python ?? '' })
                       : source.path}
                   </dd>
                 </div>
                 <div>
-                  <dt>Profile</dt>
-                  <dd>{chosen?.label ?? 'No eligible profile'}</dd>
+                  <dt>{t('setup.profile')}</dt>
+                  <dd>{chosen?.label ?? t('setup.noEligibleProfile')}</dd>
                 </div>
                 <div>
-                  <dt>ComfyUI</dt>
+                  <dt>{t('nav.comfyui')}</dt>
                   <dd>
                     {mode === 'first_run'
                       ? comfySource === 'tag'
                         ? tag
                         : comfySource === 'master'
-                          ? 'Latest commit on master'
-                          : 'Latest published release'
-                      : 'Keep current checkout'}
+                          ? t('setup.latestOnMaster')
+                          : t('setup.latestPublished')
+                      : t('setup.keepCheckout')}
                   </dd>
                 </div>
                 <div>
-                  <dt>Manager / cache clean</dt>
+                  <dt>{t('setup.managerCache')}</dt>
                   <dd>
-                    {mode === 'repair' ? 'Recorded component choices retained' : installManager
+                    {mode === 'repair' ? t('setup.recordedComponents') : installManager
                       ? mode === 'first_run'
-                        ? 'Manager selected'
-                        : 'Manager selected; consent still required'
-                      : 'Manager off'}{' '}
-                    / {cleanCache ? 'Clean cache' : 'Keep cache'}
+                        ? t('setup.managerSelected')
+                        : t('setup.managerSelectedConsent')
+                      : t('setup.managerOff')}{' '}
+                    / {cleanCache ? t('setup.cleanCache') : t('setup.keepCache')}
                   </dd>
                 </div>
                 <div>
-                  <dt>Accelerators</dt>
-                  <dd>{mode === 'repair' ? 'Recorded choices retained' : chosen?.accelerators
+                  <dt>{t('setup.accelerators')}</dt>
+                  <dd>{mode === 'repair' ? t('setup.recordedChoices') : chosen?.accelerators
                     .filter((option) => accelerators.includes(option.id))
-                    .map((option) => option.name).join(', ') || 'None selected'}</dd>
+                    .map((option) => option.name).join(', ') || t('common.noneSelected')}</dd>
                 </div>
                 {mode === 'first_run' && <div>
-                  <dt>Curated custom nodes</dt>
+                  <dt>{t('setup.curatedNodes')}</dt>
                   <dd>{curated.data?.filter((entry) => curatedSelection?.includes(entry.id))
-                    .map((entry) => entry.name).join(', ') || 'None selected'}</dd>
+                    .map((entry) => entry.name).join(', ') || t('common.noneSelected')}</dd>
                 </div>}
               </dl>
               <p>
-                The backend rechecks free space and compatibility immediately
-                before work. Package operations are serialized and require
-                ComfyUI to be stopped.
+                {t('setup.reviewHint')}
               </p>
               {thirdPartyConsent && (
                 <Alert>
                   <Info />
-                  <AlertTitle>Third-party code</AlertTitle>
+                  <AlertTitle>{t('setup.thirdParty')}</AlertTitle>
                   <AlertDescription>
-                    <p>{THIRD_PARTY_DISCLOSURE}</p>
+                    <p>{t(THIRD_PARTY_DISCLOSURE)}</p>
                     <ul
-                      aria-label="Third-party sources"
+                      aria-label={t('setup.thirdPartySources')}
                       className="break-all font-mono text-xs"
                     >
                       {thirdPartySources.map((source) => (
@@ -957,10 +937,9 @@ export function SetupWizard({
               )}
               {!ready && (
                 <Alert variant="destructive">
-                  <AlertTitle>Setup is not ready</AlertTitle>
+                  <AlertTitle>{t('setup.notReady')}</AlertTitle>
                   <AlertDescription>
-                    Review the Python validation, profile eligibility and tag
-                    selection before starting.
+                    {t('setup.notReadyHint')}
                   </AlertDescription>
                 </Alert>
               )}
@@ -975,12 +954,12 @@ export function SetupWizard({
           <div className="flex gap-2">
             {stage > (mode === 'first_run' ? 0 : 1) && (
               <Button variant="outline" onClick={() => setStage(stage - 1)}>
-                Back
+                {t('common.back')}
               </Button>
             )}
             {status.activeEnv && (
               <Button variant="ghost" onClick={onClose}>
-                Cancel
+                {t('common.cancel')}
               </Button>
             )}
           </div>
@@ -988,6 +967,7 @@ export function SetupWizard({
             <Button
               disabled={
                 !root.trim() ||
+                preferencesPending ||
                 rootSelection.isPending ||
                 rootSelection.isSuccess
               }
@@ -997,10 +977,10 @@ export function SetupWizard({
               }}
             >
               {rootSelection.isPending
-                ? 'Saving root…'
+                ? t('setup.savingRoot')
                 : root.trim() !== status.installRoot
-                  ? 'Save install root'
-                  : 'Continue'}
+                  ? t('setup.saveRoot')
+                  : t('common.continue')}
             </Button>
           ) : stage < 5 ? (
             <Button
@@ -1012,7 +992,7 @@ export function SetupWizard({
               }
               onClick={() => setStage(stage + 1)}
             >
-              Continue
+              {t('common.continue')}
             </Button>
           ) : (
             <Button
@@ -1048,8 +1028,8 @@ export function SetupWizard({
               }}
             >
               {controller.action.isPending
-                ? 'Registering setup…'
-                : 'Start setup'}
+                ? t('setup.registering')
+                : t('setup.start')}
             </Button>
           )}
         </CardFooter>

@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
+import { useTranslation } from '@/shared/i18n'
 import { gateway, type CloseChoiceDto } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
 import { Button } from '@/shared/ui/button'
@@ -17,6 +18,7 @@ import { useRuntime } from './use-runtime'
 
 /** Asked when the manager window is closed while ComfyUI runs and the setting is "ask". */
 export function CloseRequestDialog() {
+  const { t } = useTranslation()
   const { closeRequest } = useRuntime()
   const decide = useMutation({
     mutationFn: (choice: CloseChoiceDto) =>
@@ -33,12 +35,9 @@ export function CloseRequestDialog() {
     >
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>ComfyUI is still active</DialogTitle>
+          <DialogTitle>{t('runtime.close.title')}</DialogTitle>
           <DialogDescription>
-            Stop ComfyUI and exit, or keep it running in the background. In the
-            background the app stays alive without a window; opening the app
-            again restores these controls and the live log. The default can be
-            changed in Settings.
+            {t('runtime.close.hint')}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -47,20 +46,20 @@ export function CloseRequestDialog() {
             disabled={decide.isPending}
             onClick={() => decide.mutate('cancel')}
           >
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             variant="outline"
             disabled={decide.isPending}
             onClick={() => decide.mutate('keep_running')}
           >
-            Keep running in background
+            {t('runtime.close.background')}
           </Button>
           <Button
             disabled={decide.isPending}
             onClick={() => decide.mutate('stop_and_exit')}
           >
-            Stop ComfyUI and exit
+            {t('runtime.close.exit')}
           </Button>
         </DialogFooter>
       </DialogContent>

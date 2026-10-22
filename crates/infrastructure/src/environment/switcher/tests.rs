@@ -2,7 +2,7 @@ use application::{
     environment::RootSource,
     settings::{SettingsRepoError, SettingsRepository},
 };
-use domain::settings::{CloseBehavior, HfEngine, Settings, Theme};
+use domain::settings::{CloseBehavior, HfEngine, Language, Settings, Theme};
 
 use super::*;
 use crate::shared::paths::read_bootstrap;
@@ -26,6 +26,7 @@ fn settings() -> Settings {
         HfEngine::Native,
         CloseBehavior::StopComfy,
         Theme::Dark,
+        Language::Th,
         12,
         Some(2048),
     )

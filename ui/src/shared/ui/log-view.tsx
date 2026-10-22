@@ -1,3 +1,4 @@
+import { useTranslation } from '@/shared/i18n'
 import { useEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -40,6 +41,7 @@ function newTerminal() {
 }
 
 export function LogView({ lines }: { lines: string[] }) {
+  const { t } = useTranslation()
   const host = useRef<HTMLDivElement>(null)
   const terminal = useRef<Terminal | null>(null)
   useEffect(() => {
@@ -71,7 +73,7 @@ export function LogView({ lines }: { lines: string[] }) {
     <div className="setup-log h-72 min-w-0 overflow-hidden rounded-lg border border-secondary p-3">
       <div
         ref={host}
-        aria-label="Sanitized setup log"
+        aria-label={t('setup.sanitizedLog')}
         className="h-full min-w-0"
       />
     </div>

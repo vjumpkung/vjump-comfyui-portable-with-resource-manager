@@ -1,6 +1,7 @@
 import { Ban, Check, CircleX, Clock, LoaderCircle, Square, Trash2, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import {
   gateway,
   IpcClientError,
@@ -8,7 +9,6 @@ import {
   type InstalledNodeDto,
   type PlanReviewDto,
 } from '@/shared/ipc/gateway'
-import { errorMessage } from '@/shared/lib/display'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import {
@@ -21,13 +21,16 @@ import {
 } from '@/shared/ui/dialog'
 
 import {
-  checkGitStatus,
+  gitRefusalKeys,
+  nodeText,
+  type NodeText,
+  type NodeTextKey,
   chunk,
   failureKind,
   MAX_BATCH,
   NEEDS_TARGET_SKIP,
   newRequestId,
-  updateUnavailableReason,
+  updateUnavailableKey,
 } from './model'
 import { ReviewDialog } from './review-dialog'
 import { Chip } from './status-chips'
@@ -40,11 +43,11 @@ type Entry =
   | { state: 'preparing' }
   | { state: 'prepared' }
   | { state: 'applying' }
-  | { state: 'skipped'; message: string }
-  | { state: 'prepare_failed'; message: string }
+  | { state: 'skipped'; reasons: NodeText[] }
+  | { state: 'prepare_failed'; message: string | NodeText }
   | { state: 'updated'; cleanupPending: boolean }
   | { state: 'up_to_date' }
-  | { state: 'failed'; message: string }
+  | { state: 'failed'; message: string | NodeText; uncertain?: boolean }
   | { state: 'cancelled' }
   | { state: 'discarded' }
   | { state: 'not_run' }
@@ -52,19 +55,19 @@ type Entry =
 type Stage = 'intro' | 'preparing' | 'review' | 'result'
 
 const MUTED = 'bg-muted text-muted-foreground border-border'
-const CHIPS: Record<Entry['state'], { label: string; icon: LucideIcon; className: string; spin?: boolean }> = {
-  pending: { label: 'Waiting', icon: Clock, className: MUTED },
-  preparing: { label: 'Preparing', icon: LoaderCircle, className: 'border-brand-cyan bg-transparent text-foreground', spin: true },
-  prepared: { label: 'Prepared', icon: Clock, className: MUTED },
-  applying: { label: 'Applying', icon: LoaderCircle, className: 'border-brand-cyan bg-transparent text-foreground', spin: true },
-  skipped: { label: 'Skipped', icon: Ban, className: MUTED },
-  prepare_failed: { label: 'Preparation failed', icon: CircleX, className: 'bg-destructive text-white' },
-  updated: { label: 'Updated', icon: Check, className: 'bg-brand-yellow' },
-  up_to_date: { label: 'Up to date', icon: Check, className: MUTED },
-  failed: { label: 'Failed', icon: CircleX, className: 'bg-destructive text-white' },
-  cancelled: { label: 'Cancelled', icon: Square, className: 'bg-brand-pink' },
-  discarded: { label: 'Discarded', icon: Trash2, className: MUTED },
-  not_run: { label: 'Not run', icon: Clock, className: MUTED },
+const CHIPS: Record<Entry['state'], { labelKey: NodeTextKey; icon: LucideIcon; className: string; spin?: boolean }> = {
+  pending: { labelKey: 'customNodes.batch.status.waiting', icon: Clock, className: MUTED },
+  preparing: { labelKey: 'customNodes.batch.status.preparing', icon: LoaderCircle, className: 'border-brand-cyan bg-transparent text-foreground', spin: true },
+  prepared: { labelKey: 'common.prepared', icon: Clock, className: MUTED },
+  applying: { labelKey: 'customNodes.batch.status.applying', icon: LoaderCircle, className: 'border-brand-cyan bg-transparent text-foreground', spin: true },
+  skipped: { labelKey: 'common.skipped', icon: Ban, className: MUTED },
+  prepare_failed: { labelKey: 'customNodes.batch.status.prepareFailed', icon: CircleX, className: 'bg-destructive text-white' },
+  updated: { labelKey: 'customNodes.batch.status.updated', icon: Check, className: 'bg-brand-yellow' },
+  up_to_date: { labelKey: 'customNodes.batch.status.upToDate', icon: Check, className: MUTED },
+  failed: { labelKey: 'common.failed', icon: CircleX, className: 'bg-destructive text-white' },
+  cancelled: { labelKey: 'common.cancelled', icon: Square, className: 'bg-brand-pink' },
+  discarded: { labelKey: 'customNodes.batch.status.discarded', icon: Trash2, className: MUTED },
+  not_run: { labelKey: 'customNodes.batch.status.notRun', icon: Clock, className: MUTED },
 }
 
 /** Failures that would refuse every remaining node the same way. */
@@ -87,24 +90,26 @@ const BEFORE_RUN = new Set([
 
 const RETRYABLE: readonly Entry['state'][] = ['prepare_failed', 'failed', 'not_run', 'cancelled', 'discarded']
 
-function ipc(error: unknown): { code: string; message: string } {
+function ipc(error: unknown): { code: string; message: string | NodeText } {
   return error instanceof IpcClientError
     ? { code: error.code, message: error.message }
-    : { code: 'other', message: errorMessage(error) }
+    : { code: 'other', message: { key: 'common.operationError' } }
 }
 
 function describe(entry: Entry): string | null {
   switch (entry.state) {
-    case 'skipped':
-    case 'prepare_failed':
-    case 'failed': return entry.message
+    case 'skipped': return entry.reasons.map(nodeText).join(' ')
+    case 'prepare_failed': return nodeText(entry.message)
+    case 'failed': return entry.uncertain
+      ? translate('customNodes.batch.uncertain', { error: nodeText(entry.message) })
+      : nodeText(entry.message)
     case 'updated': return entry.cleanupPending
-      ? 'A retained backup could not be moved to the Recycle Bin or Trash yet; cleanup is retried on the next rescan.'
+      ? translate('customNodes.batch.cleanupHint')
       : null
-    case 'up_to_date': return 'Already up to date. Nothing was changed.'
-    case 'cancelled': return 'Cancellation was requested. Check health; Repair may still be needed.'
-    case 'discarded': return 'The reviewed plan was discarded without applying it.'
-    case 'not_run': return 'Not started. Prepare it again to review a fresh plan.'
+    case 'up_to_date': return translate('customNodes.batch.upToDateHint')
+    case 'cancelled': return translate('customNodes.batch.cancelledHint')
+    case 'discarded': return translate('customNodes.batch.discardedHint')
+    case 'not_run': return translate('customNodes.batch.notRunHint')
     default: return null
   }
 }
@@ -121,13 +126,14 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
   onSettled: (updated: number) => void
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   const [stage, setStage] = useState<Stage>('intro')
   const [entries, setEntries] = useState<Record<string, Entry>>({})
   const [plans, setPlans] = useState<PlanReviewDto[]>([])
   const [applying, setApplying] = useState(false)
-  const [progress, setProgress] = useState('')
-  const [stopReason, setStopReason] = useState<string | null>(null)
-  const [refusal, setRefusal] = useState<{ code: string; message: string } | null>(null)
+  const [progress, setProgress] = useState<NodeText | null>(null)
+  const [stopReason, setStopReason] = useState<string | NodeText | null>(null)
+  const [refusal, setRefusal] = useState<ReturnType<typeof ipc> | null>(null)
   const [stoppingComfy, setStoppingComfy] = useState(false)
   const alive = useRef(true)
   const stopRequested = useRef(false)
@@ -165,17 +171,18 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
         markNotRun(group.slice(index))
         break
       }
-      setProgress(`Preparing ${index + 1} of ${group.length}: ${node.name}`)
+      setProgress({ key: 'customNodes.batch.preparingProgress', values: { current: index + 1, total: group.length, name: node.name } })
       patch(node.id, { state: 'preparing' })
       if (node.source.kind === 'git') {
         try {
-          const check = checkGitStatus(await gateway.nodeGitStatus(node.id))
-          if (check.refusals.length > 0) {
-            patch(node.id, { state: 'skipped', message: check.refusals.join(' ') })
+          const status = await gateway.nodeGitStatus(node.id)
+          const refusals = gitRefusalKeys(status)
+          if (refusals.length > 0) {
+            patch(node.id, { state: 'skipped', reasons: refusals.map((key) => ({ key })) })
             continue
           }
-          if (check.needsReference) {
-            patch(node.id, { state: 'skipped', message: NEEDS_TARGET_SKIP })
+          if (status.branch === null || !status.hasUpstream) {
+            patch(node.id, { state: 'skipped', reasons: [{ key: NEEDS_TARGET_SKIP }] })
             continue
           }
         } catch (error) {
@@ -238,9 +245,9 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
     const eligible: InstalledNodeDto[] = []
     const initial: Record<string, Entry> = {}
     for (const node of targets) {
-      const reason = updateUnavailableReason(node, false)
+      const reason = updateUnavailableKey(node, false)
       if (reason !== null) {
-        initial[node.id] = { state: 'skipped', message: reason }
+        initial[node.id] = { state: 'skipped', reasons: [{ key: reason }] }
       } else {
         initial[node.id] = { state: 'pending' }
         eligible.push(node)
@@ -266,7 +273,7 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
   function cancelPreparation() {
     stopRequested.current = true
     userCancelled.current = true
-    setProgress('Cancellation requested. Waiting for the current step to stop…')
+    setProgress({ key: 'customNodes.batch.cancelling' })
     if (requestId.current !== null) {
       void gateway.nodeCancel(requestId.current).catch(() => undefined)
     }
@@ -300,7 +307,7 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
           patch(id, { state: 'cancelled' })
           stopRequested.current = true
         } else {
-          patch(id, { state: 'failed', message: item.error?.message ?? 'The update did not complete.' })
+          patch(id, { state: 'failed', message: item.error?.message ?? { key: 'customNodes.batch.incomplete' } })
         }
       }
       for (const plan of plans) {
@@ -309,7 +316,7 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
       }
       if (batch.stoppedForRepair) {
         stopRequested.current = true
-        setStopReason('The environment now needs repair, so no further groups were started.')
+        setStopReason({ key: 'customNodes.batch.repairStop' })
       }
       setPlans([])
       setApplying(false)
@@ -328,7 +335,7 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
       // Anything else leaves the outcome uncertain: never replay, prepare again after refreshing.
       for (const plan of plans) {
         const id = planNodes.current.get(plan.id)
-        if (id) patch(id, { state: 'failed', message: `${failure.message} The outcome is uncertain; refresh before preparing again.` })
+        if (id) patch(id, { state: 'failed', message: failure.message, uncertain: true })
       }
       stopRequested.current = true
       setStopReason(failure.message)
@@ -366,7 +373,7 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
     }
   }
 
-  const eligibleCount = nodes.filter((node) => updateUnavailableReason(node, false) === null).length
+  const eligibleCount = nodes.filter((node) => updateUnavailableKey(node, false) === null).length
   const retryTargets = nodes.filter((node) => {
     const state = entries[node.id]?.state
     return state !== undefined && RETRYABLE.includes(state)
@@ -375,15 +382,15 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
   if (stage === 'review') {
     const notice = refusal && (
       <Alert variant="destructive">
-        <AlertTitle>The batch was not applied</AlertTitle>
+        <AlertTitle>{t('customNodes.batch.refusedTitle')}</AlertTitle>
         <AlertDescription>
-          <p>{refusal.message}</p>
+          <p>{nodeText(refusal.message)}</p>
           {failureKind(refusal.code) === 'comfyui_running' && (
             <Button size="sm" disabled={stoppingComfy} onClick={() => void stopComfy()}>
-              {stoppingComfy ? 'Stopping ComfyUI…' : 'Stop ComfyUI'}
+              {stoppingComfy ? t('customNodes.stoppingComfy') : t('customNodes.stopComfy')}
             </Button>
           )}
-          <p>Nothing ran. Apply the reviewed plans again when you are ready.</p>
+          <p>{t('customNodes.batch.retryHint')}</p>
         </AlertDescription>
       </Alert>
     )
@@ -408,21 +415,21 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
     <Dialog open onOpenChange={(open) => { if (!open && stage !== 'preparing') onClose() }}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl" showCloseButton={stage !== 'preparing'}>
         <DialogHeader>
-          <DialogTitle>{stage === 'result' ? 'Update results' : 'Update nodes'}</DialogTitle>
+          <DialogTitle>{stage === 'result' ? t('customNodes.batch.results') : t('customNodes.batch.title')}</DialogTitle>
           <DialogDescription>
-            {stage === 'intro' && `${eligibleCount} of ${nodes.length} selected nodes can be updated. Each plan is prepared one at a time and reviewed before anything changes.${eligibleCount > MAX_BATCH ? ` They run as reviewed groups of at most ${MAX_BATCH}.` : ''}`}
-            {stage === 'preparing' && progress}
-            {stage === 'result' && 'Each result below is final for this run. Nothing is replayed automatically.'}
+            {stage === 'intro' && t(eligibleCount > MAX_BATCH ? 'customNodes.batch.introGroups' : 'customNodes.batch.intro', { count: eligibleCount, total: nodes.length, max: MAX_BATCH })}
+            {stage === 'preparing' && progress && nodeText(progress)}
+            {stage === 'result' && t('customNodes.batch.resultHint')}
           </DialogDescription>
         </DialogHeader>
         {stage === 'result' && stopReason && (
           <Alert>
-            <AlertTitle>The run stopped early</AlertTitle>
-            <AlertDescription>{stopReason}</AlertDescription>
+            <AlertTitle>{t('customNodes.batch.earlyStop')}</AlertTitle>
+            <AlertDescription>{nodeText(stopReason)}</AlertDescription>
           </Alert>
         )}
         {stage !== 'intro' && (
-          <ul aria-label="Update results" className="flex max-h-80 flex-col gap-2 overflow-y-auto">
+          <ul aria-label={t('customNodes.batch.results')} className="flex max-h-80 flex-col gap-2 overflow-y-auto">
             {nodes.map((node) => {
               const entry = entries[node.id]
               if (!entry) return null
@@ -432,7 +439,7 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
                 <li key={node.id} className="flex flex-col gap-1 rounded-lg border p-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="min-w-0 font-medium break-words [overflow-wrap:anywhere]">{node.name}</span>
-                    <Chip icon={chip.icon} className={chip.className} spin={chip.spin}>{chip.label}</Chip>
+                    <Chip icon={chip.icon} className={chip.className} spin={chip.spin}>{t(chip.labelKey)}</Chip>
                   </div>
                   {note && <p className="text-xs break-words text-muted-foreground [overflow-wrap:anywhere]">{note}</p>}
                 </li>
@@ -442,26 +449,25 @@ export function UpdateAllDialog({ nodes, onStopComfy, onSettled, onClose }: {
         )}
         {stage === 'result' && (
           <p className="font-mono text-xs text-muted-foreground">
-            {counts.updated ?? 0} updated · {counts.up_to_date ?? 0} up to date · {counts.skipped ?? 0} skipped ·{' '}
-            {(counts.prepare_failed ?? 0) + (counts.failed ?? 0)} failed · {counts.not_run ?? 0} not run
+            {t('customNodes.batch.summary', { updated: counts.updated ?? 0, current: counts.up_to_date ?? 0, skipped: counts.skipped ?? 0, failed: (counts.prepare_failed ?? 0) + (counts.failed ?? 0), notRun: counts.not_run ?? 0 })}
           </p>
         )}
         <DialogFooter>
           {stage === 'intro' && <>
-            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button variant="outline" onClick={onClose}>{t('common.cancel')}</Button>
             <Button disabled={eligibleCount === 0} onClick={() => void start(nodes)}>
-              Prepare {eligibleCount} {eligibleCount === 1 ? 'update' : 'updates'}
+              {t('customNodes.batch.prepareCount', { count: eligibleCount })}
             </Button>
           </>}
           {stage === 'preparing' &&
-            <Button variant="outline" onClick={cancelPreparation}>Cancel preparation</Button>}
+            <Button variant="outline" onClick={cancelPreparation}>{t('customNodes.cancelPreparation')}</Button>}
           {stage === 'result' && <>
             {retryTargets.length > 0 && (
               <Button variant="outline" onClick={() => void start(retryTargets)}>
-                Prepare failed and unrun nodes again ({retryTargets.length})
+                {t('customNodes.batch.prepareAgain', { count: retryTargets.length })}
               </Button>
             )}
-            <Button onClick={onClose}>Close</Button>
+            <Button onClick={onClose}>{t('common.close')}</Button>
           </>}
         </DialogFooter>
       </DialogContent>

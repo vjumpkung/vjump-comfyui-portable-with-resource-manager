@@ -137,6 +137,9 @@
   }
 }
 
+/* Keep Thai vowel and tone marks legible in small chips. */
+html:lang(th) .text-\[9px\] { font-size: 11px; letter-spacing: 0.025em; }
+
 .setup-log {
   background: #2a313a;
 }

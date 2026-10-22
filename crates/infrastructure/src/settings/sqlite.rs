@@ -44,6 +44,9 @@ fn decode(values: BTreeMap<String, String>) -> Result<Option<Settings>, Settings
     let theme = get("theme")?
         .parse()
         .map_err(|_| invalid("invalid theme"))?;
+    let language = get("language")?
+        .parse()
+        .map_err(|_| invalid("invalid language"))?;
     let ttl = get("registry_cache_ttl")?
         .parse()
         .map_err(|_| invalid("invalid registry cache TTL"))?;
@@ -55,7 +58,7 @@ fn decode(values: BTreeMap<String, String>) -> Result<Option<Settings>, Settings
                 .map_err(|_| invalid("invalid bandwidth cap"))?,
         ),
     };
-    Settings::new(concurrency, engine, close, theme, ttl, cap)
+    Settings::new(concurrency, engine, close, theme, language, ttl, cap)
         .map(Some)
         .map_err(|_| invalid("settings violate domain validation"))
 }
@@ -96,6 +99,7 @@ impl SettingsRepository for SqliteSettingsRepository {
                 ("hf_engine", settings.hf_engine.as_str().into()),
                 ("close_behavior", settings.close_behavior.as_str().into()),
                 ("theme", settings.theme.as_str().into()),
+                ("language", settings.language.as_str().into()),
                 ("registry_cache_ttl", settings.registry_cache_ttl.get().to_string()),
                 ("bandwidth_cap_kib_s", settings.bandwidth_cap_kib_s.map(|value| value.get().to_string()).unwrap_or_else(|| "unlimited".into())),
             ];
@@ -114,7 +118,7 @@ impl SettingsRepository for SqliteSettingsRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::settings::{CloseBehavior, HfEngine, Theme};
+    use domain::settings::{CloseBehavior, HfEngine, Language, Theme};
 
     #[tokio::test]
     async fn fresh_migration_sets_schema_and_connection_pragmas() {
@@ -160,6 +164,7 @@ mod tests {
             HfEngine::Native,
             CloseBehavior::KeepRunningHeadless,
             Theme::Dark,
+            Language::Th,
             u32::MAX,
             Some(1024),
         )
@@ -182,6 +187,7 @@ mod tests {
             ("hf_engine", "private-invalid-value"),
             ("close_behavior", "private-invalid-value"),
             ("theme", "private-invalid-value"),
+            ("language", "private-invalid-value"),
             ("download_concurrency", "4294967296"),
         ] {
             repository.save(&Settings::default()).await.unwrap();
@@ -197,15 +203,15 @@ mod tests {
             assert!(matches!(error, SettingsRepoError::InvalidPersisted(_)));
             assert!(!error.to_string().contains(value));
         }
-        db.connection
-            .lock()
-            .unwrap()
-            .execute("DELETE FROM settings WHERE key = 'theme'", [])
-            .unwrap();
-        assert!(matches!(
-            repository.load().await,
-            Err(SettingsRepoError::InvalidPersisted(_))
-        ));
+        for key in ["theme", "language"] {
+            repository.save(&Settings::default()).await.unwrap();
+            db.connection
+                .lock()
+                .unwrap()
+                .execute("DELETE FROM settings WHERE key = ?1", [key])
+                .unwrap();
+            assert_eq!(repository.load().await, Err(invalid("incomplete settings")));
+        }
     }
 
     #[tokio::test]
@@ -227,6 +233,7 @@ mod tests {
             HfEngine::Native,
             CloseBehavior::StopComfy,
             Theme::Dark,
+            Language::Th,
             99,
             Some(100),
         )

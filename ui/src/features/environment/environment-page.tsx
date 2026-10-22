@@ -2,6 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Info, RefreshCw } from 'lucide-react'
 
+import { useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type SetupModeDto,
@@ -47,28 +48,40 @@ import {
 } from '@/shared/ui/table'
 import { PackageChanges } from './package-changes'
 
-const modes: { mode: SetupModeDto; title: string; description: string }[] = [
+const modes = [
   {
     mode: 'repair',
-    title: 'Repair',
-    description: 'Verify first; build a replacement if needed.',
+    title: 'common.repair',
+    description: 'environment.mode.repairHint',
   },
   {
     mode: 'change_torch',
-    title: 'Change torch / CUDA',
-    description: 'Create a new venv using the same Python minor.',
+    title: 'environment.mode.torch',
+    description: 'environment.mode.torchHint',
   },
   {
     mode: 'change_python',
-    title: 'Change Python',
-    description: 'Choose a different Python minor in a new venv.',
+    title: 'environment.mode.python',
+    description: 'environment.mode.pythonHint',
   },
   {
     mode: 'switch_venv',
-    title: 'Switch to custom venv',
-    description: 'Validate a separate existing venv or empty folder.',
+    title: 'environment.mode.venv',
+    description: 'environment.mode.venvHint',
   },
-]
+] as const satisfies readonly { mode: SetupModeDto; title: keyof typeof import('@/shared/i18n/translations.json').en; description: keyof typeof import('@/shared/i18n/translations.json').en }[]
+
+const SOURCE_KEYS = {
+  managed: 'environment.source.managed',
+  custom_venv: 'environment.source.customVenv',
+  custom_interpreter: 'environment.source.customInterpreter',
+} as const
+
+const INSTALL_STATUS_KEYS = {
+  installed: 'status.installed',
+  failed: 'status.failed',
+  skipped: 'status.skipped',
+} as const
 
 export function EnvironmentPage({
   status,
@@ -79,6 +92,7 @@ export function EnvironmentPage({
   onSetup: (mode: SetupModeDto) => void
   onResume: () => void
 }) {
+  const { t } = useTranslation()
   const info = useQuery({
     queryKey: [...environmentKeys.info, status.activeEnv?.id],
     queryFn: gateway.envInfo,
@@ -121,35 +135,32 @@ export function EnvironmentPage({
     <div className="flex flex-col gap-6">
       <header>
         <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-          Environment
+          {t('environment.title')}
         </h1>
         <p className="text-sm text-muted-foreground">
-          Selected Python environment, protected packages and re-setup.
+          {t('environment.description')}
         </p>
       </header>
       {needsRepair && (
         <Alert variant="destructive">
           <AlertTitle>
-            RepairRequired — selected environment is not runnable
+            {t('environment.repair.title')}
           </AlertTitle>
           <AlertDescription>
-            A dependency change or verification failure left this environment
-            selected but unverified. Package rollback is unavailable. Run Repair
-            before using ComfyUI.
+            {t('environment.repair.hint')}
             <Button onClick={() => onSetup('repair')} disabled={busy}>
-              Repair environment
+              {t('environment.repair.action')}
             </Button>
           </AlertDescription>
         </Alert>
       )}
       {status.run && ['failed', 'interrupted'].includes(status.run.status) && (
         <Alert>
-          <AlertTitle>Setup needs attention</AlertTitle>
+          <AlertTitle>{t('environment.setupAttention')}</AlertTitle>
           <AlertDescription>
-            Run {status.run.id} stopped before completion. The selected
-            environment has not been replaced.
+            {t('environment.runStopped', { id: status.run.id })}
             <Button variant="outline" onClick={onResume}>
-              Review setup failure
+              {t('environment.reviewFailure')}
             </Button>
           </AlertDescription>
         </Alert>
@@ -167,7 +178,7 @@ export function EnvironmentPage({
         <Card>
           <CardHeader>
             <CardTitle>
-              Selected environment{' '}
+              {t('environment.selected')}{' '}
               <StatusBadge
                 status={needsRepair ? 'repair_required' : env.state}
               />
@@ -175,9 +186,9 @@ export function EnvironmentPage({
             <CardDescription>
               {env.id} ·{' '}
               {env.ownership === 'app_owned'
-                ? 'App-owned'
-                : 'Adopted (never deleted)'}{' '}
-              · {label(env.source)}
+                ? t('environment.appOwned')
+                : t('environment.adopted')}{' '}
+              · {Object.hasOwn(SOURCE_KEYS, env.source) ? t(SOURCE_KEYS[env.source]) : label(env.source)}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -187,52 +198,51 @@ export function EnvironmentPage({
                 <dd className="font-mono">{env.pythonVersion}</dd>
               </div>
               <div>
-                <dt>Environment path</dt>
+                <dt>{t('environment.path')}</dt>
                 <dd className="break-all font-mono">{env.path}</dd>
               </div>
               <div>
-                <dt>Profile</dt>
+                <dt>{t('environment.profile')}</dt>
                 <dd>
-                  {info.data?.profileLabel ?? env.profileId} · revision{' '}
-                  {env.profileRevision}
+                  {t('environment.profileRevision', { profile: info.data?.profileLabel ?? env.profileId, revision: env.profileRevision })}
                 </dd>
               </div>
               <div>
                 <dt>Torch / CUDA</dt>
                 <dd className="font-mono">
-                  {info.data?.torchVersion ?? 'Unknown'} /{' '}
-                  {info.data?.cudaVariant ?? 'Unknown'}
+                  {info.data?.torchVersion ?? t('common.unknownValue')} /{' '}
+                  {info.data?.cudaVariant ?? t('common.unknownValue')}
                 </dd>
               </div>
               <div>
                 <dt>Triton</dt>
                 <dd className="font-mono">
-                  {info.data?.tritonVersion ?? 'Unknown'}
+                  {info.data?.tritonVersion ?? t('common.unknownValue')}
                 </dd>
               </div>
               <div>
-                <dt>Accelerators reported</dt>
+                <dt>{t('environment.acceleratorsReported')}</dt>
                 <dd>
                   {info.data
-                    ? info.data.accelerators.join(', ') || 'None reported'
-                    : 'Unknown'}
+                    ? info.data.accelerators.join(', ') || t('environment.noneReported')
+                    : t('common.unknownValue')}
                 </dd>
               </div>
               <div>
-                <dt>ComfyUI reference</dt>
+                <dt>{t('environment.comfyReference')}</dt>
                 <dd className="break-all font-mono">
-                  {info.data?.comfyuiReference ?? 'Unknown'}
+                  {info.data?.comfyuiReference ?? t('common.unknownValue')}
                 </dd>
               </div>
               <div>
-                <dt>ComfyUI commit</dt>
+                <dt>{t('environment.comfyCommit')}</dt>
                 <dd className="break-all font-mono">
-                  {info.data?.comfyuiCommit ?? 'Unknown'}
+                  {info.data?.comfyuiCommit ?? t('common.unknownValue')}
                 </dd>
               </div>
             </dl>
             <details>
-              <summary>Protected pins and verification report</summary>
+              <summary>{t('environment.verification')}</summary>
               <ul className="font-mono text-xs">
                 {env.pins.map((pin) => (
                   <li key={pin.name}>
@@ -241,7 +251,7 @@ export function EnvironmentPage({
                 ))}
               </ul>
               <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">
-                {env.verification ?? 'No verification report available.'}
+                {env.verification ?? t('environment.noVerification')}
               </pre>
             </details>
             <Button
@@ -252,7 +262,7 @@ export function EnvironmentPage({
               }}
             >
               <RefreshCw data-icon="inline-start" />
-              Refresh environment
+              {t('environment.refresh')}
             </Button>
           </CardContent>
         </Card>
@@ -260,16 +270,16 @@ export function EnvironmentPage({
       {info.data && (
         <Card>
           <CardHeader>
-            <CardTitle>Stored accelerator results</CardTitle>
+            <CardTitle>{t('environment.accelerators.title')}</CardTitle>
             <CardDescription>
-              Recorded setup outcomes. Import checks are not run by this page.
+              {t('environment.accelerators.hint')}
             </CardDescription>
           </CardHeader>
           <CardContent>
             {info.data.components.accelerators.length === 0 ? (
               <EmptyState
-                title="No recorded accelerator outcomes"
-                description="Older metadata may not record optional components. This does not establish which accelerators are installed."
+                title={t('environment.accelerators.empty')}
+                description={t('environment.accelerators.emptyHint')}
               />
             ) : (
               <ul className="flex flex-col gap-4">
@@ -278,19 +288,19 @@ export function EnvironmentPage({
                     <p className="break-all font-mono">{result.id}</p>
                     <dl className="grid gap-2 sm:grid-cols-3">
                       <div>
-                        <dt>Selected</dt>
-                        <dd>{result.selected ? 'Yes' : 'No'}</dd>
+                        <dt>{t('common.selected')}</dt>
+                        <dd>{result.selected ? t('common.yes') : t('common.no')}</dd>
                       </div>
                       <div>
-                        <dt>Install status</dt>
-                        <dd>{label(result.status)}</dd>
+                        <dt>{t('environment.accelerators.installStatus')}</dt>
+                        <dd>{Object.hasOwn(INSTALL_STATUS_KEYS, result.status) ? t(INSTALL_STATUS_KEYS[result.status]) : label(result.status)}</dd>
                       </div>
                       <div>
-                        <dt>Import result</dt>
+                        <dt>{t('environment.accelerators.importResult')}</dt>
                         <dd>
                           {result.importable === null
-                            ? 'Untested'
-                            : result.importable ? 'Passed' : 'Failed'}
+                            ? t('environment.accelerators.untested')
+                            : result.importable ? t('common.passed') : t('common.failed')}
                         </dd>
                       </div>
                     </dl>
@@ -304,16 +314,15 @@ export function EnvironmentPage({
       )}
       <Card>
         <CardHeader>
-          <CardTitle>Installed packages</CardTitle>
+          <CardTitle>{t('environment.packages.title')}</CardTitle>
           <CardDescription>
-            Search package names and versions. Results are paginated to 100
-            rows.
+            {t('environment.packages.hint')}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <FieldGroup>
             <Field>
-              <FieldLabel htmlFor="package-search">Search packages</FieldLabel>
+              <FieldLabel htmlFor="package-search">{t('environment.packages.search')}</FieldLabel>
               <Input
                 id="package-search"
                 value={search}
@@ -338,8 +347,8 @@ export function EnvironmentPage({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Package</TableHead>
-                    <TableHead>Version</TableHead>
+                    <TableHead>{t('environment.packages.package')}</TableHead>
+                    <TableHead>{t('common.version')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -353,7 +362,7 @@ export function EnvironmentPage({
                   ))}
                 </TableBody>
               </Table>
-              {filtered.length === 0 && <p>No packages match your search.</p>}
+              {filtered.length === 0 && <p>{t('environment.packages.noMatch')}</p>}
               <div className="flex flex-wrap items-center gap-3">
                 <Button
                   variant="outline"
@@ -361,11 +370,10 @@ export function EnvironmentPage({
                   disabled={currentPage === 0}
                   onClick={() => setPage(currentPage - 1)}
                 >
-                  Previous
+                  {t('common.previous')}
                 </Button>
                 <span className="font-mono text-xs">
-                  {filtered.length} packages · page {currentPage + 1} /{' '}
-                  {pageCount}
+                  {t('environment.packages.pagination', { count: filtered.length, page: currentPage + 1, pages: pageCount })}
                 </span>
                 <Button
                   variant="outline"
@@ -373,7 +381,7 @@ export function EnvironmentPage({
                   disabled={currentPage + 1 >= pageCount}
                   onClick={() => setPage(currentPage + 1)}
                 >
-                  Next
+                  {t('common.next')}
                 </Button>
               </div>
             </>
@@ -385,11 +393,9 @@ export function EnvironmentPage({
       )}
       <Card>
         <CardHeader>
-          <CardTitle>Re-setup</CardTitle>
+          <CardTitle>{t('environment.reSetup')}</CardTitle>
           <CardDescription>
-            All modes retain the previous environment until you explicitly
-            delete it. Stop ComfyUI before continuing. If you started it outside
-            this app, stop that external process yourself.
+            {t('environment.reSetupHint')}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -401,10 +407,10 @@ export function EnvironmentPage({
                   disabled={busy}
                   onClick={() => onSetup(item.mode)}
                 >
-                  {item.title}
+                  {t(item.title)}
                 </Button>
                 <p className="text-sm text-muted-foreground">
-                  {item.description}
+                  {t(item.description)}
                 </p>
               </div>
             ))}
@@ -413,25 +419,23 @@ export function EnvironmentPage({
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle>Delete an inactive environment</CardTitle>
+          <CardTitle>{t('environment.delete.title')}</CardTitle>
           <CardDescription>
-            Only an inactive, app-owned environment can be removed. The backend
-            rejects selected, adopted, or in-use environments.
+            {t('environment.delete.hint')}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <Alert>
             <Info />
-            <AlertTitle>Delete by recorded environment ID</AlertTitle>
+            <AlertTitle>{t('environment.delete.byId')}</AlertTitle>
             <AlertDescription>
-              Enter the inactive environment ID recorded by an earlier setup.
-              Review the exact ID below before deletion.
+              {t('environment.delete.idHint')}
             </AlertDescription>
           </Alert>
           <FieldGroup>
             <Field>
               <FieldLabel htmlFor="delete-env-id">
-                Inactive app-owned environment ID
+                {t('environment.delete.id')}
               </FieldLabel>
               <Input
                 id="delete-env-id"
@@ -445,9 +449,7 @@ export function EnvironmentPage({
                 placeholder="env-…"
               />
               <FieldDescription>
-                Selected environment {status.activeEnv?.id} cannot be deleted.
-                Removal deletes the venv folder; user data and the selected
-                environment are preserved.
+                {t('environment.delete.disclosure', { id: status.activeEnv?.id ?? '' })}
               </FieldDescription>
             </Field>
           </FieldGroup>
@@ -459,11 +461,11 @@ export function EnvironmentPage({
               setDeleteOpen(true)
             }}
           >
-            Review environment deletion
+            {t('environment.delete.review')}
           </Button>
           {deletion.isError && <ErrorNotice error={deletion.error} />}
           {deletion.isSuccess && (
-            <p role="status">Inactive app-owned environment deleted.</p>
+            <p role="status">{t('environment.delete.success')}</p>
           )}
         </CardContent>
       </Card>
@@ -475,17 +477,15 @@ export function EnvironmentPage({
       >
         <DialogContent showCloseButton={!deletion.isPending}>
           <DialogHeader>
-            <DialogTitle>Delete environment {deleteId.trim()}?</DialogTitle>
+            <DialogTitle>{t('environment.delete.confirmTitle', { id: deleteId.trim() })}</DialogTitle>
             <DialogDescription>
-              This removes the inactive venv folder and its packages. Adopted
-              and selected environments are protected by the backend. Type the
-              exact ID to confirm.
+              {t('environment.delete.confirmHint')}
             </DialogDescription>
           </DialogHeader>
           <FieldGroup>
             <Field>
               <FieldLabel htmlFor="confirm-delete-id">
-                Confirm environment ID
+                {t('environment.delete.confirmId')}
               </FieldLabel>
               <Input
                 id="confirm-delete-id"
@@ -503,7 +503,7 @@ export function EnvironmentPage({
               disabled={deletion.isPending}
               onClick={() => setDeleteOpen(false)}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               variant="destructive"
@@ -514,7 +514,7 @@ export function EnvironmentPage({
               }
               onClick={() => deletion.mutate(deleteId.trim())}
             >
-              {deletion.isPending ? 'Deleting…' : 'Delete environment'}
+              {deletion.isPending ? t('environment.delete.deleting') : t('environment.delete.action')}
             </Button>
           </DialogFooter>
         </DialogContent>

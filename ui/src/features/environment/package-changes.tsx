@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type PipOperationKindDto,
@@ -36,6 +37,18 @@ import { Input } from '@/shared/ui/input'
 import { StatusBadge } from '@/shared/ui/status-badge'
 import { ToggleGroup, ToggleGroupItem } from '@/shared/ui/toggle-group'
 
+const OPERATION_KEYS = {
+  install: 'environment.changes.installLower',
+  upgrade: 'environment.changes.upgradeLower',
+  uninstall: 'environment.changes.uninstallLower',
+} as const
+
+const RESOLUTION_KEYS = {
+  constrained: 'environment.changes.constrained',
+  unconstrained: 'environment.changes.unconstrained',
+  removal: 'environment.changes.removal',
+} as const
+
 export function PackageChanges({
   envId,
   maintenanceBusy,
@@ -43,6 +56,7 @@ export function PackageChanges({
   envId: string
   maintenanceBusy: boolean
 }) {
+  const { t } = useTranslation()
   const client = useQueryClient()
   const [kind, setKind] = useState<PipOperationKindDto>('install')
   const [spec, setSpec] = useState('')
@@ -84,17 +98,15 @@ export function PackageChanges({
     <>
       <Card>
         <CardHeader>
-          <CardTitle>Change packages</CardTitle>
+          <CardTitle>{t('environment.changes.title')}</CardTitle>
           <CardDescription>
-            Resolve a preview before changing the selected environment. ComfyUI
-            must be stopped; the backend rechecks the plan under its maintenance
-            gate.
+            {t('environment.changes.hint')}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <FieldGroup>
             <Field>
-              <FieldLabel>Operation</FieldLabel>
+              <FieldLabel>{t('environment.changes.operation')}</FieldLabel>
               <ToggleGroup
                 type="single"
                 variant="outline"
@@ -111,16 +123,16 @@ export function PackageChanges({
                   }
                 }}
               >
-                <ToggleGroupItem value="install">Install</ToggleGroupItem>
-                <ToggleGroupItem value="upgrade">Upgrade</ToggleGroupItem>
-                <ToggleGroupItem value="uninstall">Uninstall</ToggleGroupItem>
+                <ToggleGroupItem value="install">{t('common.install')}</ToggleGroupItem>
+                <ToggleGroupItem value="upgrade">{t('environment.changes.upgrade')}</ToggleGroupItem>
+                <ToggleGroupItem value="uninstall">{t('common.uninstall')}</ToggleGroupItem>
               </ToggleGroup>
             </Field>
             <Field>
               <FieldLabel htmlFor="package-spec">
                 {kind === 'uninstall'
-                  ? 'Distribution name'
-                  : 'Package requirement'}
+                  ? t('environment.changes.distribution')
+                  : t('environment.changes.requirement')}
               </FieldLabel>
               <Input
                 id="package-spec"
@@ -135,8 +147,7 @@ export function PackageChanges({
                 }}
               />
               <FieldDescription>
-                Enter one requirement, including an optional version or extras.
-                Source-distribution build hooks are disabled.
+                {t('environment.changes.requirementHint')}
               </FieldDescription>
             </Field>
           </FieldGroup>
@@ -148,8 +159,8 @@ export function PackageChanges({
             }}
           >
             {preview.isPending
-              ? 'Resolving preview…'
-              : 'Preview package change'}
+              ? t('environment.changes.resolving')
+              : t('environment.changes.preview')}
           </Button>
           {preview.isError && <ErrorNotice error={preview.error} />}
           {apply.isError && <ErrorNotice error={apply.error} />}
@@ -160,13 +171,13 @@ export function PackageChanges({
               }
             >
               <AlertTitle>
-                Package operation finished{' '}
+                {t('environment.changes.finished')}{' '}
                 <StatusBadge status={apply.data.envState} />
               </AlertTitle>
               <AlertDescription>
                 {apply.data.envState === 'verified'
-                  ? 'Packages and protected pins were rechecked successfully.'
-                  : 'The environment remains selected but requires repair. It is not ready to launch.'}
+                  ? t('environment.changes.verified')
+                  : t('environment.changes.repair')}
               </AlertDescription>
             </Alert>
           )}
@@ -183,23 +194,21 @@ export function PackageChanges({
           showCloseButton={!apply.isPending}
         >
           <DialogHeader>
-            <DialogTitle>Review exact package plan</DialogTitle>
+            <DialogTitle>{t('environment.changes.review')}</DialogTitle>
             <DialogDescription>
-              Changes apply only to the displayed environment and plan. Editing
-              the request requires a fresh preview.
+              {t('environment.changes.planHint')}
             </DialogDescription>
           </DialogHeader>
           {plan && (
             <>
               <p className="break-all font-mono text-xs">
-                Environment: {plan.envId} · Plan: {plan.planId}
+                {t('environment.changes.planIdentity', { envId: plan.envId, planId: plan.planId })}
                 <br />
-                {plan.operation.kind}: {plan.operation.specs.join(', ')} ·
-                resolution: {plan.resolution}
+                {t('environment.changes.planOperation', { operation: t(OPERATION_KEYS[plan.operation.kind]), specs: plan.operation.specs.join(', '), resolution: t(RESOLUTION_KEYS[plan.resolution]) })}
               </p>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <h3 className="font-semibold">Installs / upgrades</h3>
+                  <h3 className="font-semibold">{t('environment.changes.installs')}</h3>
                   <ul className="break-all font-mono text-xs">
                     {plan.installs.map((pkg) => (
                       <li key={pkg.name}>
@@ -207,10 +216,10 @@ export function PackageChanges({
                       </li>
                     ))}
                   </ul>
-                  {plan.installs.length === 0 && <p>No installs</p>}
+                  {plan.installs.length === 0 && <p>{t('environment.changes.noInstalls')}</p>}
                 </div>
                 <div>
-                  <h3 className="font-semibold">Removals</h3>
+                  <h3 className="font-semibold">{t('environment.changes.removals')}</h3>
                   <ul className="break-all font-mono text-xs">
                     {plan.removals.map((pkg) => (
                       <li key={pkg.name}>
@@ -218,23 +227,21 @@ export function PackageChanges({
                       </li>
                     ))}
                   </ul>
-                  {plan.removals.length === 0 && <p>No removals</p>}
+                  {plan.removals.length === 0 && <p>{t('environment.changes.noRemovals')}</p>}
                 </div>
               </div>
               {plan.requiresConfirmation && (
                 <Alert variant="destructive">
-                  <AlertTitle>Protected packages will change</AlertTitle>
+                  <AlertTitle>{t('environment.changes.protectedTitle')}</AlertTitle>
                   <AlertDescription>
                     <p>
-                      Removing a mandatory core package or failing verification
-                      leaves the selected environment in RepairRequired. There
-                      is no package rollback.
+                      {t('environment.changes.protectedHint')}
                     </p>
                     <ul className="break-all font-mono text-xs">
                       {plan.protectedChanges.map((change) => (
                         <li key={change.name}>
-                          {change.name}: {change.from ?? 'absent'} →{' '}
-                          {change.to ?? 'removed'}
+                          {change.name}: {change.from ?? t('environment.changes.absent')} →{' '}
+                          {change.to ?? t('environment.changes.removed')}
                         </li>
                       ))}
                     </ul>
@@ -248,8 +255,7 @@ export function PackageChanges({
                         }
                       />
                       <FieldLabel htmlFor="approve-pins">
-                        I approve exactly these protected-package changes for
-                        this plan
+                        {t('environment.changes.approve')}
                       </FieldLabel>
                     </Field>
                   </AlertDescription>
@@ -257,13 +263,12 @@ export function PackageChanges({
               )}
               {plan.envId !== envId && (
                 <p role="alert">
-                  The selected environment changed. Close this dialog and
-                  request a fresh preview.
+                  {t('environment.changes.envChanged')}
                 </p>
               )}
               {apply.isError && <ErrorNotice error={apply.error} />}
               {attemptedPlan === plan.planId && !apply.isPending && (
-                <p>Request a fresh preview before another apply attempt.</p>
+                <p>{t('environment.changes.freshPreview')}</p>
               )}
               <DialogFooter>
                 <Button
@@ -271,7 +276,7 @@ export function PackageChanges({
                   disabled={apply.isPending}
                   onClick={() => setOpen(false)}
                 >
-                  Close preview
+                  {t('environment.changes.close')}
                 </Button>
                 <Button
                   variant={
@@ -289,8 +294,8 @@ export function PackageChanges({
                   onClick={() => apply.mutate(plan)}
                 >
                   {apply.isPending
-                    ? 'Applying and verifying…'
-                    : 'Apply this plan'}
+                    ? t('environment.changes.applying')
+                    : t('environment.changes.apply')}
                 </Button>
               </DialogFooter>
             </>

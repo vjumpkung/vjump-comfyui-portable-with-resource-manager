@@ -1,5 +1,5 @@
 use application::settings::UpdateSettingsInput;
-use domain::settings::{CloseBehavior, CredentialKind, HfEngine, Theme};
+use domain::settings::{CloseBehavior, CredentialKind, HfEngine, Language, Theme};
 use tauri::State;
 
 use super::{
@@ -44,6 +44,7 @@ pub async fn settings_set(
                 .as_str()
                 .to_owned(),
             theme: Theme::from(input.theme).as_str().to_owned(),
+            language: Language::from(input.language).as_str().to_owned(),
             registry_cache_ttl: input.registry_cache_ttl,
             bandwidth_cap_kib_s: input.bandwidth_cap_kib_s,
         })

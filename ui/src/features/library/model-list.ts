@@ -1,3 +1,4 @@
+import { t } from '@/shared/i18n'
 import type { ModelEntryDto, ModelLocationDto } from '@/shared/ipc/gateway'
 
 /** Lists longer than this render only the visible window. */
@@ -85,18 +86,18 @@ export function formatBytes(value: number | null): string {
 export function sourceLabel(model: ModelEntryDto): string {
   if (model.civitaiVersionId !== null)
     return `CivitAI v${model.civitaiVersionId}`
-  if (model.sourceJobId !== null) return 'Downloaded'
-  return 'Local file'
+  if (model.sourceJobId !== null) return t('library.source.downloaded')
+  return t('library.source.local')
 }
 
 export function formatModified(ms: number | null): string {
-  if (ms === null || ms <= 0) return 'Unknown'
+  if (ms === null || ms <= 0) return t('common.unknownValue')
   return new Date(ms).toLocaleString()
 }
 
 /** `Recycle Bin` on Windows, `Trash` elsewhere. */
 export function trashName(): string {
   return typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent)
-    ? 'Recycle Bin'
-    : 'Trash'
+    ? t('library.recycleBin')
+    : t('library.trash')
 }

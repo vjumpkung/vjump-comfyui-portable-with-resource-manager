@@ -3,6 +3,7 @@ import { Copy } from 'lucide-react'
 import { useEffect } from 'react'
 import { toast } from 'sonner'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import { gateway } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
 import { Alert, AlertDescription } from '@/shared/ui/alert'
@@ -18,6 +19,7 @@ import {
 
 /** Completed downloads as resource_list JSON, ready to copy or save. */
 export function ExportDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation()
   const exported = useMutation({
     mutationFn: () => gateway.dlExport({ jobIds: null }),
   })
@@ -30,9 +32,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     if (!data) return
     try {
       await navigator.clipboard.writeText(data.json)
-      toast.success('Copied to the clipboard.')
+      toast.success(translate('downloads.copied'))
     } catch {
-      toast.error('The clipboard is not available. Select the text and copy it.')
+      toast.error(translate('downloads.clipboardUnavailable'))
     }
   }
 
@@ -57,10 +59,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     >
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Export resource list</DialogTitle>
+          <DialogTitle>{t('downloads.exportTitle')}</DialogTitle>
           <DialogDescription>
-            Completed downloads with stable provider links, in the
-            resource_list format.
+            {t('downloads.exportHint')}
           </DialogDescription>
         </DialogHeader>
         {exported.isError ? (
@@ -72,29 +73,27 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           <>
             <textarea
               readOnly
-              aria-label="Resource list JSON"
+              aria-label={t('downloads.resourceJson')}
               className="h-64 w-full rounded-md border border-input bg-card p-2 font-mono text-xs"
               value={data.json}
             />
             {data.excluded.length > 0 ? (
               <p className="text-xs text-muted-foreground">
-                {data.excluded.length} download
-                {data.excluded.length === 1 ? ' was' : 's were'} left out because
-                their signed links cannot be reused.
+                {t('downloads.excluded', { count: data.excluded.length })}
               </p>
             ) : null}
           </>
         ) : null}
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
-            Close
+            {t('common.close')}
           </Button>
           <Button variant="outline" disabled={!data} onClick={() => void copy()}>
             <Copy aria-hidden="true" />
-            Copy
+            {t('common.copy')}
           </Button>
           <Button disabled={!data} onClick={save}>
-            Save as file
+            {t('downloads.saveFile')}
           </Button>
         </DialogFooter>
       </DialogContent>

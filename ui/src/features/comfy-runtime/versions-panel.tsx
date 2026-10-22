@@ -3,6 +3,7 @@ import { TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import {
   gateway,
   type RevisionDto,
@@ -42,20 +43,21 @@ export function describeRevision(revision: RevisionDto): string {
   return short
 }
 
-function describeTarget(input: UpdateInput): string {
+function describeTarget(input: UpdateInput, stopRunning: boolean): string {
   switch (input.target.kind) {
     case 'latest_release':
-      return 'the latest published release'
+      return translate(stopRunning ? 'runtime.versions.confirm.latestReleaseStop' : 'runtime.versions.confirm.latestRelease')
     case 'latest_commit':
-      return 'the latest commit on origin’s default branch'
+      return translate(stopRunning ? 'runtime.versions.confirm.latestCommitStop' : 'runtime.versions.confirm.latestCommit')
     case 'tag':
-      return `release ${input.target.name}`
+      return translate(stopRunning ? 'runtime.versions.confirm.tagStop' : 'runtime.versions.confirm.tag', { name: input.target.name })
     case 'branch_ff_only':
-      return 'the upstream of the current branch (fast-forward only)'
+      return translate(stopRunning ? 'runtime.versions.confirm.upstreamStop' : 'runtime.versions.confirm.upstream')
   }
 }
 
 export function VersionsPanel() {
+  const { t } = useTranslation()
   const client = useQueryClient()
   const runtime = useRuntime()
   const versions = useQuery({
@@ -82,7 +84,7 @@ export function VersionsPanel() {
         return
       }
       setRefusal(null)
-      toast.success('ComfyUI was updated and its environment verified.')
+      toast.success(translate('runtime.versions.updated'))
     },
     onError: (error) => {
       setRequest(null)
@@ -107,33 +109,25 @@ export function VersionsPanel() {
     <Card>
       <CardHeader>
         <CardTitle className="text-lg font-bold tracking-tight">
-          Version
+          {t('common.version')}
         </CardTitle>
         <CardDescription>
-          Updates fetch first, refuse unsafe checkouts, and reinstall
-          requirements while protecting the pinned packages.
+          {t('runtime.versions.hint')}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {data ? (
           <>
             <p className="font-mono text-xs">
-              Current: {describeRevision(data.current)}
+              {t('runtime.versions.current', { revision: describeRevision(data.current) })}
             </p>
             {data.pendingUpdate ? (
               <Alert variant="destructive">
                 <TriangleAlert />
-                <AlertTitle>An update was interrupted</AlertTitle>
+                <AlertTitle>{t('runtime.versions.interrupted')}</AlertTitle>
                 <AlertDescription>
                   <p>
-                    The update to{' '}
-                    {data.pendingUpdate.targetTag ??
-                      data.pendingUpdate.targetCommit.slice(0, 8)}{' '}
-                    stopped during &quot;{data.pendingUpdate.phase}&quot;
-                    {data.pendingUpdate.failure
-                      ? `: ${data.pendingUpdate.failure}`
-                      : ''}
-                    . ComfyUI cannot start until it is retried.
+                    {t('runtime.versions.interruptedHint', { target: data.pendingUpdate.targetTag ?? data.pendingUpdate.targetCommit.slice(0, 8), phase: data.pendingUpdate.phase, failure: data.pendingUpdate.failure ? `: ${data.pendingUpdate.failure}` : '' })}
                   </p>
                   <Button
                     variant="outline"
@@ -147,7 +141,7 @@ export function VersionsPanel() {
                       })
                     }
                   >
-                    Retry update
+                    {t('runtime.versions.retry')}
                   </Button>
                 </AlertDescription>
               </Alert>
@@ -155,9 +149,9 @@ export function VersionsPanel() {
             {refusal ? (
               <Alert variant="destructive">
                 <TriangleAlert />
-                <AlertTitle>Update refused: {refusal.reason}</AlertTitle>
+                <AlertTitle>{t('runtime.versions.refused', { reason: refusal.reason })}</AlertTitle>
                 <AlertDescription>
-                  <p>Nothing was changed. Git reports:</p>
+                  <p>{t('runtime.versions.unchanged')}</p>
                   <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 font-mono text-xs whitespace-pre-wrap">
                     {refusal.status}
                   </pre>
@@ -170,13 +164,13 @@ export function VersionsPanel() {
                 disabled={update.isPending}
                 onClick={() => ask({ kind: 'latest_commit' })}
               >
-                Update to latest commit (git pull)
+                {t('runtime.versions.updateCommit')}
               </Button>
               <Button
                 disabled={update.isPending}
                 onClick={() => ask({ kind: 'latest_release' })}
               >
-                Update to latest release
+                {t('runtime.versions.updateRelease')}
               </Button>
               {data.current.branch ? (
                 <Button
@@ -184,18 +178,17 @@ export function VersionsPanel() {
                   disabled={update.isPending}
                   onClick={() => ask({ kind: 'branch_ff_only' })}
                 >
-                  Fast-forward {data.current.branch}
+                  {t('runtime.versions.fastForward', { branch: data.current.branch })}
                 </Button>
               ) : null}
             </div>
             <p className="text-xs text-muted-foreground">
-              Switches to origin’s default branch, normally master. Development
-              code may be less stable than a release.
+              {t('runtime.versions.branchHint')}
             </p>
             {data.tags.length > 0 ? (
               <div className="flex flex-wrap items-end gap-3">
                 <div className="flex min-w-48 flex-col gap-1.5">
-                  <Label htmlFor="comfy-tag">Release tag</Label>
+                  <Label htmlFor="comfy-tag">{t('runtime.versions.releaseTag')}</Label>
                   <NativeSelect
                     id="comfy-tag"
                     value={tag}
@@ -211,13 +204,12 @@ export function VersionsPanel() {
                   disabled={update.isPending || !tag}
                   onClick={() => ask({ kind: 'tag', name: tag })}
                 >
-                  Switch to {tag || 'tag'}
+                  {t('runtime.versions.switchTag', { tag: tag || 'tag' })}
                 </Button>
               </div>
             ) : null}
             <p className="text-xs text-muted-foreground">
-              Switching back to an older tag changes the source only; it does
-              not restore the previous package set.
+              {t('runtime.versions.olderHint')}
             </p>
           </>
         ) : versions.isError ? (
@@ -237,14 +229,9 @@ export function VersionsPanel() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Update ComfyUI</DialogTitle>
+            <DialogTitle>{t('runtime.versions.update')}</DialogTitle>
             <DialogDescription>
-              {request
-                ? `Move ComfyUI to ${describeTarget(request)}. Its requirements are reinstalled under the protected package pins and the environment is verified again.`
-                : ''}
-              {request?.stopRunning || running
-                ? ' ComfyUI is running and will be stopped first.'
-                : ''}
+              {request ? describeTarget(request, request.stopRunning || running) : ''}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -253,7 +240,7 @@ export function VersionsPanel() {
               disabled={update.isPending}
               onClick={() => setRequest(null)}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               disabled={update.isPending || request === null}
@@ -263,10 +250,10 @@ export function VersionsPanel() {
               }}
             >
               {update.isPending
-                ? 'Updating...'
+                ? t('runtime.versions.updating')
                 : running
-                  ? 'Stop ComfyUI and update'
-                  : 'Update'}
+                  ? t('runtime.versions.stopUpdate')
+                  : t('common.update')}
             </Button>
           </DialogFooter>
         </DialogContent>

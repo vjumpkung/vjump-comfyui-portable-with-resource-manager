@@ -11,11 +11,13 @@ import {
 } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { getLanguage, setLanguage } from '@/shared/i18n'
 import {
   gateway,
   IpcClientError,
   type PlanReviewDto,
   type RunSnapshotDto,
+  type SettingsDto,
   type SetupStatusDto,
 } from '@/shared/ipc/gateway'
 import { environmentKeys } from '@/shared/lib/environment-queries'
@@ -25,7 +27,7 @@ import { environment, profile, run, setupStatus } from '@/shared/testing/environ
 import { App } from './App'
 
 const restrictedServices = vi.hoisted(() => ({
-  settings: vi.fn(() => ({ data: null })),
+  settings: vi.fn<() => { data: SettingsDto | null }>(() => ({ data: null })),
   themeToggle: vi.fn(() => null),
 }))
 
@@ -33,6 +35,7 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/shared/ipc/gateway')>()),
   gateway: {
     setupStatus: vi.fn(),
+    settingsSet: vi.fn(),
     setupDetectHardware: vi.fn(),
     setupListProfiles: vi.fn(),
     setupListCuratedNodes: vi.fn(),
@@ -49,7 +52,10 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
     nodeUpdateAll: vi.fn(),
   },
 }))
-vi.mock('@/features/settings', () => ({ useSettings: restrictedServices.settings }))
+vi.mock('@/features/settings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/features/settings')>()),
+  useSettings: restrictedServices.settings,
+}))
 vi.mock('@/shared/ui/log-view', () => ({ LogView: () => <p>Live setup log</p> }))
 vi.mock('./shell/theme-toggle', () => ({ ThemeToggle: restrictedServices.themeToggle }))
 vi.mock('./shell/app-shell', () => ({
@@ -189,7 +195,28 @@ beforeEach(() => {
 
 afterEach(() => {
   resetScreen()
+  setLanguage('en')
   vi.unstubAllGlobals()
+})
+
+it.each(['wizard', 'shell'] as const)('language_sync_applies_backend_language_on_the_%s_route', async (route) => {
+  restrictedServices.settings.mockReturnValue({ data: {
+    downloadConcurrency: 2,
+    hfEngine: 'hf_cli',
+    closeBehavior: 'ask',
+    theme: 'system',
+    language: 'th',
+    registryCacheTtl: 24,
+    bandwidthCapKibS: null,
+  } })
+  mount(route === 'wizard' ? setupStatus : { ...setupStatus, phase: 'ready', activeEnv: environment })
+  await waitFor(() => expect(getLanguage()).toBe('th'))
+  if (route === 'wizard') {
+    expect(screen.getByLabelText('ภาษา')).toBeTruthy()
+    expect(screen.getByText('1. โฟลเดอร์ติดตั้ง')).toBeTruthy()
+  } else {
+    expect(screen.getByText('Normal application shell')).toBeTruthy()
+  }
 })
 
 it('curated_selection_does_not_authorize_execution', async () => {

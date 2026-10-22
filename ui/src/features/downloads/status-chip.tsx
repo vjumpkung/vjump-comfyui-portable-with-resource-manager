@@ -11,6 +11,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
+import { useTranslation } from '@/shared/i18n'
 import type { DownloadStateDto } from '@/shared/ipc/gateway'
 import { cn } from '@/shared/lib/utils'
 import { Badge } from '@/shared/ui/badge'
@@ -19,7 +20,7 @@ const CHIP =
   'font-mono text-[9px] uppercase tracking-widest [&>svg]:size-3 text-[#2a313a]'
 
 interface ChipStyle {
-  label: string
+  labelKey: Exclude<keyof typeof import('@/shared/i18n/translations.json').en, `${string}_one` | `${string}_other`>
   icon: LucideIcon
   className: string
   spin?: boolean
@@ -27,36 +28,36 @@ interface ChipStyle {
 
 const STYLES: Record<DownloadStateDto, ChipStyle> = {
   queued: {
-    label: 'Queued',
+    labelKey: 'downloads.status.queued',
     icon: Clock,
     className: 'bg-muted text-muted-foreground border-border',
   },
   resolving: {
-    label: 'Resolving',
+    labelKey: 'downloads.status.resolving',
     icon: LoaderCircle,
     className: 'border-brand-cyan bg-transparent text-foreground',
     spin: true,
   },
   downloading: {
-    label: 'Downloading',
+    labelKey: 'downloads.status.downloading',
     icon: ArrowDownToLine,
     className: 'bg-brand-cyan',
   },
   verifying: {
-    label: 'Verifying',
+    labelKey: 'downloads.status.verifying',
     icon: LoaderCircle,
     className: 'border-brand-cyan bg-transparent text-foreground',
     spin: true,
   },
-  paused: { label: 'Paused', icon: Pause, className: 'bg-brand-pink' },
-  completed: { label: 'Completed', icon: Check, className: 'bg-brand-yellow' },
+  paused: { labelKey: 'downloads.status.paused', icon: Pause, className: 'bg-brand-pink' },
+  completed: { labelKey: 'common.completed', icon: Check, className: 'bg-brand-yellow' },
   failed: {
-    label: 'Failed',
+    labelKey: 'common.failed',
     icon: CircleX,
     className: 'bg-destructive text-white',
   },
   cancelled: {
-    label: 'Cancelled',
+    labelKey: 'common.cancelled',
     icon: Ban,
     className: 'bg-muted text-muted-foreground border-border',
   },
@@ -64,6 +65,7 @@ const STYLES: Record<DownloadStateDto, ChipStyle> = {
 
 /** A state chip. Icon and text label always travel together; color is never the only signal. */
 export function StatusChip({ state }: { state: DownloadStateDto }) {
+  const { t } = useTranslation()
   const style = STYLES[state]
   const Icon = style.icon
   return (
@@ -72,17 +74,18 @@ export function StatusChip({ state }: { state: DownloadStateDto }) {
         aria-hidden="true"
         className={cn(style.spin && 'motion-safe:animate-spin')}
       />
-      {style.label}
+      {t(style.labelKey)}
     </Badge>
   )
 }
 
 /** Integrity of a completed file: verified against a published checksum, or only locally hashed. */
 export function IntegrityChip({ verified }: { verified: boolean }) {
+  const { t } = useTranslation()
   return verified ? (
     <Badge variant="outline" className={cn(CHIP, 'bg-brand-yellow')}>
       <ShieldCheck aria-hidden="true" />
-      Verified
+      {t('common.verified')}
     </Badge>
   ) : (
     <Badge
@@ -90,7 +93,7 @@ export function IntegrityChip({ verified }: { verified: boolean }) {
       className={cn(CHIP, 'border-brand-yellow bg-transparent text-foreground')}
     >
       <ShieldQuestion aria-hidden="true" />
-      Unverified
+      {t('downloads.unverified')}
     </Badge>
   )
 }

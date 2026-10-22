@@ -3,6 +3,7 @@ import { ClipboardCopy } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 
+import { t as translate, useTranslation } from '@/shared/i18n'
 import { gateway } from '@/shared/ipc/gateway'
 import { Button } from '@/shared/ui/button'
 import {
@@ -16,6 +17,7 @@ import {
 import { errorMessage } from './error-message'
 
 export function DiagnosticsPanel() {
+  const { t } = useTranslation()
   // The report to select by hand when the clipboard could not be written.
   const [fallback, setFallback] = useState<string | null>(null)
   const copy = useMutation({
@@ -23,10 +25,10 @@ export function DiagnosticsPanel() {
     onSuccess: (result) => {
       if (result.copied) {
         setFallback(null)
-        toast.success('Diagnostics copied to the clipboard.')
+        toast.success(translate('settings.diagnostics.copied'))
       } else {
         setFallback(result.text)
-        toast.error('The clipboard is unavailable. Select the report below.')
+        toast.error(translate('settings.diagnostics.clipboardError'))
       }
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -35,11 +37,9 @@ export function DiagnosticsPanel() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Diagnostics</CardTitle>
+        <CardTitle>{t('settings.diagnostics.title')}</CardTitle>
         <CardDescription>
-          Copy a report of this app, your hardware, the environment and recent
-          logs for support. Tokens, signed links and the install folder path
-          are removed.
+          {t('settings.diagnostics.hint')}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -50,13 +50,13 @@ export function DiagnosticsPanel() {
             onClick={() => copy.mutate()}
           >
             <ClipboardCopy aria-hidden="true" />
-            Copy diagnostics
+            {t('settings.diagnostics.copy')}
           </Button>
         </div>
         {fallback !== null && (
           <textarea
             readOnly
-            aria-label="Diagnostics report"
+            aria-label={t('settings.diagnostics.report')}
             value={fallback}
             rows={12}
             onFocus={(event) => event.currentTarget.select()}

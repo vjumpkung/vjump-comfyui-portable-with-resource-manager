@@ -41,7 +41,6 @@ This is a native desktop app for installing, running and maintaining a local Com
 - Multi-user use, remote access to the manager, or a hosted service.
 - Managing more than one ComfyUI install at a time. This is a single active install [P2].
 - Making the install folder run unchanged after a move. A move is handled by a guided rebuild (§6.1, FR-SETUP-12).
-- Localisation. The UI is English only; Thai is [P2].
 
 ---
 
@@ -392,7 +391,7 @@ The list is also extensible by any folder present on disk. Unknown categories fr
 |---|---|---|
 | FR-SET-1 | P0 | Store the CivitAI and Hugging Face tokens in the OS keyring. If the keyring is unavailable, keep them in memory for the session only and warn the user. Plaintext storage is never used. Tokens are never sent in URLs or query strings. The reference sends them in a query string (`PUT /api/update_env/…?value=`) *(reference)*; this app MUST NOT. |
 | FR-SET-2 | P0 | Each token has a *Test* button: CivitAI `GET /api/v1/me` or an equivalent authenticated call; HF `GET /api/whoami-v2`. The UI shows only whether a token is set and when it was last tested. The value is never read back to the UI. |
-| FR-SET-3 | P0 | Settings for: install root (read-only after setup; change via re-setup), download concurrency, bandwidth cap, HF download engine (`hf` CLI default / Native, FR-DL-3a/3b), ComfyUI launch options, close behavior, theme (system/light/dark), registry cache TTL. |
+| FR-SET-3 | P0 | Settings for: install root (read-only after setup; change via re-setup), download concurrency, bandwidth cap, HF download engine (`hf` CLI default / Native, FR-DL-3a/3b), ComfyUI launch options, close behavior, theme (system/light/dark), interface language (English/Thai), registry cache TTL. |
 | FR-SET-4 | P1 | App self-update through `tauri-plugin-updater`, with signed update artifacts. |
 
 ---
@@ -509,7 +508,7 @@ Remote profile updates are **P2**. If added, they MUST be signed, with the signa
 | ID | Requirement |
 |---|---|
 | NFR-UX-1 | The manager UI follows [docs/DESIGN.md](DESIGN.md): tokens, typography, components, status-chip mapping, motion and accessibility rules. New tokens or patterns require updating DESIGN.md first. |
-| NFR-UX-2 | Release 1 copy is **English only**. Thai is [P2]. Fonts MUST still render Thai glyphs in names and paths (DESIGN.md §3). |
+| NFR-UX-2 | Release 1 manager UI copy MUST be available in **English and Thai**, selectable at the top of the first setup step (Install root) and in Settings, persisted across launches, with **English** as the default. Backend diagnostic text and logs remain English. Fonts MUST still render Thai glyphs in UI copy, names and paths (DESIGN.md §3). |
 | NFR-UX-3 | Fonts and icons are bundled. The UI renders correctly offline under the production CSP in both themes, on WebView2 and WebKitGTK. |
 | NFR-UX-4 | WCAG 2.1 AA contrast for text and controls in both themes. Status is never conveyed by color alone. Full keyboard operation. Usable at 200 % zoom. |
 

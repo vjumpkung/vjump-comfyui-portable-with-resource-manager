@@ -3,7 +3,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import { ReviewDialog } from '@/features/custom-nodes'
 import { useSettings } from '@/features/settings'
-import { RebuildSetup, SetupWizard, type CuratedReviewProps } from '@/features/setup'
+import { RebuildSetup, type CuratedReviewProps } from '@/features/setup'
+import { setLanguage, useTranslation } from '@/shared/i18n'
 import { gateway, IpcClientError, type SetupModeDto, type SetupStatusDto } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
 import { useSetupStatus } from '@/shared/lib/environment-queries'
@@ -18,38 +19,46 @@ import { Skeleton } from '@/shared/ui/skeleton'
 
 import { AppShell } from './shell/app-shell'
 import { ThemeToggle } from './shell/theme-toggle'
+import { SetupWizardPreferences } from './setup-wizard-preferences'
+
+function CuratedReview(props: CuratedReviewProps) {
+  const { t } = useTranslation()
+  return <ReviewDialog {...props} title={t('app.reviewCuratedNodes')}
+    commitLabel={t('app.approveRetry')} closeLabel={t('app.backToSetup')} allowRememberSource={false} />
+}
 
 function renderCuratedReview(props: CuratedReviewProps) {
-  return <ReviewDialog {...props} title="Review curated setup nodes"
-    commitLabel="Approve and retry setup" closeLabel="Back to setup" allowRememberSource={false} />
+  return <CuratedReview {...props} />
 }
 
 function SetupFrame({ children, showThemeToggle = false }: { children: ReactNode; showThemeToggle?: boolean }) {
+  const { t } = useTranslation()
   return <div className="flex min-h-screen flex-col bg-background text-foreground">
     <header className="flex h-14 shrink-0 items-center justify-between border-b px-6">
-      <span className="font-mono text-xs">ComfyUI environment setup</span>
+      <span className="font-mono text-xs">{t('app.setupTitle')}</span>
       {showThemeToggle && <ThemeToggle />}
     </header>
     <main className="flex flex-col gap-6 p-6">{children}</main>
   </div>
 }
 
-const rootErrors: Record<string, string> = {
-  root_missing: 'The selected install folder is missing. Choose an available folder.',
-  root_invalid: 'That folder is not a valid installation or a suitable new install location.',
-  root_fixed_by_override: 'The install root is fixed by a debug override. Remove the override and restart the app.',
-  root_switch_failed: 'The install root could not be changed. Check the selected folder and its permissions, then try again.',
-  comfyui_running: 'Stop ComfyUI before changing the installation.',
-  comfyui_state_unknown: 'The app cannot confirm that ComfyUI is stopped. Close external ComfyUI processes and try again.',
-  maintenance_busy: 'Another maintenance operation is running. Wait for it to finish and try again.',
-  relocation_recovery_required: 'The selected installation needs relocation recovery before it can be opened.',
-}
+const rootErrors = {
+  root_missing: 'app.rootMissing',
+  root_invalid: 'app.rootInvalid',
+  root_fixed_by_override: 'app.rootFixed',
+  root_switch_failed: 'app.rootSwitchFailed',
+  comfyui_running: 'app.comfyRunning',
+  comfyui_state_unknown: 'app.comfyUnknown',
+  maintenance_busy: 'app.maintenanceBusy',
+  relocation_recovery_required: 'app.relocationRecovery',
+} as const satisfies Record<string, keyof typeof import('@/shared/i18n/translations.json').en>
 
 function RootRecovery({ status, refresh }: { status: SetupStatusDto; refresh: () => void }) {
+  const { t } = useTranslation()
   const locked = useRef(false)
   const selection = useMutation({
     mutationFn: async (kind: 'existing' | 'new') => {
-      const path = await gateway.pickFolder(kind === 'existing' ? 'Locate existing install' : 'Choose new install folder')
+      const path = await gateway.pickFolder(kind === 'existing' ? t('app.locateInstall') : t('app.chooseNewFolder'))
       if (!path) return null
       return kind === 'existing' ? gateway.setupOpenInstall(path) : gateway.setupNewInstall(path)
     },
@@ -66,32 +75,33 @@ function RootRecovery({ status, refresh }: { status: SetupStatusDto; refresh: ()
   }
   const code = selection.error instanceof IpcClientError ? selection.error.code : null
   return <Alert variant="destructive">
-    <AlertTitle>Install recovery required</AlertTitle>
+    <AlertTitle>{t('app.recoveryRequired')}</AlertTitle>
     <AlertDescription>
       <p>{status.recovery?.message}</p>
       <p className="break-words font-mono text-xs [overflow-wrap:anywhere]">
-        {status.recovery?.code} · Recorded install root: {status.installRoot}
+        {status.recovery?.code} · {t('app.recordedRoot', { root: status.installRoot })}
       </p>
       {status.recovery?.code === 'root_inaccessible' && <p>
-        Check that the drive is connected and that your account has permission to read and write this folder.
+        {t('app.rootAccessHint')}
       </p>}
-      <p>Locate an existing installation or choose a folder for a new installation.</p>
-      <p>If the saved root is available again at its original path, restart the app. Recheck updates the report; it cannot reopen backend services.</p>
-      {restarting && <p role="status">Restart required. Restarting with the selected install root…</p>}
+      <p>{t('app.selectInstallHint')}</p>
+      <p>{t('app.recheckHint')}</p>
+      {restarting && <p role="status">{t('app.restartingRoot')}</p>}
       {selection.isError && <div role="alert">
-        <p>{(code && rootErrors[code]) || 'The installation could not be selected. Try again.'}</p>
+        <p>{t(code && Object.hasOwn(rootErrors, code) ? rootErrors[code as keyof typeof rootErrors] : 'app.selectionError')}</p>
         <p className="break-words [overflow-wrap:anywhere]">{code && `${code}: `}{errorMessage(selection.error)}</p>
       </div>}
       <div className="flex flex-wrap gap-2">
-        <Button disabled={busy} onClick={() => choose('existing')}>Locate existing install</Button>
-        <Button disabled={busy} onClick={() => choose('new')}>Create new install</Button>
-        <Button variant="outline" disabled={busy} onClick={refresh}>Recheck installation</Button>
+        <Button disabled={busy} onClick={() => choose('existing')}>{t('app.locateInstall')}</Button>
+        <Button disabled={busy} onClick={() => choose('new')}>{t('app.createInstall')}</Button>
+        <Button variant="outline" disabled={busy} onClick={refresh}>{t('app.recheckInstall')}</Button>
       </div>
     </AlertDescription>
   </Alert>
 }
 
 function Workspace() {
+  const { t } = useTranslation()
   const status = useSetupStatus()
   const [wizard, setWizard] = useState<{
     mode: SetupModeDto
@@ -118,12 +128,12 @@ function Workspace() {
     const rootless = data.recovery?.code === 'root_missing' || data.recovery?.code === 'root_inaccessible'
     return <SetupFrame>{rootless ? <RootRecovery status={data} refresh={refresh} /> :
       <Alert variant="destructive">
-        <AlertTitle>Install recovery required</AlertTitle>
+        <AlertTitle>{t('app.recoveryRequired')}</AlertTitle>
         <AlertDescription>
-          <p>{data.recovery?.message ?? 'The installation manifest and environment database need attention.'}</p>
+          <p>{data.recovery?.message ?? t('app.manifestAttention')}</p>
           <p className="break-words font-mono text-xs [overflow-wrap:anywhere]">{data.recovery?.code} · {data.installRoot}</p>
-          <p>Setup is blocked to preserve this installation. Follow the recovery guidance before continuing.</p>
-          <Button variant="outline" onClick={refresh}>Recheck installation</Button>
+          <p>{t('app.setupBlocked')}</p>
+          <Button variant="outline" onClick={refresh}>{t('app.recheckInstall')}</Button>
         </AlertDescription>
       </Alert>}
     </SetupFrame>
@@ -134,13 +144,14 @@ function Workspace() {
   </SetupFrame>
   if (showWizard) return <SetupFrame showThemeToggle>
     <ThemeSync />
-    <SetupWizard key={wizard ? 'requested' : 'automatic'} status={data}
+    <LanguageSync />
+    <SetupWizardPreferences key={wizard ? 'requested' : 'automatic'} status={data}
       mode={wizard?.mode ?? (resume ? data.run!.mode : 'first_run')}
       resume={wizard?.resume ?? resume} onClose={() => setWizard(null)} refresh={refresh}
       renderCuratedReview={renderCuratedReview} />
   </SetupFrame>
   return (
-    <><ThemeSync />
+    <><ThemeSync /><LanguageSync />
     <AppShell
       status={data}
       onSetup={(mode) => setWizard({ mode, resume: false })}
@@ -161,6 +172,18 @@ function ThemeSync() {
   useEffect(() => {
     if (stored) setSetting(stored)
   }, [stored, setSetting])
+
+  return null
+}
+
+/** Reconciles the first-paint language cache with the stored settings. */
+function LanguageSync() {
+  const settings = useSettings()
+  const stored = settings.data?.language
+
+  useEffect(() => {
+    if (stored) setLanguage(stored)
+  }, [stored])
 
   return null
 }

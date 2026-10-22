@@ -102,6 +102,7 @@ pub struct UpdateSettingsInput {
     pub hf_engine: String,
     pub close_behavior: String,
     pub theme: String,
+    pub language: String,
     pub registry_cache_ttl: u32,
     pub bandwidth_cap_kib_s: Option<u32>,
 }
@@ -121,6 +122,7 @@ impl UpdateSettings {
             input.hf_engine.parse()?,
             input.close_behavior.parse()?,
             input.theme.parse()?,
+            input.language.parse()?,
             input.registry_cache_ttl,
             input.bandwidth_cap_kib_s,
         )?;

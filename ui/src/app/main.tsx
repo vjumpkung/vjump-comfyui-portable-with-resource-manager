@@ -9,11 +9,13 @@ import './globals.css'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
+import { initLanguage } from '@/shared/i18n'
 import { initTheme } from '@/shared/lib/theme'
 
 import { App } from './App'
 
 initTheme()
+initLanguage()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

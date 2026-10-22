@@ -2,6 +2,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { TriangleAlert } from 'lucide-react'
 import { useEffect, useRef, type KeyboardEvent } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import type { InstalledNodeDto } from '@/shared/ipc/gateway'
 import { cn } from '@/shared/lib/utils'
 import { Badge } from '@/shared/ui/badge'
@@ -13,7 +14,7 @@ import { Chip, DependencyChip, EnabledChip, HealthChip } from './status-chips'
 export const ROW_HEIGHT = 56
 const COLUMNS =
   'grid grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_6.5rem_7.5rem_5.5rem_minmax(7rem,1fr)]'
-const KIND_LABEL = { registry: 'Registry', git: 'Git', manual: 'Manual' } as const
+const KIND_LABEL = { registry: 'customNodes.source.registry', git: 'customNodes.source.git', manual: 'customNodes.source.manual' } as const satisfies Record<InstalledNodeDto['source']['kind'], keyof typeof import('@/shared/i18n/translations.json').en>
 
 interface Props {
   nodes: readonly InstalledNodeDto[]
@@ -37,6 +38,7 @@ export function InstalledTable({
   onToggle,
   onToggleAll,
 }: Props) {
+  const { t } = useTranslation()
   const scroller = useRef<HTMLDivElement>(null)
   const pendingFocus = useRef<string | null>(null)
   const virtualize = nodes.length > VIRTUALIZE_AFTER
@@ -151,7 +153,7 @@ export function InstalledTable({
           <Checkbox
             checked={isSelected}
             onCheckedChange={() => onToggle(node.id)}
-            aria-label={`Select ${node.name}`}
+            aria-label={t('customNodes.selectNode', { name: node.name })}
             tabIndex={-1}
           />
         </div>
@@ -162,7 +164,7 @@ export function InstalledTable({
           </p>
         </div>
         <div role="gridcell">
-          <Badge variant="outline">{KIND_LABEL[node.source.kind]}</Badge>
+          <Badge variant="outline">{t(KIND_LABEL[node.source.kind])}</Badge>
         </div>
         <div role="gridcell" className="truncate font-mono text-xs" title={nodeVersion(node)}>
           {nodeVersion(node)}
@@ -173,11 +175,11 @@ export function InstalledTable({
         <div role="gridcell"><EnabledChip enabled={node.enabled} /></div>
         <div role="gridcell"><DependencyChip state={node.dependencies} /></div>
         <div role="gridcell" className="text-xs text-muted-foreground">
-          {node.origin === 'app' ? 'Installed here' : 'Observed'}
+          {node.origin === 'app' ? t('customNodes.origin.app') : t('customNodes.origin.observed')}
         </div>
         <div role="gridcell" className="flex flex-wrap gap-1">
           <HealthChip health={gitHealth(node)} />
-          {node.conflict && <Chip icon={TriangleAlert} className="bg-brand-pink">Conflict</Chip>}
+          {node.conflict && <Chip icon={TriangleAlert} className="bg-brand-pink">{t('customNodes.conflict')}</Chip>}
         </div>
       </div>
     )
@@ -186,7 +188,7 @@ export function InstalledTable({
   return (
     <div
       role="grid"
-      aria-label="Installed custom nodes"
+      aria-label={t('customNodes.installed')}
       aria-rowcount={nodes.length + 1}
       aria-multiselectable="true"
       className="rounded-lg border bg-card"
@@ -200,16 +202,16 @@ export function InstalledTable({
         )}
       >
         <div role="columnheader">
-          <Checkbox checked={allSelected} onCheckedChange={onToggleAll} aria-label="Select all" />
+          <Checkbox checked={allSelected} onCheckedChange={onToggleAll} aria-label={t('customNodes.selectAll')} />
         </div>
-        <div role="columnheader">Node</div>
-        <div role="columnheader">Source</div>
-        <div role="columnheader">Version / commit</div>
-        <div role="columnheader">Branch</div>
-        <div role="columnheader">State</div>
-        <div role="columnheader">Dependencies</div>
-        <div role="columnheader">Origin</div>
-        <div role="columnheader">Git health</div>
+        <div role="columnheader">{t('customNodes.node')}</div>
+        <div role="columnheader">{t('common.source')}</div>
+        <div role="columnheader">{t('customNodes.versionCommit')}</div>
+        <div role="columnheader">{t('customNodes.branch')}</div>
+        <div role="columnheader">{t('customNodes.state')}</div>
+        <div role="columnheader">{t('customNodes.dependencies')}</div>
+        <div role="columnheader">{t('customNodes.origin')}</div>
+        <div role="columnheader">{t('customNodes.gitHealth')}</div>
       </div>
       <div
         ref={scroller}

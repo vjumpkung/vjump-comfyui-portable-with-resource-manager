@@ -25,7 +25,18 @@ Desktop exceptions are marked **[desktop]**.
 3. **Hover = accent border or accent fill.** Interactive elements start neutral (`border-border bg-card text-muted-foreground`). On hover they take a brand border, or a brand fill with dark text.
 4. **Monospace for metadata.** Sizes, hashes, versions, paths, speeds, ETAs, status chips, section eyebrows, keyboard hints and log output use `font-mono`. Chips and eyebrows are often uppercase with wide tracking.
 5. **Tight, heavy headlines; small calm body.** Page titles use `font-extrabold tracking-tighter`. Body text uses `text-sm font-medium leading-relaxed`.
-6. **[desktop] English copy for release 1.** This replaces upstream's "Thai-first copy" (owner decision, 2026-10-15). Thai is P2. Fonts MUST still render Thai glyphs, because paths, model names and node names may contain Thai (§3).
+6. **[desktop] English and Thai copy for release 1.** Manager UI copy is user-selectable, with English as the default. Fonts MUST render Thai glyphs in UI copy, paths, model names and node names (§3).
+
+**[desktop] Translation pattern.**
+
+- Keep both locales in one `ui/src/shared/i18n/translations.json` catalog (`{ "en": {...}, "th": {...} }`), accessed through the `ui/src/shared/i18n/index.ts` module's `t()` / `useTranslation()`; the module keeps the current language in a zustand store. Load the catalog synchronously; existing bundler resolution supports JSON, so change TypeScript configuration only if typecheck requires it.
+- Use flat semantic keys with dotted namespaces and camelCase segments. Translate complete messages with named `{placeholders}`, never concatenated translated fragments. Define `_one` / `_other` plural variants in both locales (Thai values may match). Prefer string interpolation; add a ReactNode translation component only when a sentence needs one.
+- Store keys and data, not translated strings, in state and constant maps. Translate at render time or message-delivery time, using the current language after an asynchronous operation. `useTranslation()` makes mounted UI react to language changes.
+- Translate all manager-owned visible copy, accessible names (`aria-label`, `title`, placeholders), toasts, dialogs and validation messages. Map status/enum labels by transport value and known setup step names by `step.step`; unknown values retain their existing raw or underscore-to-space fallback.
+- Keep product and technical names untranslated. Display arbitrary backend/IPC errors, logs, external descriptions/release notes, paths, file names and identifiers as delivered; backend diagnostic text and logs remain English.
+- The backend setting is authoritative. Cache it in localStorage (`vjumpkung-comfyui.language`) for first paint and update `<html lang>`; default to `en` without browser-language detection. Recovery/rebuild routes use only the cached language and make no settings calls.
+- Show language options by endonym: **English** / **ไทย**. Put the selector at the top of the existing first setup stage (**Install root**), keeping six stages and no header language control. Apply the wizard choice locally at once, save the full settings, reconcile with the returned language and restore the previous language on failure. Settings keeps language as a draft until a successful **Save**. The app layer coordinates wizard preferences without feature-to-feature imports.
+- Number and date formatting stays unchanged.
 
 ## 2. Color
 
@@ -75,6 +86,8 @@ Type scale:
 | Body | `text-sm font-medium leading-relaxed` |
 | Meta (size, version, ETA) | `font-mono text-xs text-muted-foreground` |
 | Chip | `font-mono text-[9px] uppercase tracking-widest` |
+
+When the interface language is Thai, 9px monospace chips render at 11px without wide tracking because Thai vowel and tone marks are illegible at 9px.
 
 Long paths, model names and URLs wrap with `break-words [overflow-wrap:anywhere]`, or truncate with a tooltip in tables.
 
@@ -131,7 +144,7 @@ Long paths, model names and URLs wrap with `break-words [overflow-wrap:anywhere]
 
 ## 7. Accessibility
 - Every interactive element has `focus-visible:ring-2 ring-ring`. Full keyboard navigation covers the sidebar, tables (arrow keys), dialogs (focus trap, Esc) and the download queue.
-- Icon-only buttons have English `aria-label`s. Dialogs use `role="dialog" aria-modal="true"`.
+- Icon-only buttons have `aria-label`s translated into the selected interface language. Dialogs use `role="dialog" aria-modal="true"`.
 - Text on brand fills is always `#2a313a`. WCAG AA contrast is verified for all chip and button states in both themes.
 - Status is never conveyed by color alone (§5).
 - Layout survives 200 % zoom and long Unicode paths.
@@ -143,4 +156,4 @@ Long paths, model names and URLs wrap with `break-words [overflow-wrap:anywhere]
 ## 9. Not adopted from upstream
 - MDX/article typography, blog cards/bento, image lightbox, GitHub gist embeds, and `search.json` search.
 - A `⌘K` command palette is not part of release 1.
-- Thai-first copy (see §1.6).
+- Thai-first copy; the desktop UI offers English and Thai, defaulting to English (see §1.6).

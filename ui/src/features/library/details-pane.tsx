@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 
+import { useTranslation } from '@/shared/i18n'
 import { gateway, type ModelEntryDto } from '@/shared/ipc/gateway'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
@@ -49,6 +50,7 @@ export function DetailsPane({
   onDelete,
   onIdentify,
 }: Props) {
+  const { t } = useTranslation()
   const hasSidecars = model.sidecars.preview || model.sidecars.civitaiInfo
   const details = useQuery({
     queryKey: [
@@ -66,7 +68,7 @@ export function DetailsPane({
   const preview = details.data?.previewDataUrl ?? null
 
   return (
-    <Card aria-label="Model details">
+    <Card aria-label={t('library.details.title')}>
       <CardHeader>
         <CardTitle className="break-words [overflow-wrap:anywhere]">
           {model.name}
@@ -76,32 +78,32 @@ export function DetailsPane({
         {preview ? (
           <img
             src={preview}
-            alt={`Preview of ${model.name}`}
+            alt={t('library.details.previewOf', { name: model.name })}
             className="max-h-64 w-full rounded-lg border object-contain"
           />
         ) : (
           <div className="flex h-28 items-center justify-center gap-2 rounded-lg border border-dashed text-sm text-muted-foreground">
             <ImageOff className="size-4" aria-hidden="true" />
-            No preview
+            {t('library.details.noPreview')}
           </div>
         )}
 
         <dl className="flex flex-col gap-2">
-          <Field name="Category">{model.category}</Field>
-          <Field name="Folder">
+          <Field name={t('common.category')}>{model.category}</Field>
+          <Field name={t('library.details.folder')}>
             <span className="font-mono text-xs">
               {model.location.path}
             </span>
           </Field>
-          <Field name="Size">{formatBytes(model.size)}</Field>
-          <Field name="Modified">{formatModified(model.modifiedMs)}</Field>
-          <Field name="Source">{sourceLabel(model)}</Field>
+          <Field name={t('common.size')}>{formatBytes(model.size)}</Field>
+          <Field name={t('library.modified')}>{formatModified(model.modifiedMs)}</Field>
+          <Field name={t('common.source')}>{sourceLabel(model)}</Field>
           <Field name="SHA-256">
             {model.sha256 ? (
               <span className="font-mono text-xs">{model.sha256}</span>
             ) : (
               <span className="text-muted-foreground">
-                Not hashed yet. Identify computes it.
+                {t('library.details.notHashed')}
               </span>
             )}
           </Field>
@@ -111,12 +113,12 @@ export function DetailsPane({
           <section aria-label="CivitAI" className="flex flex-col gap-2">
             <h3 className="text-sm font-semibold">CivitAI</h3>
             <dl className="flex flex-col gap-2">
-              <Field name="Model">{civitai.modelName}</Field>
-              <Field name="Version">{civitai.versionName || '-'}</Field>
-              <Field name="Base model">{civitai.baseModel ?? 'Unknown'}</Field>
-              <Field name="Trigger words">
+              <Field name={t('library.details.model')}>{civitai.modelName}</Field>
+              <Field name={t('common.version')}>{civitai.versionName || '-'}</Field>
+              <Field name={t('library.details.baseModel')}>{civitai.baseModel ?? t('common.unknownValue')}</Field>
+              <Field name={t('library.details.triggerWords')}>
                 {civitai.triggerWords.length === 0 ? (
-                  <span className="text-muted-foreground">None</span>
+                  <span className="text-muted-foreground">{t('common.none')}</span>
                 ) : (
                   <span className="flex flex-wrap gap-1">
                     {civitai.triggerWords.map((word) => (
@@ -138,24 +140,23 @@ export function DetailsPane({
             ) : (
               <Fingerprint aria-hidden="true" />
             )}
-            Identify on CivitAI
+            {t('library.details.identify')}
           </Button>
           <Button variant="outline" onClick={onRename}>
             <Pencil aria-hidden="true" />
-            Rename
+            {t('common.rename')}
           </Button>
           <Button variant="outline" onClick={onMove}>
             <FolderInput aria-hidden="true" />
-            Move
+            {t('common.move')}
           </Button>
           <Button variant="outline" onClick={onDelete}>
             <Trash2 aria-hidden="true" />
-            Delete
+            {t('common.delete')}
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Delete moves the model to the {trashName()}. Metadata files beside it
-          stay where they are.
+          {t('library.details.deleteHint', { trash: trashName() })}
         </p>
       </CardContent>
     </Card>

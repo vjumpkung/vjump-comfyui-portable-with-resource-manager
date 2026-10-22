@@ -1,5 +1,5 @@
 use application::settings::{CredentialBackend, CredentialPresence, CredentialStatus};
-use domain::settings::{CloseBehavior, CredentialKind, HfEngine, Settings, Theme};
+use domain::settings::{CloseBehavior, CredentialKind, HfEngine, Language, Settings, Theme};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -85,6 +85,31 @@ impl From<ThemeDto> for Theme {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LanguageDto {
+    En,
+    Th,
+}
+
+impl From<Language> for LanguageDto {
+    fn from(value: Language) -> Self {
+        match value {
+            Language::En => Self::En,
+            Language::Th => Self::Th,
+        }
+    }
+}
+
+impl From<LanguageDto> for Language {
+    fn from(value: LanguageDto) -> Self {
+        match value {
+            LanguageDto::En => Self::En,
+            LanguageDto::Th => Self::Th,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum CredentialKindDto {
     CivitAi,
@@ -132,6 +157,7 @@ pub struct SettingsDto {
     pub hf_engine: HfEngineDto,
     pub close_behavior: CloseBehaviorDto,
     pub theme: ThemeDto,
+    pub language: LanguageDto,
     pub registry_cache_ttl: u32,
     pub bandwidth_cap_kib_s: Option<u32>,
 }
@@ -143,6 +169,7 @@ impl From<&Settings> for SettingsDto {
             hf_engine: value.hf_engine.into(),
             close_behavior: value.close_behavior.into(),
             theme: value.theme.into(),
+            language: value.language.into(),
             registry_cache_ttl: value.registry_cache_ttl.get(),
             bandwidth_cap_kib_s: value.bandwidth_cap_kib_s.map(|cap| cap.get()),
         }
@@ -156,6 +183,7 @@ pub struct UpdateSettingsDto {
     pub hf_engine: HfEngineDto,
     pub close_behavior: CloseBehaviorDto,
     pub theme: ThemeDto,
+    pub language: LanguageDto,
     pub registry_cache_ttl: u32,
     pub bandwidth_cap_kib_s: Option<u32>,
 }
