@@ -1,8 +1,8 @@
 use tauri_specta::{Builder, ErrorHandlingMode, collect_commands};
 
 use super::{
-    app_commands, comfy_commands, commands, download_commands, env_commands, library_commands,
-    node_commands,
+    app_commands, comfy_commands, commands, download_commands, env_commands, gallery_commands,
+    library_commands, node_commands,
 };
 
 /// The single source of truth for the command list. It is used by `run()`, the binding
@@ -69,11 +69,13 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
             library_commands::model_delete_plan,
             library_commands::model_delete,
             library_commands::model_delete_permanently,
+            library_commands::model_reveal,
             library_commands::model_identify,
             library_commands::model_operation_status,
             library_commands::model_subscribe,
             library_commands::model_unsubscribe,
             node_commands::node_open_repository,
+            node_commands::node_reveal,
             node_commands::node_registry_search,
             node_commands::node_list,
             node_commands::node_git_status,
@@ -90,6 +92,13 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
             node_commands::node_operation_status,
             node_commands::node_subscribe,
             node_commands::node_unsubscribe,
+            gallery_commands::gallery_list,
+            gallery_commands::gallery_rename,
+            gallery_commands::gallery_move,
+            gallery_commands::gallery_copy,
+            gallery_commands::gallery_delete_plan,
+            gallery_commands::gallery_delete,
+            gallery_commands::gallery_reveal,
             app_commands::app_update_status,
             app_commands::app_update_check,
             app_commands::app_update_install,

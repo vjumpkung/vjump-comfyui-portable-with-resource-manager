@@ -21,11 +21,11 @@ use domain::environment::SetupMode;
 use infrastructure::{
     custom_nodes::stack::{NodeAdapters, NodeOptions},
     environment::{
-        curated::BundledCuratedNodes, hardware::SystemHardware, manifest::FsManifestStore,
-        packages::UvPackages, profiles::BundledProfiles, python::PythonAdapter,
-        runtime_guard::ProcessRuntimeGuard, sinks::run_sink, source::GitSource,
-        sqlite::SqliteEnvironmentStore, switcher::FsRootSwitcher, tools::Tools,
-        verify::PythonVerifier,
+        curated::BundledCuratedNodes, hardware::SystemHardware,
+        manager_config::FsManagerConfigWriter, manifest::FsManifestStore, packages::UvPackages,
+        profiles::BundledProfiles, python::PythonAdapter, runtime_guard::ProcessRuntimeGuard,
+        sinks::run_sink, source::GitSource, sqlite::SqliteEnvironmentStore,
+        switcher::FsRootSwitcher, tools::Tools, verify::PythonVerifier,
     },
     settings::sqlite::SqliteSettingsRepository,
     shared::{
@@ -97,6 +97,7 @@ async fn compose(root: &std::path::Path) -> (EnvironmentDeps, Arc<dyn SetupNodes
         wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
         verifier: Arc::new(PythonVerifier::new()),
         source: Arc::new(GitSource::new()),
+        manager_config: Arc::new(FsManagerConfigWriter),
         node_requirements: Arc::new(NodeRequirements::new(
             node_adapters.store.clone(),
             node_adapters.files.clone(),

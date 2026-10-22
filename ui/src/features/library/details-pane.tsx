@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Fingerprint,
   FolderInput,
+  FolderOpen,
   ImageOff,
   LoaderCircle,
   Pencil,
@@ -28,6 +29,7 @@ interface Props {
   identifying: boolean
   onRename: () => void
   onMove: () => void
+  onReveal: () => void
   onDelete: () => void
   onIdentify: () => void
 }
@@ -47,6 +49,7 @@ export function DetailsPane({
   identifying,
   onRename,
   onMove,
+  onReveal,
   onDelete,
   onIdentify,
 }: Props) {
@@ -149,6 +152,10 @@ export function DetailsPane({
           <Button variant="outline" onClick={onMove}>
             <FolderInput aria-hidden="true" />
             {t('common.move')}
+          </Button>
+          <Button variant="outline" onClick={onReveal}>
+            <FolderOpen aria-hidden="true" />
+            {t('common.showInExplorer')}
           </Button>
           <Button variant="outline" onClick={onDelete}>
             <Trash2 aria-hidden="true" />

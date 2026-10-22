@@ -423,7 +423,13 @@ impl PinnedDirectory {
         Ok(())
     }
 
-    fn remove_checked_entry(&self, name: &SafeFileName, expected: &str) -> io::Result<()> {
+    /// Removes exactly one entry whose platform identity still matches. A directory must be
+    /// empty: unlike `remove_owned_tree` this never takes anything below it.
+    pub(crate) fn remove_checked_entry(
+        &self,
+        name: &SafeFileName,
+        expected: &str,
+    ) -> io::Result<()> {
         let entry = self.open_entry(name)?;
         if expected != identity(&entry)?.platform_id {
             return Err(io::ErrorKind::PermissionDenied.into());

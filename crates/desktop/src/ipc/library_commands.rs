@@ -13,7 +13,7 @@ use super::{
         RenameInput,
     },
 };
-use crate::state::AppState;
+use crate::{app_lifecycle::open_explorer, state::AppState};
 
 #[tauri::command]
 #[specta::specta]
@@ -136,6 +136,23 @@ pub async fn model_delete_permanently(
         .execute(&plan_id)
         .await?;
     Ok(DeleteReportDto::from(&report))
+}
+
+/// Shows the model in the system file manager, or the models folder when no location is given.
+#[tauri::command]
+#[specta::specta]
+pub async fn model_reveal(
+    state: State<'_, AppState>,
+    location: Option<ModelLocationDto>,
+) -> Result<(), IpcError> {
+    let location = location.map(ModelLocationDto::into_domain).transpose()?;
+    let target = state
+        .services()?
+        .library
+        .locate
+        .execute(location.as_ref())
+        .await?;
+    open_explorer(&state, target).await
 }
 
 #[tauri::command]

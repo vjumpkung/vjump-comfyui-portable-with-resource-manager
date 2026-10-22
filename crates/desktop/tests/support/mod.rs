@@ -20,6 +20,7 @@ use application::{
         CredentialBackend, CredentialPresence, CredentialStore, CredentialStoreError,
         PendingCredentialRef, SettingsRepoError, SettingsRepository,
     },
+    shared::ExplorerTarget,
 };
 use async_trait::async_trait;
 use desktop::{
@@ -155,6 +156,8 @@ pub struct FakePicker {
 
 pub struct FakeShell {
     pub calls: HandlerCalls,
+    /// Every target handed to the file manager, in order.
+    pub explored: Arc<Mutex<Vec<ExplorerTarget>>>,
 }
 
 impl ShellActions for FakeShell {
@@ -172,6 +175,11 @@ impl ShellActions for FakeShell {
     }
     fn request_restart(&self) {
         self.calls.hit();
+    }
+    fn open_explorer(&self, target: ExplorerTarget) -> Result<(), desktop::ipc::error::IpcError> {
+        self.calls.hit();
+        self.explored.lock().unwrap().push(target);
+        Ok(())
     }
 }
 
@@ -548,6 +556,17 @@ impl EnvVerifier for Stubs {
 }
 
 #[async_trait]
+impl ManagerConfigWriter for Stubs {
+    async fn ensure_manager_config(
+        &self,
+        _install_root: &Path,
+    ) -> Result<ManagerConfigOutcome, ProvisionError> {
+        self.calls.hit();
+        Ok(ManagerConfigOutcome::Absent)
+    }
+}
+
+#[async_trait]
 impl ComfySource for Stubs {
     async fn resolve(&self, _: &Path, _: &ComfyRef) -> Result<ResolvedGit, ProvisionError> {
         Err(stub_failure())
@@ -634,6 +653,8 @@ impl InstallManifestStore for CountedManifests {
 pub struct TestApp {
     pub app: tauri::App<MockRuntime>,
     pub calls: HandlerCalls,
+    /// What the fake shell was asked to show in the file manager.
+    pub explored: Arc<Mutex<Vec<ExplorerTarget>>>,
     pub stubs: Arc<Stubs>,
     pub root: PathBuf,
     _directory: tempfile::TempDir,
@@ -737,6 +758,7 @@ pub fn build_app_with(options: Options) -> TestApp {
                 wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
                 verifier: stubs.clone(),
                 source: stubs.clone(),
+                manager_config: stubs.clone(),
                 node_requirements: Arc::new(NodeRequirements::new(
                     node_adapters.store.clone(),
                     node_adapters.files.clone(),
@@ -791,12 +813,15 @@ pub fn build_app_with(options: Options) -> TestApp {
         .invoke_handler(bindings::builder::<MockRuntime>().invoke_handler())
         .build(context)
         .expect("failed to build the mock app");
+    let explored = Arc::new(Mutex::new(Vec::new()));
     app.state::<AppState>().install_shell(Arc::new(FakeShell {
         calls: calls.clone(),
+        explored: explored.clone(),
     }));
     TestApp {
         app,
         calls,
+        explored,
         stubs,
         root,
         _directory: directory,

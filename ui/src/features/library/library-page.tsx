@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Boxes, LoaderCircle, RefreshCw, Search, TriangleAlert } from 'lucide-react'
+import { Boxes, FolderOpen, LoaderCircle, RefreshCw, Search, TriangleAlert } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 
@@ -9,6 +9,7 @@ import {
   type ModelEntryDto,
   type ModelLocationDto,
 } from '@/shared/ipc/gateway'
+import { errorMessage } from '@/shared/lib/display'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { EmptyState } from '@/shared/ui/empty-state'
@@ -109,6 +110,15 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
     }
   }
 
+  /** Shows one model, or the models folder when no location is given. */
+  async function reveal(location: ModelLocationDto | null) {
+    try {
+      await gateway.modelReveal(location)
+    } catch (error) {
+      toast.error(errorMessage(error))
+    }
+  }
+
   function askDelete() {
     const targets =
       selectedVisible.length > 0 ? selectedVisible : active ? [active] : []
@@ -169,6 +179,10 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
               <RefreshCw aria-hidden="true" />
             )}
             {t('library.rescan')}
+          </Button>
+          <Button variant="outline" onClick={() => void reveal(null)}>
+            <FolderOpen aria-hidden="true" />
+            {t('common.openFolder')}
           </Button>
         </div>
       </div>
@@ -316,6 +330,7 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
               onIdentify={() => void identify(active, false)}
               onRename={() => setDialog({ kind: 'rename', model: active })}
               onMove={() => setDialog({ kind: 'move', model: active })}
+              onReveal={() => void reveal(active.location)}
               onDelete={() =>
                 setDialog({ kind: 'delete', locations: [active.location] })
               }

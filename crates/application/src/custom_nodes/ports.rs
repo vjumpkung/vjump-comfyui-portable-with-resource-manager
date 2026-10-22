@@ -1,5 +1,8 @@
 use super::*;
-use crate::environment::{Retained, StepContext};
+use crate::{
+    environment::{Retained, StepContext},
+    shared::ExplorerTarget,
+};
 use async_trait::async_trait;
 use domain::{custom_nodes::*, environment::PythonEnvironment};
 use std::{
@@ -121,6 +124,15 @@ pub trait NodeFiles: Send + Sync {
         root: &Path,
         retained: Retained,
     ) -> Result<Vec<InstalledNode>, NodeAppError>;
+    /// Where the system file manager should open: `ComfyUI/custom_nodes` for `None`, a node
+    /// folder (live or disabled) is opened, and a single-file node is revealed. The location is
+    /// validated through non-following handles, nothing is created, and a missing target is
+    /// `NotFound`.
+    async fn explorer_target(
+        &self,
+        root: &Path,
+        node: Option<&InstalledNode>,
+    ) -> Result<ExplorerTarget, NodeAppError>;
 }
 /// A node location whose containment protection lives exactly as long as this value. Hold it
 /// across every use of the paths and snapshots it hands out: previews, installation, the hook and

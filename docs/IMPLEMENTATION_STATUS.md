@@ -26,6 +26,30 @@ Release verdict: **NO-GO** (see "Release gates" below).
 | M6 — release | Backend + UI integration complete (B, P, E1–E3, I, D2). **Session 6, N:** consented first-run setup installs every selected curated node, including content-policy findings (shipped `__pycache__`, Windows top-level native images) as acknowledged warnings; ComfyUI-PlagueKind-Nodes is selectable again and was installed and imported natively (N28). Accelerators remain experimental and unchecked for the py312 profile. **Packaging done:** `pnpm -C ui tauri build` produced unsigned NSIS (9,336,453 B) and MSI (13,340,672 B) bundles; release exe reserves an 8 MiB stack; updater inert (`s6-packaging.md`). Installers not executed. **Session 7:** unsigned NSIS (9,343,473 B) and MSI (13,336,576 B) rebuilt from `0502a5e`; Linux `.deb` (16,610,902 B) and AppImage (120,621,560 B) built in Docker; the `.deb` installs and runs and the AppImage launches in a GPU container (S7 L2, L3, L8; hashes in `s7-native-register.md`). | Installer run on a disposable VM; Linux bundles on a Linux desktop; Authenticode and updater key custody (owner); native accelerator run. |
 | Docs | **Done (session 6):** README rewritten, docs/DOCUMENTATION.md updated with every `VERIFY` marker resolved (0 left), new [RELEASE_ACCEPTANCE.md](RELEASE_ACCEPTANCE.md) ledger, REQUIREMENTS §9 refreshed. Report: `docs/handoff/evidence/s6-docs-report.md`. | Keep the ledger in step with new evidence. |
 
+## Verification recorded on 2026-10-22 (gallery, Explorer actions, Manager config — uncommitted)
+
+- Scope: FR-GALLERY-1..5 (Gallery page over `ComfyUI/input` and `ComfyUI/output`, `gallery` preview
+  scheme, three.js 0.186.1 lazy 3D viewer), FR-MODEL-7 and FR-NODE-12 (Open folder / Show in
+  Explorer), FR-SETUP-14 (create-only `ComfyUI/user/__manager/config.ini`). Explorers and the first
+  coder pass ran on Codex; advisor (Codex, read-only) ruled GO with corrections, then accepted the
+  staging-directory protocol (no journal or migration) and create-if-missing config. Codex hit its
+  usage limit mid-run; remaining coders were Sonnet 5.5 xhigh. An Opus review of the gallery core
+  found no critical issues; its 8 findings were fixed (handle-based source removal, verified
+  case-only rename, staging removal order, depth limit, no folder creation for Explorer targets,
+  exact-case delete pruning, Unix modes on copies, gate retained by the blocking worker).
+- Windows (main, every `ci.yml` step locally): UI install, lint, typecheck ok; Vitest **36 files /
+  273 tests**; UI build ok (three.js in a separate lazy chunk); `cargo fmt --check` ok; Clippy
+  `-D warnings` ok; `cargo test --workspace --locked` **957 passed, 0 failed, 13 ignored**; release
+  desktop build (`--features tauri/custom-protocol`) ok; architecture self-tests and check OK;
+  coverage domain **92.98 %** (gate 90), application **85.45 %** (gate 80).
+- Linux x64 (Docker `rust:1.99.0-trixie`, `docs/handoff/tooling/linux-check.sh` plus fmt and the
+  core-coverage job): build ok, Clippy clean (after removing a Windows-only test import that was
+  unused on Linux), **935 passed, 0 failed, 11 ignored**; coverage domain **95.40 %**, application
+  **85.20 %**. UI steps were not repeated on Linux.
+- Not yet verified natively: the app was not launched; gallery previews (WebView2/WebKitGTK video
+  codecs, real glTF/OBJ/FBX/STL/PLY files), Explorer actions, Recycle Bin deletes from the gallery,
+  and a real ComfyUI-Manager reading the generated `config.ini`.
+
 ## Verification recorded on 2026-10-20, evening (session 7)
 
 - Package G7 (Google Drive through gdown 6.4.2): explorer Haiku 5.5, advisor read-only Opus stand-in

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-gallery-delete-plan"
+description = "Enables the gallery_delete_plan command without any pre-configured scope."
+commands.allow = ["gallery_delete_plan"]
+
+[[permission]]
+identifier = "deny-gallery-delete-plan"
+description = "Denies the gallery_delete_plan command without any pre-configured scope."
+commands.deny = ["gallery_delete_plan"]

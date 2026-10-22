@@ -90,6 +90,12 @@ export const commands = {
 	modelDelete: (planId: string) => typedError<DeleteReportDto, IpcError>(__TAURI_INVOKE("model_delete", { planId })),
 	/**  Runs only a permanent-delete plan produced after a trash failure and confirmed separately. */
 	modelDeletePermanently: (planId: string) => typedError<DeleteReportDto, IpcError>(__TAURI_INVOKE("model_delete_permanently", { planId })),
+	/**  Shows the model in the system file manager, or the models folder when no location is given. */
+	modelReveal: (location: {
+	rootId: string,
+	/**  Relative to the root, with `/` separators. */
+	path: string,
+} | null) => typedError<null, IpcError>(__TAURI_INVOKE("model_reveal", { location })),
 	modelIdentify: (input: IdentifyInput) => typedError<IdentifyOutcomeDto, IpcError>(__TAURI_INVOKE("model_identify", { input })),
 	/**  Interrupted rename or move operations that still await recovery. */
 	modelOperationStatus: () => typedError<OperationStatusDto[], IpcError>(__TAURI_INVOKE("model_operation_status")),
@@ -104,6 +110,8 @@ export const commands = {
 	 *  because automatic webview link opening is disabled.
 	 */
 	nodeOpenRepository: (repository: string) => typedError<null, IpcError>(__TAURI_INVOKE("node_open_repository", { repository })),
+	/**  Shows the node in the system file manager, or the custom nodes folder when no id is given. */
+	nodeReveal: (id: string | null) => typedError<null, IpcError>(__TAURI_INVOKE("node_reveal", { id })),
 	nodeRegistrySearch: (input: RegistrySearchInput) => typedError<RegistryPageDto, IpcError>(__TAURI_INVOKE("node_registry_search", { input })),
 	nodeList: () => typedError<NodeListDto, IpcError>(__TAURI_INVOKE("node_list")),
 	nodeGitStatus: (input: NodeIdInput) => typedError<NodeGitStatusDto, IpcError>(__TAURI_INVOKE("node_git_status", { input })),
@@ -137,6 +145,19 @@ export const commands = {
 	 */
 	nodeSubscribe: (onEvent: Channel<NodeEventDto>) => typedError<number, IpcError>(__TAURI_INVOKE("node_subscribe", { onEvent })),
 	nodeUnsubscribe: (subscriptionId: number) => typedError<null, IpcError>(__TAURI_INVOKE("node_unsubscribe", { subscriptionId })),
+	galleryList: (directory: GalleryLocationDto) => typedError<GalleryListingDto, IpcError>(__TAURI_INVOKE("gallery_list", { directory })),
+	/**  Renames inside the same folder; the answer is the new location. */
+	galleryRename: (input: GalleryRenameInput) => typedError<GalleryLocationDto, IpcError>(__TAURI_INVOKE("gallery_rename", { input })),
+	/**  Moves every entry into an existing folder, reporting each one separately. */
+	galleryMove: (input: GalleryTransferInput) => typedError<GalleryBatchReportDto, IpcError>(__TAURI_INVOKE("gallery_move", { input })),
+	/**  Copies every entry into an existing folder, reporting each one separately. */
+	galleryCopy: (input: GalleryTransferInput) => typedError<GalleryBatchReportDto, IpcError>(__TAURI_INVOKE("gallery_copy", { input })),
+	/**  Builds the confirmation (entries and total size) a delete must be bound to. */
+	galleryDeletePlan: (items: GalleryEntryRefDto[]) => typedError<GalleryDeletePlanDto, IpcError>(__TAURI_INVOKE("gallery_delete_plan", { items })),
+	/**  Moves the planned entries to the Recycle Bin or Trash, reporting every entry separately. */
+	galleryDelete: (planId: string) => typedError<GalleryBatchReportDto, IpcError>(__TAURI_INVOKE("gallery_delete", { planId })),
+	/**  Shows the entry in the system file manager: a folder opens, a file is selected in its folder. */
+	galleryReveal: (location: GalleryLocationDto) => typedError<null, IpcError>(__TAURI_INVOKE("gallery_reveal", { location })),
 	appUpdateStatus: () => typedError<UpdateStatusDto, IpcError>(__TAURI_INVOKE("app_update_status")),
 	/**  Looks for a newer signed release. The offer it returns replaces every earlier one. */
 	appUpdateCheck: () => typedError<{
@@ -449,6 +470,89 @@ export type FileIdentityDto = {
 	modifiedNs: string,
 	platformId: string,
 	digest: string | null,
+};
+
+export type GalleryAreaDto = "input" | "output";
+
+/**  One result per entry, in request order. */
+export type GalleryBatchReportDto = {
+	results: GalleryItemResultDto[],
+};
+
+/**  A confirmation bound to the fingerprints of the listed entries. */
+export type GalleryDeletePlanDto = {
+	planId: string,
+	items: GalleryDeletePlanItemDto[],
+	totalBytes: number | null,
+};
+
+export type GalleryDeletePlanItemDto = {
+	entry: GalleryEntryRefDto,
+	kind: GalleryEntryKindDto,
+	/**  The size of the entry; for a folder, of everything below it. */
+	bytes: number | null,
+};
+
+export type GalleryEntryDto = {
+	location: GalleryLocationDto,
+	revision: string,
+	name: string,
+	kind: GalleryEntryKindDto,
+	media: GalleryMediaKindDto,
+	/**  Absent for folders. */
+	sizeBytes: number | null,
+	/**  Milliseconds since the Unix epoch. */
+	modifiedMs: number | null,
+};
+
+export type GalleryEntryKindDto = "file" | "directory";
+
+/**  An entry as the UI last saw it; the revision lets the backend refuse a stale reference. */
+export type GalleryEntryRefDto = {
+	location: GalleryLocationDto,
+	revision: string,
+};
+
+export type GalleryItemOutcomeDto = "succeeded" | "unchanged" | "source_retained" | "failed";
+
+export type GalleryItemResultDto = {
+	source: GalleryLocationDto,
+	destination: GalleryLocationDto | null,
+	outcome: GalleryItemOutcomeDto,
+	error: IpcError | null,
+};
+
+export type GalleryListingDto = {
+	directory: GalleryLocationDto,
+	entries: GalleryEntryDto[],
+	warnings: GalleryWarningDto[],
+};
+
+export type GalleryLocationDto = {
+	area: GalleryAreaDto,
+	/**  Relative to the area, with `/` separators. Empty for the area root. */
+	path: string,
+};
+
+export type GalleryMediaKindDto = "image" | "video" | "model3d" | "other";
+
+export type GalleryRenameInput = {
+	entry: GalleryEntryRefDto,
+	newName: string,
+};
+
+/**  Input of a move or a copy: the entries and the existing folder they go to. */
+export type GalleryTransferInput = {
+	items: GalleryEntryRefDto[],
+	destination: GalleryLocationDto,
+};
+
+export type GalleryWarningCodeDto = "unsafe_name" | "link" | "special" | "unreadable" | "staging_leftover";
+
+export type GalleryWarningDto = {
+	/**  A display name only; never a path. */
+	name: string | null,
+	code: GalleryWarningCodeDto,
 };
 
 export type GpuDto = {

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import {
@@ -37,6 +38,7 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
     nodeOperationStatus: vi.fn(),
     nodeRegistrySearch: vi.fn(),
     nodeOpenRepository: vi.fn(),
+    nodeReveal: vi.fn(),
     nodeGitStatus: vi.fn(),
     nodePrepareRegistry: vi.fn(),
     nodePrepareGit: vi.fn(),
@@ -484,4 +486,24 @@ it('shows_a_node_recovery_failure_from_a_commit_with_a_rescan_action', async () 
   await prepareFromGit()
   fireEvent.click(await screen.findByRole('button', { name: 'Rescan nodes' }))
   await waitFor(() => expect(gateway.nodeRescan).toHaveBeenCalledTimes(1))
+})
+
+it('opens_the_custom_nodes_folder_from_the_toolbar', async () => {
+  vi.mocked(gateway.nodeReveal).mockResolvedValue(null)
+  mount()
+  await loaded()
+  fireEvent.click(button('Open folder'))
+  await waitFor(() => expect(gateway.nodeReveal).toHaveBeenCalledTimes(1))
+  expect(gateway.nodeReveal).toHaveBeenCalledWith(null)
+})
+
+it('shows_the_active_node_in_the_system_file_manager_and_toasts_a_failure', async () => {
+  vi.mocked(gateway.nodeReveal).mockRejectedValue(
+    new IpcClientError('explorer_failed', 'The file manager could not be opened.'),
+  )
+  mount()
+  await loaded()
+  fireEvent.click(button('Show in Explorer'))
+  expect(gateway.nodeReveal).toHaveBeenCalledWith('node-1')
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('The file manager could not be opened.'))
 })

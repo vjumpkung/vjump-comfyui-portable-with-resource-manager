@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-gallery-reveal"
+description = "Enables the gallery_reveal command without any pre-configured scope."
+commands.allow = ["gallery_reveal"]
+
+[[permission]]
+identifier = "deny-gallery-reveal"
+description = "Denies the gallery_reveal command without any pre-configured scope."
+commands.deny = ["gallery_reveal"]

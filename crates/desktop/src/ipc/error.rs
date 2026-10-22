@@ -1,6 +1,7 @@
 use application::{
     comfy_runtime::{RuntimeBlock, RuntimeError},
     environment::{EnvRepoError, EnvironmentAppError, ProvisionError, RootSwitchError},
+    gallery::GalleryError,
     models::{acquisition::DownloadError, library::LibraryError},
     settings::{CredentialStoreError, SettingsAppError, SettingsRepoError},
     shared::GateError,
@@ -354,6 +355,13 @@ impl From<DownloadError> for IpcError {
 impl From<LibraryError> for IpcError {
     fn from(error: LibraryError) -> Self {
         let (code, message) = super::library_dto::describe(error.0);
+        Self::new(code, message)
+    }
+}
+
+impl From<GalleryError> for IpcError {
+    fn from(error: GalleryError) -> Self {
+        let (code, message) = super::gallery_dto::describe(error.0);
         Self::new(code, message)
     }
 }

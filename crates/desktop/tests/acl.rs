@@ -259,6 +259,11 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
             HandlerError,
         ),
         (
+            "model_reveal",
+            json!({ "location": { "rootId": "models", "path": "checkpoints/none.safetensors" } }),
+            HandlerError,
+        ),
+        (
             "model_identify",
             json!({
                 "input": {
@@ -284,6 +289,7 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
             json!({ "repository": "https://github.com/example/node" }),
             Success,
         ),
+        ("node_reveal", json!({ "id": null }), HandlerError),
         (
             "node_registry_search",
             json!({ "input": { "search": "", "page": 1, "limit": 50, "refresh": false } }),
@@ -384,6 +390,72 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
         (
             "node_unsubscribe",
             json!({ "subscriptionId": 4_000_000 }),
+            HandlerError,
+        ),
+        // The gallery adapters are real, so these never count as a fake port call; the reveal
+        // commands may reach the fake shell or answer with a sanitized error.
+        (
+            "gallery_list",
+            json!({ "directory": { "area": "output", "path": "" } }),
+            HandlerError,
+        ),
+        (
+            "gallery_rename",
+            json!({
+                "input": {
+                    "entry": {
+                        "location": { "area": "output", "path": "none.png" },
+                        "revision": "revision-unknown"
+                    },
+                    "newName": "other.png"
+                }
+            }),
+            HandlerError,
+        ),
+        (
+            "gallery_move",
+            json!({
+                "input": {
+                    "items": [{
+                        "location": { "area": "output", "path": "none.png" },
+                        "revision": "revision-unknown"
+                    }],
+                    "destination": { "area": "output", "path": "folder" }
+                }
+            }),
+            HandlerError,
+        ),
+        (
+            "gallery_copy",
+            json!({
+                "input": {
+                    "items": [{
+                        "location": { "area": "output", "path": "none.png" },
+                        "revision": "revision-unknown"
+                    }],
+                    "destination": { "area": "output", "path": "folder" }
+                }
+            }),
+            HandlerError,
+        ),
+        (
+            "gallery_delete_plan",
+            json!({
+                "items": [{
+                    "location": { "area": "output", "path": "none.png" },
+                    "revision": "revision-unknown"
+                }]
+            }),
+            HandlerError,
+        ),
+        (
+            "gallery_delete",
+            json!({ "planId": "plan-unknown" }),
+            HandlerError,
+        ),
+        (
+            "gallery_reveal",
+            json!({ "location": { "area": "output", "path": "none.png" } }),
             HandlerError,
         ),
         // The test app has no updater configuration: the handlers answer with

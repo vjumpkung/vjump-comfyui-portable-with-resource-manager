@@ -449,6 +449,7 @@ impl Execution {
             )));
         }
         if self.run.request.mode == SetupMode::Repair && self.repair_check().await? {
+            deps.manager_config.ensure_manager_config(&root).await?;
             return Ok(StepOutcome::NothingToRepair);
         }
         self.ensure_env().await?;
@@ -1532,6 +1533,7 @@ impl Execution {
                 "protected versions changed during final verification".into(),
             ));
         }
+        deps.manager_config.ensure_manager_config(&root).await?;
         let now = deps.clock.now();
         let summary = report.summary();
         let env = self.env_mut()?;

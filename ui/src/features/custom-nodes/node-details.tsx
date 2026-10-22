@@ -1,4 +1,4 @@
-import { ArrowUpCircle, ExternalLink, Power, PowerOff, RotateCw, Trash2, TriangleAlert } from 'lucide-react'
+import { ArrowUpCircle, ExternalLink, FolderOpen, Power, PowerOff, RotateCw, Trash2, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { useTranslation } from '@/shared/i18n'
@@ -47,6 +47,14 @@ export function NodeDetails({
     }
   }
 
+  async function revealFolder() {
+    try {
+      await gateway.nodeReveal(node.id)
+    } catch (error) {
+      toast.error(errorMessage(error))
+    }
+  }
+
   return (
     <section aria-label={t('customNodes.actionsFor', { name: node.name })} className="flex flex-col gap-4 rounded-xl border bg-card p-4">
       <div className="min-w-0">
@@ -75,6 +83,10 @@ export function NodeDetails({
         <Button variant="destructive" disabled={busy} onClick={onUninstall}>
           <Trash2 aria-hidden="true" />
           {t('common.uninstall')}
+        </Button>
+        <Button variant="outline" onClick={() => void revealFolder()}>
+          <FolderOpen aria-hidden="true" />
+          {t('common.showInExplorer')}
         </Button>
         {repository !== null && (
           <Button variant="ghost" onClick={() => void openRepository()}>

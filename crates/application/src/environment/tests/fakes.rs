@@ -198,6 +198,8 @@ pub struct World {
     pub validation: Mutex<Option<PythonValidationReport>>,
     pub venv_version: Mutex<PythonVersion>,
     pub checkout: Mutex<Checkout>,
+    pub manager_config_calls: Mutex<Vec<PathBuf>>,
+    pub manager_config_outcome: Mutex<ManagerConfigOutcome>,
     pub node_requirements: Mutex<Vec<PathBuf>>,
     pub node_outcomes: Mutex<BTreeMap<(String, String, String), DependencyState>>,
     pub node_scan_retained: Mutex<Vec<bool>>,
@@ -251,6 +253,8 @@ impl World {
             validation: Mutex::default(),
             venv_version: Mutex::new(PythonVersion::new(3, 13, 16)),
             checkout: Mutex::new(Checkout::Absent),
+            manager_config_calls: Mutex::default(),
+            manager_config_outcome: Mutex::new(ManagerConfigOutcome::Absent),
             node_requirements: Mutex::default(),
             node_outcomes: Mutex::default(),
             node_scan_retained: Mutex::default(),
@@ -295,6 +299,7 @@ impl World {
             wheels: self.clone(),
             verifier: self.clone(),
             source: self.clone(),
+            manager_config: self.clone(),
             node_requirements: self.clone(),
             envs: self.clone(),
             runs: self.clone(),
@@ -1118,6 +1123,22 @@ impl EnvVerifier for World {
             comfy_path: Some("ComfyUI/comfy".into()),
             accelerators: vec![("sageattention".into(), false)],
         })
+    }
+}
+
+#[async_trait]
+impl ManagerConfigWriter for World {
+    async fn ensure_manager_config(
+        &self,
+        install_root: &Path,
+    ) -> Result<ManagerConfigOutcome, ProvisionError> {
+        self.call("ensure_manager_config");
+        self.manager_config_calls
+            .lock()
+            .unwrap()
+            .push(install_root.to_owned());
+        self.injected("ensure_manager_config")?;
+        Ok(*self.manager_config_outcome.lock().unwrap())
     }
 }
 

@@ -701,6 +701,23 @@ pub trait ComfySource: Send + Sync {
 // Persistence
 // ---------------------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagerConfigOutcome {
+    Absent,
+    Created,
+    Kept,
+}
+
+#[async_trait]
+pub trait ManagerConfigWriter: Send + Sync {
+    /// Creates `ComfyUI/user/__manager/config.ini` with the default contents when
+    /// ComfyUI-Manager is installed and the file is missing. Never replaces an existing file.
+    async fn ensure_manager_config(
+        &self,
+        install_root: &Path,
+    ) -> Result<ManagerConfigOutcome, ProvisionError>;
+}
+
 #[async_trait]
 pub trait EnvironmentRepository: Send + Sync {
     async fn list(&self) -> Result<Vec<PythonEnvironment>, EnvRepoError>;

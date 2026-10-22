@@ -10,6 +10,8 @@ pub mod dto;
 pub mod env_commands;
 pub mod env_dto;
 pub mod error;
+pub mod gallery_commands;
+pub mod gallery_dto;
 pub mod library_commands;
 pub mod library_dto;
 pub mod node_commands;

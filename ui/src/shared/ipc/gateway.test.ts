@@ -13,6 +13,15 @@ const commands = vi.hoisted(() => ({
   setupNewInstall: vi.fn(),
   envPipApply: vi.fn(),
   nodeOpenRepository: vi.fn(),
+  nodeReveal: vi.fn(),
+  modelReveal: vi.fn(),
+  galleryList: vi.fn(),
+  galleryRename: vi.fn(),
+  galleryMove: vi.fn(),
+  galleryCopy: vi.fn(),
+  galleryDeletePlan: vi.fn(),
+  galleryDelete: vi.fn(),
+  galleryReveal: vi.fn(),
   nodeGitStatus: vi.fn(),
   nodeSubscribe: vi.fn(),
   appUpdateStatus: vi.fn(),
@@ -26,6 +35,9 @@ vi.mock('@tauri-apps/api/core', () => ({
   Channel: class {
     onmessage?: (event: unknown) => void
   },
+  // The Windows form of Tauri's helper; a plain function so `resetAllMocks` keeps it.
+  convertFileSrc: (path: string, protocol = 'asset') =>
+    `http://${protocol}.localhost/${encodeURIComponent(path)}`,
 }))
 
 import { gateway, IpcClientError, type CommitInput, type SetupActionDto } from './gateway'
@@ -121,6 +133,83 @@ describe('gateway', () => {
     commands.nodeGitStatus.mockResolvedValue({ status: 'ok', data: status })
     await expect(gateway.nodeGitStatus('node-1')).resolves.toEqual(status)
     expect(commands.nodeGitStatus).toHaveBeenCalledWith({ nodeId: 'node-1' })
+  })
+
+  it('reveal_commands_send_the_location_or_null', async () => {
+    commands.modelReveal.mockResolvedValue({ status: 'ok', data: null })
+    commands.nodeReveal.mockResolvedValue({ status: 'ok', data: null })
+    const location = { rootId: 'models', path: 'loras/a.safetensors' }
+    await expect(gateway.modelReveal(location)).resolves.toBeNull()
+    expect(commands.modelReveal).toHaveBeenLastCalledWith(location)
+    await gateway.modelReveal(null)
+    expect(commands.modelReveal).toHaveBeenLastCalledWith(null)
+    await expect(gateway.nodeReveal('node-1')).resolves.toBeNull()
+    expect(commands.nodeReveal).toHaveBeenLastCalledWith('node-1')
+    await gateway.nodeReveal(null)
+    expect(commands.nodeReveal).toHaveBeenLastCalledWith(null)
+  })
+
+  it('gallery_commands_send_exact_payloads_and_keep_stable_error_codes', async () => {
+    const directory = { area: 'output' as const, path: 'a/b' }
+    const entry = { location: { area: 'output' as const, path: 'a/b/c.png' }, revision: 'r1' }
+    const listing = { directory, entries: [], warnings: [] }
+    const report = { results: [] }
+    commands.galleryList.mockResolvedValue({ status: 'ok', data: listing })
+    commands.galleryRename.mockResolvedValue({ status: 'ok', data: entry.location })
+    commands.galleryMove.mockResolvedValue({ status: 'ok', data: report })
+    commands.galleryCopy.mockResolvedValue({ status: 'ok', data: report })
+    commands.galleryDeletePlan.mockResolvedValue({ status: 'ok', data: { planId: 'p', items: [], totalBytes: 0 } })
+    commands.galleryDelete.mockResolvedValue({ status: 'ok', data: report })
+    commands.galleryReveal.mockResolvedValue({ status: 'ok', data: null })
+
+    await expect(gateway.galleryList(directory)).resolves.toBe(listing)
+    expect(commands.galleryList).toHaveBeenCalledWith(directory)
+    await gateway.galleryRename({ entry, newName: 'd.png' })
+    expect(commands.galleryRename).toHaveBeenCalledWith({ entry, newName: 'd.png' })
+    const transfer = { items: [entry], destination: { area: 'input' as const, path: '' } }
+    await expect(gateway.galleryMove(transfer)).resolves.toBe(report)
+    expect(commands.galleryMove).toHaveBeenCalledWith(transfer)
+    await gateway.galleryCopy(transfer)
+    expect(commands.galleryCopy).toHaveBeenCalledWith(transfer)
+    await gateway.galleryDeletePlan([entry])
+    expect(commands.galleryDeletePlan).toHaveBeenCalledWith([entry])
+    await gateway.galleryDelete('p')
+    expect(commands.galleryDelete).toHaveBeenCalledWith('p')
+    await expect(gateway.galleryReveal(directory)).resolves.toBeNull()
+    expect(commands.galleryReveal).toHaveBeenCalledWith(directory)
+
+    commands.galleryList.mockResolvedValue({
+      status: 'error',
+      error: { code: 'gallery_not_installed', message: 'Install ComfyUI first.' },
+    })
+    await expect(gateway.galleryList(directory)).rejects.toMatchObject({
+      name: 'IpcClientError', code: 'gallery_not_installed', message: 'Install ComfyUI first.',
+    })
+  })
+
+  it('gallery_preview_url_is_hierarchical_and_encodes_every_segment', () => {
+    const base = gateway.galleryPreviewBase()
+    expect(base).toBe('http://gallery.localhost/')
+    const url = (path: string, revision = 'r1') =>
+      gateway.galleryPreviewUrl({ area: 'output', path }, revision)
+
+    expect(url('cat.png')).toBe(`${base}output/cat.png?v=r1`)
+    // Nested folders keep their slashes so glTF-relative resources resolve beside the model.
+    expect(url('models/robot/robot.gltf')).toBe(`${base}output/models/robot/robot.gltf?v=r1`)
+    expect(url('my folder/my photo.png')).toBe(`${base}output/my%20folder/my%20photo.png?v=r1`)
+    expect(url('a#b/c?d.png')).toBe(`${base}output/a%23b/c%3Fd.png?v=r1`)
+    expect(url('รูป/แมว ส้ม.png')).toBe(
+      `${base}output/%E0%B8%A3%E0%B8%B9%E0%B8%9B/%E0%B9%81%E0%B8%A1%E0%B8%A7%20%E0%B8%AA%E0%B9%89%E0%B8%A1.png?v=r1`,
+    )
+    expect(url('100%/x.png')).toBe(`${base}output/100%25/x.png?v=r1`)
+    // The revision is a cache buster and may contain reserved characters.
+    expect(url('a.png', 'v 1&x=2#')).toBe(`${base}output/a.png?v=v%201%26x%3D2%23`)
+    // Redundant slashes never produce empty segments, and the area root has no path.
+    expect(url('/a//b/')).toBe(`${base}output/a/b?v=r1`)
+    expect(url('')).toBe(`${base}output/?v=r1`)
+    expect(gateway.galleryPreviewUrl({ area: 'input', path: 'x.png' }, 'r')).toBe(
+      `${base}input/x.png?v=r`,
+    )
   })
 
   it('app_update_commands_send_exact_payloads_and_keep_the_channel_inside', async () => {

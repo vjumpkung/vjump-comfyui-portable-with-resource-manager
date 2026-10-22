@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -42,6 +42,7 @@ vi.mock('@/features/custom-nodes', () => ({
   },
 }))
 vi.mock('@/features/downloads', () => ({ DownloadsPage: () => null }))
+vi.mock('@/features/gallery', () => ({ GalleryPage: () => <p>Gallery feature</p> }))
 vi.mock('@/features/library', () => ({ LibraryPage: () => null }))
 vi.mock('@/features/overview', () => ({ OverviewPage: () => <p>Overview page</p> }))
 vi.mock('@/features/settings', () => ({ SettingsPage: () => null }))
@@ -73,6 +74,17 @@ it('custom_nodes_navigation_renders_the_feature', () => {
   expect(screen.queryByText('Custom Nodes feature')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Overview' }))
   expect(screen.getByText('Overview page')).toBeTruthy()
+})
+
+it('gallery_navigation_follows_custom_nodes_and_renders_the_feature', () => {
+  render(<AppShell status={{ ...setupStatus, phase: 'ready' }} onSetup={onSetup} onResume={onResume} />)
+  const labels = within(screen.getByRole('navigation', { name: 'Main' }))
+    .getAllByRole('button')
+    .map((item) => item.getAttribute('aria-label'))
+  expect(labels.indexOf('Gallery')).toBe(labels.indexOf('Custom Nodes') + 1)
+  fireEvent.click(screen.getByRole('button', { name: 'Gallery' }))
+  expect(screen.getByText('Gallery feature')).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Gallery' }).getAttribute('aria-current')).toBe('page')
 })
 
 it('reports_setup_in_progress_as_maintenance_busy', () => {

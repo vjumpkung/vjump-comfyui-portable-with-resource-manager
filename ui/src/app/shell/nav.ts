@@ -2,6 +2,7 @@ import {
   Boxes,
   Cpu,
   Download,
+  Images,
   LayoutDashboard,
   Puzzle,
   Settings,
@@ -15,6 +16,7 @@ export type NavId =
   | 'downloads'
   | 'models'
   | 'custom-nodes'
+  | 'gallery'
   | 'environment'
   | 'settings'
 
@@ -30,6 +32,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { id: 'downloads', labelKey: 'nav.downloads', icon: Download },
   { id: 'models', labelKey: 'nav.models', icon: Boxes },
   { id: 'custom-nodes', labelKey: 'nav.customNodes', icon: Puzzle },
+  { id: 'gallery', labelKey: 'nav.gallery', icon: Images },
   { id: 'environment', labelKey: 'nav.environment', icon: Cpu },
   { id: 'settings', labelKey: 'nav.settings', icon: Settings },
 ]

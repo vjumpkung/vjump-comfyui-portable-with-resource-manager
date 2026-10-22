@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-node-reveal"
+description = "Enables the node_reveal command without any pre-configured scope."
+commands.allow = ["node_reveal"]
+
+[[permission]]
+identifier = "deny-node-reveal"
+description = "Denies the node_reveal command without any pre-configured scope."
+commands.deny = ["node_reveal"]

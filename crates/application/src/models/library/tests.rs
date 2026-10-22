@@ -2,7 +2,7 @@
 //! identification, with fault injection at every file operation.
 use super::*;
 use crate::shared::{
-    Clock, IdGenerator,
+    Clock, ExplorerTarget, IdGenerator,
     path_locks::{PathLease, PathLockError, PathLocks},
 };
 use crate::test_support::block_on;
@@ -16,6 +16,7 @@ use domain::{
 };
 use std::{
     collections::{BTreeMap, HashSet},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -32,6 +33,7 @@ struct World {
     rows: BTreeMap<String, ModelFile>,
     journal: BTreeMap<String, OperationRecord>,
     locked: HashSet<String>,
+    dirs: HashSet<String>,
     reserved: HashSet<String>,
     trash_fails: HashSet<String>,
     fail_relocate_to: HashSet<String>,
@@ -216,6 +218,23 @@ impl ModelFiles for Fake {
     }
     async fn read_sidecar(&self, location: &ModelLocation, _: usize) -> Result<Option<Vec<u8>>> {
         Ok(self.world().files.get(&location.key()).map(|f| f.1.clone()))
+    }
+    async fn explorer_target(&self, location: Option<&ModelLocation>) -> Result<ExplorerTarget> {
+        let models = PathBuf::from("/install/ComfyUI/models");
+        let Some(location) = location else {
+            return Ok(ExplorerTarget::OpenFolder(models));
+        };
+        if location.path.components().is_empty() {
+            return Ok(ExplorerTarget::OpenFolder(models));
+        }
+        let path = models.join(location.display());
+        if self.world().files.contains_key(&location.key()) {
+            Ok(ExplorerTarget::RevealItem(path))
+        } else if self.world().dirs.contains(&location.key()) {
+            Ok(ExplorerTarget::OpenFolder(path))
+        } else {
+            Err(LibraryErrorCode::NotFound.into())
+        }
     }
 }
 #[async_trait]
@@ -832,5 +851,40 @@ fn moves_must_target_a_registered_location_below_a_category() {
             .unwrap();
         assert_eq!(placed.location.display(), "loras/sub/a.safetensors");
         assert!(has(&shared, "loras/sub/a.safetensors"));
+    });
+}
+
+#[test]
+fn locating_a_model_asks_the_file_adapter_for_a_folder_or_a_revealed_file() {
+    block_on(async {
+        let (shared, deps) = setup();
+        let model = add_model(&shared, "checkpoints/a.safetensors", 10, 1);
+        shared.lock().unwrap().dirs.insert(loc("checkpoints").key());
+        let locate = LocateModel::new(deps);
+        let models = PathBuf::from("/install/ComfyUI/models");
+        assert_eq!(
+            locate.execute(None).await.unwrap(),
+            ExplorerTarget::OpenFolder(models.clone())
+        );
+        assert_eq!(
+            locate.execute(Some(&model)).await.unwrap(),
+            ExplorerTarget::RevealItem(models.join("checkpoints/a.safetensors"))
+        );
+        assert_eq!(
+            locate.execute(Some(&loc("checkpoints"))).await.unwrap(),
+            ExplorerTarget::OpenFolder(models.join("checkpoints"))
+        );
+        assert_eq!(
+            locate.execute(Some(&loc(""))).await.unwrap(),
+            ExplorerTarget::OpenFolder(models)
+        );
+        assert_eq!(
+            locate
+                .execute(Some(&loc("checkpoints/missing.pt")))
+                .await
+                .unwrap_err()
+                .0,
+            LibraryErrorCode::NotFound
+        );
     });
 }

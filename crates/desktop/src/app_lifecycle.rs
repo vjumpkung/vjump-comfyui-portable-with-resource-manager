@@ -7,9 +7,9 @@
 
 use std::{
     future::Future,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -19,11 +19,12 @@ use application::{
         CloseAction, InventoryState, RuntimeError, RuntimeEvent, RuntimeStatus, RuntimeSupervisor,
         close_action,
     },
-    shared::{MaintenanceGate, MaintenanceLease},
+    shared::{ExplorerTarget, MaintenanceGate, MaintenanceLease},
 };
 use domain::comfy_runtime::Lifecycle;
 use tauri::{AppHandle, Manager, Runtime, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_opener::OpenerExt;
 use tokio::sync::watch;
 
 use crate::{MANAGER_WINDOW, comfy_window::COMFYUI_WINDOW, ipc::error::IpcError, state::AppState};
@@ -35,6 +36,39 @@ pub trait ShellActions: Send + Sync {
     fn open_browser(&self, url: tauri::Url);
     fn perform(&self, action: CloseAction);
     fn request_restart(&self);
+    /// Shows a folder, or a folder with one item selected, in the system file manager. Blocks
+    /// until the launch returns, so callers run it off the async worker threads.
+    fn open_explorer(&self, target: ExplorerTarget) -> Result<(), IpcError>;
+}
+
+fn explorer_failed() -> IpcError {
+    IpcError::new("explorer_failed", "The file manager could not be opened.")
+}
+
+/// Pinned model roots are canonical, so their paths carry the Windows verbatim prefix. The file
+/// manager only understands plain drive and UNC paths.
+fn without_verbatim_prefix(path: &Path) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// Hands the target to the shell on a blocking thread.
+pub(crate) async fn open_explorer(
+    state: &AppState,
+    target: ExplorerTarget,
+) -> Result<(), IpcError> {
+    let shell = Arc::clone(state.shell()?);
+    tauri::async_runtime::spawn_blocking(move || shell.open_explorer(target))
+        .await
+        .map_err(|_| explorer_failed())?
 }
 
 pub struct TauriShell<R: Runtime>(pub AppHandle<R>);
@@ -71,6 +105,23 @@ impl<R: Runtime> ShellActions for TauriShell<R> {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             app.restart();
         });
+    }
+
+    fn open_explorer(&self, target: ExplorerTarget) -> Result<(), IpcError> {
+        let opener = self.0.opener();
+        let result = match target {
+            ExplorerTarget::OpenFolder(path) => opener.open_path(
+                without_verbatim_prefix(&path).to_string_lossy(),
+                None::<&str>,
+            ),
+            ExplorerTarget::RevealItem(path) => {
+                opener.reveal_item_in_dir(without_verbatim_prefix(&path))
+            }
+        };
+        result.map_err(|_| {
+            tracing::warn!("the file manager could not be opened");
+            explorer_failed()
+        })
     }
 }
 
@@ -797,5 +848,25 @@ mod tests {
         assert_eq!(close.prepare_recovery(&gate).await, Ok(CloseAction::Exit));
         assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
         assert_eq!(close.prepare_recovery(&gate).await, Ok(CloseAction::Exit));
+    }
+
+    #[test]
+    fn the_verbatim_prefix_is_stripped_before_the_file_manager_opens_a_path() {
+        for (path, expected) in [
+            (
+                r"\\?\C:\Users\me\ComfyUI\output",
+                r"C:\Users\me\ComfyUI\output",
+            ),
+            (r"\\?\UNC\server\share\ComfyUI", r"\\server\share\ComfyUI"),
+            (r"C:\Users\me\ComfyUI", r"C:\Users\me\ComfyUI"),
+            (r"\\server\share\ComfyUI", r"\\server\share\ComfyUI"),
+            ("/home/me/ComfyUI/output", "/home/me/ComfyUI/output"),
+        ] {
+            assert_eq!(
+                without_verbatim_prefix(Path::new(path)),
+                PathBuf::from(expected),
+                "{path}"
+            );
+        }
     }
 }

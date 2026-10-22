@@ -1,4 +1,5 @@
 use super::{operations::*, ports::*};
+use crate::shared::ExplorerTarget;
 use domain::{models::library::ModelLocation, shared::model_values::RelativeModelPath};
 
 pub struct ListModels {
@@ -175,5 +176,18 @@ impl GetLibraryStatus {
     }
     pub fn execute(&self) -> LibraryStatus {
         self.deps.control.status()
+    }
+}
+
+/// Resolves where "open in Explorer" should go for a model, a folder, or the models root.
+pub struct LocateModel {
+    deps: LibraryDeps,
+}
+impl LocateModel {
+    pub fn new(deps: LibraryDeps) -> Self {
+        Self { deps }
+    }
+    pub async fn execute(&self, location: Option<&ModelLocation>) -> Result<ExplorerTarget> {
+        self.deps.files.explorer_target(location).await
     }
 }

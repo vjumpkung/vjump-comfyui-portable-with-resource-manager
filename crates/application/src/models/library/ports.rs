@@ -1,3 +1,4 @@
+use crate::shared::ExplorerTarget;
 use async_trait::async_trait;
 use domain::{
     models::{
@@ -194,6 +195,10 @@ pub trait ModelFiles: Send + Sync {
     /// The sidecar file content (bounded) or `None`.
     async fn read_sidecar(&self, location: &ModelLocation, limit: usize)
     -> Result<Option<Vec<u8>>>;
+    /// Where the system file manager should open. `None` is the default models root. A file is
+    /// revealed; a directory, or the empty path of a root, is opened. Fails with `NotFound` when
+    /// the target does not exist and never creates anything.
+    async fn explorer_target(&self, location: Option<&ModelLocation>) -> Result<ExplorerTarget>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

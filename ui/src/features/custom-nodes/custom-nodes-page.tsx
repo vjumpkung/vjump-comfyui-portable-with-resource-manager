@@ -1,13 +1,16 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { LoaderCircle, Puzzle, Search, TriangleAlert, Wrench } from 'lucide-react'
+import { FolderOpen, LoaderCircle, Puzzle, Search, TriangleAlert, Wrench } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { toast } from 'sonner'
 
 import { useTranslation } from '@/shared/i18n'
-import type {
-  ComfyStatusDto,
-  InstalledNodeDto,
-  StartResultDto,
+import {
+  gateway,
+  type ComfyStatusDto,
+  type InstalledNodeDto,
+  type StartResultDto,
 } from '@/shared/ipc/gateway'
+import { errorMessage } from '@/shared/lib/display'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { EmptyState } from '@/shared/ui/empty-state'
@@ -135,6 +138,14 @@ export function CustomNodesPage({
     }
   }
 
+  async function openFolder() {
+    try {
+      await gateway.nodeReveal(null)
+    } catch (error) {
+      toast.error(errorMessage(error))
+    }
+  }
+
   async function restartComfy() {
     setRestart({ kind: 'working' })
     try {
@@ -196,6 +207,10 @@ export function CustomNodesPage({
           </Button>
           <Button variant="outline" disabled={updateAllBlocked} onClick={() => setUpdateAll(updateScope)}>
             {selectedNodes.length > 0 ? t('customNodes.updateSelected') : t('common.updateAll')} ({updateCount})
+          </Button>
+          <Button variant="outline" onClick={() => void openFolder()}>
+            <FolderOpen aria-hidden="true" />
+            {t('common.openFolder')}
           </Button>
         </div>
       </div>

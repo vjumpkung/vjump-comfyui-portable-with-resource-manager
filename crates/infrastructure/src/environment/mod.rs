@@ -5,6 +5,7 @@ pub mod curated;
 pub mod exec;
 pub mod hardware;
 pub mod layout;
+pub mod manager_config;
 pub mod manifest;
 pub mod packages;
 pub mod pins;

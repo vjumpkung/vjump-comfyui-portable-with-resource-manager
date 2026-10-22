@@ -19,12 +19,13 @@ use crate::{
     shared::{
         archive::ExtractLimits,
         download::sha256_hex,
-        model_paths::{PinnedDirectory, identity},
+        model_paths::{PinnedDirectory, identity, pin_absolute},
     },
 };
 use application::{
     custom_nodes::*,
     environment::{Retained, StepContext},
+    shared::ExplorerTarget,
 };
 use async_trait::async_trait;
 use domain::{
@@ -83,6 +84,47 @@ fn parse_requirement_lines(text: &str) -> Vec<String> {
         .take(500)
         .map(|l| l.chars().take(300).collect())
         .collect()
+}
+
+/// What "open in Explorer" shows for a node, or the custom nodes folder for `None`. It is pinned
+/// from the install root without following links and without creating anything, so it works
+/// before the app has written any of its own scaffolding below `custom_nodes`.
+fn locate(root: &Path, node: Option<&InstalledNode>) -> Result<ExplorerTarget, NodeAppError> {
+    let missing = |error: io::Error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            NodeAppError::NotFound
+        } else {
+            filesystem(error)
+        }
+    };
+    let install = pin_absolute(root).map_err(missing)?;
+    let comfy = install
+        .child(&safe_name("ComfyUI"), false)
+        .map_err(missing)?;
+    let custom_nodes = comfy
+        .child(&safe_name("custom_nodes"), false)
+        .map_err(missing)?;
+    let Some(node) = node else {
+        return Ok(ExplorerTarget::OpenFolder(custom_nodes.path.clone()));
+    };
+    let parent = if node.enabled {
+        custom_nodes
+    } else {
+        custom_nodes
+            .child(&safe_name(".disabled"), false)
+            .map_err(missing)?
+    };
+    let is_directory = parent
+        .open_entry(&node.name)
+        .and_then(|entry| entry.metadata())
+        .map_err(missing)?
+        .is_dir();
+    let path = parent.path.join(node.name.as_str());
+    Ok(if is_directory {
+        ExplorerTarget::OpenFolder(path)
+    } else {
+        ExplorerTarget::RevealItem(path)
+    })
 }
 
 fn remove_owned(entry: &Entry, expected: &FileIdentity) -> Result<(), NodeAppError> {
@@ -1206,6 +1248,15 @@ impl NodeFiles for LocalNodeFiles {
             }
         }
         Ok(nodes)
+    }
+
+    async fn explorer_target(
+        &self,
+        root: &Path,
+        node: Option<&InstalledNode>,
+    ) -> Result<ExplorerTarget, NodeAppError> {
+        let (root, node) = (root.to_owned(), node.cloned());
+        blocking(move || locate(&root, node.as_ref())).await
     }
 }
 

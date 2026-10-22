@@ -72,6 +72,7 @@ fn validation(
 #[test]
 fn first_run_executes_the_steps_in_order_and_activates() {
     let world = World::new();
+    *world.manager_config_outcome.lock().unwrap() = ManagerConfigOutcome::Created;
     let run_id = register(&world, request()).unwrap();
     let (outcome, sink) = execute(&world, &run_id);
     assert_eq!(outcome, RunOutcome::Succeeded);
@@ -92,6 +93,7 @@ fn first_run_executes_the_steps_in_order_and_activates() {
         "verify_triton",
         "install:requirements",
         "verify_final",
+        "ensure_manager_config",
         "publish_manifest",
         "commit_activation",
     ];
@@ -102,6 +104,10 @@ fn first_run_executes_the_steps_in_order_and_activates() {
         world.calls()
     );
 
+    assert_eq!(
+        *world.manager_config_calls.lock().unwrap(),
+        [PathBuf::from(ROOT)]
+    );
     let run = world.run(&run_id);
     assert_eq!(run.status, RunStatus::Succeeded);
     assert_eq!(run.activation, ActivationPhase::Committed);
@@ -132,6 +138,31 @@ fn first_run_executes_the_steps_in_order_and_activates() {
         assert_eq!(run.step(step).status, StepStatus::Skipped, "{step:?}");
     }
     assert!(!sink.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn manager_configuration_failure_fails_final_verification_before_activation() {
+    let world = World::new();
+    world.fail(
+        "ensure_manager_config",
+        ProvisionError::Failed("manager configuration failed".into()),
+    );
+    let run_id = register(&world, request()).unwrap();
+    let RunOutcome::Failed(failure) = execute(&world, &run_id).0 else {
+        panic!("manager configuration failure must fail the run")
+    };
+    assert_eq!(failure.step, StepId::FinalVerify);
+    assert_eq!(
+        world.run(&run_id).step(StepId::FinalVerify).status,
+        StepStatus::Failed
+    );
+    assert_eq!(
+        *world.manager_config_calls.lock().unwrap(),
+        [PathBuf::from(ROOT)]
+    );
+    assert!(world.active_id().is_none());
+    assert_eq!(world.count("publish_manifest"), 0);
+    assert_eq!(world.count("commit_activation"), 0);
 }
 
 #[test]
@@ -1010,6 +1041,7 @@ fn switching_to_the_active_venv_is_rejected() {
 #[test]
 fn repair_does_nothing_when_the_selected_environment_verifies() {
     let world = World::new();
+    *world.manager_config_outcome.lock().unwrap() = ManagerConfigOutcome::Kept;
     let env = world.seed_active_env("env-old", PythonVersion::new(3, 13, 16));
     world.node_requirements.lock().unwrap().push(PathBuf::from(
         "/install/ComfyUI/custom_nodes/ready/requirements.txt",
@@ -1018,6 +1050,11 @@ fn repair_does_nothing_when_the_selected_environment_verifies() {
     let run_id = register(&world, resetup_request(SetupMode::Repair)).unwrap();
     let (outcome, _) = execute(&world, &run_id);
     assert_eq!(outcome, RunOutcome::NothingToRepair);
+    assert_eq!(
+        *world.manager_config_calls.lock().unwrap(),
+        [PathBuf::from(ROOT)]
+    );
+    assert!(world.position("verify_final") < world.position("ensure_manager_config"));
     assert_eq!(world.env("env-old").state(), EnvState::Verified);
     assert_eq!(
         world.envs.lock().unwrap().len(),

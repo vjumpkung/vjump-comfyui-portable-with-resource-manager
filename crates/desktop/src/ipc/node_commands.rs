@@ -21,7 +21,10 @@ use super::{
         request_key,
     },
 };
-use crate::state::{AppState, NodeServices};
+use crate::{
+    app_lifecycle::open_explorer,
+    state::{AppState, NodeServices},
+};
 
 fn trimmed(value: &str, max: usize) -> Result<&str, IpcError> {
     let value = value.trim();
@@ -120,6 +123,15 @@ pub async fn node_open_repository(
     let url = repository_url(&repository)?;
     state.shell()?.open_browser(url);
     Ok(())
+}
+
+/// Shows the node in the system file manager, or the custom nodes folder when no id is given.
+#[tauri::command]
+#[specta::specta]
+pub async fn node_reveal(state: State<'_, AppState>, id: Option<String>) -> Result<(), IpcError> {
+    let id = id.as_deref().map(node_id).transpose()?;
+    let target = state.services()?.nodes.locate.execute(id.as_ref()).await?;
+    open_explorer(&state, target).await
 }
 
 #[tauri::command]

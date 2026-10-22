@@ -1,11 +1,14 @@
 //! File operations of the library over pinned, non-following parent directories. Containment is
 //! re-established for every operation; no unchecked absolute path is ever mutated.
 use super::roots::LibraryRoots;
-use crate::shared::{
-    model_paths::{self, PinnedDirectory},
-    trash,
+use crate::{
+    models::acquisition::stack::DEFAULT_MODEL_ROOT_ID,
+    shared::{
+        model_paths::{self, PinnedDirectory},
+        trash,
+    },
 };
-use application::models::library::*;
+use application::{models::library::*, shared::ExplorerTarget};
 use async_trait::async_trait;
 use domain::{
     models::{acquisition::FileIdentity, library::ModelLocation},
@@ -55,7 +58,7 @@ pub fn classify(error: &io::Error) -> LibraryErrorCode {
 fn err(error: io::Error) -> LibraryError {
     LibraryError(classify(&error))
 }
-fn is_cross_volume(error: &io::Error) -> bool {
+pub(crate) fn is_cross_volume(error: &io::Error) -> bool {
     error.raw_os_error() == Some(if cfg!(windows) { 17 } else { 18 })
 }
 fn same(live: &FileIdentity, expected: &FileIdentity) -> bool {
@@ -327,6 +330,37 @@ impl ModelFiles for LocalModelFiles {
         })
         .await
     }
+
+    async fn explorer_target(&self, location: Option<&ModelLocation>) -> Result<ExplorerTarget> {
+        let location = location.cloned();
+        self.blocking(move |this| {
+            let Some(location) = location else {
+                let spec = this
+                    .roots
+                    .spec(DEFAULT_MODEL_ROOT_ID)
+                    .ok_or(LibraryErrorCode::NotFound)?;
+                let pinned = model_paths::pin_absolute(&spec.path).map_err(err)?;
+                return Ok(ExplorerTarget::OpenFolder(pinned.path.clone()));
+            };
+            if location.path.components().is_empty() {
+                let pinned = this.roots.pinned_directory(&location).map_err(err)?;
+                return Ok(ExplorerTarget::OpenFolder(pinned.path.clone()));
+            }
+            let (parent, name) = this.parent(&location, false).map_err(err)?;
+            let is_directory = parent
+                .open_entry(&name)
+                .and_then(|entry| entry.metadata())
+                .map_err(err)?
+                .is_dir();
+            let path = parent.path.join(name.as_str());
+            Ok(if is_directory {
+                ExplorerTarget::OpenFolder(path)
+            } else {
+                ExplorerTarget::RevealItem(path)
+            })
+        })
+        .await
+    }
 }
 
 /// Copies into a private temporary file in the destination directory, flushes, verifies the
@@ -585,6 +619,74 @@ mod tests {
             LibraryErrorCode::Locked
         );
         assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn explorer_targets_open_folders_and_reveal_files_of_the_default_root() {
+        let install = tempfile::tempdir().unwrap();
+        let (_, files) = fixture(install.path());
+        let dir = models_dir(install.path());
+        std::fs::create_dir_all(dir.join("loras/sub")).unwrap();
+        std::fs::write(dir.join("loras/a.safetensors"), b"a").unwrap();
+        // The roots are pinned from their canonical spelling.
+        let root = std::fs::canonicalize(&dir).unwrap();
+        assert_eq!(
+            files.explorer_target(None).await.unwrap(),
+            ExplorerTarget::OpenFolder(root.clone())
+        );
+        assert_eq!(
+            files.explorer_target(Some(&loc(""))).await.unwrap(),
+            ExplorerTarget::OpenFolder(root.clone())
+        );
+        assert_eq!(
+            files.explorer_target(Some(&loc("loras"))).await.unwrap(),
+            ExplorerTarget::OpenFolder(root.join("loras"))
+        );
+        assert_eq!(
+            files
+                .explorer_target(Some(&loc("loras/sub")))
+                .await
+                .unwrap(),
+            ExplorerTarget::OpenFolder(root.join("loras").join("sub"))
+        );
+        assert_eq!(
+            files
+                .explorer_target(Some(&loc("loras/a.safetensors")))
+                .await
+                .unwrap(),
+            ExplorerTarget::RevealItem(root.join("loras").join("a.safetensors"))
+        );
+        for missing in ["loras/none.pt", "nothing/deeper/x.pt"] {
+            assert_eq!(
+                files
+                    .explorer_target(Some(&loc(missing)))
+                    .await
+                    .unwrap_err()
+                    .0,
+                LibraryErrorCode::NotFound,
+                "{missing}"
+            );
+        }
+        assert!(!dir.join("nothing").exists(), "nothing is created");
+        let elsewhere = ModelLocation::new("elsewhere", RelativeModelPath::new("x").unwrap());
+        assert_eq!(
+            files.explorer_target(Some(&elsewhere)).await.unwrap_err().0,
+            LibraryErrorCode::OutsideRoot
+        );
+    }
+
+    #[tokio::test]
+    async fn the_default_root_is_not_found_until_it_is_registered() {
+        let install = tempfile::tempdir().unwrap();
+        let roots = Arc::new(
+            LibraryRoots::deferred(install.path(), Arc::new(NoExtra), Arc::default()).unwrap(),
+        );
+        let files = LocalModelFiles { roots };
+        assert_eq!(
+            files.explorer_target(None).await.unwrap_err().0,
+            LibraryErrorCode::NotFound
+        );
+        assert!(!install.path().join("ComfyUI").exists());
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 pub mod app_lifecycle;
 pub mod comfy_window;
 pub mod diagnostics;
+pub mod gallery_protocol;
 pub mod ipc;
 pub mod picker;
 pub mod state;
@@ -67,7 +68,9 @@ pub fn run() {
         // no capability grants the plugin's commands to any webview.
         .plugin(tauri_plugin_dialog::init())
         // Used from Rust only, for Copy diagnostics; no capability grants its commands either.
-        .plugin(tauri_plugin_clipboard_manager::init());
+        .plugin(tauri_plugin_clipboard_manager::init())
+        // Previews of gallery files for the manager window only; the handler checks the webview.
+        .register_asynchronous_uri_scheme_protocol("gallery", gallery_protocol::handle);
     // The signed updater exists only in builds that carry both the public key and the HTTPS
     // endpoint. Without them nothing is registered and the update commands refuse.
     let updater_config = updates::UpdaterBuildConfig::from_build_env();

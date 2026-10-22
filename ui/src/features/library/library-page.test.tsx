@@ -8,6 +8,7 @@ import {
   waitFor,
   within,
 } from '@testing-library/react'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import {
@@ -36,6 +37,7 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
     modelDeletePermanently: vi.fn(),
     modelIdentify: vi.fn(),
     modelOperationStatus: vi.fn(),
+    modelReveal: vi.fn(),
   },
 }))
 vi.mock('sonner', () => ({
@@ -419,4 +421,26 @@ it('model_table_active_row_keeps_readable_contrast', async () => {
   expect(active.classList.contains('bg-muted')).toBe(true)
   expect(active.classList.contains('bg-accent')).toBe(false)
   expect(row('b.pt').classList.contains('bg-accent')).toBe(false)
+})
+
+it('opens the models folder from the toolbar', async () => {
+  vi.mocked(gateway.modelReveal).mockResolvedValue(null)
+  mount(snapshot([model()]))
+  fireEvent.click(await screen.findByRole('button', { name: 'Open folder' }))
+  expect(gateway.modelReveal).toHaveBeenCalledTimes(1)
+  expect(gateway.modelReveal).toHaveBeenCalledWith(null)
+})
+
+it('shows the selected model in the system file manager and toasts a failure', async () => {
+  vi.mocked(gateway.modelReveal).mockRejectedValue(
+    new IpcClientError('explorer_failed', 'The file manager could not be opened.'),
+  )
+  const selected = model({ name: 'a.pt' })
+  mount(snapshot([selected, model({ name: 'b.pt' })]))
+  fireEvent.click(await screen.findByRole('row', { name: /a\.pt/ }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Show in Explorer' }))
+  expect(gateway.modelReveal).toHaveBeenCalledWith(selected.location)
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith('The file manager could not be opened.'),
+  )
 })

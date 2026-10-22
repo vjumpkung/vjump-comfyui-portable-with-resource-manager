@@ -358,6 +358,39 @@ impl NodeFiles for FakeFiles {
             None => Ok(state.scan.clone()),
         }
     }
+    async fn explorer_target(
+        &self,
+        root: &Path,
+        node: Option<&InstalledNode>,
+    ) -> Result<crate::shared::ExplorerTarget, NodeAppError> {
+        assert_eq!(root, Path::new(ROOT));
+        let busy = self
+            .world
+            .gate
+            .busy
+            .load(std::sync::atomic::Ordering::SeqCst);
+        self.world.call(&format!(
+            "files:explorer_target:{}:{busy}",
+            node.map_or("custom_nodes", |node| node.id.as_str())
+        ));
+        let cn = root.join("ComfyUI/custom_nodes");
+        Ok(match node {
+            None => crate::shared::ExplorerTarget::OpenFolder(cn),
+            Some(node) => {
+                let parent = if node.enabled {
+                    cn
+                } else {
+                    cn.join(".disabled")
+                };
+                let path = parent.join(node.name.as_str());
+                if node.single_file {
+                    crate::shared::ExplorerTarget::RevealItem(path)
+                } else {
+                    crate::shared::ExplorerTarget::OpenFolder(path)
+                }
+            }
+        })
+    }
 }
 
 #[test]
@@ -397,6 +430,54 @@ fn git_status_resolves_stored_nodes_under_the_gate_and_rejects_non_git() {
     assert_eq!(
         block_on(h.service.git_status(&node.id)),
         Err(NodeAppError::Busy)
+    );
+}
+
+#[test]
+fn locating_a_node_resolves_stored_nodes_without_the_gate() {
+    use crate::shared::ExplorerTarget;
+    let h = Harness::new();
+    let locate = LocateNode::new(h.service.deps.clone());
+    let cn = PathBuf::from(ROOT).join("ComfyUI/custom_nodes");
+    assert_eq!(
+        block_on(locate.execute(None)),
+        Ok(ExplorerTarget::OpenFolder(cn.clone()))
+    );
+    let mut node = interrupted(&h, OperationPhase::Completed, OperationKind::Install).node;
+    assert_eq!(
+        block_on(locate.execute(Some(&node.id))),
+        Err(NodeAppError::NotFound)
+    );
+    block_on(h.store.save_node(&node)).unwrap();
+    assert_eq!(
+        block_on(locate.execute(Some(&node.id))),
+        Ok(ExplorerTarget::OpenFolder(cn.join(node.name.as_str())))
+    );
+    node.enabled = false;
+    block_on(h.store.save_node(&node)).unwrap();
+    assert_eq!(
+        block_on(locate.execute(Some(&node.id))),
+        Ok(ExplorerTarget::OpenFolder(
+            cn.join(".disabled").join(node.name.as_str())
+        ))
+    );
+    node.enabled = true;
+    node.single_file = true;
+    block_on(h.store.save_node(&node)).unwrap();
+    // Held by someone else, the gate does not matter for a read.
+    let _lease = block_on(h.service.deps.environment.gate.try_acquire()).unwrap();
+    assert_eq!(
+        block_on(locate.execute(Some(&node.id))),
+        Ok(ExplorerTarget::RevealItem(cn.join(node.name.as_str())))
+    );
+    assert_eq!(
+        h.world.calls(),
+        [
+            "files:explorer_target:custom_nodes:false".to_owned(),
+            format!("files:explorer_target:{}:false", node.id.as_str()),
+            format!("files:explorer_target:{}:false", node.id.as_str()),
+            format!("files:explorer_target:{}:true", node.id.as_str()),
+        ]
     );
 }
 

@@ -1,5 +1,5 @@
 import { commands } from './bindings'
-import { Channel } from '@tauri-apps/api/core'
+import { Channel, convertFileSrc } from '@tauri-apps/api/core'
 import type {
   CloseChoiceDto,
   ComfyEventDto,
@@ -31,6 +31,10 @@ import type {
   NodeEventDto,
   NodeGitStatusDto,
   UpdateProgressDto,
+  GalleryEntryRefDto,
+  GalleryLocationDto,
+  GalleryRenameInput,
+  GalleryTransferInput,
 } from './bindings'
 export type * from './bindings'
 import type {
@@ -209,6 +213,9 @@ export const gateway = {
   /** Only runs a permanent-delete plan produced after a trash failure. */
   modelDeletePermanently: (planId: string) =>
     unwrap(() => commands.modelDeletePermanently(planId)),
+  /** Shows the model in the system file manager, or the models folder when `null`. */
+  modelReveal: (location: ModelLocationDto | null): Promise<null> =>
+    unwrap(() => commands.modelReveal(location)),
   modelIdentify: (input: IdentifyInput) =>
     unwrap(() => commands.modelIdentify(input)),
   modelOperationStatus: () => unwrap(() => commands.modelOperationStatus()),
@@ -226,6 +233,9 @@ export const gateway = {
   nodeList: () => unwrap(() => commands.nodeList()),
   nodeOpenRepository: (repository: string): Promise<null> =>
     unwrap(() => commands.nodeOpenRepository(repository)),
+  /** Shows the node's folder in the system file manager, or the custom nodes folder when `null`. */
+  nodeReveal: (id: string | null): Promise<null> =>
+    unwrap(() => commands.nodeReveal(id)),
   nodeGitStatus: (nodeId: string): Promise<NodeGitStatusDto> =>
     unwrap(() => commands.nodeGitStatus({ nodeId })),
   nodeRescan: () => unwrap(() => commands.nodeRescan()),
@@ -270,6 +280,29 @@ export const gateway = {
     }),
   /** Copies the redacted report; `copied` is false when the clipboard was unavailable. */
   appCopyDiagnostics: () => unwrap(() => commands.appCopyDiagnostics()),
+  galleryList: (directory: GalleryLocationDto) =>
+    unwrap(() => commands.galleryList(directory)),
+  galleryRename: (input: GalleryRenameInput) =>
+    unwrap(() => commands.galleryRename(input)),
+  galleryMove: (input: GalleryTransferInput) =>
+    unwrap(() => commands.galleryMove(input)),
+  galleryCopy: (input: GalleryTransferInput) =>
+    unwrap(() => commands.galleryCopy(input)),
+  galleryDeletePlan: (items: GalleryEntryRefDto[]) =>
+    unwrap(() => commands.galleryDeletePlan(items)),
+  galleryDelete: (planId: string) =>
+    unwrap(() => commands.galleryDelete(planId)),
+  galleryReveal: (location: GalleryLocationDto): Promise<null> =>
+    unwrap(() => commands.galleryReveal(location)),
+  /** `<base>` of the `gallery` protocol, e.g. for validating loader URLs. */
+  galleryPreviewBase: (): string => convertFileSrc('', 'gallery'),
+  /** Hierarchical URL on the app's `gallery` protocol, so glTF-relative resources resolve inside the same folder. `revision` busts the webview cache. */
+  galleryPreviewUrl: (location: GalleryLocationDto, revision: string): string =>
+    `${convertFileSrc('', 'gallery')}${location.area}/${location.path
+      .split('/')
+      .filter(Boolean)
+      .map(encodeURIComponent)
+      .join('/')}?v=${encodeURIComponent(revision)}`,
   pickFolder: (title: string) => unwrap(() => commands.pickFolder(title)),
   pickFile: (title: string, extensions: string[] = []) =>
     unwrap(() => commands.pickFile(title, extensions)),

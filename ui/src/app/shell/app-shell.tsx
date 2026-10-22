@@ -8,6 +8,7 @@ import {
 } from '@/features/comfy-runtime'
 import { CustomNodesPage } from '@/features/custom-nodes'
 import { DownloadsPage } from '@/features/downloads'
+import { GalleryPage } from '@/features/gallery'
 import { LibraryPage } from '@/features/library'
 import { OverviewPage } from '@/features/overview'
 import { SettingsPage } from '@/features/settings'
@@ -89,6 +90,7 @@ function Page({
         onOpenComfy={onOpenComfy}
       />
     )
+  if (active === 'gallery') return <GalleryPage />
   if (active === 'settings')
     return (
       <SettingsPage

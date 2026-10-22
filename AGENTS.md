@@ -29,6 +29,18 @@ Run from the repository root. Use the Rust toolchain in `rust-toolchain.toml` an
 
 CI (`.github/workflows/ci.yml`) runs these checks on every push and pull request; still run relevant checks locally. `.github/workflows/release.yml` builds draft release bundles only when `version` in `crates/desktop/tauri.conf.json` changes on the default branch.
 
+### Before finishing a feature
+
+When you implement a new feature, run every CI step locally before calling it done, and keep `ci.yml` and this list in sync. All must pass:
+
+1. `pnpm -C ui install --frozen-lockfile`, then `pnpm -C ui lint`, `pnpm -C ui typecheck`, `pnpm -C ui test`, `pnpm -C ui build` (the desktop crate embeds `ui/dist`, so build the UI first).
+2. `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`.
+3. `cargo build -p desktop --locked --features tauri/custom-protocol`.
+4. `node --test scripts/check-arch-deps.test.mjs` and `node scripts/check-arch-deps.mjs`.
+5. Coverage gates (needs `cargo-llvm-cov` 0.9.1 and `llvm-tools-preview`): `cargo llvm-cov -p domain --locked --fail-under-lines 90` and `cargo llvm-cov -p application --locked --fail-under-lines 80`.
+
+CI also runs the check job on Ubuntu; if you cannot run Linux locally, say so and call out any `cfg(target_os = "linux")`/`cfg(unix)` code you changed.
+
 ## Coding Style & Naming Conventions
 
 Use rustfmt, four-space Rust indentation, and `snake_case` modules/functions. Match TypeScript's two-space indentation, single quotes, and omitted semicolons. Use PascalCase components/types and kebab-case feature filenames. ESLint enforces frontend boundaries. Regenerate IPC bindings through the export test; never edit generated files manually.

@@ -356,6 +356,17 @@ impl EnvVerifier for Sim {
 }
 
 #[async_trait]
+impl ManagerConfigWriter for Sim {
+    async fn ensure_manager_config(
+        &self,
+        _install_root: &Path,
+    ) -> Result<ManagerConfigOutcome, ProvisionError> {
+        self.step("ensure_manager_config")?;
+        Ok(ManagerConfigOutcome::Absent)
+    }
+}
+
+#[async_trait]
 impl ComfySource for Sim {
     async fn resolve(&self, _: &Path, _: &ComfyRef) -> Result<ResolvedGit, ProvisionError> {
         self.step("resolve")?;
@@ -508,6 +519,7 @@ async fn start(root: &Path, sim: Arc<Sim>, faults: Faults) -> Machine {
         wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
         verifier: sim.clone(),
         source: sim.clone(),
+        manager_config: sim.clone(),
         node_requirements: Arc::new(NodeRequirements::new(
             node_adapters.store.clone(),
             node_adapters.files.clone(),

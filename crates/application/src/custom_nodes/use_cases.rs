@@ -1,5 +1,5 @@
 use super::*;
-use crate::shared::MaintenanceLease;
+use crate::shared::{ExplorerTarget, MaintenanceLease};
 use domain::{custom_nodes::*, environment::EnvState};
 
 #[derive(Clone)]
@@ -535,5 +535,32 @@ impl NodeService {
         } else {
             Ok(())
         }
+    }
+}
+
+/// Resolves where "open in Explorer" should go for a node or the custom nodes folder. It only
+/// reads, so it does not take the maintenance gate.
+pub struct LocateNode {
+    deps: NodeDeps,
+}
+impl LocateNode {
+    pub fn new(deps: NodeDeps) -> Self {
+        Self { deps }
+    }
+    pub async fn execute(&self, id: Option<&NodeId>) -> Result<ExplorerTarget, NodeAppError> {
+        let node = match id {
+            None => None,
+            Some(id) => Some(
+                self.deps
+                    .store
+                    .nodes()
+                    .await?
+                    .into_iter()
+                    .find(|node| &node.id == id)
+                    .ok_or(NodeAppError::NotFound)?,
+            ),
+        };
+        let root = self.deps.environment.root.current().root;
+        self.deps.files.explorer_target(&root, node.as_ref()).await
     }
 }

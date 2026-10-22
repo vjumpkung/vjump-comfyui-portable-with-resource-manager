@@ -16,13 +16,17 @@ use application::{
         ReadExtraModelPaths, RestartComfy, RuntimeDeps, RuntimeError, RuntimeEvents, RuntimeStore,
         RuntimeSupervisor, SetLaunchOptions, StartComfy, StopComfy, UpdateComfy,
     },
-    custom_nodes::{NodeContext, NodeRequirements, NodeService, PrepareRequest},
+    custom_nodes::{LocateNode, NodeContext, NodeRequirements, NodeService, PrepareRequest},
     environment::{
         ActiveRuns, ApplyPackageChange, CancelSetup, CuratedNodeCatalog, DeleteEnvironment,
         DetectHardware, EnvironmentDeps, ExecuteSetup, ExistingInstallOpener, GetEnvironmentInfo,
         GetSetupStatus, InstallManifestStore, ListPackages, ListProfiles, ManifestState, PlanStore,
         PreviewPackageChange, ReconcileStartup, RootInfo, RootSource, SelectInstallRoot,
         SetupNodes, StartSetup, ValidatePython,
+    },
+    gallery::{
+        DeleteGalleryEntries, GalleryDeletePlans, GalleryDeps, ListGallery, LocateGalleryEntry,
+        OpenGalleryMedia, PlanGalleryDelete, RenameGalleryEntry, TransferGalleryEntries,
     },
     models::{
         acquisition::{
@@ -32,7 +36,7 @@ use application::{
         },
         library::{
             DeleteModels, DeleteModelsPermanently, GetLibraryStatus, GetModelDetails,
-            GetOperationStatus, IdentifyModel, ListModels, MoveModel, PlanDelete,
+            GetOperationStatus, IdentifyModel, ListModels, LocateModel, MoveModel, PlanDelete,
             ReconcileModelOperations, RenameModel, RescanModels,
         },
     },
@@ -59,6 +63,7 @@ use infrastructure::{
     environment::{
         curated::BundledCuratedNodes,
         hardware::SystemHardware,
+        manager_config::FsManagerConfigWriter,
         manifest::FsManifestStore,
         packages::UvPackages,
         pins,
@@ -75,6 +80,7 @@ use infrastructure::{
         tools::Tools,
         verify::PythonVerifier,
     },
+    gallery::files::LocalGalleryFiles,
     models::{
         acquisition::stack::{DownloadStack, path_locks},
         library::stack::LibraryStack,
@@ -382,6 +388,7 @@ pub struct LibraryServices {
     pub(crate) delete_permanently: DeleteModelsPermanently,
     pub(crate) identify: IdentifyModel,
     pub(crate) operations: GetOperationStatus,
+    pub(crate) locate: LocateModel,
     reconcile: ReconcileModelOperations,
     pub(crate) status: Arc<GetLibraryStatus>,
     pub(crate) epoch: String,
@@ -409,6 +416,7 @@ impl LibraryServices {
             delete_permanently: DeleteModelsPermanently::new(deps.clone()),
             identify: IdentifyModel::new(deps.clone()),
             operations: GetOperationStatus::new(deps.clone()),
+            locate: LocateModel::new(deps.clone()),
             reconcile: ReconcileModelOperations::new(deps.clone()),
             status: Arc::new(GetLibraryStatus::new(deps)),
             epoch: IdGenerator::new_id(&RandomIds::default()),
@@ -475,10 +483,37 @@ pub(crate) fn subscription_gap(error: &tokio::sync::broadcast::error::RecvError)
     matches!(error, tokio::sync::broadcast::error::RecvError::Lagged(_))
 }
 
+/// Gallery use cases over ComfyUI's `input` and `output` folders. Nothing is created at
+/// composition time and nothing is persisted.
+pub struct GalleryServices {
+    pub(crate) list: ListGallery,
+    pub(crate) rename: RenameGalleryEntry,
+    pub(crate) transfer: TransferGalleryEntries,
+    pub(crate) plan_delete: PlanGalleryDelete,
+    pub(crate) delete: DeleteGalleryEntries,
+    pub(crate) open_media: OpenGalleryMedia,
+    pub(crate) locate: LocateGalleryEntry,
+}
+
+impl GalleryServices {
+    pub fn new(deps: GalleryDeps) -> Self {
+        Self {
+            list: ListGallery::new(deps.clone()),
+            rename: RenameGalleryEntry::new(deps.clone()),
+            transfer: TransferGalleryEntries::new(deps.clone()),
+            plan_delete: PlanGalleryDelete::new(deps.clone()),
+            delete: DeleteGalleryEntries::new(deps.clone()),
+            open_media: OpenGalleryMedia::new(deps.clone()),
+            locate: LocateGalleryEntry::new(deps),
+        }
+    }
+}
+
 /// Custom-node use cases, the event hub and the live subscriptions.
 pub struct NodeServices {
     pub(crate) stack: NodeStack,
     pub(crate) service: NodeService,
+    pub(crate) locate: LocateNode,
     active: Mutex<HashMap<String, CancelToken>>,
     pub(crate) subscriptions: Mutex<HashMap<u32, tauri::async_runtime::JoinHandle<()>>>,
     next_subscription: AtomicU32,
@@ -506,6 +541,7 @@ impl NodeServices {
     pub fn new(stack: NodeStack) -> Self {
         Self {
             service: NodeService::new(stack.deps.clone()),
+            locate: LocateNode::new(stack.deps.clone()),
             stack,
             active: Mutex::default(),
             subscriptions: Mutex::default(),
@@ -622,6 +658,7 @@ pub struct Services {
     pub(crate) comfy: ComfyServices,
     pub(crate) downloads: DownloadServices,
     pub(crate) library: LibraryServices,
+    pub(crate) gallery: GalleryServices,
     pub(crate) nodes: NodeServices,
     pub(crate) install_update: InstallAppUpdate,
     pub(crate) diagnostics: CollectDiagnostics,
@@ -690,6 +727,13 @@ impl Services {
             comfy: ComfyServices::new(deps.clone(), runtime, node_lifecycle),
             downloads: DownloadServices::new(downloads),
             library: LibraryServices::new(library),
+            gallery: GalleryServices::new(GalleryDeps {
+                root: deps.root.clone(),
+                files: Arc::new(LocalGalleryFiles::new()),
+                gate: deps.gate.clone(),
+                ids: deps.ids.clone(),
+                plans: Arc::new(GalleryDeletePlans::default()),
+            }),
             nodes,
             get_settings: GetSettings::new(settings.clone()),
             update_settings: UpdateSettings::new(settings),
@@ -935,6 +979,7 @@ impl AppState {
             wheels: Arc::new(infrastructure::environment::wheels::Wheels::new()),
             verifier: verifier.clone(),
             source: source.clone(),
+            manager_config: Arc::new(FsManagerConfigWriter),
             node_requirements,
             envs: store.clone(),
             runs: store.clone(),

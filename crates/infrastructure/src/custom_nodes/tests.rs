@@ -6474,3 +6474,100 @@ with open('observed.json', 'w') as out:
     assert_eq!(guarded["helper"], "sibling import");
     assert_eq!(guarded["stdin"], "");
 }
+
+#[tokio::test]
+async fn explorer_targets_are_pinned_and_never_create_scaffolding() {
+    use application::shared::ExplorerTarget;
+    let fixture = Fixture::new().await;
+    let (root, cn) = (fixture.root.clone(), fixture.cn());
+    let locate = |node: Option<InstalledNode>| {
+        let files = &fixture.files;
+        let root = root.clone();
+        async move { files.explorer_target(&root, node.as_ref()).await }
+    };
+    // A fresh install has no `.disabled` scaffolding yet; looking must not create it.
+    assert_eq!(
+        locate(None).await,
+        Ok(ExplorerTarget::OpenFolder(cn.clone()))
+    );
+    assert!(!fixture.disabled().exists());
+
+    fs::create_dir_all(cn.join("EnabledNode")).unwrap();
+    fs::write(cn.join("solo.py"), "x = 1").unwrap();
+    let enabled = node("EnabledNode", NodeSource::Manual, true);
+    assert_eq!(
+        locate(Some(enabled)).await,
+        Ok(ExplorerTarget::OpenFolder(cn.join("EnabledNode")))
+    );
+    let mut single = node("solo.py", NodeSource::Manual, true);
+    single.single_file = true;
+    assert_eq!(
+        locate(Some(single.clone())).await,
+        Ok(ExplorerTarget::RevealItem(cn.join("solo.py")))
+    );
+    assert!(!fixture.disabled().exists());
+
+    fs::create_dir_all(fixture.disabled().join("DisabledNode")).unwrap();
+    fs::write(fixture.disabled().join("off.py"), "x = 2").unwrap();
+    let disabled = node("DisabledNode", NodeSource::Manual, false);
+    assert_eq!(
+        locate(Some(disabled)).await,
+        Ok(ExplorerTarget::OpenFolder(
+            fixture.disabled().join("DisabledNode")
+        ))
+    );
+    let mut off = node("off.py", NodeSource::Manual, false);
+    off.single_file = true;
+    assert_eq!(
+        locate(Some(off)).await,
+        Ok(ExplorerTarget::RevealItem(
+            fixture.disabled().join("off.py")
+        ))
+    );
+
+    // Unknown nodes are not found, in either place.
+    for enabled in [true, false] {
+        assert_eq!(
+            locate(Some(node("Ghost", NodeSource::Manual, enabled))).await,
+            Err(NodeAppError::NotFound)
+        );
+    }
+    assert!(!cn.join("Ghost").exists());
+}
+
+#[tokio::test]
+async fn explorer_targets_refuse_links_and_report_a_missing_custom_nodes_folder() {
+    let fixture = Fixture::new().await;
+    let (root, cn) = (fixture.root.clone(), fixture.cn());
+    let outside = fixture.root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    if directory_link(&outside, &cn.join("Linked")) {
+        assert_eq!(
+            fixture
+                .files
+                .explorer_target(&root, Some(&node("Linked", NodeSource::Manual, true)))
+                .await,
+            Err(NodeAppError::UnsafeSource)
+        );
+        remove_directory_link(&cn.join("Linked"));
+    }
+    fs::remove_dir_all(&cn).unwrap();
+    assert_eq!(
+        fixture.files.explorer_target(&root, None).await,
+        Err(NodeAppError::NotFound)
+    );
+    assert_eq!(
+        fixture
+            .files
+            .explorer_target(&root, Some(&node("Any", NodeSource::Manual, true)))
+            .await,
+        Err(NodeAppError::NotFound)
+    );
+    assert!(!cn.exists(), "a missing folder is reported, never created");
+    // With ComfyUI itself gone, the answer is the same.
+    fs::remove_dir_all(root.join("ComfyUI")).unwrap();
+    assert_eq!(
+        fixture.files.explorer_target(&root, None).await,
+        Err(NodeAppError::NotFound)
+    );
+}

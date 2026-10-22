@@ -1044,6 +1044,7 @@ dependencies = [
  "async-trait",
  "domain",
  "infrastructure",
+ "percent-encoding",
  "serde",
  "serde_json",
  "specta",

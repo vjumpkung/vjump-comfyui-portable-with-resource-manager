@@ -23,8 +23,8 @@
     ],
     "security": {
       "capabilities": ["manager"],
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; font-src 'self' data:; connect-src ipc: http://ipc.localhost",
-      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; font-src 'self' data:; connect-src ipc: http://ipc.localhost ws://127.0.0.1:1420 http://127.0.0.1:1420"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost blob: gallery: http://gallery.localhost; media-src 'self' gallery: http://gallery.localhost; font-src 'self' data:; connect-src ipc: http://ipc.localhost gallery: http://gallery.localhost",
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost blob: gallery: http://gallery.localhost; media-src 'self' gallery: http://gallery.localhost; font-src 'self' data:; connect-src ipc: http://ipc.localhost gallery: http://gallery.localhost ws://127.0.0.1:1420 http://127.0.0.1:1420"
     }
   },
   "bundle": {
