@@ -68,6 +68,15 @@ fn copy_tree(source: &Path, destination: &Path) {
     }
 }
 
+/// Production canonicalizes an existing root before rebasing, and a runner's TEMP may be an
+/// 8.3 short path, so compare where existing paths point rather than how they are spelled.
+fn same_existing_location(left: &Path, right: &Path) -> bool {
+    same_location(
+        &fs::canonicalize(left).unwrap(),
+        &fs::canonicalize(right).unwrap(),
+    )
+}
+
 async fn moved_rebuild(original_present: bool) {
     let (directory, original) = fresh_root();
     let moved = directory.path().join("moved root ย้าย");
@@ -272,7 +281,7 @@ async fn moved_rebuild(original_present: bool) {
         Some(original_run)
     );
     let copied_previous = machine.deps.envs.get(&previous.id).await.unwrap().unwrap();
-    assert!(same_location(
+    assert!(same_existing_location(
         &copied_previous.path,
         &moved.join("envs").join(previous.id.as_str())
     ));
@@ -284,7 +293,7 @@ async fn moved_rebuild(original_present: bool) {
     let ManifestState::Valid(manifest) = machine.deps.manifests.read(&moved).await.unwrap() else {
         panic!("the verified rebuild must publish its manifest")
     };
-    assert!(same_location(&manifest.install_root, &moved));
+    assert!(same_existing_location(&manifest.install_root, &moved));
     assert_eq!(manifest.env_id, target.target_env);
     assert_eq!(manifest.env_path, target.python_target.env_path);
     assert_eq!(manifest.profile_revision, previous.profile_revision);
