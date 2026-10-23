@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "application"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "domain",
@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "application",
  "async-trait",
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -2316,7 +2316,7 @@ dependencies = [
 
 [[package]]
 name = "infrastructure"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "application",
  "async-trait",
