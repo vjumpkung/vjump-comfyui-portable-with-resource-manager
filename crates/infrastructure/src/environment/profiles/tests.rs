@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use domain::environment::{
-    ComputeCapability, Eligibility, GpuObservation, GpuProbe, HardwareObservation, ProfileStatus,
-    PythonVersion, evaluate,
+    ComputeCapability, CudaVariant, Eligibility, GpuObservation, GpuProbe, HardwareObservation,
+    ProfileStatus, PythonVersion, evaluate,
 };
 
 use super::*;
@@ -15,7 +15,7 @@ fn catalog() -> BundledProfiles {
 #[test]
 fn every_bundled_profile_parses_validates_and_has_a_unique_id() {
     let profiles = catalog().list();
-    assert_eq!(profiles.len(), 7);
+    assert_eq!(profiles.len(), 9);
     let ids: HashSet<_> = profiles.iter().map(|profile| profile.id.clone()).collect();
     assert_eq!(ids.len(), profiles.len());
     for profile in &profiles {
@@ -172,6 +172,74 @@ fn the_pinned_stacks_match_the_verified_evidence() {
     assert_eq!(compat.torch.torchaudio.as_deref(), Some("2.10.0"));
     assert_eq!(compat.triton.specifier, ">=3.6,<3.7");
     assert_eq!(compat.verify.torch_version_prefix, "2.10.0+cu130");
+}
+
+#[test]
+fn cpu_testing_profiles_need_no_gpu() {
+    let catalog = catalog();
+    let cpu_ids: Vec<_> = catalog
+        .list()
+        .into_iter()
+        .filter(|profile| profile.torch.cuda == CudaVariant::Cpu)
+        .map(|profile| profile.id)
+        .collect();
+    assert_eq!(
+        cpu_ids,
+        ["win-py312-torch2100-cpu", "linux-py313-torch2141-cpu"]
+    );
+    for (cpu_id, cuda_id, os) in [
+        (
+            "win-py312-torch2100-cpu",
+            "win-py312-torch2100-cu130",
+            domain::environment::OsKind::Windows,
+        ),
+        (
+            "linux-py313-torch2141-cpu",
+            "linux-py313-torch2141-cu130",
+            domain::environment::OsKind::Linux,
+        ),
+    ] {
+        let cpu = catalog.get(cpu_id).unwrap();
+        let cuda = catalog.get(cuda_id).unwrap();
+        assert_eq!(cpu.os, os, "{cpu_id}");
+        assert_eq!(cpu.status, ProfileStatus::Experimental, "{cpu_id}");
+        assert!(!cpu.recommended, "{cpu_id}");
+        assert_eq!(cpu.revision, 1, "{cpu_id}");
+        assert!(!cpu.verify.require_cuda, "{cpu_id}");
+        assert!(
+            cpu.verify.torch_version_prefix.ends_with("+cpu"),
+            "{cpu_id}"
+        );
+        assert!(cpu.torch.index_url.ends_with("/whl/cpu"), "{cpu_id}");
+        assert!(cpu.accelerators.is_empty(), "{cpu_id}");
+        assert!(cpu.torch_archs.is_empty(), "{cpu_id}");
+        assert_eq!(cpu.python, cuda.python, "{cpu_id}");
+        assert_eq!(cpu.torch.torch, cuda.torch.torch, "{cpu_id}");
+        assert_eq!(cpu.torch.torchvision, cuda.torch.torchvision, "{cpu_id}");
+        assert_eq!(cpu.torch.torchaudio, cuda.torch.torchaudio, "{cpu_id}");
+        assert_eq!(cpu.triton, cuda.triton, "{cpu_id}");
+        assert_eq!(cpu.constraints, cuda.constraints, "{cpu_id}");
+        let host = HardwareObservation {
+            gpus: GpuProbe::NoNvidiaGpu,
+            driver_version: None,
+            driver_cuda: None,
+            os,
+            os_version: "test".into(),
+            install_volume_free: Some(1 << 40),
+            env_volume_free: None,
+            env_on_separate_volume: false,
+            long_paths_enabled: Some(true),
+        };
+        assert_eq!(evaluate(&cpu, &host), Eligibility::Eligible, "{cpu_id}");
+    }
+    assert_eq!(
+        catalog
+            .get("linux-py313-torch2141-cpu")
+            .unwrap()
+            .torch
+            .torchaudio,
+        None
+    );
 }
 
 #[test]
@@ -439,5 +507,5 @@ fn profile_v1_empty_and_v2_components_round_trip() {
             .is_none()
     );
     assert!(catalog().get_revision("unknown-id", 1).is_none());
-    assert_eq!(catalog().list().len(), 7);
+    assert_eq!(catalog().list().len(), 9);
 }

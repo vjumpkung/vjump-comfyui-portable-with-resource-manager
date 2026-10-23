@@ -112,7 +112,7 @@ The Hardware stage detects:
 - free disk space on the install volume;
 - on Windows, whether long paths are enabled.
 
-A profile is **disabled, with the reason shown**, when any of these hold: it is for another operating system; no NVIDIA GPU is found; any detected GPU's architecture is not supported by the profile's wheels; the driver does not support the profile's CUDA level; or there is not enough free disk for the profile's budget. The bundled profiles all require compute capability 8.0 or newer.
+A profile is **disabled, with the reason shown**, when any of these hold: it is for another operating system; no NVIDIA GPU is found; any detected GPU's architecture is not supported by the profile's wheels; the driver does not support the profile's CUDA level; or there is not enough free disk for the profile's budget. The bundled CUDA profiles all require compute capability 8.0 or newer. The two CPU testing profiles (see [Profiles](#profiles)) skip the GPU and driver checks, so only the operating system and disk checks apply; ComfyUI then runs with `--cpu` and the VRAM mode is ignored.
 
 ### Python source
 
@@ -126,7 +126,7 @@ For the last two, the chosen Python is validated before setup, and each check sh
 
 ### Profiles
 
-Seven profiles are bundled. All use PyTorch from `download.pytorch.org`, a Triton build and a verification step. The wizard lists the recommended profile for your OS first and preselects it (N25); the other eligible profiles follow.
+Nine profiles are bundled. All use PyTorch from `download.pytorch.org` (the two CPU profiles use `download.pytorch.org/whl/cpu`), a Triton build and a verification step. The wizard lists the recommended profile for your OS first and preselects it (N25); the other eligible profiles follow. The CPU testing profiles are never preselected.
 
 | Profile | Python | PyTorch | CUDA | Status |
 |---|---|---|---|---|
@@ -137,6 +137,8 @@ Seven profiles are bundled. All use PyTorch from `download.pytorch.org`, a Trito
 | `linux-py313-torch2141-cu130` | 3.13.16 | 2.14.1 | 13.0 | Stable, recommended (default on Linux) |
 | `linux-py313-torch2141-cu126` | 3.13.16 | 2.14.1 | 12.6 | Stable |
 | `linux-py314-torch2141-cu130` | 3.14.8 | 2.14.1 | 13.0 | Experimental |
+| `win-py312-torch2100-cpu` | 3.12.15 | 2.10.0 (+ torchvision 0.25.0, torchaudio 2.10.0) | CPU | Experimental, for testing without an NVIDIA GPU |
+| `linux-py313-torch2141-cpu` | 3.13.16 | 2.14.1 | CPU | Experimental, for testing |
 
 "Stable" describes the profile's status label in the bundle, not a validation result on real hardware. On the RTX 3060 test machine:
 
@@ -323,7 +325,7 @@ The page shows the model paths read from `ComfyUI/extra_model_paths.yaml`. The p
 
 - `base_path` is the folder you chose, and `is_default` is `false`, so `ComfyUI/models` stays ComfyUI's default location.
 - One key per model folder, each pointing at `<name>/` inside the base folder: the standard categories (`checkpoints`, `diffusion_models`, `text_encoders`, `vae`, `loras`, `controlnet`, ...), `configs`, and every folder that already exists in `ComfyUI/models`. `text_encoders` also lists `clip/`, and `diffusion_models` also lists `unet/`, but only when those folders already exist in the base folder.
-- Missing standard folders are created inside the base folder. Existing folders and links are left as they are, and nothing is ever deleted. A file with the name of a standard folder stops the operation.
+- Every folder the section lists (the standard ones, `configs` and any found in `ComfyUI/models`) is created inside the base folder when missing. Existing folders and links are left as they are, and nothing is ever deleted. A file with the name of any listed folder stops the operation.
 
 Other sections of an existing file are kept, but the file is re-written, so its comments are lost. When the file was not written by the app (its first line is not the `# Managed by vjumpkung ComfyUI desktop` header), a copy is first saved as `data/backups/extra_model_paths-<YYYYMMDDTHHMMSSZ>.yaml` in the install folder. Backups are never placed beside the file, because that would make the ComfyUI checkout dirty and block app updates. Press **Generate** again to change the base folder; repeating it with the same folder does not make another backup. **Remove generated section** deletes only the `vjumpkung_desktop` section, and the file itself when no other section remains. Both actions rescan the model library.
 
@@ -966,7 +968,7 @@ Profiles are versioned JSON files bundled with the application in `crates/infras
 | `status` (`stable` or `experimental`), `recommended` | Presentation and defaults |
 | `os` | `windows` or `linux` |
 | `python` | Exact patch version, pinned for the uv-managed CPython |
-| `torch` | `torch`, `torchvision`, `torchaudio` (nullable), `cuda` (`cu130`, `cu126`) and `index_url` |
+| `torch` | `torch`, `torchvision`, `torchaudio` (nullable), `cuda` (`cu130`, `cu126`, `cpu`) and `index_url` |
 | `min_driver_cuda`, `min_cc`, `torch_archs` | Eligibility gates: driver CUDA level, minimum compute capability, supported GPU architectures |
 | `triton` | Package (`triton-windows` or `triton`) and version specifier |
 | `accelerators` | Optional accelerator records (schema 2). Only `win-py312-torch2100-cu130` has entries |
@@ -975,9 +977,9 @@ Profiles are versioned JSON files bundled with the application in `crates/infras
 | `disk` | Disk budget (`env_bytes`, `other_bytes`, `margin_bytes`, `calibrated`) |
 | `provenance` | Notes on how the values were observed |
 
-Eligibility checks the OS, an NVIDIA GPU, every detected GPU's compute capability and wheel architecture, the driver's CUDA level, and the disk budget. Pinned tool versions and SHA-256 values (uv 0.13.1, MinGit, `hf` 2.2.0 and `gdown` 6.4.2 with their hash-locked requirements, managed CPython hashes, the app-local MSVC runtime) are in `crates/infrastructure/src/environment/pins.rs` and `data/`.
+Eligibility checks the OS, an NVIDIA GPU, every detected GPU's compute capability and wheel architecture, the driver's CUDA level, and the disk budget. The CPU testing profiles (`cuda` is `cpu`) skip the GPU and driver checks and need an empty `torch_archs`, zero `min_driver_cuda` and `min_cc`, and `require_cuda` false; ComfyUI then runs with `--cpu`, and the VRAM mode is ignored. Pinned tool versions and SHA-256 values (uv 0.13.1, MinGit, `hf` 2.2.0 and `gdown` 6.4.2 with their hash-locked requirements, managed CPython hashes, the app-local MSVC runtime) are in `crates/infrastructure/src/environment/pins.rs` and `data/`.
 
-**Accelerator records (schema 2).** Each record has `id`, `name`, `modules` (importable module names used for the import check), `source`, `no_deps`, `default_selected`, `non_fatal` and `provenance`. `source` is either `{"kind": "wheel"}` with an HTTPS `url`, a safe `.whl` `filename`, `sha256` and `size`, or `{"kind": "packages"}` with requirement strings. Schema 1 profiles remain readable only with an empty accelerator list. `win-py312-torch2100-cu130` is schema 2, revision 3, with five experimental wheels and a "Compatibility packages" component, none selected by default; revisions 1 and 2 are kept in `data/profiles/archive/` for rebuilds. The other six profiles are schema 1 with no accelerators. FlashAttention 3's installed module name is unverified, so its `modules` list is empty.
+**Accelerator records (schema 2).** Each record has `id`, `name`, `modules` (importable module names used for the import check), `source`, `no_deps`, `default_selected`, `non_fatal` and `provenance`. `source` is either `{"kind": "wheel"}` with an HTTPS `url`, a safe `.whl` `filename`, `sha256` and `size`, or `{"kind": "packages"}` with requirement strings. Schema 1 profiles remain readable only with an empty accelerator list. `win-py312-torch2100-cu130` is schema 2, revision 3, with five experimental wheels and a "Compatibility packages" component, none selected by default; revisions 1 and 2 are kept in `data/profiles/archive/` for rebuilds. The other six CUDA profiles are schema 1 and the two CPU testing profiles are schema 2, all with no accelerators. FlashAttention 3's installed module name is unverified, so its `modules` list is empty.
 
 ## 21. Adding a download provider
 
@@ -1011,7 +1013,7 @@ Ordinary tests never touch real credentials or user installations. These tests a
 
 | Test | Command and variables | Needs |
 |---|---|---|
-| Real first-run setup | `VJ_REAL_ROOT=<empty or nonexistent dir> cargo test -p infrastructure --locked --test real_setup -- --ignored --nocapture`. Optional `VJ_REAL_PROFILE` picks a profile | Network, several GB of downloads, an NVIDIA GPU. The root must not exist yet or be empty |
+| Real first-run setup | `VJ_REAL_ROOT=<empty or nonexistent dir> cargo test -p infrastructure --locked --test real_setup -- --ignored --nocapture`. Optional `VJ_REAL_PROFILE` picks a profile | Network, several GB of downloads, an NVIDIA GPU (not needed with `VJ_REAL_PROFILE=win-py312-torch2100-cpu` or `linux-py313-torch2141-cpu`). The root must not exist yet or be empty |
 | Interpreter validation | `VJ_TEST_PYTHON=<path to CPython 3.12-3.14>` with `a_real_interpreter_is_probed` in `infrastructure/src/environment/python/tests.rs` | A suitable interpreter |
 | Real tool provisioning | `real_tools_are_provisioned` in `infrastructure/src/environment/tools/tests.rs` | Network; downloads uv, MinGit and Python |
 | Real keyring | `real_keyring_round_trip` in `infrastructure/src/settings/secrets/tests.rs` | An unlocked OS credential store; creates and deletes a temporary credential |
@@ -1135,4 +1137,4 @@ All on one machine: Windows 11, NVIDIA GeForce RTX 3060 12 GiB, driver 610.88 (C
 - Move detection needs a valid `install.json` (residual R21).
 - Only one ComfyUI install is managed at a time.
 - No license has been selected. The application does not add one on the owner's behalf.
-- AMD, Intel, macOS, CPU-only and multi-install support are out of scope for release 1.
+- AMD, Intel, macOS, CPU-only generation and multi-install support are out of scope for release 1. The two CPU profiles exist only for testing the application without an NVIDIA GPU.

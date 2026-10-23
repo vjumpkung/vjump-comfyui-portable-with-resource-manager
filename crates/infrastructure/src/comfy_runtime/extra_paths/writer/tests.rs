@@ -109,6 +109,31 @@ fn generate_writes_a_managed_section_and_creates_missing_folders() {
     for name in &expected {
         assert_eq!(text(&section, name), format!("{name}/"));
     }
+    // Every folder the section lists exists, including `configs` and the discovered ones.
+    for key in keys(&section)
+        .iter()
+        .filter(|key| !matches!(key.as_str(), "base_path" | "is_default"))
+    {
+        assert!(base.join(key).is_dir(), "{key} must be created");
+    }
+}
+
+#[test]
+fn generate_refuses_a_file_named_like_a_discovered_category() {
+    let fx = fixture();
+    fs::create_dir(fx.root.join("ComfyUI/models/custom_pack")).unwrap();
+    fs::write(fx.file(), HAND_WRITTEN).unwrap();
+    let base = fx.base("models");
+    fs::create_dir(&base).unwrap();
+    fs::write(base.join("custom_pack"), "a file").unwrap();
+
+    assert!(rejection(generate(&fx.root, &base)).starts_with("A file named custom_pack exists"));
+
+    // Nothing was created and the existing file was neither rewritten nor backed up.
+    assert!(!base.join("checkpoints").exists());
+    assert!(!base.join("configs").exists());
+    assert_eq!(fs::read(fx.file()).unwrap(), HAND_WRITTEN.as_bytes());
+    assert!(fx.backups().is_empty());
 }
 
 #[test]

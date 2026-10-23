@@ -276,8 +276,14 @@ impl NodeService {
                 Ok(value) => value,
                 Err(error) => {
                     // The adapter cleans only entries acquired by its failed prepare attempt.
-                    op.phase = OperationPhase::Failed;
-                    op.failure = Some(error.to_string());
+                    if error == NodeAppError::UpToDate {
+                        // Already current: nothing changed, so the journal records a no-op,
+                        // not a failure.
+                        op.phase = OperationPhase::Completed;
+                    } else {
+                        op.phase = OperationPhase::Failed;
+                        op.failure = Some(error.to_string());
+                    }
                     self.deps.store.save_operation(&op).await?;
                     return Err(error);
                 }
@@ -588,12 +594,21 @@ impl NodeService {
             plan.operation.kind,
             OperationKind::Install | OperationKind::Update
         );
+        // Enable and Disable record the target state on `node`; the tree is still at `prior`.
+        let on_disk = match plan.operation.kind {
+            OperationKind::Enable | OperationKind::Disable => plan
+                .operation
+                .prior
+                .as_ref()
+                .ok_or(NodeAppError::StalePlan)?,
+            _ => &plan.operation.node,
+        };
         let snapshot = self
             .deps
             .files
             .snapshot(
                 root,
-                &plan.operation.node,
+                on_disk,
                 staged.then_some(&plan.operation.id),
                 step.retained.clone(),
             )

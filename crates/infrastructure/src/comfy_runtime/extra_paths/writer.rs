@@ -27,7 +27,7 @@ pub const APP_SECTION: &str = "vjumpkung_desktop";
 const FILE_NAME: &str = "extra_model_paths.yaml";
 const HEADER: &str = "# Managed by vjumpkung ComfyUI desktop. Other sections are kept; the vjumpkung_desktop section is rewritten by the app.";
 const MAX_BYTES: u64 = 1 << 20;
-/// REQUIREMENTS section 4.6 primary names; these folders are created under the base.
+/// REQUIREMENTS section 4.6 primary names; always listed, so always created under the base.
 const PRIMARY: [&str; 18] = [
     "checkpoints",
     "diffusion_models",
@@ -100,13 +100,14 @@ pub(super) fn generate(root: &Path, base: &Path) -> Result<(), RuntimeError> {
     let path = comfyui.join(FILE_NAME);
     // Read and validate the existing file before anything on disk is created.
     let existing = load(&path)?;
-    create_folders(&base)?;
+    let names = category_names(&comfyui.join("models"));
+    create_folders(&base, &names)?;
     let mut sections = existing
         .as_ref()
         .map_or_else(Mapping::new, |file| file.sections.clone());
     sections.insert(
         Value::String(APP_SECTION.into()),
-        Value::Mapping(app_section(&base, &comfyui.join("models"))?),
+        Value::Mapping(app_section(&base, &names)?),
     );
     if let Some(file) = existing.filter(|file| !file.managed) {
         back_up(root, &file.bytes)?;
@@ -279,10 +280,11 @@ fn load(path: &Path) -> Result<Option<Existing>, RuntimeError> {
     }))
 }
 
-/// Creates the base and the missing primary folders. An existing folder (or link) is left as it
-/// is; a file with a category's name refuses the whole operation before anything is created.
-fn create_folders(base: &Path) -> Result<(), RuntimeError> {
-    for name in PRIMARY {
+/// Creates the base and every missing category folder the section lists. An existing folder (or
+/// link) is left as it is; a file with a category's name refuses the whole operation before
+/// anything is created.
+fn create_folders(base: &Path, names: &[String]) -> Result<(), RuntimeError> {
+    for name in names {
         if fs::symlink_metadata(base.join(name)).is_ok_and(|meta| meta.is_file()) {
             return Err(rejected(format!(
                 "A file named {name} exists in the model base folder. Move or rename it, then retry."
@@ -290,7 +292,7 @@ fn create_folders(base: &Path) -> Result<(), RuntimeError> {
         }
     }
     fs::create_dir_all(base).map_err(|_| invalid("the model base folder could not be created"))?;
-    for name in PRIMARY {
+    for name in names {
         match fs::create_dir(base.join(name)) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -300,11 +302,9 @@ fn create_folders(base: &Path) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-/// The section: `base_path`, `is_default: false`, then one sorted key per folder name. The names
-/// are the primary categories, `configs` and every folder that already exists in the install's
-/// `ComfyUI/models`, without duplicates that differ only in case.
-fn app_section(base: &Path, models: &Path) -> Result<Mapping, RuntimeError> {
-    let base_text = base.to_str().ok_or_else(|| rejected(NOT_ABSOLUTE))?;
+/// The sorted category names: the primary categories, `configs` and every folder that already
+/// exists in the install's `ComfyUI/models`, without duplicates that differ only in case.
+fn category_names(models: &Path) -> Vec<String> {
     let mut names: BTreeMap<String, String> = PRIMARY
         .iter()
         .chain(&["configs"])
@@ -313,10 +313,17 @@ fn app_section(base: &Path, models: &Path) -> Result<Mapping, RuntimeError> {
     for name in model_folders(models) {
         names.entry(name.to_lowercase()).or_insert(name);
     }
+    names.into_values().collect()
+}
+
+/// The section: `base_path`, `is_default: false`, then one key per category name, in the order
+/// given (sorted by `category_names`).
+fn app_section(base: &Path, names: &[String]) -> Result<Mapping, RuntimeError> {
+    let base_text = base.to_str().ok_or_else(|| rejected(NOT_ABSOLUTE))?;
     let mut section = Mapping::new();
     section.insert("base_path".into(), Value::String(base_text.to_owned()));
     section.insert("is_default".into(), Value::Bool(false));
-    for name in names.into_values() {
+    for name in names {
         // The legacy alias is listed only when it exists, as ComfyUI would otherwise warn.
         let alias = match name.as_str() {
             "text_encoders" => Some("clip"),
@@ -328,7 +335,7 @@ fn app_section(base: &Path, models: &Path) -> Result<Mapping, RuntimeError> {
             Some(alias) => format!("{name}/\n{alias}/"),
             None => format!("{name}/"),
         };
-        section.insert(Value::String(name), Value::String(value));
+        section.insert(Value::String(name.clone()), Value::String(value));
     }
     Ok(section)
 }

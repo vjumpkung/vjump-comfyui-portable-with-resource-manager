@@ -36,7 +36,7 @@ This is a native desktop app for installing, running and maintaining a local Com
 | Portable installer | `D:\vjump\pixellatent-happy-meals-scripts\comfyui-python-3-12-happy-meals\portable_version\install_comfyui_3_12_uv_nvidia_torch_2100_portable.bat` (+ `update_comfyui_portable.bat`) | Setup steps, environment isolation, essential packages, verification, update safety |
 
 ### 1.4 Non-goals for release 1
-- AMD (ROCm), Intel (XPU), Apple/macOS and CPU-only torch builds. The architecture MUST NOT preclude them, but they are [P2].
+- AMD (ROCm), Intel (XPU), Apple/macOS and CPU-only torch builds. The architecture MUST NOT preclude them, but they are [P2]. The exception is the bundled CPU testing profiles, which exist only so the app can be exercised without an NVIDIA GPU and are not a supported generation path.
 - The reference backend's Forge, InvokeAI, Z-Image and RunPod variants. This app is ComfyUI only.
 - Multi-user use, remote access to the manager, or a hosted service.
 - Managing more than one ComfyUI install at a time. This is a single active install [P2].
@@ -276,7 +276,7 @@ Rules by layer:
 | ID | Pri | Requirement |
 |---|---|---|
 | FR-SETUP-1 | P0 | On first launch, with no valid `install.json`, the app MUST open a setup wizard. The steps are: install root → hardware check → Python source → setup profile (Python + torch + CUDA) → optional components → review → install. |
-| FR-SETUP-2 | P0 | **Hardware check.** Detect the NVIDIA GPU(s), driver version, maximum supported CUDA version and compute capability. Also check free disk space on the install volume, OS version and, on Windows, whether long paths are enabled. Profiles whose CUDA build is newer than the driver supports, or that drop the GPU's architecture, MUST be disabled with the reason shown. |
+| FR-SETUP-2 | P0 | **Hardware check.** Detect the NVIDIA GPU(s), driver version, maximum supported CUDA version and compute capability. Also check free disk space on the install volume, OS version and, on Windows, whether long paths are enabled. Profiles whose CUDA build is newer than the driver supports, or that drop the GPU's architecture, MUST be disabled with the reason shown. The CPU testing profiles are not gated on the GPU or the driver. |
 | FR-SETUP-3 | P0 | **Python source options:** (a) **App-managed.** uv installs the pinned CPython and creates a venv under `envs/`. This is the default. (b) **Custom venv path.** The user picks an existing venv, or an empty folder in which the app creates one. (c) **Custom interpreter.** The user picks a `python` executable and the app creates a venv from it. |
 | FR-SETUP-4 | P0 | **Validate custom Python.** For options (b) and (c), check: version in the supported range; 64-bit; `pip`/`uv` usable; headers and import library present (needed by Triton). On Windows, also check the MSVC runtime DLLs load. Show pass/fail per check. A failed check blocks the profile features that need it, e.g. accelerators. |
 | FR-SETUP-5 | P0 | **Environment ownership.** Each env is marked **app-owned** or **adopted**. Adopted envs are never deleted, and are rebuilt only after explicit confirmation. |
@@ -474,6 +474,7 @@ Initial profiles to define and validate *(to validate)*:
 2. `linux-py313-torch2141-cu130` (default, Linux)
 3. `win-py313-torch2141-cu130` (Windows alternative; the only profile with a calibrated disk estimate)
 4. `*-py313-torch2141-cu126` for GPUs or drivers without CUDA 13 support
+5. `win-py312-torch2100-cpu` and `linux-py313-torch2141-cpu` (CPU-only testing profiles: experimental, never recommended or preselected, no GPU or driver gate; ComfyUI runs with `--cpu`)
 
 Remote profile updates are **P2**. If added, they MUST be signed, with the signature verified by a key embedded in the app, and they MUST carry artifact hashes and version-rollback protection.
 
@@ -569,7 +570,7 @@ Remote profile updates are **P2**. If added, they MUST be signed, with the signa
 10. **Registry node** install shows a consent prompt, records id@version, and installs deps with torch unchanged. A requirement that asks for a different torch is blocked by the constraint and reported.
 11. **Git node with local edits** → update refuses and shows `git status`. Enable/disable round-trips through `.disabled/`.
 12. **Secret redaction.** After a CivitAI download, grep logs, the DB and exports for the token and the `X-Amz-Signature` value → zero matches.
-13. **Unsupported hardware.** No NVIDIA GPU, or a driver too old for cu130 → CUDA profiles are disabled with the reason, and the cu126 profile is offered where eligible.
+13. **Unsupported hardware.** No NVIDIA GPU, or a driver too old for cu130 → CUDA profiles are disabled with the reason, and the cu126 profile is offered where eligible. The CPU testing profiles stay available.
 14. **Crash recovery.** Kill the app during a download and a node install → on restart the download is `paused` and resumable, and the node staging dir is cleaned up with `custom_nodes/` unchanged.
 15. **Architecture guard.** Adding `serde`, `tokio` or `tauri` to `domain` or `application`, or importing `features/downloads` internals from `features/custom-nodes`, fails CI.
 16. **Maintenance race.** While a node install holds the maintenance gate, *Start ComfyUI* waits or is refused. A model rename during a running ComfyUI succeeds if the file is not locked.

@@ -192,7 +192,7 @@ export function SetupWizard({
   const chosen =
     offers.find((profile) => profile.id === profileId) ??
     eligible.find((profile) => profile.recommended) ??
-    eligible[0]
+    eligible.find((profile) => profile.torch.cuda !== 'cpu')
   if (chosen && acceleratorSelection?.profileId !== chosen.id)
     setAcceleratorSelection({
       profileId: chosen.id,
@@ -643,8 +643,11 @@ export function SetupWizard({
                           </FieldLabel>
                           <FieldDescription>
                             Python {profile.python} · torch{' '}
-                            {profile.torch.torch} · CUDA {profile.torch.cuda} ·{' '}
-                            {profile.triton}
+                            {profile.torch.torch} ·{' '}
+                            {profile.torch.cuda === 'cpu'
+                              ? 'CPU'
+                              : `CUDA ${profile.torch.cuda}`}{' '}
+                            · {profile.triton}
                             <br />
                             {profile.torch.torchaudio
                               ? `torchaudio ${profile.torch.torchaudio}`

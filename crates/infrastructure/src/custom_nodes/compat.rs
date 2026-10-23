@@ -8,7 +8,8 @@ use std::path::Path;
 #[derive(Debug, Clone)]
 pub struct Host {
     pub os: HostOs,
-    /// Every bundled profile installs the NVIDIA CUDA build of torch.
+    /// Assumed true: the CUDA profiles install the NVIDIA build of torch; the CPU testing
+    /// profiles are not distinguished.
     pub cuda: bool,
     pub comfyui: Option<Version>,
 }

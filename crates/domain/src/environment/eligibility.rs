@@ -3,7 +3,7 @@ use thiserror::Error;
 use super::{
     hardware::{GpuProbe, HardwareObservation},
     profile::SetupProfile,
-    version::{ComputeCapability, CudaVersion, OsKind},
+    version::{ComputeCapability, CudaVariant, CudaVersion, OsKind},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +69,8 @@ impl Eligibility {
 }
 
 /// Decides whether `profile` may be offered on `hardware`. Every detected GPU must be
-/// compatible, because no device-selection mechanism exists yet.
+/// compatible, because no device-selection mechanism exists yet. A CPU-only profile skips the
+/// GPU and driver checks; only the OS and disk checks apply.
 pub fn evaluate(profile: &SetupProfile, hardware: &HardwareObservation) -> Eligibility {
     let mut reasons = Vec::new();
     if profile.os != hardware.os {
@@ -78,50 +79,54 @@ pub fn evaluate(profile: &SetupProfile, hardware: &HardwareObservation) -> Eligi
             host: hardware.os,
         });
     }
-    match &hardware.gpus {
-        GpuProbe::NoNvidiaGpu => reasons.push(IneligibleReason::NoNvidiaGpu),
-        GpuProbe::Unavailable => reasons.push(IneligibleReason::GpuProbeFailed),
-        GpuProbe::Detected(gpus) if gpus.is_empty() => reasons.push(IneligibleReason::NoNvidiaGpu),
-        GpuProbe::Detected(gpus) => {
-            for gpu in gpus {
-                match gpu.compute_capability {
-                    None => reasons
-                        .push(IneligibleReason::ComputeCapabilityUnknown { index: gpu.index }),
-                    Some(capability) if capability < profile.min_cc => {
-                        reasons.push(IneligibleReason::ArchTooOld {
-                            index: gpu.index,
-                            name: gpu.name.clone(),
-                            has: capability,
-                            needs: profile.min_cc,
-                        })
+    if profile.torch.cuda != CudaVariant::Cpu {
+        match &hardware.gpus {
+            GpuProbe::NoNvidiaGpu => reasons.push(IneligibleReason::NoNvidiaGpu),
+            GpuProbe::Unavailable => reasons.push(IneligibleReason::GpuProbeFailed),
+            GpuProbe::Detected(gpus) if gpus.is_empty() => {
+                reasons.push(IneligibleReason::NoNvidiaGpu)
+            }
+            GpuProbe::Detected(gpus) => {
+                for gpu in gpus {
+                    match gpu.compute_capability {
+                        None => reasons
+                            .push(IneligibleReason::ComputeCapabilityUnknown { index: gpu.index }),
+                        Some(capability) if capability < profile.min_cc => {
+                            reasons.push(IneligibleReason::ArchTooOld {
+                                index: gpu.index,
+                                name: gpu.name.clone(),
+                                has: capability,
+                                needs: profile.min_cc,
+                            })
+                        }
+                        Some(capability)
+                            if !profile
+                                .torch_archs
+                                .iter()
+                                .any(|arch| capability.runs_binaries_for(*arch)) =>
+                        {
+                            reasons.push(IneligibleReason::ArchNotInWheels {
+                                index: gpu.index,
+                                name: gpu.name.clone(),
+                                has: capability,
+                            })
+                        }
+                        Some(_) => {}
                     }
-                    Some(capability)
-                        if !profile
-                            .torch_archs
-                            .iter()
-                            .any(|arch| capability.runs_binaries_for(*arch)) =>
-                    {
-                        reasons.push(IneligibleReason::ArchNotInWheels {
-                            index: gpu.index,
-                            name: gpu.name.clone(),
-                            has: capability,
-                        })
-                    }
-                    Some(_) => {}
                 }
             }
         }
-    }
-    if !matches!(hardware.gpus, GpuProbe::NoNvidiaGpu | GpuProbe::Unavailable) {
-        match hardware.driver_cuda {
-            None => reasons.push(IneligibleReason::DriverUnknown),
-            Some(has) if has < profile.min_driver_cuda => {
-                reasons.push(IneligibleReason::DriverTooOld {
-                    needs: profile.min_driver_cuda,
-                    has,
-                })
+        if !matches!(hardware.gpus, GpuProbe::NoNvidiaGpu | GpuProbe::Unavailable) {
+            match hardware.driver_cuda {
+                None => reasons.push(IneligibleReason::DriverUnknown),
+                Some(has) if has < profile.min_driver_cuda => {
+                    reasons.push(IneligibleReason::DriverTooOld {
+                        needs: profile.min_driver_cuda,
+                        has,
+                    })
+                }
+                Some(_) => {}
             }
-            Some(_) => {}
         }
     }
     let same_volume = !hardware.env_on_separate_volume;
@@ -170,7 +175,7 @@ mod tests {
     use super::*;
     use crate::environment::{
         hardware::GpuObservation,
-        profile::fixtures::profile,
+        profile::fixtures::{cpu_profile, profile},
         version::{ComputeCapability, CudaVersion},
     };
 
@@ -293,6 +298,44 @@ mod tests {
         assert!(matches!(
             reasons[0],
             IneligibleReason::ArchTooOld { index: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn cpu_profile_ignores_the_gpu_and_driver() {
+        let cpu = cpu_profile();
+        let old_gpu = hardware(GpuProbe::Detected(vec![gpu(0, 6, 1)]));
+        let mut no_driver = old_gpu.clone();
+        no_driver.driver_cuda = None;
+        for observation in [
+            hardware(GpuProbe::NoNvidiaGpu),
+            hardware(GpuProbe::Unavailable),
+            old_gpu,
+            no_driver,
+        ] {
+            assert!(
+                evaluate(&cpu, &observation).is_eligible(),
+                "{:?}",
+                observation.gpus
+            );
+        }
+        let mut linux_host = hardware(GpuProbe::NoNvidiaGpu);
+        linux_host.os = OsKind::Linux;
+        assert_eq!(
+            reasons(evaluate(&cpu, &linux_host)),
+            [IneligibleReason::WrongOs {
+                profile: OsKind::Windows,
+                host: OsKind::Linux
+            }]
+        );
+        let mut low_disk = hardware(GpuProbe::NoNvidiaGpu);
+        low_disk.install_volume_free = Some(1 << 30);
+        assert!(matches!(
+            reasons(evaluate(&cpu, &low_disk))[..],
+            [IneligibleReason::InsufficientDisk {
+                volume: DiskVolume::Install,
+                ..
+            }]
         ));
     }
 

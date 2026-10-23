@@ -10,7 +10,7 @@ use std::{
 
 use application::{
     comfy_runtime::{RuntimeBlock, RuntimeMaintenance},
-    custom_nodes::{NodeRequirements, NodeService},
+    custom_nodes::{NodeContext, NodeRequirements, NodeService, PrepareRequest},
     environment::*,
     settings::SettingsRepository,
 };
@@ -483,6 +483,7 @@ struct Machine {
     root: PathBuf,
     deps: EnvironmentDeps,
     nodes: Arc<dyn SetupNodes>,
+    node_service: Arc<NodeService>,
     settings: Arc<SqliteSettingsRepository>,
 }
 
@@ -553,7 +554,8 @@ async fn start(root: &Path, sim: Arc<Sim>, faults: Faults) -> Machine {
     Machine {
         root: root.to_owned(),
         deps,
-        nodes,
+        nodes: nodes.clone(),
+        node_service: nodes,
         settings,
     }
 }
@@ -682,6 +684,56 @@ async fn a_completed_setup_survives_a_restart() {
             .join(format!("setup-{}.log", run.id))
             .is_file()
     );
+}
+
+#[tokio::test]
+async fn disable_and_enable_move_a_manual_node_through_the_workflow() {
+    let (_directory, root) = fresh_root();
+    let machine = start(&root, Arc::new(Sim::default()), Faults::default()).await;
+    let run_id = machine.register(machine.request()).await;
+    assert_eq!(machine.run(&run_id).await, RunOutcome::Succeeded);
+
+    let custom_nodes = root.join("ComfyUI").join("custom_nodes");
+    let enabled_dir = custom_nodes.join("plain-node");
+    let disabled_dir = custom_nodes.join(".disabled").join("plain-node");
+    std::fs::create_dir_all(&enabled_dir).unwrap();
+    std::fs::write(
+        enabled_dir.join("__init__.py"),
+        "NODE_CLASS_MAPPINGS = {}\n",
+    )
+    .unwrap();
+    let node = machine
+        .node_service
+        .rescan()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name.as_str() == "plain-node")
+        .expect("the rescan records the manual node");
+    assert!(node.enabled);
+
+    let ctx = NodeContext::default();
+    for enabled in [false, true] {
+        let outcome = machine
+            .node_service
+            .run_direct(
+                PrepareRequest::SetEnabled {
+                    node: node.id.clone(),
+                    enabled,
+                },
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.node.enabled, enabled);
+        assert_eq!(enabled_dir.join("__init__.py").is_file(), enabled);
+        assert_eq!(disabled_dir.join("__init__.py").is_file(), !enabled);
+        assert_eq!(enabled_dir.exists(), enabled);
+        assert_eq!(disabled_dir.exists(), !enabled);
+        let stored = machine.node_service.list().await.unwrap();
+        let stored = stored.iter().find(|stored| stored.id == node.id).unwrap();
+        assert_eq!(stored.enabled, enabled);
+    }
 }
 
 #[tokio::test]

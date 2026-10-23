@@ -89,6 +89,8 @@ pub struct LaunchCapabilities {
     pub flash: bool,
     pub builtin_manager: bool,
     pub legacy_manager: bool,
+    /// The environment's torch is a CPU-only build, so ComfyUI must run with `--cpu`.
+    pub cpu: bool,
 }
 
 fn reserved(name: &str) -> bool {
@@ -198,7 +200,9 @@ impl LaunchOptions {
         if windows {
             args.push("--windows-standalone-build".into());
         }
+        // ComfyUI rejects `--cpu` together with a VRAM flag, so the VRAM mode is ignored on CPU.
         let vram = match self.vram {
+            _ if capabilities.cpu => Some("--cpu"),
             VramMode::Auto => None,
             VramMode::Low => Some("--lowvram"),
             VramMode::High => Some("--highvram"),
@@ -288,5 +292,40 @@ mod tests {
         assert_eq!(&args[..4], ["-s", "main.py", "--listen", "127.0.0.1"]);
         assert_eq!(args.last().unwrap(), "a folder ไทย");
         assert!(args.contains(&"--disable-auto-launch".into()));
+    }
+    #[test]
+    fn cpu_environments_run_with_cpu_and_never_with_a_vram_flag() {
+        let mut caps = LaunchCapabilities {
+            options: [
+                "--listen",
+                "--port",
+                "--disable-auto-launch",
+                "--preview-method",
+                "--windows-standalone-build",
+                "--cpu",
+                "--lowvram",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            cpu: true,
+            ..Default::default()
+        };
+        let options = LaunchOptions {
+            vram: VramMode::Low,
+            ..Default::default()
+        };
+        let args = options.args(true, &caps).unwrap();
+        assert!(args.contains(&"--cpu".into()));
+        assert!(!args.contains(&"--lowvram".into()));
+        caps.options.remove("--cpu");
+        assert_eq!(
+            options.args(true, &caps),
+            Err(LaunchError::Unsupported("--cpu".into()))
+        );
+        caps.cpu = false;
+        let args = options.args(true, &caps).unwrap();
+        assert!(args.contains(&"--lowvram".into()));
+        assert!(!args.contains(&"--cpu".into()));
     }
 }

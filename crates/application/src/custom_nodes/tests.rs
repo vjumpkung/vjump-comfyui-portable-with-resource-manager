@@ -30,6 +30,8 @@ struct FilesState {
     requirements_digest: Option<String>,
     hook_digest: Option<String>,
     publish_error: Option<NodeAppError>,
+    /// Fails the next `prepare` once with this error.
+    prepare_error: Option<NodeAppError>,
     recover: Option<RecoveryAction>,
     recycle_fails: bool,
     scan: Vec<InstalledNode>,
@@ -37,6 +39,8 @@ struct FilesState {
     guard_resources: Vec<std::sync::Weak<()>>,
     scan_retained: Vec<bool>,
     snapshots: std::collections::HashMap<String, String>,
+    /// Where each published node's tree lives: `true` in `custom_nodes`, `false` in `.disabled`.
+    locations: std::collections::HashMap<String, bool>,
     /// Overrides the tree digest a guarded location reports (simulated drift).
     pin_digest: Option<String>,
     pin_error: Option<NodeAppError>,
@@ -143,6 +147,10 @@ impl NodeFiles for FakeFiles {
         _ctx: &crate::environment::StepContext,
     ) -> Result<StagedNode, NodeAppError> {
         self.world.call("files:prepare");
+        let failure = self.state.lock().unwrap().prepare_error.take();
+        if let Some(error) = failure {
+            return Err(error);
+        }
         self.state.lock().unwrap().prepare_policies.push(policy);
         if let PrepareRequest::Git {
             repository,
@@ -204,6 +212,16 @@ impl NodeFiles for FakeFiles {
     ) -> Result<TreeSnapshot, NodeAppError> {
         let mut state = self.state.lock().unwrap();
         state.snapshot_attempts.push(node.id.clone());
+        // The real adapter reads the tree where `node.enabled` says it is; a tree elsewhere is
+        // missing.
+        if staged.is_none()
+            && state
+                .locations
+                .get(node.name.as_str())
+                .is_some_and(|enabled| *enabled != node.enabled)
+        {
+            return Err(NodeAppError::Filesystem);
+        }
         if staged.is_none() && self.world.count("verify_final") > 0 {
             self.world.call("files:final_snapshot");
             state.final_snapshot_env = self
@@ -299,6 +317,9 @@ impl NodeFiles for FakeFiles {
             None => {
                 let digest = state.digest.clone();
                 state.snapshots.insert(op.node.name.as_str().into(), digest);
+                state
+                    .locations
+                    .insert(op.node.name.as_str().into(), op.node.enabled);
                 Ok(())
             }
         }
@@ -311,10 +332,20 @@ impl NodeFiles for FakeFiles {
     async fn move_enabled(
         &self,
         _root: &Path,
-        _prior: &InstalledNode,
+        prior: &InstalledNode,
         enabled: bool,
     ) -> Result<(), NodeAppError> {
         self.world.call(&format!("files:move_enabled:{enabled}"));
+        let mut state = self.state.lock().unwrap();
+        let name = prior.name.as_str();
+        if state
+            .locations
+            .get(name)
+            .is_some_and(|current| *current != prior.enabled)
+        {
+            return Err(NodeAppError::Filesystem);
+        }
+        state.locations.insert(name.into(), enabled);
         Ok(())
     }
     async fn recycle(&self, _root: &Path, _op: &NodeOperation) -> Result<(), NodeAppError> {
@@ -555,6 +586,37 @@ fn recent_operations_are_terminal_newest_first_and_bounded() {
     assert_eq!(recent[0].id.as_str(), "op-19");
     assert_eq!(recent[15].id.as_str(), "op-04");
     assert!(recent.iter().all(|op| !op.blocks_start()));
+}
+
+#[test]
+fn an_already_current_update_is_journaled_as_completed() {
+    let h = Harness::new();
+    let node = h.installed();
+    let update = || PrepareRequest::Update {
+        node: node.id.clone(),
+        reference: None,
+    };
+
+    // Nothing changed, so the journal records a no-op while the caller still sees `UpToDate`.
+    h.files.state.lock().unwrap().prepare_error = Some(NodeAppError::UpToDate);
+    let result = block_on(h.service.prepare(update(), &h.ctx()));
+    assert_eq!(result.unwrap_err(), NodeAppError::UpToDate);
+    let recent = block_on(h.service.recent_operations()).unwrap();
+    assert_eq!(recent[0].kind, OperationKind::Update);
+    assert_eq!(recent[0].phase, OperationPhase::Completed);
+    assert_eq!(recent[0].failure, None);
+
+    // Any other preparation error is still a failure with its text.
+    h.files.state.lock().unwrap().prepare_error = Some(NodeAppError::InvalidRequest);
+    let result = block_on(h.service.prepare(update(), &h.ctx()));
+    assert_eq!(result.unwrap_err(), NodeAppError::InvalidRequest);
+    let recent = block_on(h.service.recent_operations()).unwrap();
+    assert_eq!(recent[0].kind, OperationKind::Update);
+    assert_eq!(recent[0].phase, OperationPhase::Failed);
+    assert_eq!(
+        recent[0].failure.as_deref(),
+        Some(NodeAppError::InvalidRequest.to_string().as_str())
+    );
 }
 
 struct FakeRegistry {
@@ -1596,6 +1658,29 @@ fn enable_disable_and_uninstall_use_the_journal_and_recycle_the_backup() {
         block_on(h.service.ensure_reconciled()).is_ok(),
         "a retained backup does not block start"
     );
+}
+
+#[test]
+fn disable_then_enable_moves_the_tree_from_its_current_location() {
+    let h = Harness::new();
+    let node = h.installed();
+    for enabled in [false, true] {
+        let review = block_on(h.service.prepare(
+            PrepareRequest::SetEnabled {
+                node: node.id.clone(),
+                enabled,
+            },
+            &h.ctx(),
+        ))
+        .unwrap();
+        let outcome = block_on(
+            h.service
+                .commit(&review.id, Harness::decision(&review), &h.ctx()),
+        )
+        .unwrap();
+        assert_eq!(outcome.node.enabled, enabled);
+        assert_eq!(h.world.count(&format!("files:move_enabled:{enabled}")), 1);
+    }
 }
 
 #[test]

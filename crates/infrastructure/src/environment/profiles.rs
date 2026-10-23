@@ -331,7 +331,7 @@ pub fn parse_profile(json: &str) -> Result<SetupProfile, ProfileError> {
     SetupProfile::try_from(doc)
 }
 
-const BUNDLED: [&str; 7] = [
+const BUNDLED: [&str; 9] = [
     include_str!("data/profiles/win-py313-torch2141-cu130.json"),
     include_str!("data/profiles/win-py313-torch2141-cu126.json"),
     include_str!("data/profiles/win-py314-torch2141-cu130.json"),
@@ -339,6 +339,8 @@ const BUNDLED: [&str; 7] = [
     include_str!("data/profiles/linux-py313-torch2141-cu130.json"),
     include_str!("data/profiles/linux-py313-torch2141-cu126.json"),
     include_str!("data/profiles/linux-py314-torch2141-cu130.json"),
+    include_str!("data/profiles/win-py312-torch2100-cpu.json"),
+    include_str!("data/profiles/linux-py313-torch2141-cpu.json"),
 ];
 
 const ARCHIVED: [&str; 2] = [

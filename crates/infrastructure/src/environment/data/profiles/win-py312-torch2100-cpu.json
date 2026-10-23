@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "id": "win-py312-torch2100-cpu",
+  "revision": 1,
+  "label": "Python 3.12, PyTorch 2.10.0, CPU only (for testing)",
+  "status": "experimental",
+  "recommended": false,
+  "os": "windows",
+  "python": "3.12.15",
+  "torch": {
+    "torch": "2.10.0",
+    "torchvision": "0.25.0",
+    "torchaudio": "2.10.0",
+    "cuda": "cpu",
+    "index_url": "https://download.pytorch.org/whl/cpu"
+  },
+  "min_driver_cuda": "0.0",
+  "min_cc": "0.0",
+  "torch_archs": [],
+  "triton": {
+    "package": "triton-windows",
+    "specifier": ">=3.6,<3.7"
+  },
+  "accelerators": [],
+  "constraints": [
+    "numpy<2.3",
+    "pillow<12",
+    "transformers==5.20.2"
+  ],
+  "verify": {
+    "torch_version_prefix": "2.10.0+cpu",
+    "require_cuda": false,
+    "require_triton": true
+  },
+  "disk": {
+    "env_bytes": 4294967296,
+    "other_bytes": 7516192768,
+    "margin_bytes": 4294967296,
+    "calibrated": false
+  },
+  "provenance": [
+    "Testing profile: lets the app's setup, runtime and pages be exercised on a machine without an NVIDIA GPU. ComfyUI runs with --cpu; image generation is very slow. Not a supported generation path.",
+    "download.pytorch.org/whl/cpu: torch 2.10.0+cpu, torchvision 0.25.0+cpu, torchaudio 2.10.0+cpu cp312 win_amd64 wheels exist (index listing observed 2026-10-23)",
+    "Mirrors win-py312-torch2100-cu130 revision 3 (Python 3.12.15, constraints) except the torch build; Triton is kept so the setup steps match the CUDA profiles",
+    "Python 3.12.15: uv 0.13.1 embedded python-build-standalone 20261013 metadata (SHA-256 pinned in python-downloads.json)",
+    "Disk budget is an estimate; it has not been measured"
+  ]
+}

@@ -47,7 +47,7 @@ Use rustfmt, four-space Rust indentation, and `snake_case` modules/functions. Ma
 
 ## Testing Guidelines
 
-Keep Rust unit tests beside modules or in `tests.rs`; integration tests belong in each crate's `tests/`. Colocate Vitest/React Testing Library tests as `*.test.ts` or `*.test.tsx`. Line coverage targets: domain ≥90%, application ≥80%, measured with `cargo llvm-cov`. Ignored real setup tests require explicit execution, downloads, and NVIDIA hardware.
+Keep Rust unit tests beside modules or in `tests.rs`; integration tests belong in each crate's `tests/`. Colocate Vitest/React Testing Library tests as `*.test.ts` or `*.test.tsx`. Line coverage targets: domain ≥90%, application ≥80%, measured with `cargo llvm-cov`. Ignored real setup tests require explicit execution, downloads, and NVIDIA hardware (or a CPU testing profile via `VJ_REAL_PROFILE`).
 
 ## Commit & Pull Request Guidelines
 

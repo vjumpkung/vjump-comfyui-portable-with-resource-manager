@@ -254,10 +254,20 @@ impl SetupProfile {
         if !self.torch.index_url.ends_with(self.torch.cuda.as_str()) {
             return Err(invalid("torch index does not match the CUDA variant"));
         }
-        if self.min_driver_cuda < self.torch.cuda.minimum_driver_cuda() {
+        if let Some(minimum) = self.torch.cuda.minimum_driver_cuda()
+            && self.min_driver_cuda < minimum
+        {
             return Err(invalid("driver floor below the CUDA variant minimum"));
         }
-        if self.torch_archs.is_empty() {
+        if self.torch.cuda == CudaVariant::Cpu {
+            if !self.torch_archs.is_empty()
+                || self.min_driver_cuda != CudaVersion::new(0, 0)
+                || self.min_cc != ComputeCapability::new(0, 0)
+                || self.verify.require_cuda
+            {
+                return Err(invalid("cpu profile has GPU requirements"));
+            }
+        } else if self.torch_archs.is_empty() {
             return Err(invalid("torch architecture list"));
         }
         let expected_triton = match self.os {
@@ -345,11 +355,55 @@ pub(crate) mod fixtures {
             provenance: vec!["test fixture".into()],
         }
     }
+
+    pub fn cpu_profile() -> SetupProfile {
+        SetupProfile {
+            id: "win-py312-torch2100-cpu".into(),
+            schema_version: PROFILE_SCHEMA_VERSION,
+            revision: 1,
+            label: "Python 3.12, PyTorch 2.10.0, CPU only (for testing)".into(),
+            status: ProfileStatus::Experimental,
+            recommended: false,
+            os: OsKind::Windows,
+            python: PythonVersion::new(3, 12, 15),
+            torch: TorchBuild {
+                torch: "2.10.0".into(),
+                torchvision: "0.25.0".into(),
+                torchaudio: Some("2.10.0".into()),
+                cuda: CudaVariant::Cpu,
+                index_url: "https://download.pytorch.org/whl/cpu".into(),
+            },
+            min_driver_cuda: CudaVersion::new(0, 0),
+            min_cc: ComputeCapability::new(0, 0),
+            torch_archs: Vec::new(),
+            triton: TritonSpec {
+                distribution: DistName::new("triton-windows").unwrap(),
+                specifier: ">=3.6,<3.7".into(),
+            },
+            accelerators: Vec::new(),
+            constraints: Vec::new(),
+            verify: VerifyExpectations {
+                torch_version_prefix: "2.10.0+cpu".into(),
+                require_cuda: false,
+                require_triton: true,
+            },
+            disk: DiskBudget {
+                env_bytes: 4 << 30,
+                other_bytes: 7 << 30,
+                margin_bytes: 4 << 30,
+                calibrated: false,
+            },
+            provenance: vec!["test fixture".into()],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{fixtures::profile, *};
+    use super::{
+        fixtures::{cpu_profile, profile},
+        *,
+    };
 
     #[test]
     fn fixture_is_valid_and_lists_protected_distributions() {
@@ -410,6 +464,36 @@ mod tests {
             mutate(&mut candidate);
             assert!(candidate.validate().is_err(), "{case} must be rejected");
         }
+    }
+
+    #[test]
+    fn cpu_profile_needs_no_gpu_and_rejects_gpu_requirements() {
+        let cpu = cpu_profile();
+        cpu.validate().unwrap();
+        assert_eq!(cpu.torch.cuda, CudaVariant::Cpu);
+        assert_eq!(
+            cpu.torch.requirements(),
+            ["torch==2.10.0", "torchvision==0.25.0", "torchaudio==2.10.0"]
+        );
+        type Mutation = fn(&mut SetupProfile);
+        let mutations: Vec<(&str, Mutation)> = vec![
+            ("archs", |p| {
+                p.torch_archs.push(ComputeCapability::new(8, 0))
+            }),
+            ("driver", |p| p.min_driver_cuda = CudaVersion::new(12, 6)),
+            ("compute capability", |p| {
+                p.min_cc = ComputeCapability::new(8, 0)
+            }),
+            ("require cuda", |p| p.verify.require_cuda = true),
+        ];
+        for (case, mutate) in mutations {
+            let mut candidate = cpu_profile();
+            mutate(&mut candidate);
+            assert!(candidate.validate().is_err(), "{case} must be rejected");
+        }
+        let mut cuda = profile();
+        cuda.torch_archs.clear();
+        assert!(cuda.validate().is_err());
     }
 
     #[test]

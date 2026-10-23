@@ -290,6 +290,62 @@ describe('setup wizard', () => {
     expect(radios[0].getAttribute('aria-checked')).toBe('true')
   })
 
+  it('cpu_profile_card_says_cpu_instead_of_a_cuda_variant', async () => {
+    vi.mocked(gateway.setupListProfiles).mockResolvedValue([
+      {
+        ...profile,
+        id: 'cpu-testing',
+        label: 'CPU testing profile',
+        status: 'experimental',
+        recommended: false,
+        torch: { ...profile.torch, cuda: 'cpu' },
+      },
+    ])
+    mount()
+    await toPython()
+    next()
+    await screen.findByRole('radio', { name: /CPU testing profile/ })
+    expect(screen.getByText(/torch 2\.14\.1 · CPU · triton/)).toBeTruthy()
+    expect(screen.queryByText(/CUDA cpu/)).toBeNull()
+  })
+
+  it('cpu_profile_is_never_preselected_and_can_be_chosen_by_the_user', async () => {
+    vi.mocked(gateway.setupListProfiles).mockResolvedValue([
+      {
+        ...profile,
+        enabled: false,
+        reasons: [{ code: 'gpu', message: 'No NVIDIA GPU was detected' }],
+      },
+      {
+        ...profile,
+        id: 'cpu-testing',
+        label: 'CPU testing profile',
+        status: 'experimental',
+        recommended: false,
+        torch: { ...profile.torch, cuda: 'cpu' },
+      },
+    ])
+    mount()
+    await toPython()
+    next()
+    const cpu = await screen.findByRole('radio', { name: /CPU testing profile/ })
+    expect(cpu.getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('button', { name: 'Continue' })).toHaveProperty(
+      'disabled',
+      true,
+    )
+    fireEvent.click(cpu)
+    await waitFor(() =>
+      expect(cpu.getAttribute('aria-checked')).toBe('true'),
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Continue' })).toHaveProperty(
+        'disabled',
+        false,
+      ),
+    )
+  })
+
   it('profile_change_resets_accelerator_selection', async () => {
     const option = { id: 'fast', name: 'Fast attention (experimental)', defaultSelected: true, provenance: 'Authored provenance; not app validated.' }
     const profiles = [

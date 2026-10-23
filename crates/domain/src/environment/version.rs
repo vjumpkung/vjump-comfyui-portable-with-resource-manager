@@ -147,11 +147,12 @@ impl FromStr for CudaVersion {
     }
 }
 
-/// The CUDA build of a PyTorch wheel set.
+/// The compute build of a PyTorch wheel set: a CUDA version or CPU only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CudaVariant {
     Cu126,
     Cu130,
+    Cpu,
 }
 
 impl CudaVariant {
@@ -159,14 +160,17 @@ impl CudaVariant {
         match self {
             Self::Cu126 => "cu126",
             Self::Cu130 => "cu130",
+            Self::Cpu => "cpu",
         }
     }
 
-    /// The driver-supported CUDA version below which the wheels cannot run.
-    pub fn minimum_driver_cuda(self) -> CudaVersion {
+    /// The driver-supported CUDA version below which the wheels cannot run, or `None` for a
+    /// CPU-only build, which needs no driver.
+    pub fn minimum_driver_cuda(self) -> Option<CudaVersion> {
         match self {
-            Self::Cu126 => CudaVersion::new(12, 6),
-            Self::Cu130 => CudaVersion::new(13, 0),
+            Self::Cu126 => Some(CudaVersion::new(12, 6)),
+            Self::Cu130 => Some(CudaVersion::new(13, 0)),
+            Self::Cpu => None,
         }
     }
 }
@@ -178,6 +182,7 @@ impl FromStr for CudaVariant {
         match value {
             "cu126" => Ok(Self::Cu126),
             "cu130" => Ok(Self::Cu130),
+            "cpu" => Ok(Self::Cpu),
             _ => Err(EnvironmentError::InvalidCudaVariant),
         }
     }
@@ -274,15 +279,19 @@ mod tests {
                 .parse::<CudaVariant>()
                 .unwrap()
                 .minimum_driver_cuda(),
-            CudaVersion::new(12, 6)
+            Some(CudaVersion::new(12, 6))
         );
         assert_eq!(
             "cu130"
                 .parse::<CudaVariant>()
                 .unwrap()
                 .minimum_driver_cuda(),
-            CudaVersion::new(13, 0)
+            Some(CudaVersion::new(13, 0))
         );
+        let cpu: CudaVariant = "cpu".parse().unwrap();
+        assert_eq!(cpu, CudaVariant::Cpu);
+        assert_eq!(cpu.as_str(), "cpu");
+        assert_eq!(cpu.minimum_driver_cuda(), None);
         assert_eq!(CudaVariant::Cu126.as_str(), "cu126");
         assert!("cu129".parse::<CudaVariant>().is_err());
         assert!("macos".parse::<OsKind>().is_err());

@@ -126,7 +126,7 @@ async fn compose(root: &std::path::Path) -> (EnvironmentDeps, Arc<dyn SetupNodes
 }
 
 #[tokio::test]
-#[ignore = "downloads several gigabytes and needs an NVIDIA GPU"]
+#[ignore = "downloads several gigabytes; needs an NVIDIA GPU unless VJ_REAL_PROFILE names a CPU profile"]
 async fn real_first_run_setup() {
     let Some(root) = std::env::var_os("VJ_REAL_ROOT").map(PathBuf::from) else {
         println!("set VJ_REAL_ROOT to run the real setup");

@@ -765,6 +765,7 @@ impl LaunchPreflight for PythonLaunchPreflight {
             .pins
             .get(&DistName::new("torch").expect("static name"))
             .ok_or(RuntimeError::EnvironmentNotUsable)?;
+        let cpu = torch.ends_with("+cpu");
         let ctx = StepContext {
             run_id: RunId::new("runtime-preflight").expect("static id"),
             step: StepId::FinalVerify,
@@ -775,7 +776,7 @@ impl LaunchPreflight for PythonLaunchPreflight {
         };
         let expectations = VerifyExpectations {
             torch_version_prefix: torch.into(),
-            require_cuda: true,
+            require_cuda: !cpu,
             require_triton: env
                 .pins
                 .iter()
@@ -842,6 +843,7 @@ print('VJ-CAPS:'+json.dumps({name:available(name) for name in ['sageattention','
                 .comfyui_dir()
                 .join("custom_nodes/ComfyUI-Manager")
                 .exists(),
+            cpu,
         })
     }
 }

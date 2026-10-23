@@ -42,11 +42,11 @@ The application is a Rust program built on **Tauri 2**. Its whole interface is a
 | Item | Release 1 |
 |---|---|
 | Operating systems | Windows 10/11 x64 and Linux x64 |
-| GPU | NVIDIA only. AMD, Intel, macOS and CPU-only torch builds are out of scope. |
+| GPU | NVIDIA only. AMD, Intel, macOS and CPU-only torch builds are out of scope. Two CPU-only profiles exist solely for testing the app without an NVIDIA GPU, not for generation. |
 | Webview runtime | Windows: WebView2 (the Windows bundle is configured to install it through a silent bootstrapper). Linux: `libwebkit2gtk-4.1`. |
 | Git | Windows: a pinned MinGit is downloaded by the app. Linux: system `git` 2.40 or newer, which you must install yourself. |
-| Defaults | Windows: Python 3.12.15, PyTorch 2.10.0 with CUDA 13.0 (`win-py312-torch2100-cu130`). Linux: Python 3.13.16, PyTorch 2.14.1 with CUDA 13.0. CUDA 12.6 profiles exist for older drivers, and Python 3.14 profiles are experimental. ComfyUI: the latest release by default, or the latest commit on `master`, or a specific tag. |
-| Driver and GPU | The wizard disables any profile that your driver or GPU architecture cannot run, and shows the reason. All bundled profiles require compute capability 8.0 or newer. |
+| Defaults | Windows: Python 3.12.15, PyTorch 2.10.0 with CUDA 13.0 (`win-py312-torch2100-cu130`). Linux: Python 3.13.16, PyTorch 2.14.1 with CUDA 13.0. CUDA 12.6 profiles exist for older drivers, and Python 3.14 profiles are experimental. CPU-only profiles (labelled "for testing") exist for testing the app without an NVIDIA GPU, not for generation, and are never preselected. ComfyUI: the latest release by default, or the latest commit on `master`, or a specific tag. |
+| Driver and GPU | The wizard disables any profile that your driver or GPU architecture cannot run, and shows the reason. All bundled CUDA profiles require compute capability 8.0 or newer; the CPU testing profiles have no GPU or driver requirement. |
 | Disk | The wizard checks free space against the selected profile's budget and blocks the install if it is too low. The recommended Windows profile budgets 17 GiB (6 GiB environment, 7 GiB other, 4 GiB margin); this estimate is not calibrated. |
 | Interface language | English and Thai (switch on the first setup step or in Settings) |
 

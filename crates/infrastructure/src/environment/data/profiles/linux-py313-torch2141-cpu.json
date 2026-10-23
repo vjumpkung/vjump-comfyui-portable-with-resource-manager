@@ -1,0 +1,44 @@
+{
+  "schema_version": 2,
+  "id": "linux-py313-torch2141-cpu",
+  "revision": 1,
+  "label": "Python 3.13, PyTorch 2.14.1, CPU only (for testing)",
+  "status": "experimental",
+  "recommended": false,
+  "os": "linux",
+  "python": "3.13.16",
+  "torch": {
+    "torch": "2.14.1",
+    "torchvision": "0.29.1",
+    "torchaudio": null,
+    "cuda": "cpu",
+    "index_url": "https://download.pytorch.org/whl/cpu"
+  },
+  "min_driver_cuda": "0.0",
+  "min_cc": "0.0",
+  "torch_archs": [],
+  "triton": {
+    "package": "triton",
+    "specifier": "==3.8.0"
+  },
+  "accelerators": [],
+  "constraints": [],
+  "verify": {
+    "torch_version_prefix": "2.14.1+cpu",
+    "require_cuda": false,
+    "require_triton": true
+  },
+  "disk": {
+    "env_bytes": 4294967296,
+    "other_bytes": 7516192768,
+    "margin_bytes": 4294967296,
+    "calibrated": false
+  },
+  "provenance": [
+    "Testing profile: lets the app's setup, runtime and pages be exercised on a machine without an NVIDIA GPU. ComfyUI runs with --cpu; image generation is very slow. Not a supported generation path.",
+    "download.pytorch.org/whl/cpu: torch 2.14.1+cpu, torchvision 0.29.1+cpu cp313 manylinux_2_28_x86_64 wheels exist (index listing observed 2026-10-23); no torchaudio 2.14.x wheel is published, as for linux-py313-torch2141-cu130",
+    "Mirrors linux-py313-torch2141-cu130 except the torch build; Triton is kept so the setup steps match the CUDA profiles",
+    "Python 3.13.16: uv 0.13.1 embedded python-build-standalone 20261013 metadata (SHA-256 pinned in python-downloads.json)",
+    "Disk budget is an estimate; it has not been measured"
+  ]
+}
