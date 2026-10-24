@@ -2,7 +2,7 @@ name: Release bundles
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
     paths: ['crates/desktop/tauri.conf.json']
   workflow_dispatch:
 
@@ -154,6 +154,8 @@ jobs:
           releaseBody: 'Windows and Linux x64 bundles. GPU setup runs on first launch. See README.md for requirements and signing status.'
           uploadUpdaterJson: ${{ env.HAS_UPDATER_KEY == 'true' }}
           updaterJsonPreferNsis: true
+          # Also attach the unbundled Windows executable; tauri-action finds it through mainBinaryName.
+          uploadPlainBinary: ${{ runner.os == 'Windows' }}
 
       - name: Inspect Debian runtime dependencies
         if: runner.os == 'Linux'
