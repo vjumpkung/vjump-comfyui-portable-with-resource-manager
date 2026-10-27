@@ -3,6 +3,9 @@ use std::sync::{Arc, RwLock};
 use tauri::{Manager, Runtime, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
+#[cfg(windows)]
+mod save_as;
+
 /// The label of the top-level window that hosts the ComfyUI web UI. No capability
 /// names this label, so it can never invoke app commands.
 pub const COMFYUI_WINDOW: &str = "comfyui";
@@ -77,7 +80,7 @@ pub fn open_comfyui_window<R: Runtime, M: Manager<R>>(
     let new_window_app = app.app_handle().clone();
     let state = app.state::<crate::AppState>();
     let data_directory = state.data_dir.join("webview/comfyui");
-    WebviewWindowBuilder::new(app, COMFYUI_WINDOW, WebviewUrl::External(url))
+    let window = WebviewWindowBuilder::new(app, COMFYUI_WINDOW, WebviewUrl::External(url))
         .title("ComfyUI")
         .data_directory(data_directory)
         .disable_drag_drop_handler()
@@ -98,5 +101,8 @@ pub fn open_comfyui_window<R: Runtime, M: Manager<R>>(
             open_in_browser(&new_window_app, target);
             tauri::webview::NewWindowResponse::Deny
         })
-        .build()
+        .build()?;
+    #[cfg(windows)]
+    save_as::install(&window);
+    Ok(window)
 }
