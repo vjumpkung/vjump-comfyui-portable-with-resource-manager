@@ -120,6 +120,11 @@ export const commands = {
 	 *  ComfyUI stop, because Manager or the user may have changed the folders meanwhile.
 	 */
 	nodeRescan: () => typedError<NodeListDto, IpcError>(__TAURI_INVOKE("node_rescan")),
+	/**
+	 *  Closes an interrupted operation that recovery cannot resolve and keeps every file as it is,
+	 *  then reads the folders again. The closure stands even when the following scan fails.
+	 */
+	nodeResolveOperation: (operationId: string) => typedError<NodeListDto, IpcError>(__TAURI_INVOKE("node_resolve_operation", { operationId })),
 	nodePrepareRegistry: (input: PrepareRegistryInput) => typedError<PlanReviewDto, IpcError>(__TAURI_INVOKE("node_prepare_registry", { input })),
 	nodePrepareGit: (input: PrepareGitInput) => typedError<PlanReviewDto, IpcError>(__TAURI_INVOKE("node_prepare_git", { input })),
 	nodePrepareUpdate: (input: PrepareUpdateInput) => typedError<PlanReviewDto, IpcError>(__TAURI_INVOKE("node_prepare_update", { input })),

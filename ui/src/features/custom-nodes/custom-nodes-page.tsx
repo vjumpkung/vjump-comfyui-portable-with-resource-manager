@@ -8,6 +8,7 @@ import {
   gateway,
   type ComfyStatusDto,
   type InstalledNodeDto,
+  type OperationDto,
   type StartResultDto,
 } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
@@ -36,6 +37,7 @@ import {
 import { NodeDetails } from './node-details'
 import { OperationsPanel } from './operations-panel'
 import { RegistryBrowser } from './registry-browser'
+import { ResolveDialog } from './resolve-dialog'
 import { ReviewDialog } from './review-dialog'
 import { UpdateAllDialog } from './update-all-dialog'
 import { UpdateDialog } from './update-dialog'
@@ -86,6 +88,7 @@ export function CustomNodesPage({
   const [updateAll, setUpdateAll] = useState<InstalledNodeDto[] | null>(null)
   const [confirm, setConfirm] = useState<{ node: InstalledNodeDto; action: NodeConfirmation } | null>(null)
   const [operationId, setOperationId] = useState<string | null>(null)
+  const [keepFiles, setKeepFiles] = useState<OperationDto | null>(null)
   const [restart, setRestart] = useState<Restart>({ kind: 'idle' })
 
   const list = nodes.data
@@ -128,6 +131,10 @@ export function CustomNodesPage({
   const toggleAll = () => {
     const ids = visible.map((node) => node.id)
     setSelected((current) => ids.every((id) => current.has(id)) ? new Set() : new Set(ids))
+  }
+
+  async function resolveKeepFiles() {
+    if (keepFiles && await actions.resolveOperation(keepFiles.id)) setKeepFiles(null)
   }
 
   async function stopRunning() {
@@ -426,7 +433,19 @@ export function CustomNodesPage({
         rescanning={actions.rescanning}
         rescanError={actions.rescanError}
         onRescan={() => void actions.rescan()}
+        onKeepFiles={setKeepFiles}
+        resolving={actions.resolving}
+        resolveError={actions.resolveError}
       />
+
+      {keepFiles && (
+        <ResolveDialog
+          operation={keepFiles}
+          busy={actions.resolving}
+          onClose={() => setKeepFiles(null)}
+          onConfirm={() => void resolveKeepFiles()}
+        />
+      )}
 
       {installTarget && (
         <InstallDialog

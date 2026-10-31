@@ -75,6 +75,7 @@ fn main() {
             "node_list",
             "node_git_status",
             "node_rescan",
+            "node_resolve_operation",
             "node_prepare_registry",
             "node_prepare_git",
             "node_prepare_update",

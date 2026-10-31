@@ -8,6 +8,7 @@ import {
   gateway,
   IpcClientError,
   type BatchOutcomeDto,
+  type NodeListDto,
   type NodeOutcomeDto,
   type PlanReviewDto,
   type StartResultDto,
@@ -50,6 +51,7 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
     nodeUpdateAll: vi.fn(),
     nodeCancel: vi.fn(),
     nodeRescan: vi.fn(),
+    nodeResolveOperation: vi.fn(),
   },
 }))
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() } }))
@@ -252,7 +254,7 @@ it('stop_is_awaited_before_retry', async () => {
   const stop = deferred<void>()
   vi.mocked(props.onStopComfy).mockReturnValue(stop.promise)
   vi.mocked(gateway.nodePrepareGit).mockRejectedValueOnce(new IpcClientError(
-    'comfyui_running', 'ComfyUI must be stopped before changing custom nodes. Stop it and retry.',
+    'comfyui_running', 'ComfyUI must be stopped before changing custom nodes. If it is already stopped, close other programs that use the ComfyUI folder, such as a terminal opened there, and retry.',
   ))
   mount()
   await loaded()
@@ -474,6 +476,101 @@ it('offers_rescan_and_shows_its_failure', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Rescan / finish recovery' }))
   expect(await screen.findByText('The rescan failed')).toBeTruthy()
   expect(gateway.nodeRescan).toHaveBeenCalledTimes(1)
+})
+
+it('confirms_keeping_files_and_moves_the_closed_operation_out_of_unfinished', async () => {
+  const interrupted = operation({ id: 'op-interrupted', phase: 'prepared', blocksStart: true, nodeName: 'Interrupted Pack' })
+  const closed = nodeList({ recent: [operation({ ...interrupted, phase: 'failed', blocksStart: false })] })
+  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({ unresolved: [interrupted] }))
+  vi.mocked(gateway.nodeResolveOperation).mockImplementation(() => {
+    vi.mocked(gateway.nodeList).mockResolvedValue(closed)
+    return Promise.resolve(closed)
+  })
+  mount()
+  fireEvent.click(await screen.findByRole('button', { name: 'Keep the files of Interrupted Pack as they are' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Close the interrupted install of Interrupted Pack?' })
+  expect(within(dialog).getByText(/custom_nodes\/\.disabled/)).toBeTruthy()
+  expect(within(dialog).getByText(/Dependencies are not installed or repaired/)).toBeTruthy()
+  expect(gateway.nodeResolveOperation).not.toHaveBeenCalled()
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Keep files as they are' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(gateway.nodeResolveOperation).toHaveBeenCalledExactlyOnceWith('op-interrupted')
+  expect(screen.queryByRole('heading', { name: 'Unfinished' })).toBeNull()
+  expect(screen.getByRole('heading', { name: 'Recent results (latest 16)' })).toBeTruthy()
+  expect(screen.getByText('Interrupted Pack')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: /Keep the files of/ })).toBeNull()
+})
+
+it('keeping_files_clears_a_previous_rescan_failure', async () => {
+  const interrupted = operation({ id: 'op-interrupted', phase: 'prepared', blocksStart: true })
+  const resolved = nodeList()
+  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({ unresolved: [interrupted] }))
+  vi.mocked(gateway.nodeRescan).mockRejectedValue(new IpcClientError('node_rescan_failed', 'The rescan failed.'))
+  vi.mocked(gateway.nodeResolveOperation).mockImplementation(() => {
+    vi.mocked(gateway.nodeList).mockResolvedValue(resolved)
+    return Promise.resolve(resolved)
+  })
+  mount()
+  await loaded()
+  fireEvent.click(button('Rescan / finish recovery'))
+  expect((await screen.findByText('The rescan failed')).closest('[role="alert"]')).toBeTruthy()
+  fireEvent.click(button('Keep the files of ComfyUI-Example as they are'))
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Keep files as they are' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(gateway.nodeResolveOperation).toHaveBeenCalledExactlyOnceWith('op-interrupted')
+  expect(screen.queryByRole('heading', { name: 'Unfinished' })).toBeNull()
+  expect(screen.queryByText('The rescan failed')).toBeNull()
+})
+
+it('cancelling_keep_files_does_not_resolve_the_operation', async () => {
+  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
+    unresolved: [operation({ phase: 'published', blocksStart: true })],
+  }))
+  mount()
+  fireEvent.click(await screen.findByRole('button', { name: 'Keep the files of ComfyUI-Example as they are' }))
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(gateway.nodeResolveOperation).not.toHaveBeenCalled()
+  expect(screen.getByRole('heading', { name: 'Unfinished' })).toBeTruthy()
+})
+
+it('keep_files_failure_keeps_the_dialog_open_and_shows_the_failed_alert', async () => {
+  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
+    unresolved: [operation({ phase: 'published', blocksStart: true })],
+  }))
+  vi.mocked(gateway.nodeResolveOperation).mockRejectedValue(new IpcClientError('node_storage', 'The journal is unavailable.'))
+  mount()
+  fireEvent.click(await screen.findByRole('button', { name: 'Keep the files of ComfyUI-Example as they are' }))
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Keep files as they are' }))
+  const title = await screen.findByText('The operation could not be closed')
+  expect(title.closest('[role="alert"]')?.textContent).toContain('The journal is unavailable.')
+  expect(screen.getByRole('dialog')).toBeTruthy()
+  expect(within(screen.getByRole('dialog')).getByRole<HTMLButtonElement>('button', { name: 'Keep files as they are' }).disabled).toBe(false)
+})
+
+it('disables_recovery_buttons_and_prevents_closing_while_resolving', async () => {
+  const pending = deferred<NodeListDto>()
+  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
+    unresolved: [operation({ id: 'op-interrupted', phase: 'published', blocksStart: true })],
+  }))
+  vi.mocked(gateway.nodeResolveOperation).mockReturnValue(pending.promise)
+  mount()
+  const keep = await screen.findByRole<HTMLButtonElement>('button', { name: 'Keep the files of ComfyUI-Example as they are' })
+  const rescan = button('Rescan / finish recovery')
+  fireEvent.click(keep)
+  const dialog = await screen.findByRole('dialog')
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Keep files as they are' }))
+  expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Closing…' }).disabled).toBe(true)
+  expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Cancel' }).disabled).toBe(true)
+  expect(within(dialog).queryByRole('button', { name: 'Close' })).toBeNull()
+  expect(keep.disabled).toBe(true)
+  expect(rescan.disabled).toBe(true)
+  fireEvent.keyDown(dialog, { key: 'Escape' })
+  expect(screen.getByRole('dialog')).toBeTruthy()
+  expect(gateway.nodeResolveOperation).toHaveBeenCalledExactlyOnceWith('op-interrupted')
+  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList())
+  pending.resolve(nodeList())
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 })
 
 it('shows_a_node_recovery_failure_from_a_commit_with_a_rescan_action', async () => {

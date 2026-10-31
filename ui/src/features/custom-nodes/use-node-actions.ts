@@ -91,6 +91,8 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
   const [stopping, setStopping] = useState(false)
   const [rescanning, setRescanning] = useState(false)
   const [rescanError, setRescanError] = useState<unknown>(null)
+  const [resolving, setResolving] = useState(false)
+  const [resolveError, setResolveError] = useState<unknown>(null)
   const inflight = useRef(false)
   const cancelled = useRef(false)
   const preparations = useRef(new Map<string, NodePreparation>())
@@ -248,7 +250,7 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
   }
 
   async function rescan(): Promise<void> {
-    if (inflight.current || rescanning) return
+    if (inflight.current || rescanning || resolving) return
     setRescanning(true)
     setRescanError(null)
     try {
@@ -258,6 +260,24 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
       setRescanError(error)
     } finally {
       setRescanning(false)
+      settle()
+    }
+  }
+
+  async function resolveOperation(operationId: string): Promise<boolean> {
+    if (inflight.current || rescanning || resolving) return false
+    setResolving(true)
+    setResolveError(null)
+    try {
+      const list = await gateway.nodeResolveOperation(operationId)
+      client.setQueryData(NODE_KEY, list)
+      setRescanError(null)
+      return true
+    } catch (error) {
+      setResolveError(error)
+      return false
+    } finally {
+      setResolving(false)
       settle()
     }
   }
@@ -288,7 +308,9 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
     stopping,
     rescanning,
     rescanError,
-    working: busy !== null || stopping || rescanning,
+    resolving,
+    resolveError,
+    working: busy !== null || stopping || rescanning || resolving,
     prepare,
     commit,
     discard,
@@ -297,6 +319,7 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
     toggle,
     uninstall,
     rescan,
+    resolveOperation,
     stopAndRetry,
     report: fail,
     dismissFailure: () => setFailure(null),

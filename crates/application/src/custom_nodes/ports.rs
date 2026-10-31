@@ -97,12 +97,14 @@ pub trait NodeFiles: Send + Sync {
         node: &InstalledNode,
         staged: Option<&NodeId>,
     ) -> Result<Box<dyn NodeLocationGuard>, NodeAppError>;
+    /// Returns the full live tree digest for an in-place Git publication, which must replace
+    /// the recorded node digest; rename publications return `None`.
     async fn publish(
         &self,
         root: &Path,
         operation: &NodeOperation,
         retained: Retained,
-    ) -> Result<(), NodeAppError>;
+    ) -> Result<Option<String>, NodeAppError>;
     async fn backup(&self, root: &Path, operation: &NodeOperation) -> Result<(), NodeAppError>;
     async fn move_enabled(
         &self,
@@ -118,7 +120,7 @@ pub trait NodeFiles: Send + Sync {
         root: &Path,
         operation: &NodeOperation,
         retained: Retained,
-    ) -> Result<RecoveryAction, NodeAppError>;
+    ) -> Result<RecoveryOutcome, NodeAppError>;
     async fn scan(
         &self,
         root: &Path,

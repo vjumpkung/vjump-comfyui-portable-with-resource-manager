@@ -239,6 +239,7 @@ export const gateway = {
   nodeGitStatus: (nodeId: string): Promise<NodeGitStatusDto> =>
     unwrap(() => commands.nodeGitStatus({ nodeId })),
   nodeRescan: () => unwrap(() => commands.nodeRescan()),
+  nodeResolveOperation: (operationId: string) => unwrap(() => commands.nodeResolveOperation(operationId)),
   nodePrepareRegistry: (input: PrepareRegistryInput) =>
     unwrap(() => commands.nodePrepareRegistry(input)),
   nodePrepareGit: (input: PrepareGitInput) =>

@@ -30,9 +30,11 @@ struct FilesState {
     requirements_digest: Option<String>,
     hook_digest: Option<String>,
     publish_error: Option<NodeAppError>,
+    publish_digest: Option<String>,
     /// Fails the next `prepare` once with this error.
     prepare_error: Option<NodeAppError>,
     recover: Option<RecoveryAction>,
+    recover_digest: Option<String>,
     recycle_fails: bool,
     scan: Vec<InstalledNode>,
     scan_error: Option<NodeAppError>,
@@ -187,6 +189,7 @@ impl NodeFiles for FakeFiles {
                     },
                     name: SafeFileName::new(folder).unwrap(),
                     tree_digest: state.digest.clone(),
+                    untracked_digest: None,
                     artifact_digest: None,
                     requirement_lines: vec!["numpy".into()],
                     requirements_digest: state.requirements_digest.clone(),
@@ -309,18 +312,21 @@ impl NodeFiles for FakeFiles {
         _root: &Path,
         op: &NodeOperation,
         _retained: crate::shared::Retained,
-    ) -> Result<(), NodeAppError> {
+    ) -> Result<Option<String>, NodeAppError> {
         self.world.call("files:publish");
         let mut state = self.state.lock().unwrap();
         match state.publish_error.take() {
             Some(error) => Err(error),
             None => {
-                let digest = state.digest.clone();
+                let digest = state
+                    .publish_digest
+                    .clone()
+                    .unwrap_or_else(|| state.digest.clone());
                 state.snapshots.insert(op.node.name.as_str().into(), digest);
                 state
                     .locations
                     .insert(op.node.name.as_str().into(), op.node.enabled);
-                Ok(())
+                Ok(state.publish_digest.clone())
             }
         }
     }
@@ -367,14 +373,13 @@ impl NodeFiles for FakeFiles {
         _root: &Path,
         _op: &NodeOperation,
         _retained: crate::shared::Retained,
-    ) -> Result<RecoveryAction, NodeAppError> {
+    ) -> Result<RecoveryOutcome, NodeAppError> {
         self.world.call("files:recover");
-        Ok(self
-            .state
-            .lock()
-            .unwrap()
-            .recover
-            .unwrap_or(RecoveryAction::Blocked))
+        let state = self.state.lock().unwrap();
+        Ok(RecoveryOutcome {
+            action: state.recover.unwrap_or(RecoveryAction::Blocked),
+            tree_digest: state.recover_digest.clone(),
+        })
     }
     async fn scan(
         &self,
@@ -658,6 +663,10 @@ struct StoreState {
     journal_error: Option<NodeAppError>,
     nodes_error: Option<NodeAppError>,
     verified: Vec<NodeOperation>,
+    saved_nodes: Vec<InstalledNode>,
+    published: Vec<NodeOperation>,
+    save_error_phase: Option<OperationPhase>,
+    journal_error_after_blocked_save: bool,
 }
 
 struct FakeStore {
@@ -676,6 +685,7 @@ impl NodeRepository for FakeStore {
     }
     async fn save_node(&self, node: &InstalledNode) -> Result<(), NodeAppError> {
         let mut state = self.state.lock().unwrap();
+        state.saved_nodes.push(node.clone());
         state.nodes.retain(|n| n.id != node.id);
         state.nodes.push(node.clone());
         Ok(())
@@ -687,6 +697,17 @@ impl NodeRepository for FakeStore {
     async fn save_operation(&self, op: &NodeOperation) -> Result<(), NodeAppError> {
         self.world.call(&format!("store:{}", op.phase.as_str()));
         let mut state = self.state.lock().unwrap();
+        if state.save_error_phase == Some(op.phase) {
+            state.save_error_phase = None;
+            return Err(NodeAppError::Storage);
+        }
+        if op.phase == OperationPhase::Published {
+            state.published.push(op.clone());
+        }
+        if state.journal_error_after_blocked_save && op.blocks_start() && op.failure.is_some() {
+            state.journal_error_after_blocked_save = false;
+            state.journal_error = Some(NodeAppError::Storage);
+        }
         if op.phase == OperationPhase::Verified {
             if op.consent_identity.is_some()
                 && matches!(
@@ -818,6 +839,50 @@ struct Harness {
     service: NodeService,
 }
 
+struct FailingActiveRead {
+    inner: Arc<dyn EnvironmentRepository>,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl EnvironmentRepository for FailingActiveRead {
+    async fn list(&self) -> Result<Vec<PythonEnvironment>, crate::environment::EnvRepoError> {
+        self.inner.list().await
+    }
+    async fn get(
+        &self,
+        id: &EnvId,
+    ) -> Result<Option<PythonEnvironment>, crate::environment::EnvRepoError> {
+        self.inner.get(id).await
+    }
+    async fn active(&self) -> Result<Option<PythonEnvironment>, crate::environment::EnvRepoError> {
+        if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            Err(crate::environment::EnvRepoError::Unavailable)
+        } else {
+            self.inner.active().await
+        }
+    }
+    async fn save(&self, env: &PythonEnvironment) -> Result<(), crate::environment::EnvRepoError> {
+        self.inner.save(env).await
+    }
+    async fn load_components(
+        &self,
+        id: &EnvId,
+    ) -> Result<crate::environment::InstalledComponents, crate::environment::EnvRepoError> {
+        self.inner.load_components(id).await
+    }
+    async fn save_components(
+        &self,
+        id: &EnvId,
+        components: &crate::environment::InstalledComponents,
+    ) -> Result<(), crate::environment::EnvRepoError> {
+        self.inner.save_components(id, components).await
+    }
+    async fn delete(&self, id: &EnvId) -> Result<(), crate::environment::EnvRepoError> {
+        self.inner.delete(id).await
+    }
+}
+
 fn registry_source(version: &str) -> NodeSource {
     NodeSource::Registry {
         id: "pack".into(),
@@ -832,6 +897,7 @@ fn staged(version: &str) -> StagedNode {
         source: registry_source(version),
         name: SafeFileName::new("pack").unwrap(),
         tree_digest: format!("tree:{version}"),
+        untracked_digest: None,
         artifact_digest: Some("artifact".into()),
         requirement_lines: vec!["numpy".into()],
         requirements_digest: Some("req".into()),
@@ -1715,6 +1781,117 @@ fn a_failed_publish_is_settled_from_the_disk_state() {
     assert_eq!(blocked.unwrap_err(), NodeAppError::RecoveryRequired);
 }
 
+fn prepare_git_update_with_ignored_files(h: &Harness) -> PlanReview {
+    let source = |commit: &str| NodeSource::Git {
+        repository: "https://github.com/pub/pack".into(),
+        commit: commit.repeat(40),
+        branch: Some("main".into()),
+    };
+    h.files
+        .state
+        .lock()
+        .unwrap()
+        .staged
+        .as_mut()
+        .unwrap()
+        .source = source("a");
+    let installed = h.installed();
+    {
+        let mut state = h.files.state.lock().unwrap();
+        let mut target = staged("1.1.0");
+        target.source = source("b");
+        target.untracked_digest = Some("tree:ignored-baseline".into());
+        state.staged = Some(target);
+        state.digest = "tree:1.1.0".into();
+    }
+    block_on(h.service.prepare(
+        PrepareRequest::Update {
+            node: installed.id,
+            reference: None,
+        },
+        &h.ctx(),
+    ))
+    .unwrap()
+}
+
+#[test]
+fn in_place_publish_saves_the_live_digest_after_durable_staging_evidence() {
+    let h = Harness::new();
+    let review = prepare_git_update_with_ignored_files(&h);
+    let prepared = block_on(h.service.operation_status(&review.id)).unwrap();
+    assert_eq!(prepared.staged_digest.as_deref(), Some("tree:1.1.0"));
+    assert_eq!(
+        prepared.untracked_digest.as_deref(),
+        Some("tree:ignored-baseline")
+    );
+    h.files.state.lock().unwrap().publish_digest = Some("tree:full-live".into());
+    let outcome = block_on(
+        h.service
+            .commit(&review.id, Harness::decision(&review), &h.ctx()),
+    )
+    .unwrap();
+    assert_eq!(outcome.node.tree_digest, "tree:full-live");
+    let state = h.store.state.lock().unwrap();
+    let published = state.published.last().unwrap();
+    assert_eq!(published.phase, OperationPhase::Published);
+    assert_eq!(published.node.tree_digest, "tree:full-live");
+    assert_eq!(published.staged_digest.as_deref(), Some("tree:1.1.0"));
+    assert_eq!(published.untracked_digest, prepared.untracked_digest);
+    assert!(
+        state
+            .saved_nodes
+            .iter()
+            .any(|node| node.tree_digest == "tree:full-live")
+    );
+    assert_eq!(state.nodes[0].tree_digest, "tree:full-live");
+}
+
+#[test]
+fn a_failed_published_save_recovers_the_live_digest_without_dependencies() {
+    let h = Harness::new();
+    let review = prepare_git_update_with_ignored_files(&h);
+    h.files.state.lock().unwrap().publish_digest = Some("tree:full-live".into());
+    h.store.state.lock().unwrap().save_error_phase = Some(OperationPhase::Published);
+    assert_eq!(
+        block_on(
+            h.service
+                .commit(&review.id, Harness::decision(&review), &h.ctx())
+        )
+        .unwrap_err(),
+        NodeAppError::Storage
+    );
+    let durable = block_on(h.service.operation_status(&review.id)).unwrap();
+    assert_eq!(durable.phase, OperationPhase::OldBackedUp);
+    assert_eq!(durable.node.tree_digest, "tree:1.1.0");
+    assert_eq!(durable.staged_digest.as_deref(), Some("tree:1.1.0"));
+    assert_eq!(h.world.count("install:node"), 0);
+    {
+        let mut state = h.files.state.lock().unwrap();
+        state.recover = Some(RecoveryAction::RolledForward);
+        state.recover_digest = Some("tree:full-live".into());
+        state.scan = vec![durable.node];
+    }
+    let nodes = block_on(h.service.rescan()).unwrap();
+    assert_eq!(nodes[0].tree_digest, "tree:full-live");
+    let recovered = block_on(h.service.operation_status(&review.id)).unwrap();
+    assert_eq!(recovered.phase, OperationPhase::Failed);
+    assert_eq!(recovered.node.tree_digest, "tree:full-live");
+    assert_eq!(recovered.node.dependencies, DependencyState::NotRun);
+    assert!(
+        recovered
+            .failure
+            .unwrap()
+            .contains("dependencies did not run")
+    );
+    assert_eq!(h.world.count("install:node"), 0);
+    assert_eq!(h.world.count("hook:run"), 0);
+    assert_eq!(
+        h.store.state.lock().unwrap().nodes[0].tree_digest,
+        "tree:full-live"
+    );
+    assert!(block_on(h.service.ensure_reconciled()).is_ok());
+}
+
 #[test]
 fn git_post_apply_refusals_keep_dependencies_and_hooks_unexecuted() {
     for error in [
@@ -1807,6 +1984,8 @@ fn interrupted(h: &Harness, phase: OperationPhase, kind: OperationKind) -> NodeO
         pins: env.pins.clone(),
         binding: "b".into(),
         artifact_digest: None,
+        staged_digest: None,
+        untracked_digest: None,
         requirements_digest: None,
         hook_digest: None,
         consent_identity: None,
@@ -1815,6 +1994,268 @@ fn interrupted(h: &Harness, phase: OperationPhase, kind: OperationKind) -> NodeO
         backup: ".disabled/.vjump-backup-node-int".into(),
         dependency_requirements: Vec::new(),
     }
+}
+
+#[test]
+fn superseded_recovery_scans_before_closing_without_saving_recorded_nodes() {
+    for phase in [
+        OperationPhase::PublishIntent,
+        OperationPhase::OldBackedUp,
+        OperationPhase::Published,
+    ] {
+        let h = Harness::new();
+        let mut op = interrupted(&h, phase, OperationKind::Update);
+        let source = |commit: &str| NodeSource::Git {
+            repository: "https://github.com/pub/pack".into(),
+            commit: commit.repeat(40),
+            branch: Some("main".into()),
+        };
+        op.prior.as_mut().unwrap().source = source("a");
+        op.node.source = source("b");
+        let mut observed = op.node.clone();
+        observed.source = source("c");
+        observed.tree_digest = "tree:external".into();
+        block_on(h.store.save_node(op.prior.as_ref().unwrap())).unwrap();
+        block_on(h.store.save_operation(&op)).unwrap();
+        h.store.state.lock().unwrap().saved_nodes.clear();
+        {
+            let mut state = h.files.state.lock().unwrap();
+            state.recover = Some(RecoveryAction::Superseded);
+            state.scan = vec![observed.clone()];
+            state.pin_digest = Some(observed.tree_digest.clone());
+        }
+        h.world.calls.lock().unwrap().clear();
+        block_on(h.service.reconcile()).unwrap();
+        let calls = h.world.calls();
+        let scan = calls.iter().position(|call| call == "files:scan").unwrap();
+        let terminal = calls
+            .iter()
+            .position(|call| call == "store:failed")
+            .unwrap();
+        assert!(scan < terminal);
+        let closed = block_on(h.service.operation_status(op.id.as_str())).unwrap();
+        assert_eq!(closed.phase, OperationPhase::Failed);
+        assert_eq!(
+            closed.failure.as_deref(),
+            Some(
+                "The node folder was changed outside the app and is now at another commit. The update was closed without installing dependencies."
+            )
+        );
+        let state = h.store.state.lock().unwrap();
+        assert_eq!(state.saved_nodes, [observed.clone()]);
+        assert_eq!(state.nodes, [observed]);
+        assert!(state.dependencies.is_empty());
+        assert_eq!(h.world.count("install:node"), 0);
+        assert_eq!(h.env().state(), EnvState::Verified);
+    }
+}
+
+#[test]
+fn superseded_recovery_remains_blocking_when_the_scan_fails_and_retries() {
+    let h = Harness::new();
+    let op = interrupted(&h, OperationPhase::OldBackedUp, OperationKind::Update);
+    block_on(h.store.save_operation(&op)).unwrap();
+    {
+        let mut state = h.files.state.lock().unwrap();
+        state.recover = Some(RecoveryAction::Superseded);
+        state.scan_error = Some(NodeAppError::Filesystem);
+    }
+    assert_eq!(
+        block_on(h.service.reconcile()),
+        Err(NodeAppError::Filesystem)
+    );
+    assert_eq!(
+        block_on(h.service.operation_status(op.id.as_str())).unwrap(),
+        op
+    );
+    assert_eq!(
+        block_on(h.service.ensure_reconciled()),
+        Err(NodeAppError::RecoveryRequired)
+    );
+    assert_eq!(h.world.count("store:failed"), 0);
+    assert!(h.store.state.lock().unwrap().saved_nodes.is_empty());
+    h.files.state.lock().unwrap().scan_error = None;
+    block_on(h.service.reconcile()).unwrap();
+    assert_eq!(h.world.count("files:scan"), 2);
+    assert_eq!(h.world.count("store:failed"), 1);
+    assert!(block_on(h.service.ensure_reconciled()).is_ok());
+}
+
+#[test]
+fn cleanup_recovery_saves_the_live_digest_from_split_evidence() {
+    let h = Harness::new();
+    let op = interrupted(&h, OperationPhase::Published, OperationKind::Update);
+    block_on(h.store.save_operation(&op)).unwrap();
+    {
+        let mut state = h.files.state.lock().unwrap();
+        state.recover = Some(RecoveryAction::CleanupPending);
+        state.recover_digest = Some("tree:full-live".into());
+    }
+    block_on(h.service.reconcile()).unwrap();
+    let saved = block_on(h.service.operation_status(op.id.as_str())).unwrap();
+    assert_eq!(saved.phase, OperationPhase::CleanupPending);
+    assert_eq!(saved.node.tree_digest, "tree:full-live");
+    assert_eq!(
+        h.store.state.lock().unwrap().nodes[0].tree_digest,
+        "tree:full-live"
+    );
+}
+
+#[test]
+fn resolving_an_operation_closes_the_journal_keeps_files_and_removes_its_plan() {
+    let h = Harness::new();
+    let review = h.prepare();
+    let mut op = block_on(h.service.operation_status(&review.id)).unwrap();
+    op.phase = OperationPhase::PublishIntent;
+    block_on(h.store.save_operation(&op)).unwrap();
+    h.files.state.lock().unwrap().scan = vec![op.node.clone()];
+    h.world.calls.lock().unwrap().clear();
+    block_on(h.service.resolve_operation(&review.id)).unwrap();
+    let closed = block_on(h.service.operation_status(&review.id)).unwrap();
+    assert_eq!(closed.phase, OperationPhase::Failed);
+    assert_eq!(
+        closed.failure.as_deref(),
+        Some(
+            "Closed by the user. The files were kept as they are; any preserved copies stay in custom_nodes/.disabled."
+        )
+    );
+    assert!(h.service.pending_reviews().unwrap().is_empty());
+    assert_eq!(h.world.count("files:scan"), 1);
+    assert!(
+        h.files
+            .state
+            .lock()
+            .unwrap()
+            .scan_retained
+            .iter()
+            .all(|held| *held)
+    );
+    for call in [
+        "files:recover",
+        "files:discard",
+        "files:recycle",
+        "files:publish",
+        "files:backup",
+    ] {
+        assert_eq!(h.world.count(call), 0, "{call}");
+    }
+    let calls = h.world.calls();
+    assert!(
+        calls
+            .iter()
+            .position(|call| call == "store:failed")
+            .unwrap()
+            < calls.iter().position(|call| call == "files:scan").unwrap()
+    );
+    assert_eq!(h.env().state(), EnvState::Verified);
+    assert!(block_on(h.service.ensure_reconciled()).is_ok());
+}
+
+#[test]
+fn resolving_interrupted_dependencies_marks_the_environment_for_repair() {
+    for already_damaged in [false, true] {
+        let h = Harness::new();
+        let op = interrupted(
+            &h,
+            OperationPhase::DependenciesInProgress,
+            OperationKind::Update,
+        );
+        block_on(h.store.save_operation(&op)).unwrap();
+        if already_damaged {
+            let mut env = h.env();
+            env.mark_repair_required("now").unwrap();
+            block_on(h.service.deps.environment.envs.save(&env)).unwrap();
+        }
+        block_on(h.service.resolve_operation(op.id.as_str())).unwrap();
+        assert_eq!(h.env().state(), EnvState::RepairRequired);
+        let closed = block_on(h.service.operation_status(op.id.as_str())).unwrap();
+        assert_eq!(closed.phase, OperationPhase::Failed);
+        assert_eq!(closed.node, op.node);
+        let state = h.store.state.lock().unwrap();
+        assert!(state.saved_nodes.is_empty());
+        assert!(state.dependencies.is_empty());
+        assert_eq!(h.world.count("files:recover"), 0);
+        assert_eq!(h.world.count("files:scan"), 1);
+    }
+}
+
+#[test]
+fn resolving_a_nonblocking_operation_is_an_idempotent_noop() {
+    for phase in [
+        OperationPhase::Prepared,
+        OperationPhase::Verified,
+        OperationPhase::CleanupPending,
+        OperationPhase::Completed,
+        OperationPhase::Failed,
+    ] {
+        let h = Harness::new();
+        let mut op = interrupted(&h, phase, OperationKind::Update);
+        if matches!(phase, OperationPhase::Completed | OperationPhase::Failed) {
+            op.failure = Some("Existing terminal explanation".into());
+        }
+        block_on(h.store.save_operation(&op)).unwrap();
+        h.world.calls.lock().unwrap().clear();
+        for _ in 0..2 {
+            block_on(h.service.resolve_operation(op.id.as_str())).unwrap();
+        }
+        assert_eq!(
+            block_on(h.service.operation_status(op.id.as_str())).unwrap(),
+            op
+        );
+        assert_eq!(h.world.calls(), ["ensure_stopped", "ensure_stopped"]);
+        assert!(h.store.state.lock().unwrap().saved_nodes.is_empty());
+    }
+}
+
+#[test]
+fn resolving_requires_the_gate_a_stopped_runtime_and_a_known_operation() {
+    let h = Harness::new();
+    let op = interrupted(&h, OperationPhase::PublishIntent, OperationKind::Update);
+    block_on(h.store.save_operation(&op)).unwrap();
+    let lease = block_on(h.service.deps.environment.gate.try_acquire()).unwrap();
+    assert_eq!(
+        block_on(h.service.resolve_operation(op.id.as_str())),
+        Err(NodeAppError::Busy)
+    );
+    drop(lease);
+    *h.world.runtime_block.lock().unwrap() = Some(RuntimeBlock::Running);
+    assert_eq!(
+        block_on(h.service.resolve_operation(op.id.as_str())),
+        Err(NodeAppError::RuntimeRunning)
+    );
+    *h.world.runtime_block.lock().unwrap() = None;
+    assert_eq!(
+        block_on(h.service.resolve_operation("missing")),
+        Err(NodeAppError::NotFound)
+    );
+    assert_eq!(
+        block_on(h.service.operation_status(op.id.as_str())).unwrap(),
+        op
+    );
+    assert_eq!(h.world.count("files:scan"), 0);
+}
+
+#[test]
+fn resolving_keeps_the_operation_closed_when_its_following_scan_fails() {
+    let h = Harness::new();
+    let op = interrupted(&h, OperationPhase::OldBackedUp, OperationKind::Update);
+    block_on(h.store.save_operation(&op)).unwrap();
+    h.files.state.lock().unwrap().scan_error = Some(NodeAppError::Filesystem);
+    assert_eq!(
+        block_on(h.service.resolve_operation(op.id.as_str())),
+        Err(NodeAppError::Filesystem)
+    );
+    assert_eq!(
+        block_on(h.service.operation_status(op.id.as_str()))
+            .unwrap()
+            .phase,
+        OperationPhase::Failed
+    );
+    assert!(block_on(h.service.ensure_reconciled()).is_ok());
+    block_on(h.service.resolve_operation(op.id.as_str())).unwrap();
+    assert_eq!(h.world.count("files:scan"), 1);
+    assert_eq!(h.world.count("files:recover"), 0);
+    assert_eq!(h.world.count("files:discard"), 0);
 }
 
 #[test]
@@ -1976,6 +2417,178 @@ fn update_all_runs_sequentially_and_stops_when_the_environment_is_damaged() {
         &h.ctx(),
     ));
     assert_eq!(result.unwrap_err(), NodeAppError::StalePlan);
+}
+
+#[test]
+fn update_all_discards_remaining_plans_after_a_blocking_failure() {
+    let h = Harness::new();
+    let first = h.installed();
+    let mut second = first.clone();
+    second.id = NodeId::new("n-2").unwrap();
+    second.name = SafeFileName::new("second").unwrap();
+    block_on(h.store.save_node(&second)).unwrap();
+    {
+        let mut state = h.files.state.lock().unwrap();
+        state.staged = Some(staged("1.1.0"));
+        state.digest = "tree:1.1.0".into();
+    }
+    let reviews: Vec<_> = [&first, &second]
+        .into_iter()
+        .map(|node| {
+            block_on(h.service.prepare(
+                PrepareRequest::Update {
+                    node: node.id.clone(),
+                    reference: None,
+                },
+                &h.ctx(),
+            ))
+            .unwrap()
+        })
+        .collect();
+    h.files.state.lock().unwrap().publish_error = Some(NodeAppError::StalePlan);
+    let batch = block_on(
+        h.service.update_all(
+            reviews
+                .iter()
+                .map(|review| (review.id.clone(), Harness::decision(review)))
+                .collect(),
+            &h.ctx(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        batch.results[0].1.as_ref().unwrap_err(),
+        &NodeAppError::StalePlan
+    );
+    assert_eq!(
+        batch.results[1].1.as_ref().unwrap_err(),
+        &NodeAppError::Cancelled
+    );
+    assert!(!batch.stopped_for_repair);
+    assert_eq!(h.world.count("files:publish"), 1);
+    assert_eq!(h.world.count("files:discard"), 1);
+    let discarded = block_on(h.service.operation_status(&reviews[1].id)).unwrap();
+    assert_eq!(discarded.phase, OperationPhase::Failed);
+    assert_eq!(
+        discarded.failure.as_deref(),
+        Some("The reviewed plan was discarded")
+    );
+    assert!(h.service.pending_reviews().unwrap().is_empty());
+}
+
+#[test]
+fn update_all_discards_remaining_plans_after_a_post_commit_storage_error() {
+    let mut h = Harness::new();
+    let first = h.installed();
+    let mut second = first.clone();
+    second.id = NodeId::new("n-2").unwrap();
+    second.name = SafeFileName::new("second").unwrap();
+    block_on(h.store.save_node(&second)).unwrap();
+    {
+        let mut state = h.files.state.lock().unwrap();
+        state.staged = Some(staged("1.1.0"));
+        state.digest = "tree:1.1.0".into();
+    }
+    let reviews: Vec<_> = [&first, &second]
+        .into_iter()
+        .map(|node| {
+            block_on(h.service.prepare(
+                PrepareRequest::Update {
+                    node: node.id.clone(),
+                    reference: None,
+                },
+                &h.ctx(),
+            ))
+            .unwrap()
+        })
+        .collect();
+    h.service.deps.environment.envs = Arc::new(FailingActiveRead {
+        inner: h.service.deps.environment.envs.clone(),
+        reads: std::sync::atomic::AtomicUsize::new(0),
+    });
+    assert_eq!(
+        block_on(
+            h.service.update_all(
+                reviews
+                    .iter()
+                    .map(|review| (review.id.clone(), Harness::decision(review)))
+                    .collect(),
+                &h.ctx(),
+            )
+        )
+        .unwrap_err(),
+        NodeAppError::Storage
+    );
+    assert_eq!(h.world.count("files:publish"), 1);
+    let discarded = block_on(h.service.operation_status(&reviews[1].id)).unwrap();
+    assert_eq!(discarded.phase, OperationPhase::Failed);
+    assert_eq!(
+        discarded.failure.as_deref(),
+        Some("The reviewed plan was discarded")
+    );
+    assert!(h.service.pending_reviews().unwrap().is_empty());
+    assert_eq!(h.world.count("files:discard"), 2);
+}
+
+#[test]
+fn update_all_discards_remaining_plans_when_the_reconciliation_read_fails() {
+    let h = Harness::new();
+    let first = h.installed();
+    let mut second = first.clone();
+    second.id = NodeId::new("n-2").unwrap();
+    second.name = SafeFileName::new("second").unwrap();
+    block_on(h.store.save_node(&second)).unwrap();
+    {
+        let mut state = h.files.state.lock().unwrap();
+        state.staged = Some(staged("1.1.0"));
+        state.digest = "tree:1.1.0".into();
+    }
+    let reviews: Vec<_> = [&first, &second]
+        .into_iter()
+        .map(|node| {
+            block_on(h.service.prepare(
+                PrepareRequest::Update {
+                    node: node.id.clone(),
+                    reference: None,
+                },
+                &h.ctx(),
+            ))
+            .unwrap()
+        })
+        .collect();
+    h.files.state.lock().unwrap().publish_error = Some(NodeAppError::StalePlan);
+    h.store
+        .state
+        .lock()
+        .unwrap()
+        .journal_error_after_blocked_save = true;
+    assert_eq!(
+        block_on(
+            h.service.update_all(
+                reviews
+                    .iter()
+                    .map(|review| (review.id.clone(), Harness::decision(review)))
+                    .collect(),
+                &h.ctx(),
+            )
+        )
+        .unwrap_err(),
+        NodeAppError::Storage
+    );
+    let state = h.store.state.lock().unwrap();
+    let discarded = state
+        .operations
+        .iter()
+        .find(|operation| operation.id.as_str() == reviews[1].id)
+        .unwrap();
+    assert_eq!(discarded.phase, OperationPhase::Failed);
+    assert_eq!(
+        discarded.failure.as_deref(),
+        Some("The reviewed plan was discarded")
+    );
+    assert!(h.service.pending_reviews().unwrap().is_empty());
+    assert_eq!(h.world.count("files:publish"), 1);
+    assert_eq!(h.world.count("files:discard"), 1);
 }
 
 #[test]

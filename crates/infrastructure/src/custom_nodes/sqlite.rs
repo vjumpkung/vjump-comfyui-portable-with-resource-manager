@@ -187,6 +187,8 @@ struct OperationRow {
     pins: String,
     binding: String,
     artifact_digest: Option<String>,
+    staged_digest: Option<String>,
+    untracked_digest: Option<String>,
     requirements_digest: Option<String>,
     hook_digest: Option<String>,
     consent_identity: Option<String>,
@@ -213,6 +215,8 @@ fn operation_from(row: OperationRow) -> Option<NodeOperation> {
         pins: pins_from_json(&serde_json::from_str(&row.pins).ok()?)?,
         binding: row.binding,
         artifact_digest: row.artifact_digest,
+        staged_digest: row.staged_digest,
+        untracked_digest: row.untracked_digest,
         requirements_digest: row.requirements_digest,
         hook_digest: row.hook_digest,
         consent_identity: row.consent_identity,
@@ -325,13 +329,14 @@ impl NodeRepository for SqliteNodes {
                 c.execute(
                     "INSERT INTO node_operations(id, kind, phase, node_json, prior_json, environment_id, \
                      pins_json, binding, artifact_digest, requirements_digest, hook_digest, consent_identity, \
-                     failure, staging, backup, requirements_json, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17) \
+                     failure, staging, backup, requirements_json, staged_digest, untracked_digest, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?19) \
                      ON CONFLICT(id) DO UPDATE SET phase = excluded.phase, node_json = excluded.node_json, \
                      prior_json = excluded.prior_json, artifact_digest = excluded.artifact_digest, \
                      requirements_digest = excluded.requirements_digest, hook_digest = excluded.hook_digest, \
                      consent_identity = excluded.consent_identity, failure = excluded.failure, \
-                     requirements_json = excluded.requirements_json, updated_at = excluded.updated_at",
+                     requirements_json = excluded.requirements_json, staged_digest = excluded.staged_digest, \
+                     untracked_digest = excluded.untracked_digest, updated_at = excluded.updated_at",
                     params![
                         op.id.as_str(),
                         kind_str(op.kind),
@@ -349,6 +354,8 @@ impl NodeRepository for SqliteNodes {
                         op.staging,
                         op.backup,
                         serde_json::to_string(&op.dependency_requirements).unwrap_or_default(),
+                        op.staged_digest,
+                        op.untracked_digest,
                         now
                     ],
                 )
@@ -367,7 +374,8 @@ impl NodeRepository for SqliteNodes {
                     .prepare(
                         "SELECT id, kind, phase, node_json, prior_json, environment_id, pins_json, binding, \
                          artifact_digest, requirements_digest, hook_digest, consent_identity, failure, \
-                         staging, backup, requirements_json FROM node_operations ORDER BY created_at, rowid",
+                         staging, backup, requirements_json, staged_digest, untracked_digest \
+                         FROM node_operations ORDER BY created_at, rowid",
                     )
                     .map_err(|_| crate::shared::sqlite::DbError::Unavailable)?;
                 let rows = statement
@@ -389,6 +397,8 @@ impl NodeRepository for SqliteNodes {
                             staging: row.get(13)?,
                             backup: row.get(14)?,
                             requirements: row.get(15)?,
+                            staged_digest: row.get(16)?,
+                            untracked_digest: row.get(17)?,
                         })
                     })
                     .map_err(|_| crate::shared::sqlite::DbError::Unavailable)?;
@@ -530,5 +540,101 @@ impl SqliteNodes {
                 .map_err(|_| crate::shared::sqlite::DbError::Unavailable)
             })
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::sqlite::migrations;
+
+    fn operation() -> NodeOperation {
+        NodeOperation {
+            id: NodeId::new("git-evidence-operation").unwrap(),
+            kind: OperationKind::Update,
+            phase: OperationPhase::OldBackedUp,
+            node: InstalledNode {
+                id: NodeId::new("git-evidence-node").unwrap(),
+                name: SafeFileName::new("git-evidence-node").unwrap(),
+                source: NodeSource::Git {
+                    repository: "https://github.com/owner/node".into(),
+                    commit: "a".repeat(40),
+                    branch: Some("main".into()),
+                },
+                origin: ProvenanceOrigin::App,
+                enabled: true,
+                single_file: false,
+                tree_digest: "tree:staged".into(),
+                dependencies: DependencyState::NotRun,
+                conflict: false,
+                dirty: None,
+            },
+            prior: None,
+            environment: EnvId::new("env-1").unwrap(),
+            pins: PinSet::new(),
+            binding: "binding".into(),
+            artifact_digest: None,
+            staged_digest: None,
+            untracked_digest: None,
+            requirements_digest: None,
+            hook_digest: None,
+            consent_identity: None,
+            failure: None,
+            staging: ".disabled/.vjump-staging-git-evidence-operation".into(),
+            backup: ".disabled/.vjump-backup-git-evidence-operation".into(),
+            dependency_requirements: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn operation_git_evidence_round_trips_and_updates() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = SqliteNodes {
+            db: Db::open(directory.path().join("app.db")).await.unwrap(),
+        };
+        let mut operation = operation();
+        for (staged, untracked) in [
+            (Some("tree:staged"), Some("tree:untracked")),
+            (Some("tree:next-staged"), Some("tree:next-untracked")),
+            (None, None),
+        ] {
+            operation.staged_digest = staged.map(str::to_owned);
+            operation.untracked_digest = untracked.map(str::to_owned);
+            repository.save_operation(&operation).await.unwrap();
+            assert_eq!(repository.operations().await.unwrap(), [operation.clone()]);
+        }
+    }
+
+    #[tokio::test]
+    async fn upgrades_pre_git_evidence_operations_with_nullable_digests() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("app.db");
+        let operation = operation();
+        {
+            let mut connection = rusqlite::Connection::open(&path).unwrap();
+            migrations().to_version(&mut connection, 9).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO node_operations(id, kind, phase, node_json, prior_json, environment_id, \
+                     pins_json, binding, staging, backup, requirements_json, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, '[]', 't', 't')",
+                    params![
+                        operation.id.as_str(),
+                        kind_str(operation.kind),
+                        operation.phase.as_str(),
+                        node_to_json(&operation.node).to_string(),
+                        operation.environment.as_str(),
+                        pins_to_json(&operation.pins).to_string(),
+                        operation.binding,
+                        operation.staging,
+                        operation.backup,
+                    ],
+                )
+                .unwrap();
+        }
+        let repository = SqliteNodes {
+            db: Db::open(&path).await.unwrap(),
+        };
+        assert_eq!(repository.operations().await.unwrap(), [operation]);
     }
 }

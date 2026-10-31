@@ -15,7 +15,7 @@ const LogView = lazy(() =>
   import('@/shared/ui/log-view').then((module) => ({ default: module.LogView })),
 )
 
-const KIND_LABEL = {
+export const KIND_LABEL = {
   install: 'common.install',
   update: 'common.update',
   retry_dependencies: 'customNodes.retryDependencies',
@@ -79,10 +79,12 @@ function OperationDetail({ operationId, logs }: {
   )
 }
 
-function OperationRow({ operation, selected, onSelect }: {
+function OperationRow({ operation, selected, onSelect, onKeepFiles, disabled }: {
   operation: OperationDto
   selected: boolean
   onSelect: () => void
+  onKeepFiles?: () => void
+  disabled: boolean
 }) {
   const { t } = useTranslation()
   const note = phaseNote(operation)
@@ -93,6 +95,17 @@ function OperationRow({ operation, selected, onSelect }: {
         <span className="text-xs text-muted-foreground">{t(KIND_LABEL[operation.kind])}</span>
         <PhaseChip phase={operation.phase} />
         {operation.blocksStart && <Chip icon={TriangleAlert} className="bg-brand-pink">{t('customNodes.operation.blocksStart')}</Chip>}
+        {operation.blocksStart && onKeepFiles && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            aria-label={t('customNodes.operation.keepFilesOf', { name: operation.nodeName })}
+            onClick={onKeepFiles}
+          >
+            {t('customNodes.operation.keepFiles')}
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="sm"
@@ -121,6 +134,9 @@ export function OperationsPanel({
   rescanning,
   rescanError,
   onRescan,
+  onKeepFiles,
+  resolving,
+  resolveError,
 }: {
   unresolved: readonly OperationDto[]
   recent: readonly OperationDto[]
@@ -130,6 +146,9 @@ export function OperationsPanel({
   rescanning: boolean
   rescanError: unknown
   onRescan: () => void
+  onKeepFiles: (operation: OperationDto) => void
+  resolving: boolean
+  resolveError: unknown
 }) {
   const { t } = useTranslation()
   const blocking = unresolved.filter((operation) => operation.blocksStart)
@@ -138,7 +157,7 @@ export function OperationsPanel({
     <section aria-label={t('customNodes.operation.title')} className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-bold tracking-tight">{t('customNodes.operation.title')}</h2>
-        <Button variant="outline" disabled={rescanning} onClick={onRescan}>
+        <Button variant="outline" disabled={rescanning || resolving} onClick={onRescan}>
           {rescanning
             ? <LoaderCircle className="animate-spin" aria-hidden="true" />
             : <RefreshCw aria-hidden="true" />}
@@ -161,12 +180,20 @@ export function OperationsPanel({
           <AlertDescription>{errorMessage(rescanError)}</AlertDescription>
         </Alert>
       )}
+      {resolveError !== null && resolveError !== undefined && (
+        <Alert variant="destructive">
+          <TriangleAlert aria-hidden="true" />
+          <AlertTitle>{t('customNodes.resolve.failed')}</AlertTitle>
+          <AlertDescription>{errorMessage(resolveError)}</AlertDescription>
+        </Alert>
+      )}
       {unresolved.length > 0 && (
         <div className="flex flex-col gap-2">
           <h3 className="font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">{t('customNodes.operation.unfinished')}</h3>
           <ul className="flex flex-col gap-2">
             {unresolved.map((operation) => (
               <OperationRow key={operation.id} operation={operation}
+                onKeepFiles={() => onKeepFiles(operation)} disabled={resolving || rescanning}
                 selected={selectedId === operation.id} onSelect={() => toggle(operation.id)} />
             ))}
           </ul>
@@ -178,6 +205,7 @@ export function OperationsPanel({
           <ul className="flex flex-col gap-2">
             {recent.map((operation) => (
               <OperationRow key={operation.id} operation={operation}
+                onKeepFiles={() => onKeepFiles(operation)} disabled={resolving || rescanning}
                 selected={selectedId === operation.id} onSelect={() => toggle(operation.id)} />
             ))}
           </ul>

@@ -124,6 +124,40 @@ impl NodeService {
             .find(|op| op.id.as_str() == id)
             .ok_or(NodeAppError::NotFound)
     }
+    pub async fn resolve_operation(&self, id: &str) -> Result<(), NodeAppError> {
+        let mut lease = self
+            .deps
+            .environment
+            .gate
+            .try_acquire()
+            .await
+            .map_err(|_| NodeAppError::Busy)?;
+        let root = self.deps.environment.root.current().root;
+        self.deps
+            .environment
+            .runtime
+            .ensure_stopped(&root)
+            .await
+            .map_err(|_| NodeAppError::RuntimeRunning)?;
+        let mut op = self.operation_status(id).await?;
+        if !op.blocks_start() {
+            return Ok(());
+        }
+        self.deps
+            .plans
+            .0
+            .lock()
+            .map_err(|_| NodeAppError::Storage)?
+            .remove(id);
+        if op.phase == OperationPhase::DependenciesInProgress {
+            self.mark_environment_repair_required(&op.environment)
+                .await?;
+        }
+        op.phase = OperationPhase::Failed;
+        op.failure = Some("Closed by the user. The files were kept as they are; any preserved copies stay in custom_nodes/.disabled.".into());
+        self.deps.store.save_operation(&op).await?;
+        self.scan_held(&mut *lease).await.map(|_| ())
+    }
     /// True when the selected environment needs repair; node operations are limited until then.
     pub async fn repair_required(&self) -> Result<bool, NodeAppError> {
         let active = self
@@ -284,19 +318,27 @@ impl NodeService {
             stopped_for_repair: false,
         };
         let mut remaining: Vec<String> = decisions.iter().map(|(id, _)| id.clone()).collect();
+        let mut storage_error = None;
         for (id, decision) in decisions {
             remaining.retain(|r| r != &id);
             let outcome = self.commit_held(&id, decision, ctx, &mut *lease).await;
-            let damaged = self
-                .deps
-                .environment
-                .envs
-                .active()
-                .await
-                .map_err(|_| NodeAppError::Storage)?
-                .is_none_or(|env| env.state() != EnvState::Verified);
+            let blocked = match self.ensure_reconciled().await {
+                Ok(()) => false,
+                Err(NodeAppError::RecoveryRequired) => true,
+                Err(error) => {
+                    storage_error = Some(error);
+                    false
+                }
+            };
+            let damaged = match self.deps.environment.envs.active().await {
+                Ok(env) => env.is_none_or(|env| env.state() != EnvState::Verified),
+                Err(_) => {
+                    storage_error = Some(NodeAppError::Storage);
+                    false
+                }
+            };
             batch.results.push((id, outcome));
-            if damaged || ctx.cancel.is_cancelled() {
+            if damaged || blocked || ctx.cancel.is_cancelled() || storage_error.is_some() {
                 batch.stopped_for_repair = damaged;
                 break;
             }
@@ -307,6 +349,9 @@ impl NodeService {
                 .results
                 .push((id.clone(), Err(NodeAppError::Cancelled)));
             let _ = self.discard_held(&id, &mut *lease).await;
+        }
+        if let Some(error) = storage_error {
+            return Err(error);
         }
         Ok(batch)
     }
@@ -398,7 +443,7 @@ impl NodeService {
             {
                 continue;
             }
-            self.settle(&root, op, lease.retained()).await?;
+            self.settle(&root, op, lease).await?;
         }
         self.ensure_reconciled().await
     }
@@ -430,23 +475,48 @@ impl NodeService {
         op.phase = OperationPhase::Failed;
         Ok(())
     }
+    async fn mark_environment_repair_required(
+        &self,
+        id: &domain::environment::EnvId,
+    ) -> Result<(), NodeAppError> {
+        let d = &self.deps.environment;
+        if let Some(mut env) = d.envs.get(id).await.map_err(|_| NodeAppError::Storage)?
+            && env.state() == EnvState::Verified
+        {
+            env.mark_repair_required(&d.clock.now())
+                .map_err(|_| NodeAppError::EnvironmentUnavailable)?;
+            d.envs.save(&env).await.map_err(|_| NodeAppError::Storage)?;
+        }
+        Ok(())
+    }
     /// Reconciles one interrupted operation's files from what is actually on disk, applies the
     /// outcome to the stored records and persists the operation.
     pub(crate) async fn settle(
         &self,
         root: &std::path::Path,
         mut op: NodeOperation,
-        retained: crate::shared::Retained,
+        lease: &mut dyn MaintenanceLease,
     ) -> Result<NodeOperation, NodeAppError> {
         let before = op.phase;
-        let action = self
+        let outcome = self
             .deps
             .files
-            .recover(root, &op, retained)
+            .recover(root, &op, lease.retained())
             .await
-            .unwrap_or(RecoveryAction::Blocked);
+            .unwrap_or(RecoveryOutcome {
+                action: RecoveryAction::Blocked,
+                tree_digest: None,
+            });
+        let action = outcome.action;
         if action != RecoveryAction::Blocked {
             op.failure = None;
+        }
+        if matches!(
+            action,
+            RecoveryAction::RolledForward | RecoveryAction::CleanupPending
+        ) && let Some(digest) = outcome.tree_digest
+        {
+            op.node.tree_digest = digest;
         }
         if before == OperationPhase::DependenciesInProgress {
             // Even an ambiguous publication may have mutated the shared environment.
@@ -456,20 +526,15 @@ impl NodeService {
                 self.deps.store.save_operation(&op).await?;
                 return Ok(op);
             }
-            let d = &self.deps.environment;
-            if let Some(mut env) = d
-                .envs
-                .get(&op.environment)
-                .await
-                .map_err(|_| NodeAppError::Storage)?
-                && env.state() == EnvState::Verified
-            {
-                env.mark_repair_required(&d.clock.now())
-                    .map_err(|_| NodeAppError::EnvironmentUnavailable)?;
-                d.envs.save(&env).await.map_err(|_| NodeAppError::Storage)?;
-            }
+            self.mark_environment_repair_required(&op.environment)
+                .await?;
         }
         match action {
+            RecoveryAction::Superseded => {
+                self.scan_held(lease).await?;
+                op.phase = OperationPhase::Failed;
+                op.failure = Some("The node folder was changed outside the app and is now at another commit. The update was closed without installing dependencies.".into());
+            }
             RecoveryAction::Blocked => {
                 op.failure = Some("Node recovery could not establish file identity".into());
             }

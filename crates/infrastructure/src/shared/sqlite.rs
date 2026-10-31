@@ -29,6 +29,9 @@ pub fn migrations() -> Migrations<'static> {
         )),
         M::up(include_str!("../../migrations/008_install_relocation.sql")),
         M::up(include_str!("../../migrations/009_settings_language.sql")),
+        M::up(include_str!(
+            "../../migrations/010_node_operation_git_evidence.sql"
+        )),
     ])
 }
 
@@ -132,7 +135,7 @@ mod tests {
             let version: u32 = connection
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 9);
+            assert_eq!(version, 10);
             let theme: String = connection
                 .query_row(
                     "SELECT value FROM settings WHERE key = 'theme'",

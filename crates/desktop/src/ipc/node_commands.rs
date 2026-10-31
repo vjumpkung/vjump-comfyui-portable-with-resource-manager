@@ -74,7 +74,7 @@ async fn list(nodes: &NodeServices) -> Result<NodeListDto, IpcError> {
         .await?
         .iter()
         // A prepared plan awaiting review is not something the user must resolve.
-        .filter(|op| op.phase != OperationPhase::Prepared)
+        .filter(|op| op.phase != OperationPhase::Prepared || op.blocks_start())
         .map(|op| OperationDto::new(op, nodes.stack.hub.tail(op.id.as_str())))
         .collect();
     Ok(NodeListDto {
@@ -191,6 +191,21 @@ pub async fn node_git_status(
 pub async fn node_rescan(state: State<'_, AppState>) -> Result<NodeListDto, IpcError> {
     let nodes = &state.services()?.nodes;
     let result = nodes.service.rescan().await;
+    nodes.changed();
+    result?;
+    list(nodes).await
+}
+
+/// Closes an interrupted operation that recovery cannot resolve and keeps every file as it is,
+/// then reads the folders again. The closure stands even when the following scan fails.
+#[tauri::command]
+#[specta::specta]
+pub async fn node_resolve_operation(
+    state: State<'_, AppState>,
+    operation_id: String,
+) -> Result<NodeListDto, IpcError> {
+    let nodes = &state.services()?.nodes;
+    let result = nodes.service.resolve_operation(&operation_id).await;
     nodes.changed();
     result?;
     list(nodes).await

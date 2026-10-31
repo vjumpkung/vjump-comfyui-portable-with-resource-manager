@@ -221,6 +221,7 @@ pub fn tool_environment(layout: &Layout, tool: Tool) -> Vec<(OsString, OsString)
         ("PYTHONUTF8", "1"),
         ("PYTHONDONTWRITEBYTECODE", "1"),
         ("PIP_DISABLE_PIP_VERSION_CHECK", "1"),
+        ("HF_HUB_DISABLE_UPDATE_CHECK", "1"),
         ("GIT_TERMINAL_PROMPT", "0"),
         ("NO_COLOR", "1"),
         ("UV_NO_PROGRESS", "1"),
@@ -298,6 +299,10 @@ mod tests {
         }
         assert_eq!(value(&env, "PYTHONNOUSERSITE").as_deref(), Some("1"));
         assert_eq!(
+            value(&env, "HF_HUB_DISABLE_UPDATE_CHECK").as_deref(),
+            Some("1")
+        );
+        assert_eq!(
             value(&env, "UV_PYTHON_DOWNLOADS").as_deref(),
             Some("manual")
         );
@@ -338,6 +343,7 @@ mod tests {
                     "PYTHONUTF8",
                     "PYTHONDONTWRITEBYTECODE",
                     "PIP_DISABLE_PIP_VERSION_CHECK",
+                    "HF_HUB_DISABLE_UPDATE_CHECK",
                     "GIT_TERMINAL_PROMPT",
                     "NO_COLOR",
                     "UV_NO_PROGRESS",

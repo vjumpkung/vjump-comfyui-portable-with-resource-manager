@@ -303,6 +303,11 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
         ),
         ("node_rescan", json!({}), HandlerError),
         (
+            "node_resolve_operation",
+            json!({ "operationId": "node-x" }),
+            HandlerError,
+        ),
+        (
             "node_prepare_registry",
             json!({ "input": { "requestId": "req-1", "id": "some-node", "version": null } }),
             HandlerError,
@@ -715,11 +720,11 @@ fn node_list_exposes_recent_failures_and_correct_launch_blocking() {
             dirty: None,
         };
         store.save_node(&node).await.unwrap();
-        for index in 0..23 {
+        for index in 0..24 {
             let phase = match index {
                 20 => OperationPhase::CleanupPending,
                 21 => OperationPhase::Published,
-                22 => OperationPhase::Prepared,
+                22 | 23 => OperationPhase::Prepared,
                 n if n % 2 == 0 => OperationPhase::Completed,
                 _ => OperationPhase::Failed,
             };
@@ -734,10 +739,16 @@ fn node_list_exposes_recent_failures_and_correct_launch_blocking() {
                 pins: PinSet::new(),
                 binding: "binding".into(),
                 artifact_digest: None,
+                staged_digest: None,
+                untracked_digest: None,
                 requirements_digest: None,
                 hook_digest: None,
                 consent_identity: None,
-                failure: (phase == OperationPhase::Failed).then(|| "Installation failed".into()),
+                failure: if index == 23 {
+                    Some("Node recovery could not establish file identity".into())
+                } else {
+                    (phase == OperationPhase::Failed).then(|| "Installation failed".into())
+                },
                 staging: format!(".disabled/.vjump-staging-{id}"),
                 backup: format!(".disabled/.vjump-backup-{id}"),
                 dependency_requirements: Vec::new(),
@@ -761,7 +772,13 @@ fn node_list_exposes_recent_failures_and_correct_launch_blocking() {
             .iter()
             .all(|op| op.node_id == "node-1" && !op.blocks_start)
     );
-    assert_eq!(list.unresolved.len(), 2);
+    assert_eq!(list.unresolved.len(), 3);
+    assert!(list.unresolved.iter().all(|op| op.id != "op-22"));
+    assert!(
+        list.unresolved
+            .iter()
+            .any(|op| op.id == "op-23" && op.phase == "prepared" && op.blocks_start)
+    );
     assert!(
         list.unresolved
             .iter()

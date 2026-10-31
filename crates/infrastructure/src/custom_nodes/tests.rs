@@ -944,6 +944,8 @@ fn operation(
         environment: EnvId::new("env-1").unwrap(),
         pins: PinSet::new(),
         binding: "binding".into(),
+        staged_digest: None,
+        untracked_digest: None,
         artifact_digest: None,
         requirements_digest: None,
         hook_digest: None,
@@ -2303,7 +2305,8 @@ async fn install_recovery_at_every_boundary() {
                     .files
                     .recover(&fixture.root, &op, Default::default())
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .action,
                 expected,
                 "{phase:?} live={live} staging={staging}"
             );
@@ -2398,7 +2401,8 @@ async fn update_recovery_preserves_the_only_recoverable_copy() {
                     .files
                     .recover(&fixture.root, &op, Default::default())
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .action,
                 expected,
                 "{phase:?} {live:?} backup={backup} staging={staging}"
             );
@@ -2469,7 +2473,8 @@ async fn uninstall_and_toggle_recovery() {
                     .files
                     .recover(&fixture.root, &op, Default::default())
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .action,
                 expected
             );
             let restored = expected == RecoveryAction::RolledBack && backup;
@@ -2526,7 +2531,8 @@ async fn uninstall_and_toggle_recovery() {
                     .files
                     .recover(&fixture.root, &op, Default::default())
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .action,
                 if moved {
                     RecoveryAction::RolledForward
                 } else {
@@ -2606,7 +2612,8 @@ async fn recovery_preserves_foreign_destinations() {
                     .files
                     .recover(&fixture.root, &op, Default::default())
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .action,
                 expected
             );
             assert_recovery_copies(
@@ -2662,7 +2669,8 @@ async fn verified_recovery_preserves_changed_published_trees() {
                     .files
                     .recover(&fixture.root, &op, Default::default())
                     .await
-                    .unwrap(),
+                    .unwrap()
+                    .action,
                 RecoveryAction::Blocked
             );
             assert_recovery_copies(
@@ -2714,7 +2722,8 @@ async fn recovery_never_restores_or_recycles_a_modified_backup() {
                         .files
                         .recover(&fixture.root, &op, Default::default())
                         .await
-                        .unwrap(),
+                        .unwrap()
+                        .action,
                     RecoveryAction::Blocked
                 );
                 assert_recovery_copies(
@@ -2772,7 +2781,8 @@ async fn toggle_recovery_requires_matching_content() {
                         .files
                         .recover(&fixture.root, &op, Default::default())
                         .await
-                        .unwrap(),
+                        .unwrap()
+                        .action,
                     RecoveryAction::Blocked
                 );
                 assert_eq!(
@@ -3228,14 +3238,17 @@ impl GitFixture {
             .await?;
         let mut updated = prior.clone();
         updated.source = staged.source;
-        updated.tree_digest = staged.tree_digest;
-        Ok(operation(
+        updated.tree_digest = staged.tree_digest.clone();
+        let mut op = operation(
             OperationKind::Update,
             id,
             updated,
             Some(prior.clone()),
             OperationPhase::PublishIntent,
-        ))
+        );
+        op.staged_digest = Some(staged.tree_digest);
+        op.untracked_digest = staged.untracked_digest;
+        Ok(op)
     }
 }
 
@@ -3918,6 +3931,319 @@ async fn git_update_stages_the_complete_frozen_tree() {
 }
 
 #[tokio::test]
+async fn git_batch_b_refuses_ignored_files_that_become_tracked() {
+    for detached in [false, true] {
+        let g = git_fixture(require_git!()).await;
+        let initial = g
+            .repo
+            .commit(".gitignore", "ignored.dat\n", "ignore runtime data");
+        let mut prior = g
+            .install("collision-install", detached.then_some(initial.as_str()))
+            .await;
+        let live = g.fixture.cn().join(prior.name.as_str());
+        fs::write(live.join("ignored.dat"), "user runtime data\n").unwrap();
+        prior.tree_digest = tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap();
+        fs::write(g.repo.dir.join("ignored.dat"), "repository data\n").unwrap();
+        g.repo.run(&["add", "-f", "ignored.dat"]);
+        g.repo
+            .run(&["commit", "-q", "-m", "start tracking ignored file"]);
+        let op = g
+            .update("collision-update", &prior, detached.then_some("main"))
+            .await
+            .unwrap();
+        assert!(
+            g.fixture
+                .files
+                .publish(&g.fixture.root, &op, Default::default())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(live.join("ignored.dat")).unwrap(),
+            "user runtime data\n"
+        );
+        assert_eq!(
+            g.fixture
+                .files
+                .recover(&g.fixture.root, &op, Default::default())
+                .await
+                .unwrap()
+                .action,
+            RecoveryAction::RolledBack
+        );
+    }
+}
+
+#[tokio::test]
+async fn git_batch_b_baseline_requires_the_reviewed_prior_snapshot() {
+    let g = git_fixture(require_git!()).await;
+    g.repo
+        .commit(".gitignore", "ignored.dat\n", "ignore runtime data");
+    let prior = g.install("baseline-install", None).await;
+    let live = g.fixture.cn().join(prior.name.as_str());
+    fs::write(
+        live.join("ignored.dat"),
+        "appeared since the prior snapshot\n",
+    )
+    .unwrap();
+    g.repo.commit("target.py", "updated = True\n", "target");
+    assert_eq!(
+        g.update("baseline-update", &prior, None).await.unwrap_err(),
+        NodeAppError::StalePlan
+    );
+    assert!(g.fixture.owned().is_empty());
+    assert_eq!(
+        fs::read_to_string(live.join("ignored.dat")).unwrap(),
+        "appeared since the prior snapshot\n"
+    );
+}
+
+#[tokio::test]
+async fn git_batch_b_crlf_guard_explains_unattributed_line_endings() {
+    let g = git_fixture(require_git!()).await;
+    g.repo.commit("code.py", "value = 1\n", "LF code");
+    let mut prior = g.install("crlf-install", None).await;
+    let live = g.fixture.cn().join(prior.name.as_str());
+    let checkout = Repo {
+        dir: live.clone(),
+        git: g.repo.git.clone(),
+    };
+    checkout.run(&["config", "core.autocrlf", "true"]);
+    fs::write(live.join("code.py"), "value = 1\r\n").unwrap();
+    checkout.run(&["-c", "core.autocrlf=true", "add", "--renormalize", "."]);
+    prior.tree_digest = tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap();
+    let old_head = checkout.run(&["rev-parse", "HEAD"]);
+    g.repo.commit("target.py", "updated = True\n", "target");
+    let error = g.update("crlf-update", &prior, None).await.unwrap_err();
+    let status = refused_status(error);
+    assert!(status.contains("line endings"), "{status}");
+    assert!(status.contains("code.py"), "{status}");
+    assert_eq!(checkout.run(&["rev-parse", "HEAD"]), old_head);
+    assert_eq!(fs::read(live.join("code.py")).unwrap(), b"value = 1\r\n");
+    assert!(g.fixture.owned().is_empty());
+}
+
+#[tokio::test]
+async fn git_batch_b_attribute_line_endings_are_allowed() {
+    for attributes in ["* text=auto\n", "* text eol=crlf\n"] {
+        let g = git_fixture(require_git!()).await;
+        g.repo
+            .commit(".gitattributes", attributes, "explicit line ending policy");
+        g.repo.commit("code.py", "value = 1\n", "code");
+        let prior = g.install("attrs-install", None).await;
+        let live = g.fixture.cn().join(prior.name.as_str());
+        let before = tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap();
+        g.repo.commit("target.py", "updated = True\n", "target");
+        let op = g.update("attrs-update", &prior, None).await.unwrap();
+        assert_eq!(
+            tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap(),
+            before
+        );
+        assert!(
+            g.fixture
+                .files
+                .path(&g.fixture.root, &op.node, Some(&op.id))
+                .exists()
+        );
+    }
+}
+
+#[tokio::test]
+async fn git_batch_b_recovery_closes_a_clean_replacement_checkout() {
+    for change in ["clean", "dirty", "prior", "staging"] {
+        let g = git_fixture(require_git!()).await;
+        let prior = g.install("replacement-install", None).await;
+        let prior_commit = g.repo.run(&["rev-parse", "HEAD"]);
+        g.repo.commit("target.py", "updated = True\n", "target");
+        let op = g.update("replacement-update", &prior, None).await.unwrap();
+        let third = g
+            .repo
+            .commit("third.py", "external = True\n", "third commit");
+        let live = g.fixture.cn().join(prior.name.as_str());
+        fs::remove_dir_all(&live).unwrap();
+        g.repo.run(&["clone", "-q", &g.url, live.to_str().unwrap()]);
+        let checkout = Repo {
+            dir: live.clone(),
+            git: g.repo.git.clone(),
+        };
+        if change == "prior" {
+            checkout.run(&["checkout", "-q", "--detach", &prior_commit]);
+        }
+        if matches!(change, "dirty" | "prior") {
+            fs::write(live.join("__init__.py"), "local edit\n").unwrap();
+        }
+        let staging = g
+            .fixture
+            .files
+            .path(&g.fixture.root, &op.node, Some(&op.id));
+        if change == "staging" {
+            fs::write(staging.join("extra.py"), "unreviewed staging\n").unwrap();
+        }
+        let before = tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap();
+        let action = g
+            .fixture
+            .files
+            .recover(&g.fixture.root, &op, Default::default())
+            .await
+            .unwrap()
+            .action;
+        if matches!(change, "clean" | "staging") {
+            assert_eq!(action, RecoveryAction::Superseded);
+            assert_eq!(staging.exists(), change == "staging");
+            assert_eq!(checkout.run(&["rev-parse", "HEAD"]), third);
+        } else {
+            assert_eq!(action, RecoveryAction::Blocked);
+            assert!(staging.exists());
+        }
+        assert_eq!(
+            tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap(),
+            before
+        );
+    }
+}
+
+#[tokio::test]
+async fn git_update_preserves_preexisting_ignored_files() {
+    let g = git_fixture(require_git!()).await;
+    g.repo
+        .commit(".gitignore", "ignored.dat\n", "ignore runtime data");
+    let mut prior = g.install("ignored-install", None).await;
+    let live = g.fixture.cn().join(prior.name.as_str());
+    fs::write(live.join("ignored.dat"), "runtime data\n").unwrap();
+    prior.tree_digest = tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap();
+    g.repo.commit("target.py", "updated = True\n", "target");
+    let op = g.update("ignored-update", &prior, None).await.unwrap();
+    let published = g
+        .fixture
+        .files
+        .publish(&g.fixture.root, &op, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        published,
+        Some(tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap())
+    );
+    assert_eq!(
+        fs::read_to_string(live.join("ignored.dat")).unwrap(),
+        "runtime data\n"
+    );
+}
+
+#[tokio::test]
+async fn git_update_refuses_post_apply_changes_to_baseline_ignored_files() {
+    for change in ["delete-one", "delete-all", "edit", "add"] {
+        let g = git_fixture(require_git!()).await;
+        g.repo
+            .commit(".gitignore", "*.dat\n", "ignore runtime data");
+        let mut prior = g.install("ignored-change-install", None).await;
+        let live = g.fixture.cn().join(prior.name.as_str());
+        fs::write(live.join("first.dat"), "first runtime file\n").unwrap();
+        fs::write(live.join("second.dat"), "second runtime file\n").unwrap();
+        prior.tree_digest = tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap();
+        g.repo.commit("target.py", "updated = True\n", "target");
+        let op = g
+            .update("ignored-change-update", &prior, None)
+            .await
+            .unwrap();
+        let changed = live.clone();
+        super::files::after_git_apply(move || match change {
+            "delete-one" => fs::remove_file(changed.join("first.dat")).unwrap(),
+            "delete-all" => {
+                fs::remove_file(changed.join("first.dat")).unwrap();
+                fs::remove_file(changed.join("second.dat")).unwrap();
+            }
+            "edit" => fs::write(changed.join("first.dat"), "changed runtime file\n").unwrap(),
+            "add" => fs::write(changed.join("third.dat"), "new runtime file\n").unwrap(),
+            _ => unreachable!(),
+        });
+        assert_eq!(
+            g.fixture
+                .files
+                .publish(&g.fixture.root, &op, Default::default())
+                .await
+                .unwrap_err(),
+            NodeAppError::StalePlan,
+            "{change}"
+        );
+        assert_eq!(
+            g.fixture
+                .files
+                .recover(&g.fixture.root, &op, Default::default())
+                .await
+                .unwrap()
+                .action,
+            RecoveryAction::Blocked,
+            "{change}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn git_recovery_uses_durable_split_evidence_before_published_is_saved() {
+    let g = git_fixture(require_git!()).await;
+    g.repo
+        .commit(".gitignore", "ignored.dat\n", "ignore runtime data");
+    let mut prior = g.install("split-install", None).await;
+    let live = g.fixture.cn().join(prior.name.as_str());
+    fs::write(live.join("ignored.dat"), "preserved runtime file\n").unwrap();
+    prior.tree_digest = tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap();
+    g.repo.commit("target.py", "updated = True\n", "target");
+    let mut op = g.update("split-update", &prior, None).await.unwrap();
+    op.phase = OperationPhase::OldBackedUp;
+    assert_eq!(op.staged_digest.as_ref(), Some(&op.node.tree_digest));
+    assert!(op.untracked_digest.is_some());
+    let published = g
+        .fixture
+        .files
+        .publish(&g.fixture.root, &op, Default::default())
+        .await
+        .unwrap();
+    let full = tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap();
+    assert_eq!(published, Some(full.clone()));
+    assert_ne!(op.node.tree_digest, full);
+    let mut legacy = op.clone();
+    legacy.untracked_digest = None;
+    assert_eq!(
+        g.fixture
+            .files
+            .recover(&g.fixture.root, &legacy, Default::default())
+            .await
+            .unwrap()
+            .action,
+        RecoveryAction::Blocked
+    );
+    let outcome = g
+        .fixture
+        .files
+        .recover(&g.fixture.root, &op, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(outcome.action, RecoveryAction::RolledForward);
+    assert_eq!(outcome.tree_digest, Some(full.clone()));
+    assert!(
+        !g.fixture
+            .files
+            .path(&g.fixture.root, &op.node, Some(&op.id))
+            .exists()
+    );
+    assert_eq!(
+        fs::read_to_string(live.join("ignored.dat")).unwrap(),
+        "preserved runtime file\n"
+    );
+    // After Published has been saved the reviewed digest still identifies the staging copy.
+    op.node.tree_digest = full;
+    assert_eq!(
+        g.fixture
+            .files
+            .recover(&g.fixture.root, &op, Default::default())
+            .await
+            .unwrap()
+            .action,
+        RecoveryAction::RolledForward
+    );
+}
+
+#[tokio::test]
 async fn git_post_apply_validation_precedes_dependency_execution() {
     let git = locate_git().expect("Git must execute for post-apply validation coverage");
     for change in ["tracked", "ignored", "origin", "unfinished", "head", "link"] {
@@ -3979,9 +4305,14 @@ async fn git_post_apply_validation_precedes_dependency_execution() {
                 .files
                 .recover(&g.fixture.root, &op, Default::default())
                 .await
-                .unwrap(),
-            RecoveryAction::Blocked,
-            "{change} must remain unresolved"
+                .unwrap()
+                .action,
+            if change == "head" {
+                RecoveryAction::Superseded
+            } else {
+                RecoveryAction::Blocked
+            },
+            "{change}"
         );
         assert!(live.join("target.py").exists());
         assert_eq!(
@@ -4492,6 +4823,7 @@ async fn git_update_fast_forwards_in_place_and_never_discards_edits() {
     fs::write(live.join("__init__.py"), "my local edit").unwrap();
     let mut current = installed.clone();
     current.source = operation.node.source.clone();
+    current.tree_digest = operation.node.tree_digest.clone();
     let status = refused_status(g.update("node-f4", &current, None).await.unwrap_err());
     assert!(status.contains("M __init__.py"), "{status}");
     assert_eq!(
@@ -4667,7 +4999,8 @@ async fn git_update_recovery_compares_the_head_with_the_recorded_commits() {
             .files
             .recover(&g.fixture.root, &operation, Default::default())
             .await
-            .unwrap(),
+            .unwrap()
+            .action,
         RecoveryAction::RolledBack
     );
     assert!(g.fixture.owned().is_empty());
@@ -4683,10 +5016,11 @@ async fn git_update_recovery_compares_the_head_with_the_recorded_commits() {
             .files
             .recover(&g.fixture.root, &operation, Default::default())
             .await
-            .unwrap(),
+            .unwrap()
+            .action,
         RecoveryAction::RolledForward
     );
-    // A head that matches neither recorded commit blocks.
+    // A clean head that matches neither recorded commit closes the old update.
     let mut odd = operation.clone();
     odd.node.source = NodeSource::Git {
         repository: g.url.clone(),
@@ -4705,8 +5039,9 @@ async fn git_update_recovery_compares_the_head_with_the_recorded_commits() {
             .files
             .recover(&g.fixture.root, &odd, Default::default())
             .await
-            .unwrap(),
-        RecoveryAction::Blocked
+            .unwrap()
+            .action,
+        RecoveryAction::Superseded
     );
 }
 
@@ -4734,7 +5069,8 @@ async fn git_recovery_requires_source_commit_and_content() {
             .files
             .recover(&g.fixture.root, &op, Default::default())
             .await
-            .unwrap(),
+            .unwrap()
+            .action,
         RecoveryAction::Blocked
     );
     assert_eq!(
@@ -4755,7 +5091,8 @@ async fn git_recovery_requires_source_commit_and_content() {
             .files
             .recover(&g.fixture.root, &legacy, Default::default())
             .await
-            .unwrap(),
+            .unwrap()
+            .action,
         RecoveryAction::Blocked
     );
     assert_eq!(fs::read(live.join("__init__.py")).unwrap(), original);
@@ -4776,7 +5113,8 @@ async fn git_recovery_requires_source_commit_and_content() {
             .files
             .recover(&g.fixture.root, &op, Default::default())
             .await
-            .unwrap(),
+            .unwrap()
+            .action,
         RecoveryAction::Blocked
     );
     assert_eq!(fs::read(live.join("__init__.py")).unwrap(), original);
@@ -4810,7 +5148,8 @@ async fn git_recovery_requires_source_commit_and_content() {
                 .files
                 .recover(&g.fixture.root, &interrupted, Default::default())
                 .await
-                .unwrap(),
+                .unwrap()
+                .action,
             RecoveryAction::Blocked
         );
         assert_eq!(
@@ -4829,7 +5168,8 @@ async fn git_recovery_requires_source_commit_and_content() {
             .files
             .recover(&g.fixture.root, &interrupted, Default::default())
             .await
-            .unwrap(),
+            .unwrap()
+            .action,
         RecoveryAction::RolledForward
     );
     assert_eq!(
@@ -4846,7 +5186,8 @@ async fn git_recovery_requires_source_commit_and_content() {
             .files
             .recover(&g.fixture.root, &verified, Default::default())
             .await
-            .unwrap(),
+            .unwrap()
+            .action,
         RecoveryAction::Blocked
     );
     assert_eq!(
@@ -4860,7 +5201,8 @@ async fn git_recovery_requires_source_commit_and_content() {
             .files
             .recover(&g.fixture.root, &verified, Default::default())
             .await
-            .unwrap(),
+            .unwrap()
+            .action,
         RecoveryAction::RolledForward
     );
     assert!(!staged.exists());
@@ -4913,7 +5255,8 @@ async fn interrupted_recovery_requires_published_source_and_retains_all_copies()
                 .files
                 .recover(&fixture.root, &op, Default::default())
                 .await
-                .unwrap(),
+                .unwrap()
+                .action,
             if publication == "changed" {
                 RecoveryAction::RolledForward
             } else {
@@ -5560,11 +5903,13 @@ async fn node_mutations_resist_parent_substitution() {
             OperationPhase::PublishIntent,
         );
         match action {
-            "publication" => fixture
-                .files
-                .publish(&fixture.root, &op, Default::default())
-                .await
-                .unwrap(),
+            "publication" => {
+                fixture
+                    .files
+                    .publish(&fixture.root, &op, Default::default())
+                    .await
+                    .unwrap();
+            }
             "restore" => {
                 op.kind = OperationKind::Uninstall;
                 op.prior = Some(prior.clone());
@@ -5574,7 +5919,8 @@ async fn node_mutations_resist_parent_substitution() {
                         .files
                         .recover(&fixture.root, &op, Default::default())
                         .await
-                        .unwrap(),
+                        .unwrap()
+                        .action,
                     RecoveryAction::RolledBack
                 );
             }
@@ -5705,7 +6051,8 @@ async fn failed_safe_recycling_retains_the_backup() {
             .files
             .recover(&fixture.root, &op, Default::default())
             .await
-            .unwrap(),
+            .unwrap()
+            .action,
         RecoveryAction::CleanupPending
     );
     assert_eq!(fs::read(backup.join("__init__.py")).unwrap(), contents);
@@ -5751,7 +6098,8 @@ async fn node_recycle_refusal_retains_cleanup_pending_backup() {
             .files
             .recover(&fixture.root, &op, Default::default())
             .await
-            .unwrap(),
+            .unwrap()
+            .action,
         RecoveryAction::CleanupPending
     );
     assert!(refusal.was_refused());

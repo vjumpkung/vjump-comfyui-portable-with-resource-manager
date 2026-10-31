@@ -1,6 +1,32 @@
 # HANDOFF — vjumpkung-rust-comfyui-desktop
 
-Last updated: **2026-10-23 ~11:45 (+07:00)**, session 11 (CPU testing profiles; §0g Bug 1, Bug 2 and Observation 3 fixed — **uncommitted**). HEAD is `5a70ffe`. No build, test, agent, container or app of this session is running. **Read §0h first, then §0g.**
+Last updated: **2026-10-31 (+07:00)**, session 12 (custom-node update failures, permanent "blocks start", silent exit refusal; version 0.1.4). **Read §0i first.**
+
+## 0i. Session 12 (2026-10-31) — ComfyUI-Manager update blocked start forever; exit silently refused
+
+**Owner report:** update custom nodes → the update fails → the node folder is deleted in Explorer and re-cloned with an external `git clone` → Rescan keeps showing "An interrupted node operation blocks ComfyUI from starting" (screenshot: ComfyUI-Manager · Update · OLD BACKED UP · BLOCKS START · "Node recovery could not establish file identity") → the app cannot be closed. Find every way an update can fail, fix, bump the version, commit and push.
+
+**Reproduced natively (pre-fix 0.1.3 debug build, CPU profile, root `%TEMP%\vjc-r3`, Manager + rgthree-comfy + ComfyUI-Custom-Scripts + was-node-suite + Registry cg-use-everywhere 7.8.0):** rgthree update (no ignored files) COMPLETED; ComfyUI-Manager update with gitignored runtime files in its folder (`config.ini`, `.cache/*.json`, as older Manager versions write; recreated by hand because the current Manager keeps them in `user/__manager`) → `git merge --ff-only` moved HEAD, then OLD BACKED UP + BLOCKS START exactly as in the screenshot; with a cmd window open in `custom_nodes` (the external `git clone`), Rescan failed with "ComfyUI must be stopped…" although ComfyUI was stopped, and closing the window did nothing (`app.log`: `close refused; staying open error=ComfyUI must be stopped before continuing`); closing the terminal let the app exit.
+
+**Root causes:**
+1. Git updates are applied in place, then `verify_applied` compared the FULL live tree digest (which includes every untracked-but-gitignored file) with the digest of a fresh staging clone (tracked files only). Any pre-existing ignored file → StalePlan after HEAD had moved → recovery Blocked forever (published = false, prior_live = false). "Update all" then failed every later item with RecoveryRequired and left their plans/staging behind (the "rolled back" rows in the screenshot).
+2. Blocked recovery had no user escape; a hand-made replacement (another commit, CRLF clone, missing folder, occupied path) never matches.
+3. The exit guard refused unless process inventory was `Stopped`; any process whose cwd is under `<root>/ComfyUI` (a terminal) made it `Unknown` → `NeedsStop`, and `perform()` showed a dialog only for `Busy`, so the refusal was silent.
+4. Found while reproducing: first-run setup's `hf.exe version` check (10 s) times out on a cold start (fresh tool venv + PyPI update check) — failed 4/4 fresh roots here.
+
+**Fix (advisor Codex gpt-6.1-sol, two rounds; coders Codex gpt-6.1-sol; explorers gpt-6-luna):**
+- Git update evidence: `NodeOperation.staged_digest` + `untracked_digest` (migration `010_node_operation_git_evidence.sql`), captured at prepare (baseline must equal the prior snapshot); `verify_applied` requires tracked-file digest == reviewed staging and untracked-file digest == baseline, returns the full live digest, which `mutate_files` records. Recovery uses the same split check (no full-digest OR) and returns the validated digest (`RecoveryOutcome`). `merge`/`checkout` use `--no-overwrite-ignore`. `git ls-files -z` / `--eol -z` read raw.
+- CRLF guard: a checkout with `i/lf w/crlf` files without attributes is refused before anything changes, with guidance.
+- `RecoveryAction::Superseded`: a clean same-origin checkout at neither the prior nor the target commit (no backup) closes the update as "changed outside the app" after a refreshing scan.
+- "Keep files as they are": `NodeService::resolve_operation` / IPC `node_resolve_operation` closes a blocking operation in the journal only (no file moves; preserved copies stay in `.disabled`; DependenciesInProgress marks the env RepairRequired), then scans. UI button + dialog (en/th). Blocking Prepared rows are now listed.
+- Update all stops after an item leaves a blocking operation and discards the remaining plans (also on storage errors).
+- Windows rename retry (OS 5/32/33, one ~2 s deadline, same handle).
+- Exit: refused only for an owned/surviving runtime, a non-stopped lifecycle or unverified termination; other `Unknown` inventory is logged and exit proceeds; every refusal shows a dialog. The `comfyui_running` node message mentions other programs using the ComfyUI folder.
+- `HF_HUB_DISABLE_UPDATE_CHECK=1` for tools, `hf version` timeout 60 s. Docs: DOCUMENTATION update/recovery/closing/setup sections. Version 0.1.4.
+
+**Native acceptance (fixed 0.1.4 debug build, same root):** migration to v10; the legacy blocked Manager row → Keep files as they are → closed, ComfyUI starts (Running, `/system_stats` 0.43.0); single ComfyUI-Manager update with its ignored files → COMPLETED, HEAD at target, ignored files byte-identical; Registry update cg-use-everywhere 7.8.0 → 8.0.0 COMPLETED (old folder in the Recycle Bin); Uninstall COMPLETED; Disable and Enable of ComfyUI-Manager COMPLETED (ignored files intact); Update all of 5 nodes (4 Git incl. Manager + 1 Registry) → "5 updated · 0 failed"; external `-c core.autocrlf=true` clone → update refused with the CRLF guidance and nothing changed; LF re-clone → update COMPLETED; terminal open in `custom_nodes` → Rescan shows the new message, closing the app exits and the terminal stays alive. Evidence screenshots were kept in the session scratchpad only.
+
+**Residuals:** (1) ComfyUI's readiness timeout (120 s) is exceeded by cold starts on this CPU-only machine (Manager + WAS node suite); a warm start works — pre-existing, not changed. (2) Superseded is covered by tests only (a natural re-clone here landed on the target commit). (3) Copies preserved by "Keep files as they are" stay in `custom_nodes/.disabled` until removed by hand. (4) Linux not run; no `cfg(unix)` code changed. (5) Vitest needed `--maxWorkers=2` under load on this machine; one transient rustc ICE with incremental compilation (passed with `CARGO_INCREMENTAL=0`).
 
 ## 0h. Session 11 (2026-10-23) — CPU torch testing profiles; custom-node Disable, extra-model-paths and "already up to date" fixes
 

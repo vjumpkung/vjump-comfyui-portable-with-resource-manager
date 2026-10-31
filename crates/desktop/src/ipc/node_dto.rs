@@ -516,7 +516,7 @@ pub fn describe(error: NodeAppError) -> (&'static str, String) {
         ),
         E::RuntimeRunning => fixed(
             "comfyui_running",
-            "ComfyUI must be stopped before changing custom nodes. Stop it and retry.",
+            "ComfyUI must be stopped before changing custom nodes. If it is already stopped, close other programs that use the ComfyUI folder, such as a terminal opened there, and retry.",
         ),
         E::EnvironmentUnavailable => fixed(
             "environment_not_usable",

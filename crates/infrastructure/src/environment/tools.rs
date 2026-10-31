@@ -144,7 +144,7 @@ fn hf_marker_text(layout: &Layout, interpreter: &Path) -> Result<String, Provisi
 async fn verify_hf_launch(layout: &Layout, ctx: &StepContext) -> Result<(), ProvisionError> {
     let spec = command(layout, Tool::Python, layout.hf_exe()).arg("version");
     let limits = RunLimits {
-        timeout: Some(Duration::from_secs(10)),
+        timeout: Some(Duration::from_secs(60)),
         ..RunLimits::default()
     };
     let output = run_step(&spec, ctx, &limits).await?;

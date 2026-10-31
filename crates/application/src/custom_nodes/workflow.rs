@@ -247,6 +247,8 @@ impl NodeService {
             pins: env.pins.clone(),
             binding: d.ids.new_id(),
             artifact_digest: None,
+            staged_digest: None,
+            untracked_digest: None,
             requirements_digest: None,
             hook_digest: None,
             consent_identity: None,
@@ -288,6 +290,8 @@ impl NodeService {
                     return Err(error);
                 }
             };
+            op.staged_digest = Some(prepared.tree_digest.clone());
+            op.untracked_digest = prepared.untracked_digest;
             op.node.name = prepared.name;
             op.node.source = prepared.source;
             op.node.tree_digest = prepared.tree_digest;
@@ -655,7 +659,7 @@ impl NodeService {
         let mut op = plan.operation;
         if let Err(error) = self.mutate_files(root, &mut op, lease.retained()).await {
             // Nothing may stay half-moved: settle the files from what is actually on disk.
-            let _ = self.settle(root, op, lease.retained()).await;
+            let _ = self.settle(root, op, lease).await;
             return Err(error);
         }
         self.phase(&mut op, OperationPhase::Published).await?;
@@ -741,7 +745,9 @@ impl NodeService {
                     self.deps.files.backup(root, op).await?;
                     self.phase(op, OperationPhase::OldBackedUp).await?;
                 }
-                self.deps.files.publish(root, op, retained).await?;
+                if let Some(digest) = self.deps.files.publish(root, op, retained).await? {
+                    op.node.tree_digest = digest;
+                }
             }
             OperationKind::Enable | OperationKind::Disable => {
                 let prior = op.prior.clone().ok_or(NodeAppError::StalePlan)?;

@@ -3,7 +3,7 @@
 use super::{
     paths::{NodePaths, filesystem, safe_name},
     provenance::{Remote, observed_identity, validate_remote},
-    tree::{MAX_ENTRIES, ROOT_NATIVE_MESSAGE, is_link, is_native_image_name},
+    tree::{MAX_ENTRIES, ROOT_NATIVE_MESSAGE, is_link, is_native_image_name, validate_components},
 };
 use crate::{
     comfy_runtime::git::{parse_counts, porcelain_dirty},
@@ -23,6 +23,7 @@ use application::{
 use domain::comfy_runtime::{RepoState, Revision, UpdateRefusal, UpdateTarget, can_update};
 use domain::shared::model_values::SafeFileName;
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -116,6 +117,66 @@ fn config_refused() -> NodeAppError {
 
 fn tree_listing_failed() -> NodeAppError {
     failed("The repository tree could not be listed")
+}
+
+fn tracked_paths(bytes: &[u8]) -> Result<HashSet<String>, NodeAppError> {
+    let mut paths = HashSet::new();
+    if bytes.is_empty() {
+        return Ok(paths);
+    }
+    let records = bytes.strip_suffix(&[0]).ok_or_else(tree_listing_failed)?;
+    for (index, record) in records.split(|byte| *byte == 0).enumerate() {
+        if index >= MAX_ENTRIES {
+            return Err(NodeAppError::UnsafeSource);
+        }
+        let path = std::str::from_utf8(record).map_err(|_| NodeAppError::UnsafeSource)?;
+        validate_components(&path.split('/').map(str::to_owned).collect::<Vec<_>>())?;
+        paths.insert(path.to_owned());
+    }
+    Ok(paths)
+}
+
+fn crlf_mismatch_path(bytes: &[u8]) -> Result<Option<String>, NodeAppError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let records = bytes.strip_suffix(&[0]).ok_or_else(tree_listing_failed)?;
+    let mut mismatch = None;
+    for (index, record) in records.split(|byte| *byte == 0).enumerate() {
+        if index >= MAX_ENTRIES {
+            return Err(NodeAppError::UnsafeSource);
+        }
+        let record = std::str::from_utf8(record).map_err(|_| NodeAppError::UnsafeSource)?;
+        let (header, path) = record.split_once('\t').ok_or_else(tree_listing_failed)?;
+        if path.is_empty() {
+            return Err(NodeAppError::UnsafeSource);
+        }
+        let (index, rest) = header.split_once(' ').ok_or_else(tree_listing_failed)?;
+        let (worktree, attrs) = rest
+            .trim_start_matches(' ')
+            .split_once(' ')
+            .ok_or_else(tree_listing_failed)?;
+        let index = index.strip_prefix("i/").ok_or_else(tree_listing_failed)?;
+        let worktree = worktree
+            .strip_prefix("w/")
+            .ok_or_else(tree_listing_failed)?;
+        let attrs = attrs
+            .trim_start_matches(' ')
+            .strip_prefix("attr/")
+            .ok_or_else(tree_listing_failed)?
+            .trim_end_matches(' ');
+        if header.chars().any(char::is_control)
+            || ![index, worktree]
+                .iter()
+                .all(|eol| matches!(*eol, "" | "-text" | "none" | "lf" | "crlf" | "mixed"))
+        {
+            return Err(tree_listing_failed());
+        }
+        if mismatch.is_none() && index == "lf" && worktree == "crlf" && attrs.is_empty() {
+            mismatch = Some(path.to_owned());
+        }
+    }
+    Ok(mismatch)
 }
 
 pub(crate) fn admit_root_tree(bytes: &[u8]) -> Result<(), NodeAppError> {
@@ -445,6 +506,36 @@ impl GitNodes {
                 ) if looks_transient(&tail) => NodeAppError::Offline,
                 _ => tree_listing_failed(),
             })
+    }
+
+    pub(crate) async fn tracked(
+        &self,
+        root: &Path,
+        hooks: &Path,
+        dir: &Path,
+    ) -> Result<HashSet<String>, NodeAppError> {
+        let bytes = self
+            .read_raw(root, hooks, dir, &["ls-files", "-z"], &CancelToken::new())
+            .await?;
+        tracked_paths(&bytes)
+    }
+
+    pub(crate) async fn crlf_mismatch(
+        &self,
+        root: &Path,
+        hooks: &Path,
+        dir: &Path,
+    ) -> Result<Option<String>, NodeAppError> {
+        let bytes = self
+            .read_raw(
+                root,
+                hooks,
+                dir,
+                &["ls-files", "--eol", "-z"],
+                &CancelToken::new(),
+            )
+            .await?;
+        crlf_mismatch_path(&bytes)
     }
 
     /// Resolves the reference to one immutable commit. A name that matches both a branch and a
@@ -1030,7 +1121,7 @@ impl GitNodes {
                 root,
                 hooks,
                 Some(dir),
-                &["merge", "--ff-only", target],
+                &["merge", "--ff-only", "--no-overwrite-ignore", target],
                 &ctx.cancel,
                 Some(ctx),
                 timeout,
@@ -1041,7 +1132,7 @@ impl GitNodes {
                 root,
                 hooks,
                 Some(dir),
-                &["checkout", "--detach", target],
+                &["checkout", "--detach", "--no-overwrite-ignore", target],
                 &ctx.cancel,
                 Some(ctx),
                 timeout,
@@ -1064,4 +1155,112 @@ impl Default for GitNodes {
 /// Remote identity of an observed repository, for comparison with a stored source.
 pub fn identity_of(raw: &str) -> String {
     observed_identity(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracked_paths_require_complete_valid_nul_records() {
+        assert_eq!(tracked_paths(b""), Ok(HashSet::new()));
+        assert_eq!(
+            tracked_paths("node.py\0sub/caf\u{e9}.py\0".as_bytes()).unwrap(),
+            HashSet::from(["node.py".to_owned(), "sub/caf\u{e9}.py".to_owned()])
+        );
+        for bytes in [
+            &b"\0"[..],
+            &b"node.py\0\0"[..],
+            &b"/node.py\0"[..],
+            &b"a//node.py\0"[..],
+            &b"./node.py\0"[..],
+            &b"a/../node.py\0"[..],
+            &b"a\\node.py\0"[..],
+            &b"a/CON\0"[..],
+            &b"bad\tname.py\0"[..],
+            &b"\xff\0"[..],
+        ] {
+            assert_eq!(tracked_paths(bytes), Err(NodeAppError::UnsafeSource));
+        }
+        for bytes in [&b"node.py"[..], &b"node.py\0unfinished"[..]] {
+            assert_eq!(tracked_paths(bytes), Err(tree_listing_failed()));
+        }
+    }
+
+    #[test]
+    fn eol_parser_finds_first_unattributed_lf_crlf_mismatch() {
+        assert_eq!(crlf_mismatch_path(b""), Ok(None));
+        assert_eq!(
+            crlf_mismatch_path(
+                b"i/lf    w/lf    attr/                  \tclean.py\0i/lf    w/crlf  attr/    \tfirst.py\0i/lf w/crlf attr/\tsub/second.py\0"
+            ),
+            Ok(Some("first.py".into()))
+        );
+        for eol in ["", "-text", "none", "lf", "crlf", "mixed"] {
+            assert_eq!(
+                crlf_mismatch_path(format!("i/{eol} w/{eol} attr/\tfile.py\0").as_bytes()),
+                Ok(None)
+            );
+        }
+    }
+
+    #[test]
+    fn eol_parser_ignores_explicit_attributes() {
+        for attrs in [
+            "text",
+            "text=auto",
+            "eol=crlf",
+            "eol=lf",
+            "text=auto eol=crlf",
+            "-text",
+        ] {
+            assert_eq!(
+                crlf_mismatch_path(
+                    format!("i/lf    w/crlf  attr/{attrs}        \tfile.py\0").as_bytes()
+                ),
+                Ok(None),
+                "{attrs}"
+            );
+        }
+    }
+
+    #[test]
+    fn eol_parser_refuses_malformed_records() {
+        for bytes in [
+            &b"i/lf w/crlf attr/\tfile.py"[..],
+            &b"i/lf w/crlf attr/\tfile.py\0unfinished"[..],
+            &b"i/lf w/crlf attr/ file.py\0"[..],
+            &b"i/lf attr/\tfile.py\0"[..],
+            &b"w/lf i/crlf attr/\tfile.py\0"[..],
+            &b"i/lf w/crlf attrs/\tfile.py\0"[..],
+            &b"i/unknown w/crlf attr/\tfile.py\0"[..],
+            &b"i/lf w/unknown attr/\tfile.py\0"[..],
+            &b"i/lf w/crlf attr/\r\tfile.py\0"[..],
+            &b"i/lf w/crlf attr/\tfirst.py\0broken\0"[..],
+        ] {
+            assert_eq!(
+                crlf_mismatch_path(bytes),
+                Err(tree_listing_failed()),
+                "{bytes:?}"
+            );
+        }
+        for bytes in [
+            &b"i/lf w/crlf attr/\t\xff\0"[..],
+            &b"i/lf w/crlf attr/\t\0"[..],
+        ] {
+            assert_eq!(crlf_mismatch_path(bytes), Err(NodeAppError::UnsafeSource));
+        }
+    }
+
+    #[test]
+    fn eol_parser_preserves_tabs_in_the_verbatim_path() {
+        assert_eq!(
+            crlf_mismatch_path(b"i/lf w/crlf attr/\tname\twith-tab.py\0"),
+            Ok(Some("name\twith-tab.py".into()))
+        );
+        assert_eq!(
+            crlf_mismatch_path(b"i/lf w/crlf attr/text=auto\tname\twith-tab.py\0"),
+            Ok(None)
+        );
+    }
 }

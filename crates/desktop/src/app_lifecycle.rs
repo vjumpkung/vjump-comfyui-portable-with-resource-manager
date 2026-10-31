@@ -21,7 +21,7 @@ use application::{
     },
     shared::{ExplorerTarget, MaintenanceGate, MaintenanceLease},
 };
-use domain::comfy_runtime::Lifecycle;
+use domain::comfy_runtime::{FailureKind, Lifecycle};
 use tauri::{AppHandle, Manager, Runtime, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
@@ -170,14 +170,20 @@ impl CloseCoordinator {
         root: &Path,
     ) -> Result<CloseAction, RuntimeError> {
         let lease = gate.try_acquire().await.map_err(|_| RuntimeError::Busy)?;
-        // Inventory detects surviving/unowned processes even when the hub says Crashed.
-        if !matches!(supervisor.inventory(root).await?, InventoryState::Stopped)
-            || !matches!(
-                supervisor.status().await.lifecycle,
-                Lifecycle::Stopped | Lifecycle::Crashed
-            )
+        let inventory = supervisor.inventory(root).await?;
+        let status = supervisor.status().await;
+        if matches!(
+            inventory,
+            InventoryState::OwnedRunning | InventoryState::VerifiedSurvivor(_)
+        ) || !matches!(status.lifecycle, Lifecycle::Stopped | Lifecycle::Crashed)
+            || status
+                .failure
+                .is_some_and(|failure| failure.kind == FailureKind::Termination)
         {
             return Err(RuntimeError::NeedsStop);
+        }
+        if let InventoryState::Unknown(reason) = inventory {
+            tracing::warn!(%reason, "exiting while a process this app does not own uses the installation");
         }
         *self.exit_lease.lock().unwrap_or_else(|p| p.into_inner()) = Some(lease);
         Ok(CloseAction::Exit)
@@ -360,12 +366,18 @@ pub async fn perform<R: Runtime>(app: AppHandle<R>, action: CloseAction) {
         Err(error) => {
             tracing::warn!(%error, "close refused; staying open");
             restore_manager(&app);
-            if matches!(error, RuntimeError::Busy) {
-                app.dialog()
-                    .message(MAINTENANCE_MESSAGE)
-                    .kind(MessageDialogKind::Info)
-                    .show(|_| {});
-            }
+            let message = match error {
+                RuntimeError::Busy => MAINTENANCE_MESSAGE.to_owned(),
+                RuntimeError::NeedsStop => {
+                    "ComfyUI from this installation is still running. Stop it, then close again."
+                        .to_owned()
+                }
+                _ => format!("The application could not close: {error}"),
+            };
+            app.dialog()
+                .message(message)
+                .kind(MessageDialogKind::Info)
+                .show(|_| {});
             return;
         }
     };
@@ -517,6 +529,7 @@ mod tests {
     struct Supervisor {
         gate: TokioMaintenanceGate,
         lifecycle: Mutex<Lifecycle>,
+        failure: Mutex<Option<domain::comfy_runtime::RuntimeFailure>>,
         inventory: Mutex<Result<InventoryState, RuntimeError>>,
         inspections: AtomicUsize,
         require_gate: AtomicBool,
@@ -527,6 +540,7 @@ mod tests {
             Self {
                 gate: gate.clone(),
                 lifecycle: Mutex::new(lifecycle),
+                failure: Mutex::new(None),
                 inventory: Mutex::new(Ok(InventoryState::Stopped)),
                 inspections: AtomicUsize::new(0),
                 require_gate: AtomicBool::new(true),
@@ -554,6 +568,7 @@ mod tests {
         async fn status(&self) -> RuntimeStatus {
             RuntimeStatus {
                 lifecycle: *self.lifecycle.lock().unwrap(),
+                failure: self.failure.lock().unwrap().clone(),
                 ..Default::default()
             }
         }
@@ -613,7 +628,6 @@ mod tests {
         }
         for inventory in [
             Ok(InventoryState::OwnedRunning),
-            Ok(InventoryState::Unknown("ownership unknown".into())),
             Ok(InventoryState::VerifiedSurvivor(
                 application::comfy_runtime::ProcessIdentity {
                     pid: 1,
@@ -641,6 +655,58 @@ mod tests {
             );
             assert!(close.exit_lease.lock().unwrap().is_none());
             assert!(gate.try_acquire().await.is_ok());
+        }
+        for lifecycle in [Lifecycle::Stopped, Lifecycle::Crashed] {
+            let gate = TokioMaintenanceGate::new();
+            let supervisor = Supervisor::new(&gate, lifecycle);
+            *supervisor.inventory.lock().unwrap() = Ok(InventoryState::Unknown(
+                "a process is using this installation; ownership is unknown".into(),
+            ));
+            let close = CloseCoordinator::default();
+            assert_eq!(
+                close
+                    .prepare(
+                        CloseAction::Exit,
+                        &gate,
+                        &supervisor,
+                        Path::new("root"),
+                        async { unreachable!() }
+                    )
+                    .await,
+                Ok(CloseAction::Exit)
+            );
+            assert!(close.exit_lease.lock().unwrap().is_some());
+            assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
+        }
+        for inventory in [
+            InventoryState::Stopped,
+            InventoryState::Unknown("a process is using this installation".into()),
+        ] {
+            for lifecycle in [Lifecycle::Stopped, Lifecycle::Crashed] {
+                let gate = TokioMaintenanceGate::new();
+                let supervisor = Supervisor::new(&gate, lifecycle);
+                *supervisor.inventory.lock().unwrap() = Ok(inventory.clone());
+                *supervisor.failure.lock().unwrap() = Some(domain::comfy_runtime::RuntimeFailure {
+                    kind: FailureKind::Termination,
+                    exit_code: None,
+                    message: "termination could not be verified".into(),
+                });
+                let close = CloseCoordinator::default();
+                assert_eq!(
+                    close
+                        .prepare(
+                            CloseAction::Exit,
+                            &gate,
+                            &supervisor,
+                            Path::new("root"),
+                            async { unreachable!() }
+                        )
+                        .await,
+                    Err(RuntimeError::NeedsStop)
+                );
+                assert!(close.exit_lease.lock().unwrap().is_none());
+                assert!(gate.try_acquire().await.is_ok());
+            }
         }
         // A successful Stop response alone cannot authorize exit while still running.
         let gate = TokioMaintenanceGate::new();

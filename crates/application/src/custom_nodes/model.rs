@@ -204,6 +204,10 @@ pub struct NodeOperation {
     pub pins: PinSet,
     pub binding: String,
     pub artifact_digest: Option<String>,
+    /// The reviewed Install/Update staging tree digest, unchanged after preparation.
+    pub staged_digest: Option<String>,
+    /// The prior live checkout's untracked-file digest for an in-place Git update.
+    pub untracked_digest: Option<String>,
     pub requirements_digest: Option<String>,
     pub hook_digest: Option<String>,
     pub consent_identity: Option<String>,
@@ -256,6 +260,7 @@ pub struct StagedNode {
     pub source: NodeSource,
     pub name: SafeFileName,
     pub tree_digest: String,
+    pub untracked_digest: Option<String>,
     pub artifact_digest: Option<String>,
     pub requirement_lines: Vec<String>,
     pub requirements_digest: Option<String>,
@@ -281,8 +286,17 @@ pub enum RecoveryAction {
     RolledForward,
     /// The new state is in place but a retained backup could not be recycled yet.
     CleanupPending,
+    /// An in-place Git update found a clean checkout of the same repository at neither the
+    /// recorded prior nor target commit; nothing moved and the update closes without dependencies.
+    Superseded,
     /// The disk state is ambiguous; every copy is preserved and the operation stays unresolved.
     Blocked,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryOutcome {
+    pub action: RecoveryAction,
+    /// The validated full live tree digest when split evidence established publication.
+    pub tree_digest: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trust {

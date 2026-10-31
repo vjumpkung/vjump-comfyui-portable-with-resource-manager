@@ -449,6 +449,7 @@ impl LocalNodeFiles {
             source,
             name,
             tree_digest: tree.digest,
+            untracked_digest: None,
             artifact_digest: Some(artifact.sha256),
             requirement_lines: tree.requirement_lines,
             requirements_digest: tree.requirements_digest,
@@ -575,6 +576,7 @@ impl LocalNodeFiles {
             source,
             name,
             tree_digest: tree.digest,
+            untracked_digest: None,
             artifact_digest: None,
             requirement_lines: tree.requirement_lines,
             requirements_digest: tree.requirements_digest,
@@ -626,6 +628,24 @@ impl LocalNodeFiles {
             .await?;
         if remote.identity != *repository {
             return Err(NodeAppError::UnsafeSource);
+        }
+        if let Some(path) = git
+            .crlf_mismatch(&paths.root.anchored_path(), &hooks, &dir)
+            .await?
+        {
+            const EXPLANATION: &str = "Some files in this checkout have Windows (CRLF) line endings that differ from the repository, for example after cloning it outside the app. The app cannot verify such a checkout. Reinstall the node from the app, or clone it again with `git clone -c core.autocrlf=false <url>`.";
+            return Err(refused(
+                "",
+                &format!("{EXPLANATION} First affected file: {path}"),
+            ));
+        }
+        let tracked = git
+            .tracked(&paths.root.anchored_path(), &hooks, &dir)
+            .await?;
+        let checked = live_directory.clone();
+        let split = blocking(move || tree::split_digest(&checked, &tracked)).await?;
+        if split.full != prior.tree_digest {
+            return Err(NodeAppError::StalePlan);
         }
         // The live update stays an in-place fast-forward; this complete checkout of the frozen
         // target is the evidence that is reviewed and later compared with the live result.
@@ -687,6 +707,7 @@ impl LocalNodeFiles {
             },
             name: prior.name.clone(),
             tree_digest: tree.digest,
+            untracked_digest: Some(split.untracked),
             artifact_digest: None,
             requirement_lines: tree.requirement_lines,
             requirements_digest: tree.requirements_digest,
@@ -801,7 +822,7 @@ impl LocalNodeFiles {
         directory: &Arc<PinnedDirectory>,
         operation: &NodeOperation,
         retained: Retained,
-    ) -> Result<(), NodeAppError> {
+    ) -> Result<String, NodeAppError> {
         let git = self
             .git
             .bound(paths.clone(), vec![directory.clone()], retained)?;
@@ -817,8 +838,9 @@ impl LocalNodeFiles {
             directory.anchored_path(),
         );
         let _git = pin_git_dir(directory)?;
+        let tracked = git.tracked(&root, &hooks, &dir).await?;
         let checked = directory.clone();
-        let snapshot = blocking(move || read_tree(&checked, true)).await?;
+        let split = blocking(move || tree::split_digest(&checked, &tracked)).await?;
         let applied = git.require_clean(&root, &hooks, &dir).await?;
         if applied.revision.commit != *commit {
             return Err(NodeAppError::Failed(
@@ -828,10 +850,18 @@ impl LocalNodeFiles {
         if git.origin(&root, &hooks, &dir).await?.identity != *repository {
             return Err(NodeAppError::UnsafeSource);
         }
-        if snapshot.digest != operation.node.tree_digest {
+        if let Some(untracked) = &operation.untracked_digest {
+            let staged = operation
+                .staged_digest
+                .as_ref()
+                .unwrap_or(&operation.node.tree_digest);
+            if split.tracked != *staged || split.untracked != *untracked {
+                return Err(NodeAppError::StalePlan);
+            }
+        } else if split.full != operation.node.tree_digest {
             return Err(NodeAppError::StalePlan);
         }
-        Ok(())
+        Ok(split.full)
     }
 }
 
@@ -1056,7 +1086,7 @@ impl NodeFiles for LocalNodeFiles {
         root: &Path,
         operation: &NodeOperation,
         retained: Retained,
-    ) -> Result<(), NodeAppError> {
+    ) -> Result<Option<String>, NodeAppError> {
         let paths = Arc::new(NodePaths::open(root, true)?);
         let node = &operation.node;
         if let (Some(prior), true) = (&operation.prior, is_git(node)) {
@@ -1088,10 +1118,12 @@ impl NodeFiles for LocalNodeFiles {
             // Before any dependency or hook runs, the live result must be the reviewed one.
             return self
                 .verify_applied(&paths, &directory, operation, retained)
-                .await;
+                .await
+                .map(Some);
         }
         let (staging, destination) = (paths.staging(&operation.id), paths.location(node));
-        blocking(move || rename(&staging, &destination)).await
+        blocking(move || rename(&staging, &destination)).await?;
+        Ok(None)
     }
 
     async fn backup(&self, root: &Path, operation: &NodeOperation) -> Result<(), NodeAppError> {
@@ -1136,7 +1168,7 @@ impl NodeFiles for LocalNodeFiles {
         root: &Path,
         operation: &NodeOperation,
         retained: Retained,
-    ) -> Result<RecoveryAction, NodeAppError> {
+    ) -> Result<RecoveryOutcome, NodeAppError> {
         let paths = Arc::new(NodePaths::open(root, true)?);
         let staging = paths.staging(&operation.id);
         let backup = paths.backup(&operation.id);
@@ -1145,15 +1177,18 @@ impl NodeFiles for LocalNodeFiles {
             let op = operation.id.clone();
             return blocking(move || {
                 paths.discard(&op)?;
-                Ok(RecoveryAction::Discarded)
+                Ok(RecoveryOutcome {
+                    action: RecoveryAction::Discarded,
+                    tree_digest: None,
+                })
             })
             .await;
         }
         // A partially executed hook may have changed contents. Establish source and location,
         // preserve every copy, and let the application record the failed dependency mutation.
         if operation.phase == OperationPhase::DependenciesInProgress {
-            return Ok(
-                if self
+            return Ok(RecoveryOutcome {
+                action: if self
                     .snapshot_entry(&paths, live, &operation.node, false, retained)
                     .await
                     .is_ok()
@@ -1162,7 +1197,8 @@ impl NodeFiles for LocalNodeFiles {
                 } else {
                     RecoveryAction::Blocked
                 },
-            );
+                tree_digest: None,
+            });
         }
         let (f, b, s) = (
             entry_exists(&live)?,
@@ -1176,8 +1212,24 @@ impl NodeFiles for LocalNodeFiles {
             operation.kind,
             OperationKind::Install | OperationKind::Update
         );
-        let published = f
-            && self
+        let git_update = operation.kind == OperationKind::Update
+            && operation.prior.as_ref().is_some_and(is_git)
+            && is_git(&operation.node);
+        let in_place_phase = matches!(
+            operation.phase,
+            OperationPhase::PublishIntent | OperationPhase::OldBackedUp | OperationPhase::Published
+        );
+        let mut tree_digest = None;
+        let published = if git_update && in_place_phase && operation.untracked_digest.is_some() {
+            if f && let Ok(directory) = live.0.child(&live.1, false) {
+                tree_digest = self
+                    .verify_applied(&paths, &directory, operation, retained.clone())
+                    .await
+                    .ok();
+            }
+            tree_digest.is_some()
+        } else {
+            f && self
                 .matches_entry(
                     &paths,
                     &live,
@@ -1185,7 +1237,8 @@ impl NodeFiles for LocalNodeFiles {
                     require_clean,
                     retained.clone(),
                 )
-                .await;
+                .await
+        };
         let mut prior_live = false;
         let mut prior_backup = false;
         if let Some(prior) = &operation.prior {
@@ -1199,10 +1252,63 @@ impl NodeFiles for LocalNodeFiles {
                     .matches_entry(&paths, &backup, prior, false, retained.clone())
                     .await;
         }
+        let mut reviewed = operation.node.clone();
+        reviewed.tree_digest = operation
+            .staged_digest
+            .clone()
+            .unwrap_or_else(|| reviewed.tree_digest.clone());
         let staged = s
             && self
-                .matches_entry(&paths, &staging, &operation.node, false, retained)
+                .matches_entry(&paths, &staging, &reviewed, false, retained.clone())
                 .await;
+        if git_update && in_place_phase && !published && !prior_live && !b && f {
+            let prior = operation.prior.as_ref().ok_or(NodeAppError::Storage)?;
+            if let (
+                NodeSource::Git {
+                    repository,
+                    commit: prior_commit,
+                    ..
+                },
+                NodeSource::Git {
+                    repository: target_repository,
+                    commit: target_commit,
+                    ..
+                },
+            ) = (&prior.source, &operation.node.source)
+                && repository == target_repository
+            {
+                let superseded = async {
+                    let directory = live.0.child(&live.1, false).map_err(filesystem)?;
+                    let _git = pin_git_dir(&directory)?;
+                    let git = self
+                        .git
+                        .bound(paths.clone(), vec![directory.clone()], retained)?;
+                    let (root, hooks, dir) = (
+                        paths.root.anchored_path(),
+                        paths.hooks(),
+                        directory.anchored_path(),
+                    );
+                    if git.origin(&root, &hooks, &dir).await?.identity != *repository {
+                        return Ok::<_, NodeAppError>(false);
+                    }
+                    let checked = git.require_clean(&root, &hooks, &dir).await?;
+                    Ok(checked.revision.commit != *prior_commit
+                        && checked.revision.commit != *target_commit)
+                }
+                .await
+                .unwrap_or(false);
+                if superseded {
+                    if staged {
+                        let op = operation.id.clone();
+                        blocking(move || paths.discard(&op)).await?;
+                    }
+                    return Ok(RecoveryOutcome {
+                        action: RecoveryAction::Superseded,
+                        tree_digest: None,
+                    });
+                }
+            }
+        }
         let evidence = RecoveryEvidence {
             live: f,
             backup: b,
@@ -1214,7 +1320,13 @@ impl NodeFiles for LocalNodeFiles {
         };
         let op = operation.clone();
         let recycler = self.recycler.clone();
-        blocking(move || recover_blocking(&paths, &op, evidence, &recycler)).await
+        let action = blocking(move || recover_blocking(&paths, &op, evidence, &recycler)).await?;
+        Ok(RecoveryOutcome {
+            action,
+            tree_digest: (action == RecoveryAction::RolledForward)
+                .then_some(tree_digest)
+                .flatten(),
+        })
     }
 
     async fn scan(

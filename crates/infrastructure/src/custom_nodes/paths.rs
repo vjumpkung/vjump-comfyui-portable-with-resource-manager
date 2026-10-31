@@ -8,6 +8,8 @@ use domain::{
     custom_nodes::{InstalledNode, NodeId},
     shared::model_values::SafeFileName,
 };
+#[cfg(any(windows, test))]
+use std::time::Instant;
 use std::{
     fs::{self, File},
     io::{self, Read},
@@ -66,14 +68,57 @@ pub(crate) fn exists(entry: &Entry) -> Result<bool, NodeAppError> {
 }
 
 pub(crate) fn rename(from: &Entry, to: &Entry) -> Result<(), NodeAppError> {
+    #[cfg(windows)]
+    let mut retry = {
+        use std::time::Duration;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut delay = Duration::from_millis(50);
+        move |error: &io::Error| {
+            let now = Instant::now();
+            if !rename_retryable(error, now, deadline) {
+                return false;
+            }
+            std::thread::sleep(delay.min(deadline.saturating_duration_since(now)));
+            delay = (delay * 2).min(Duration::from_millis(800));
+            Instant::now() < deadline
+        }
+    };
+    #[cfg(windows)]
+    let file = loop {
+        match from.0.open_entry(&from.1) {
+            Ok(file) => break file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(NodeAppError::TargetExists);
+            }
+            Err(error) if retry(&error) => {}
+            Err(error) => return Err(filesystem(error)),
+        }
+    };
+    #[cfg(not(windows))]
     let file = from.0.open_entry(&from.1).map_err(filesystem)?;
-    model_paths::rename_no_replace(&from.0, &from.1, &file, &to.0, &to.1).map_err(|e| {
+    #[cfg(windows)]
+    let result = loop {
+        match model_paths::rename_no_replace(&from.0, &from.1, &file, &to.0, &to.1) {
+            Err(error) if retry(&error) => {}
+            result => break result,
+        }
+    };
+    #[cfg(not(windows))]
+    let result = model_paths::rename_no_replace(&from.0, &from.1, &file, &to.0, &to.1);
+    result.map_err(|e| {
         if e.kind() == io::ErrorKind::AlreadyExists {
             NodeAppError::TargetExists
         } else {
             filesystem(e)
         }
     })
+}
+
+#[cfg(any(windows, test))]
+fn rename_retryable(error: &io::Error, now: Instant, deadline: Instant) -> bool {
+    error.kind() != io::ErrorKind::AlreadyExists
+        && matches!(error.raw_os_error(), Some(5 | 32 | 33))
+        && now < deadline
 }
 
 pub(crate) fn remove(entry: &Entry) -> Result<(), NodeAppError> {
@@ -277,4 +322,76 @@ pub(crate) fn after_open(boundary: impl FnOnce() + 'static) {
         assert!(slot.borrow().is_none());
         *slot.borrow_mut() = Some(Box::new(boundary));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_rename_retry_policy_is_bounded_and_os_specific() {
+        use std::time::Duration;
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(2);
+        for code in [5, 32, 33] {
+            let error = io::Error::from_raw_os_error(code);
+            assert!(rename_retryable(&error, now, deadline));
+            assert!(rename_retryable(
+                &error,
+                deadline - Duration::from_nanos(1),
+                deadline
+            ));
+            assert!(!rename_retryable(&error, deadline, deadline));
+            assert!(!rename_retryable(
+                &error,
+                deadline + Duration::from_nanos(1),
+                deadline
+            ));
+        }
+        for error in [
+            io::Error::from_raw_os_error(2),
+            io::Error::from_raw_os_error(183),
+            io::Error::from(io::ErrorKind::AlreadyExists),
+            io::Error::from(io::ErrorKind::PermissionDenied),
+            io::Error::other("non-OS error"),
+        ] {
+            assert!(!rename_retryable(&error, now, deadline));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rename_retries_windows_transient_child_lock() {
+        use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt, time::Duration};
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("locked.py"), "unchanged").unwrap();
+        let parent = model_paths::pin_absolute(temporary.path()).unwrap();
+        let (ready, started) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let file = OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(source.join("locked.py"))
+                .unwrap();
+            ready.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            drop(file);
+        });
+        started.recv().unwrap();
+        let result = rename(
+            &(parent.clone(), safe_name("source")),
+            &(parent, safe_name("target")),
+        );
+        holder.join().unwrap();
+        assert_eq!(result, Ok(()));
+        assert!(!temporary.path().join("source").exists());
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("target/locked.py")).unwrap(),
+            "unchanged"
+        );
+    }
 }

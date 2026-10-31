@@ -8,7 +8,11 @@ use crate::shared::{
 use application::custom_nodes::{NodeAppError, NodePreparePolicy};
 use domain::shared::model_values::SafeFileName;
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, io::Write, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Write,
+    sync::Arc,
+};
 use std::{
     fs::{self, File},
     io::{self, Read},
@@ -256,6 +260,55 @@ pub fn sha256_file(parent: &PinnedDirectory, name: &SafeFileName) -> io::Result<
 /// A digest of the node's files and their relative names. Order-stable and link-free.
 pub fn tree_digest(directory: &Arc<PinnedDirectory>) -> Result<String, NodeAppError> {
     digest_tree(directory, true)
+}
+
+pub(crate) struct SplitDigest {
+    pub full: String,
+    pub tracked: String,
+    pub untracked: String,
+}
+
+pub(crate) fn split_digest(
+    directory: &Arc<PinnedDirectory>,
+    tracked: &HashSet<String>,
+) -> Result<SplitDigest, NodeAppError> {
+    let mut full = Sha256::new();
+    let mut tracked_digest = Sha256::new();
+    let mut untracked_digest = Sha256::new();
+    walk_files(
+        directory,
+        true,
+        false,
+        |parent, name, relative, excluded| {
+            if excluded {
+                return Ok(());
+            }
+            let file = sha256_file(parent, name).map_err(filesystem)?;
+            let partition = if tracked.contains(relative) {
+                &mut tracked_digest
+            } else {
+                &mut untracked_digest
+            };
+            for hasher in [&mut full, partition] {
+                hasher.update(relative.as_bytes());
+                hasher.update([0]);
+                hasher.update(file.as_bytes());
+                hasher.update(*b"\n");
+            }
+            Ok(())
+        },
+    )?;
+    Ok(SplitDigest {
+        full: format!("tree:{}", crate::shared::download::hex(&full.finalize())),
+        tracked: format!(
+            "tree:{}",
+            crate::shared::download::hex(&tracked_digest.finalize())
+        ),
+        untracked: format!(
+            "tree:{}",
+            crate::shared::download::hex(&untracked_digest.finalize())
+        ),
+    })
 }
 
 pub(crate) fn digest_tree(
@@ -521,6 +574,51 @@ mod tests {
         assert_eq!(first, tree_digest(&pin_absolute(&node).unwrap()).unwrap());
         fs::write(node.join("a.py"), "changed").unwrap();
         assert_ne!(first, tree_digest(&pin_absolute(&node).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn split_digest_partitions_files_with_the_full_tree_digest() {
+        let directory = tempfile::tempdir().unwrap();
+        let node = directory.path().join("node");
+        let tracked_tree = directory.path().join("tracked");
+        let untracked_tree = directory.path().join("untracked");
+        fs::create_dir_all(node.join("sub/__pycache__")).unwrap();
+        fs::create_dir_all(node.join("runtime")).unwrap();
+        fs::create_dir_all(node.join("__pycache__")).unwrap();
+        fs::create_dir_all(node.join(".git")).unwrap();
+        fs::create_dir_all(tracked_tree.join("sub")).unwrap();
+        fs::create_dir_all(untracked_tree.join("runtime")).unwrap();
+        fs::write(node.join("sub/tracked.py"), "tracked").unwrap();
+        fs::write(tracked_tree.join("sub/tracked.py"), "tracked").unwrap();
+        fs::write(node.join("runtime/cache.json"), "untracked").unwrap();
+        fs::write(untracked_tree.join("runtime/cache.json"), "untracked").unwrap();
+        for name in [
+            "__pycache__/one.pyc",
+            "sub/__pycache__/two.pyc",
+            ".vjump-node.json",
+            ".tracking",
+            ".git/config",
+        ] {
+            fs::write(node.join(name), "excluded").unwrap();
+        }
+        let tracked = HashSet::from([
+            "sub/tracked.py".into(),
+            "__pycache__/one.pyc".into(),
+            "sub/__pycache__/two.pyc".into(),
+            ".vjump-node.json".into(),
+            ".tracking".into(),
+        ]);
+        let node = pin_absolute(&node).unwrap();
+        let split = split_digest(&node, &tracked).unwrap();
+        assert_eq!(split.full, tree_digest(&node).unwrap());
+        assert_eq!(
+            split.tracked,
+            tree_digest(&pin_absolute(&tracked_tree).unwrap()).unwrap()
+        );
+        assert_eq!(
+            split.untracked,
+            tree_digest(&pin_absolute(&untracked_tree).unwrap()).unwrap()
+        );
     }
 
     #[cfg(unix)]

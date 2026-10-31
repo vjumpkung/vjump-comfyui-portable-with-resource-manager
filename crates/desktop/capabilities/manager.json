@@ -77,6 +77,7 @@
     "allow-node-list",
     "allow-node-git-status",
     "allow-node-rescan",
+    "allow-node-resolve-operation",
     "allow-node-prepare-registry",
     "allow-node-prepare-git",
     "allow-node-prepare-update",

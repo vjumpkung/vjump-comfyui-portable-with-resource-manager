@@ -479,8 +479,8 @@ Closing an idle review discards the prepared plan.
 
 ### Updating, enabling, disabling, uninstalling
 
-- **Update.** Registry nodes are installed from the newer version in a staging folder and swapped in, and the old folder goes to the trash. Git nodes use fast-forward only. A repository with local changes, an unfinished operation or a diverged history is **refused**, and your files are left alone.
-- **Update all** prepares reviewed plans one node at a time, then applies them sequentially. More than 128 targets run as successive reviewed groups of at most 128 plans. Nodes that need an explicit target (a detached HEAD, or no upstream) are skipped with a message. A partially executed batch is never replayed: failed and unrun targets are prepared again. The batch stops if a dependency failure damages the environment.
+- **Update.** Registry updates replace the whole folder with the newer version from staging; the old folder goes to the Recycle Bin or Trash (FR-NODE-6). Git nodes use fast-forward only and keep files the node writes that Git ignores, such as ComfyUI-Manager caches and config. An update that would overwrite an ignored file is **refused**. A repository with local changes, an unfinished operation or a diverged history is also refused, and your files are left alone. A checkout with CRLF line endings that differ from the repository (for example cloned outside the app with `core.autocrlf`) is refused with guidance before anything changes. If a folder was replaced outside the app at another commit, Rescan closes the interrupted update as "changed outside the app".
+- **Update all** prepares reviewed plans one node at a time, then applies them sequentially. More than 128 targets run as successive reviewed groups of at most 128 plans. Nodes that need an explicit target (a detached HEAD, or no upstream) are skipped with a message. A partially executed batch is never replayed: failed and unrun targets are prepared again. The batch stops if a dependency failure damages the environment or an operation blocks start.
 - **Enable / Disable.** Disabling moves the node folder to `custom_nodes/.disabled/<name>`, the same convention ComfyUI-Manager uses. Enabling moves it back.
 - **Uninstall.** The node folder moves to the Recycle Bin or Trash. Python packages stay installed, because other nodes may share them. There is no permanent-delete fallback.
 
@@ -597,13 +597,17 @@ Install Git 2.40 or newer (for example `sudo apt install git`) and retry. The ap
 
 The Custom Nodes page falls back to the cached Registry data and labels it stale. You can browse but not refresh. Installing a Registry node needs the Registry reachable, because the download link is requested for each install.
 
+### First-run setup fails at "hf.exe version"
+
+The Hugging Face tool's version check disables its update check and allows 60 seconds, so a cold start no longer fails at "hf.exe version". Update the application and retry setup.
+
 ### maintenance_busy
 
 Another maintenance operation (setup, an environment change, a node operation, a ComfyUI update, or a ComfyUI start) holds the application-wide lock. Wait for it to finish and try again. The application never stops another operation on your behalf.
 
 ### node_recovery_required
 
-A custom-node operation was interrupted and the application could not prove which copy of a node is safe. Start is refused with "interrupted custom-node work must be resolved before launch." until you run **Rescan / finish recovery** on the Custom Nodes page and resolve what it reports. The operations panel marks the responsible operation with **Blocks start**. Preserved copies stay on disk.
+A custom-node operation was interrupted and the application could not prove which copy of a node is safe. Start is refused with "interrupted custom-node work must be resolved before launch." The operations panel marks the responsible operation with **Blocks start**. Run **Rescan / finish recovery** on the Custom Nodes page first. If it still blocks start, choose **Keep files as they are** to close the operation without moving files. Preserved copies stay in `custom_nodes/.disabled`. Dependencies are not repaired; use **Repair** or **Retry dependencies** afterwards when needed.
 
 ### node_rescan_failed
 
@@ -622,9 +626,11 @@ The install folder was moved or copied, or the venv's interpreter no longer work
 | `profile_revision_unavailable` | The recorded setup profile revision is not bundled with this version |
 | `rebuild_checkout_missing`, `rebuild_checkout_invalid` | The existing ComfyUI checkout is missing, unsafe or not a Git checkout |
 
-### Closing is refused with "Maintenance is in progress"
+### Closing is refused
 
-The dialog "Maintenance is in progress. Wait for it to finish or cancel it before closing." appears when you close the application while setup, a node operation, an update or a post-stop custom-node rescan holds the maintenance lease. Right after **Stop**, the rescan can hold it for a moment; close again once it finishes (seen natively, N17).
+Another program using the installation, such as a terminal opened in the ComfyUI folder, no longer prevents closing. Closing is refused with a message while this app's ComfyUI is still running or its termination is unverified: "ComfyUI from this installation is still running. Stop it, then close again."
+
+The dialog "Maintenance is in progress. Wait for it to finish or cancel it before closing." appears while setup, a node operation, an update or a post-stop custom-node rescan holds the maintenance lease. Right after **Stop**, the rescan can hold it for a moment; close again once it finishes (seen natively, N17).
 
 ### ComfyUI fails to start on the Python 3.12 profile with a `pwd` error
 
