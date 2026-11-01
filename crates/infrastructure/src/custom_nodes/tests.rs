@@ -3239,11 +3239,16 @@ impl GitFixture {
         let mut updated = prior.clone();
         updated.source = staged.source;
         updated.tree_digest = staged.tree_digest.clone();
+        // As the workflow does: normalizing line endings replaces the prior snapshot.
+        let mut prior = prior.clone();
+        if let Some(digest) = staged.prior_tree_digest {
+            prior.tree_digest = digest;
+        }
         let mut op = operation(
             OperationKind::Update,
             id,
             updated,
-            Some(prior.clone()),
+            Some(prior),
             OperationPhase::PublishIntent,
         );
         op.staged_digest = Some(staged.tree_digest);
@@ -3624,6 +3629,15 @@ async fn git_specs_always_disable_system_and_global_config() {
                 .unwrap_or_else(|| panic!("missing {name}"))
         };
         assert_eq!(value("GIT_CONFIG_NOSYSTEM"), "1");
+        for setting in ["core.autocrlf=input", "core.eol=lf"] {
+            assert!(
+                spec.args
+                    .windows(2)
+                    .any(|pair| pair[0] == "-c" && pair[1] == setting),
+                "{setting} in {:?}",
+                spec.args
+            );
+        }
         let config = Path::new(value("GIT_CONFIG_GLOBAL"));
         assert!(config.is_absolute());
         assert_eq!(fs::read(config).unwrap(), b"");
@@ -3998,29 +4012,358 @@ async fn git_batch_b_baseline_requires_the_reviewed_prior_snapshot() {
     );
 }
 
+/// Replaces the installed checkout with a clone made outside the app the way Git for Windows
+/// makes one (`core.autocrlf=true`), at `commit` on the tracked branch.
+fn external_crlf_clone(g: &GitFixture, node: &InstalledNode, commit: &str) -> Repo {
+    let live = g.fixture.cn().join(node.name.as_str());
+    fs::remove_dir_all(&live).unwrap();
+    g.repo.run(&[
+        "-c",
+        "core.autocrlf=true",
+        "clone",
+        "-q",
+        "--no-checkout",
+        &g.url,
+        live.to_str().unwrap(),
+    ]);
+    let checkout = Repo {
+        dir: live,
+        git: g.repo.git.clone(),
+    };
+    checkout.run(&[
+        "-c",
+        "core.autocrlf=true",
+        "checkout",
+        "-q",
+        "-B",
+        "main",
+        commit,
+    ]);
+    checkout.run(&["branch", "-q", "--set-upstream-to=origin/main", "main"]);
+    checkout
+}
+
+/// Gives every working file a new modification time without changing its size or content, so
+/// that Git compares the content instead of trusting the stat data of its index.
+fn touch_files(dir: &Path) {
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+    for entry in fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        if path.is_dir() {
+            touch_files(&path);
+        } else {
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(later)
+                .unwrap();
+        }
+    }
+}
+
+/// `lf`, `crlf`, `mixed`, `none` or `-text`: what Git reports for the working copy of `path`.
+fn worktree_eol(repo: &Repo, path: &str) -> String {
+    repo.run(&["ls-files", "--eol", "--", path])
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("w/"))
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// Every file of the working tree (not `.git`) with its bytes.
+fn working_bytes(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fn collect(dir: &Path, prefix: &str, files: &mut std::collections::BTreeMap<String, Vec<u8>>) {
+        for entry in fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == ".git" {
+                continue;
+            }
+            let relative = format!("{prefix}{name}");
+            if entry.path().is_dir() {
+                collect(&entry.path(), &format!("{relative}/"), files);
+            } else {
+                files.insert(relative, fs::read(entry.path()).unwrap());
+            }
+        }
+    }
+    let mut files = std::collections::BTreeMap::new();
+    collect(dir, "", &mut files);
+    files
+}
+
+fn live_digest(live: &Path) -> String {
+    tree::tree_digest(&pin_absolute(live).unwrap()).unwrap()
+}
+
+async fn scanned_dirty(g: &GitFixture, node: &InstalledNode) -> Option<bool> {
+    g.fixture
+        .files
+        .scan(&g.fixture.root, Default::default())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|found| found.name.as_str() == node.name.as_str())
+        .unwrap()
+        .dirty
+}
+
 #[tokio::test]
-async fn git_batch_b_crlf_guard_explains_unattributed_line_endings() {
+async fn git_update_normalizes_an_external_crlf_clone_and_completes() {
     let g = git_fixture(require_git!()).await;
-    g.repo.commit("code.py", "value = 1\n", "LF code");
-    let mut prior = g.install("crlf-install", None).await;
+    g.repo.commit(
+        ".gitattributes",
+        "auto.txt text=auto\n*.bat text eol=crlf\n*.bin -text\n",
+        "line ending policy",
+    );
+    g.repo.commit("code.py", "value = 1\n", "code");
+    g.repo.commit("auto.txt", "auto\n", "auto");
+    g.repo.commit("sub/win.bat", "echo hi\n", "batch file");
+    g.repo.commit("data.bin", "bin\0\r\nkeep\n", "binary");
+    let mut prior = g.install("crlf-external-install", None).await;
+    let installed = g.repo.run(&["rev-parse", "HEAD"]);
+    let target = g.repo.commit("target.py", "updated = True\n", "target");
+    let checkout = external_crlf_clone(&g, &prior, &installed);
+    let live = checkout.dir.clone();
+    for file in ["code.py", "auto.txt", "requirements.txt", ".gitattributes"] {
+        assert_eq!(worktree_eol(&checkout, file), "crlf", "{file}");
+    }
+    touch_files(&live);
+    // Only the line endings differ, so the node is not "modified" and can be updated.
+    assert_eq!(scanned_dirty(&g, &prior).await, Some(false));
+    prior.tree_digest = live_digest(&live);
+    let crlf_digest = prior.tree_digest.clone();
+    let op = g
+        .update("crlf-external-update", &prior, None)
+        .await
+        .unwrap();
+    // The live tree was rewritten like a fresh checkout and is what the update starts from.
+    let normalized = op.prior.as_ref().unwrap().tree_digest.clone();
+    assert_ne!(normalized, crlf_digest);
+    assert_eq!(normalized, live_digest(&live));
+    assert!(
+        op.untracked_digest.is_some(),
+        "a normalizing prepare keeps the untracked baseline"
+    );
+    g.fixture
+        .files
+        .publish(&g.fixture.root, &op, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(checkout.run(&["rev-parse", "HEAD"]), target);
+    for file in [
+        "code.py",
+        "auto.txt",
+        "requirements.txt",
+        "target.py",
+        ".gitattributes",
+    ] {
+        assert_eq!(worktree_eol(&checkout, file), "lf", "{file}");
+    }
+    assert_eq!(
+        worktree_eol(&checkout, "sub/win.bat"),
+        "crlf",
+        "an explicit eol=crlf attribute still wins"
+    );
+    assert_eq!(
+        fs::read(live.join("data.bin")).unwrap(),
+        b"bin\0\r\nkeep\n",
+        "binary files are never converted"
+    );
+    assert_eq!(checkout.run(&["status", "--porcelain"]), "");
+    assert_eq!(scanned_dirty(&g, &prior).await, Some(false));
+    g.fixture
+        .files
+        .discard_staging(&g.fixture.root, &op.id)
+        .await
+        .unwrap();
+    assert!(g.fixture.owned().is_empty());
+}
+
+#[tokio::test]
+async fn git_update_normalizes_text_auto_files_checked_out_crlf_by_older_versions() {
+    let g = git_fixture(require_git!()).await;
+    g.repo.commit(".gitattributes", "* text=auto\n", "auto");
+    g.repo.commit("code.py", "value = 1\n", "code");
+    let mut prior = g.install("older-crlf-install", None).await;
     let live = g.fixture.cn().join(prior.name.as_str());
     let checkout = Repo {
         dir: live.clone(),
         git: g.repo.git.clone(),
     };
-    checkout.run(&["config", "core.autocrlf", "true"]);
-    fs::write(live.join("code.py"), "value = 1\r\n").unwrap();
-    checkout.run(&["-c", "core.autocrlf=true", "add", "--renormalize", "."]);
-    prior.tree_digest = tree::tree_digest(&pin_absolute(&live).unwrap()).unwrap();
-    let old_head = checkout.run(&["rev-parse", "HEAD"]);
+    assert_eq!(worktree_eol(&checkout, "code.py"), "lf");
+    // Older versions let Git write `text=auto` files with the platform's CRLF.
+    fs::remove_file(live.join("code.py")).unwrap();
+    checkout.run(&["-c", "core.eol=crlf", "checkout", "--", "code.py"]);
+    assert_eq!(worktree_eol(&checkout, "code.py"), "crlf");
+    touch_files(&live);
+    prior.tree_digest = live_digest(&live);
     g.repo.commit("target.py", "updated = True\n", "target");
-    let error = g.update("crlf-update", &prior, None).await.unwrap_err();
-    let status = refused_status(error);
+    let op = g.update("older-crlf-update", &prior, None).await.unwrap();
+    g.fixture
+        .files
+        .publish(&g.fixture.root, &op, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(fs::read(live.join("code.py")).unwrap(), b"value = 1\n");
+    assert_eq!(checkout.run(&["status", "--porcelain"]), "");
+}
+
+#[tokio::test]
+async fn git_update_of_an_up_to_date_crlf_checkout_changes_no_file() {
+    let g = git_fixture(require_git!()).await;
+    g.repo.commit("code.py", "value = 1\n", "code");
+    let mut prior = g.install("current-crlf-install", None).await;
+    let head = g.repo.run(&["rev-parse", "HEAD"]);
+    let checkout = external_crlf_clone(&g, &prior, &head);
+    let live = checkout.dir.clone();
+    touch_files(&live);
+    prior.tree_digest = live_digest(&live);
+    let before = working_bytes(&live);
+    assert_eq!(
+        g.update("current-crlf-update", &prior, None)
+            .await
+            .unwrap_err(),
+        NodeAppError::UpToDate
+    );
+    assert_eq!(working_bytes(&live), before);
+    assert_eq!(worktree_eol(&checkout, "code.py"), "crlf");
+    assert_eq!(checkout.run(&["rev-parse", "HEAD"]), head);
+    assert!(g.fixture.owned().is_empty());
+}
+
+#[tokio::test]
+async fn git_update_with_a_real_edit_in_a_crlf_checkout_is_refused_untouched() {
+    let g = git_fixture(require_git!()).await;
+    g.repo.commit("code.py", "value = 1\n", "code");
+    g.repo.commit("other.py", "other = 1\n", "other");
+    let mut prior = g.install("edited-crlf-install", None).await;
+    let installed = g.repo.run(&["rev-parse", "HEAD"]);
+    g.repo.commit("target.py", "updated = True\n", "target");
+    let checkout = external_crlf_clone(&g, &prior, &installed);
+    let live = checkout.dir.clone();
+    fs::write(live.join("code.py"), "value = 2\r\n").unwrap();
+    touch_files(&live);
+    prior.tree_digest = live_digest(&live);
+    let before = working_bytes(&live);
+    let status = refused_status(
+        g.update("edited-crlf-update", &prior, None)
+            .await
+            .unwrap_err(),
+    );
+    assert!(status.contains("code.py"), "{status}");
+    assert!(!status.contains("other.py"), "{status}");
+    assert_eq!(working_bytes(&live), before);
+    assert_eq!(worktree_eol(&checkout, "other.py"), "crlf");
+    assert_eq!(checkout.run(&["rev-parse", "HEAD"]), installed);
+    assert!(g.fixture.owned().is_empty());
+}
+
+#[tokio::test]
+async fn git_update_refuses_line_ending_candidates_whose_content_differs() {
+    let g = git_fixture(require_git!()).await;
+    g.repo.commit("code.py", "value = 1\n", "code");
+    g.repo.commit("other.py", "other = 1\n", "other");
+    let mut prior = g.install("hidden-edit-install", None).await;
+    let installed = g.repo.run(&["rev-parse", "HEAD"]);
+    g.repo.commit("target.py", "updated = True\n", "target");
+    let checkout = external_crlf_clone(&g, &prior, &installed);
+    let live = checkout.dir.clone();
+    // Git is told not to look at this file, so `git status` stays clean although it was edited.
+    checkout.run(&["update-index", "--assume-unchanged", "code.py"]);
+    fs::write(live.join("code.py"), "value = 2\r\n").unwrap();
+    touch_files(&live);
+    assert_eq!(
+        checkout.run(&["-c", "core.autocrlf=input", "status", "--porcelain"]),
+        ""
+    );
+    prior.tree_digest = live_digest(&live);
+    let before = working_bytes(&live);
+    let status = refused_status(
+        g.update("hidden-edit-update", &prior, None)
+            .await
+            .unwrap_err(),
+    );
     assert!(status.contains("line endings"), "{status}");
     assert!(status.contains("code.py"), "{status}");
-    assert_eq!(checkout.run(&["rev-parse", "HEAD"]), old_head);
-    assert_eq!(fs::read(live.join("code.py")).unwrap(), b"value = 1\r\n");
+    assert_eq!(
+        working_bytes(&live),
+        before,
+        "nothing is rewritten when a file cannot be proven unchanged"
+    );
+    assert_eq!(checkout.run(&["rev-parse", "HEAD"]), installed);
     assert!(g.fixture.owned().is_empty());
+}
+
+#[tokio::test]
+async fn recovery_uses_the_normalized_prior_digest() {
+    for published in [false, true] {
+        let g = git_fixture(require_git!()).await;
+        g.repo.commit("code.py", "value = 1\n", "code");
+        let mut prior = g.install("normalized-recovery-install", None).await;
+        let installed = g.repo.run(&["rev-parse", "HEAD"]);
+        g.repo.commit("target.py", "updated = True\n", "target");
+        let checkout = external_crlf_clone(&g, &prior, &installed);
+        let live = checkout.dir.clone();
+        touch_files(&live);
+        prior.tree_digest = live_digest(&live);
+        let op = g
+            .update("normalized-recovery-update", &prior, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            op.prior.as_ref().unwrap().tree_digest,
+            live_digest(&live),
+            "the journaled prior is the normalized live tree"
+        );
+        if published {
+            g.fixture
+                .files
+                .publish(&g.fixture.root, &op, Default::default())
+                .await
+                .unwrap();
+        }
+        let outcome = g
+            .fixture
+            .files
+            .recover(&g.fixture.root, &op, Default::default())
+            .await
+            .unwrap();
+        if published {
+            assert_eq!(outcome.action, RecoveryAction::RolledForward);
+            assert_eq!(outcome.tree_digest, Some(live_digest(&live)));
+        } else {
+            assert_eq!(outcome.action, RecoveryAction::RolledBack);
+            assert_eq!(live_digest(&live), op.prior.as_ref().unwrap().tree_digest);
+        }
+    }
+}
+
+#[tokio::test]
+async fn git_install_checks_out_text_files_with_lf() {
+    let g = git_fixture(require_git!()).await;
+    g.repo.commit(
+        ".gitattributes",
+        "* text=auto\n*.bat text eol=crlf\n",
+        "line ending policy",
+    );
+    g.repo.commit("code.py", "value = 1\nvalue = 2\n", "code");
+    g.repo.commit("run.bat", "echo hi\n", "batch file");
+    let node = g.install("lf-install", None).await;
+    let live = g.fixture.cn().join(node.name.as_str());
+    assert_eq!(
+        fs::read(live.join("code.py")).unwrap(),
+        b"value = 1\nvalue = 2\n"
+    );
+    assert_eq!(fs::read(live.join("run.bat")).unwrap(), b"echo hi\r\n");
+    assert_eq!(
+        fs::read(live.join(".gitattributes")).unwrap(),
+        b"* text=auto\n*.bat text eol=crlf\n"
+    );
+    assert_eq!(scanned_dirty(&g, &node).await, Some(false));
 }
 
 #[tokio::test]

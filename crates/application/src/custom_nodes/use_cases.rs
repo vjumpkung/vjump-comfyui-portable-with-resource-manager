@@ -1,5 +1,8 @@
 use super::*;
-use crate::shared::{ExplorerTarget, MaintenanceLease};
+use crate::{
+    comfy_runtime::RuntimeBlock,
+    shared::{ExplorerTarget, MaintenanceLease},
+};
 use domain::{custom_nodes::*, environment::EnvState};
 
 #[derive(Clone)]
@@ -355,7 +358,11 @@ impl NodeService {
         }
         Ok(batch)
     }
-    /// Desktop calls this after a verified stop. Required reconciliation is awaited before scanning.
+    /// Desktop calls this after a verified stop, and from the Rescan button. Interrupted
+    /// operations are settled first, which moves folders and so needs ComfyUI verified stopped.
+    /// Scanning only reads, so when the state of ComfyUI cannot be determined (another program,
+    /// for example a terminal, uses the folder) it still runs, unless an operation is waiting to
+    /// be settled.
     pub async fn rescan(&self) -> Result<Vec<InstalledNode>, NodeAppError> {
         let mut lease = self
             .deps
@@ -364,7 +371,18 @@ impl NodeService {
             .try_acquire()
             .await
             .map_err(|_| NodeAppError::Busy)?;
-        self.reconcile_held(&mut *lease).await?;
+        let root = self.deps.environment.root.current().root;
+        match self.deps.environment.runtime.ensure_stopped(&root).await {
+            Ok(()) => self.reconcile_stopped(&root, &mut *lease).await?,
+            Err(RuntimeBlock::Running) => return Err(NodeAppError::RuntimeRunning),
+            Err(RuntimeBlock::CannotAssess) => {
+                for op in self.deps.store.operations().await? {
+                    if op.blocks_start() || self.should_settle(&op)? {
+                        return Err(NodeAppError::RuntimeRunning);
+                    }
+                }
+            }
+        }
         self.scan_held(&mut *lease).await
     }
     pub async fn scan_held(
@@ -426,26 +444,38 @@ impl NodeService {
             .ensure_stopped(&root)
             .await
             .map_err(|_| NodeAppError::RuntimeRunning)?;
+        self.reconcile_stopped(&root, lease).await
+    }
+    /// Settles every unfinished operation. The caller has verified that ComfyUI is stopped.
+    async fn reconcile_stopped(
+        &self,
+        root: &std::path::Path,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<(), NodeAppError> {
         self.discard_obsolete_setup_plans().await?;
         for op in self.deps.store.operations().await? {
-            if matches!(op.phase, OperationPhase::Completed | OperationPhase::Failed) {
-                continue;
+            if self.should_settle(&op)? {
+                self.settle(root, op, lease).await?;
             }
-            // Plans are process-local; do not discard a still-reviewable staged plan during rescan.
-            if op.phase == OperationPhase::Prepared
-                && self
-                    .deps
-                    .plans
-                    .0
-                    .lock()
-                    .map_err(|_| NodeAppError::Storage)?
-                    .contains_key(op.id.as_str())
-            {
-                continue;
-            }
-            self.settle(&root, op, lease).await?;
         }
         self.ensure_reconciled().await
+    }
+    /// Whether reconciliation has to settle `op`: everything unfinished except a staged plan that
+    /// is still reviewable (plans are process-local, so a live one is not discarded by a rescan).
+    fn should_settle(&self, op: &NodeOperation) -> Result<bool, NodeAppError> {
+        if matches!(op.phase, OperationPhase::Completed | OperationPhase::Failed) {
+            return Ok(false);
+        }
+        if op.phase == OperationPhase::Prepared {
+            return Ok(!self
+                .deps
+                .plans
+                .0
+                .lock()
+                .map_err(|_| NodeAppError::Storage)?
+                .contains_key(op.id.as_str()));
+        }
+        Ok(true)
     }
     async fn interrupted_dependencies(&self, op: &mut NodeOperation) -> Result<(), NodeAppError> {
         let d = &self.deps.environment;

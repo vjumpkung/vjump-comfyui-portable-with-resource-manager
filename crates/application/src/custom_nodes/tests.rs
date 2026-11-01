@@ -190,6 +190,7 @@ impl NodeFiles for FakeFiles {
                     name: SafeFileName::new(folder).unwrap(),
                     tree_digest: state.digest.clone(),
                     untracked_digest: None,
+                    prior_tree_digest: None,
                     artifact_digest: None,
                     requirement_lines: vec!["numpy".into()],
                     requirements_digest: state.requirements_digest.clone(),
@@ -898,6 +899,7 @@ fn staged(version: &str) -> StagedNode {
         name: SafeFileName::new("pack").unwrap(),
         tree_digest: format!("tree:{version}"),
         untracked_digest: None,
+        prior_tree_digest: None,
         artifact_digest: Some("artifact".into()),
         requirement_lines: vec!["numpy".into()],
         requirements_digest: Some("req".into()),
@@ -2670,6 +2672,151 @@ fn rescan_keeps_ids_flags_provenance_conflicts_and_prunes_missing_nodes() {
         ))
         .is_ok()
     );
+}
+
+fn manual_node(name: &str) -> InstalledNode {
+    InstalledNode {
+        id: NodeId::new("scan-0123456789abcdef").unwrap(),
+        name: SafeFileName::new(name).unwrap(),
+        source: NodeSource::Manual,
+        origin: ProvenanceOrigin::ExternallyObserved,
+        enabled: true,
+        single_file: false,
+        tree_digest: String::new(),
+        dependencies: DependencyState::NotRun,
+        conflict: false,
+        dirty: None,
+    }
+}
+
+#[test]
+fn rescan_reads_the_folders_when_another_program_uses_them() {
+    let h = Harness::new();
+    h.files.state.lock().unwrap().scan = vec![manual_node("checked-out-by-hand")];
+    *h.world.runtime_block.lock().unwrap() = Some(RuntimeBlock::CannotAssess);
+    // Finished operations have nothing left to settle.
+    let mut done = interrupted(&h, OperationPhase::Completed, OperationKind::Install);
+    block_on(h.store.save_operation(&done)).unwrap();
+    done.id = NodeId::new("node-failed").unwrap();
+    done.phase = OperationPhase::Failed;
+    block_on(h.store.save_operation(&done)).unwrap();
+    h.world.calls.lock().unwrap().clear();
+    let nodes = block_on(h.service.rescan()).unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].name.as_str(), "checked-out-by-hand");
+    assert_eq!(
+        block_on(h.store.nodes()).unwrap().len(),
+        1,
+        "the scan is saved"
+    );
+    assert_eq!(h.world.count("files:scan"), 1);
+    assert_eq!(h.world.count("files:recover"), 0);
+    assert_eq!(h.world.count("files:discard"), 0);
+}
+
+#[test]
+fn rescan_leaves_recovery_for_a_verified_stop() {
+    for phase in [
+        OperationPhase::Prepared,
+        OperationPhase::PublishIntent,
+        OperationPhase::OldBackedUp,
+        OperationPhase::Published,
+        OperationPhase::DependenciesInProgress,
+        OperationPhase::Verified,
+        OperationPhase::CleanupPending,
+    ] {
+        let h = Harness::new();
+        let op = interrupted(&h, phase, OperationKind::Install);
+        block_on(h.store.save_operation(&op)).unwrap();
+        *h.world.runtime_block.lock().unwrap() = Some(RuntimeBlock::CannotAssess);
+        h.world.calls.lock().unwrap().clear();
+        assert_eq!(
+            block_on(h.service.rescan()).unwrap_err(),
+            NodeAppError::RuntimeRunning,
+            "{phase:?}"
+        );
+        assert_eq!(h.world.count("files:scan"), 0, "{phase:?}");
+        assert_eq!(h.world.count("files:recover"), 0, "{phase:?}");
+        assert_eq!(h.world.count("files:discard"), 0, "{phase:?}");
+        assert_eq!(
+            block_on(h.store.operations()).unwrap(),
+            [op],
+            "the operation is untouched"
+        );
+    }
+}
+
+#[test]
+fn rescan_keeps_a_live_prepared_plan_when_the_state_is_unknown() {
+    let h = Harness::new();
+    let review = h.prepare();
+    let before = block_on(h.store.operations()).unwrap();
+    assert_eq!(before[0].phase, OperationPhase::Prepared);
+    *h.world.runtime_block.lock().unwrap() = Some(RuntimeBlock::CannotAssess);
+    h.world.calls.lock().unwrap().clear();
+    block_on(h.service.rescan()).unwrap();
+    assert_eq!(h.world.count("files:scan"), 1);
+    assert_eq!(h.world.count("files:discard"), 0);
+    assert_eq!(block_on(h.store.operations()).unwrap(), before);
+    assert_eq!(h.service.pending_reviews().unwrap()[0].id, review.id);
+}
+
+#[test]
+fn rescan_refuses_while_comfyui_runs() {
+    let h = Harness::new();
+    h.files.state.lock().unwrap().scan = vec![manual_node("checked-out-by-hand")];
+    *h.world.runtime_block.lock().unwrap() = Some(RuntimeBlock::Running);
+    assert_eq!(
+        block_on(h.service.rescan()).unwrap_err(),
+        NodeAppError::RuntimeRunning
+    );
+    let op = interrupted(&h, OperationPhase::PublishIntent, OperationKind::Install);
+    block_on(h.store.save_operation(&op)).unwrap();
+    assert_eq!(
+        block_on(h.service.rescan()).unwrap_err(),
+        NodeAppError::RuntimeRunning
+    );
+    assert_eq!(h.world.count("files:scan"), 0);
+    assert_eq!(h.world.count("files:recover"), 0);
+}
+
+#[test]
+fn an_update_adopts_the_prior_digest_after_line_ending_normalization() {
+    let h = Harness::new();
+    let node = h.installed();
+    {
+        let mut files = h.files.state.lock().unwrap();
+        files.staged = Some(StagedNode {
+            prior_tree_digest: Some("tree:normalized".into()),
+            ..staged("1.1.0")
+        });
+        files.digest = "tree:1.1.0".into();
+    }
+    let review = block_on(h.service.prepare(
+        PrepareRequest::Update {
+            node: node.id.clone(),
+            reference: None,
+        },
+        &h.ctx(),
+    ))
+    .unwrap();
+    let prepared = block_on(h.service.operation_status(&review.id)).unwrap();
+    assert_eq!(prepared.prior.unwrap().tree_digest, "tree:normalized");
+    // The adapter rewrote the line endings while preparing: the live tree is the new prior.
+    h.files
+        .state
+        .lock()
+        .unwrap()
+        .snapshots
+        .insert("pack".into(), "tree:normalized".into());
+    block_on(
+        h.service
+            .commit(&review.id, Harness::decision(&review), &h.ctx()),
+    )
+    .unwrap();
+    let done = block_on(h.service.operation_status(&review.id)).unwrap();
+    assert_eq!(done.phase, OperationPhase::Completed);
+    assert_eq!(done.prior.unwrap().tree_digest, "tree:normalized");
 }
 
 #[test]

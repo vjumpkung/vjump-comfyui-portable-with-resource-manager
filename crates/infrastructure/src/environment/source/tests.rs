@@ -1128,3 +1128,43 @@ async fn the_manager_is_installed_at_the_approved_commit_and_existing_folders_ar
     );
     assert_eq!(fs::read(manager.join("custom.txt")).unwrap(), b"mine");
 }
+
+#[test]
+fn git_commands_check_out_lf_line_endings() {
+    let source = GitSource::with(Downloader::new(), Endpoints::pinned(), Some(locate_git()));
+    let spec = source
+        .git_command(&Layout::new(Path::new("install root")))
+        .unwrap();
+    for setting in ["core.autocrlf=input", "core.eol=lf"] {
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|pair| pair[0] == "-c" && pair[1] == setting),
+            "{setting} in {:?}",
+            spec.args
+        );
+    }
+}
+
+#[tokio::test]
+async fn clones_check_out_text_files_with_lf() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.remote.path.join(".gitattributes"), "* text=auto\n").unwrap();
+    fs::write(fixture.remote.path.join("notes.txt"), "one\ntwo\n").unwrap();
+    git(&fixture.remote.path, &["add", "-A"]);
+    git(&fixture.remote.path, &["commit", "-m", "text files"]);
+    let source = fixture.source();
+    let resolved = source
+        .resolve(&fixture.root, &ComfyRef::Branch("main".into()))
+        .await
+        .unwrap();
+    source
+        .clone_comfyui(&fixture.root, &resolved, &ctx())
+        .await
+        .unwrap();
+    let dir = fixture.root.join("ComfyUI");
+    assert_eq!(fs::read(dir.join("notes.txt")).unwrap(), b"one\ntwo\n");
+    let listing = git(&dir, &["ls-files", "--eol", "notes.txt"]);
+    assert!(listing.contains("w/lf"), "{listing}");
+    assert_eq!(git(&dir, &["status", "--porcelain"]), "");
+}

@@ -290,6 +290,13 @@ impl NodeService {
                     return Err(error);
                 }
             };
+            // The adapter may have rewritten line endings of the live tree; that tree, not the
+            // one snapshotted before, is what publishing and recovery compare with.
+            if let (Some(digest), Some(prior)) =
+                (prepared.prior_tree_digest.clone(), op.prior.as_mut())
+            {
+                prior.tree_digest = digest;
+            }
             op.staged_digest = Some(prepared.tree_digest.clone());
             op.untracked_digest = prepared.untracked_digest;
             op.node.name = prepared.name;

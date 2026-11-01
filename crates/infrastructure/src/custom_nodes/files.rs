@@ -450,6 +450,7 @@ impl LocalNodeFiles {
             name,
             tree_digest: tree.digest,
             untracked_digest: None,
+            prior_tree_digest: None,
             artifact_digest: Some(artifact.sha256),
             requirement_lines: tree.requirement_lines,
             requirements_digest: tree.requirements_digest,
@@ -577,6 +578,7 @@ impl LocalNodeFiles {
             name,
             tree_digest: tree.digest,
             untracked_digest: None,
+            prior_tree_digest: None,
             artifact_digest: None,
             requirement_lines: tree.requirement_lines,
             requirements_digest: tree.requirements_digest,
@@ -629,24 +631,33 @@ impl LocalNodeFiles {
         if remote.identity != *repository {
             return Err(NodeAppError::UnsafeSource);
         }
-        if let Some(path) = git
-            .crlf_mismatch(&paths.root.anchored_path(), &hooks, &dir)
-            .await?
-        {
-            const EXPLANATION: &str = "Some files in this checkout have Windows (CRLF) line endings that differ from the repository, for example after cloning it outside the app. The app cannot verify such a checkout. Reinstall the node from the app, or clone it again with `git clone -c core.autocrlf=false <url>`.";
-            return Err(refused(
-                "",
-                &format!("{EXPLANATION} First affected file: {path}"),
-            ));
-        }
         let tracked = git
             .tracked(&paths.root.anchored_path(), &hooks, &dir)
             .await?;
         let checked = live_directory.clone();
-        let split = blocking(move || tree::split_digest(&checked, &tracked)).await?;
-        if split.full != prior.tree_digest {
+        let before = blocking(move || tree::split_digest(&checked, &tracked)).await?;
+        if before.full != prior.tree_digest {
             return Err(NodeAppError::StalePlan);
         }
+        // Files that differ from the repository only in line endings (a checkout made outside
+        // the app, or by an older version) are proven identical and rewritten like a fresh
+        // checkout. The digest after that replaces the prior snapshot; nothing else may change.
+        let normalized = git
+            .normalize_line_endings(&paths.root.anchored_path(), &hooks, &dir, ctx)
+            .await?;
+        let split = if normalized > 0 {
+            let tracked = git
+                .tracked(&paths.root.anchored_path(), &hooks, &dir)
+                .await?;
+            let checked = live_directory.clone();
+            let after = blocking(move || tree::split_digest(&checked, &tracked)).await?;
+            if after.untracked != before.untracked {
+                return Err(NodeAppError::StalePlan);
+            }
+            after
+        } else {
+            before
+        };
         // The live update stays an in-place fast-forward; this complete checkout of the frozen
         // target is the evidence that is reviewed and later compared with the live result.
         let staged = paths.staging(op);
@@ -708,6 +719,7 @@ impl LocalNodeFiles {
             name: prior.name.clone(),
             tree_digest: tree.digest,
             untracked_digest: Some(split.untracked),
+            prior_tree_digest: Some(split.full),
             artifact_digest: None,
             requirement_lines: tree.requirement_lines,
             requirements_digest: tree.requirements_digest,

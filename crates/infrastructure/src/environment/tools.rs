@@ -261,6 +261,45 @@ pub fn git_program(layout: &Layout) -> Option<PathBuf> {
     }
 }
 
+const MINGIT_LINE_ENDINGS_MARKER: &str =
+    "# vjumpkung-comfyui: check out LF line endings; CRLF working files still compare as unchanged";
+
+/// Appends the app's line-ending block to the portable MinGit's system config, once. It must stay
+/// after MinGit's own `[include]` lines so that its values win over the `autocrlf = true` of an
+/// installed Git for Windows. Returns whether the file was changed.
+pub fn configure_mingit_line_endings(layout: &Layout) -> std::io::Result<bool> {
+    if !layout.mingit_exe().is_file() {
+        return Ok(false);
+    }
+    let directory = layout.git_dir().join("etc");
+    let path = directory.join("gitconfig");
+    let existing = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    if String::from_utf8_lossy(&existing)
+        .lines()
+        .any(|line| line.trim() == MINGIT_LINE_ENDINGS_MARKER)
+    {
+        return Ok(false);
+    }
+    fs::create_dir_all(&directory)?;
+    let mut block = String::new();
+    if !existing.is_empty() && !existing.ends_with(b"\n") {
+        block.push('\n');
+    }
+    block.push_str(MINGIT_LINE_ENDINGS_MARKER);
+    block.push_str("\n[core]\n\tautocrlf = input\n\teol = lf\n");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    std::io::Write::write_all(&mut file, block.as_bytes())?;
+    file.sync_all()?;
+    Ok(true)
+}
+
 struct Staged {
     stage: PathBuf,
     archive: PathBuf,
@@ -599,17 +638,24 @@ impl ToolProvisioner for Tools {
         if cfg!(windows) {
             let source = &self.sources.mingit;
             let executable = layout.mingit_exe();
-            if executable.is_file()
-                && let Ok(version) = check_version(&layout, &executable, source, ctx).await
-            {
-                return Ok(ToolInfo {
-                    name: "git".into(),
-                    version,
-                });
+            let reusable = if executable.is_file() {
+                check_version(&layout, &executable, source, ctx).await.ok()
+            } else {
+                None
+            };
+            let version = match reusable {
+                Some(version) => version,
+                None => {
+                    self.install_tool(&layout, source, "mingit", &layout.git_dir(), false, ctx)
+                        .await?
+                }
+            };
+            // Best effort: Git still works with MinGit's own defaults.
+            if let Err(error) = configure_mingit_line_endings(&layout) {
+                ctx.log(format!(
+                    "Warning: the portable Git line-ending defaults could not be set ({error})"
+                ));
             }
-            let version = self
-                .install_tool(&layout, source, "mingit", &layout.git_dir(), false, ctx)
-                .await?;
             return Ok(ToolInfo {
                 name: "git".into(),
                 version,

@@ -53,6 +53,7 @@ impl GitRepository {
                 "-c",
                 "advice.detachedHead=false",
             ])
+            .args(["-c", "core.autocrlf=input", "-c", "core.eol=lf"])
             .arg("-C")
             .arg(layout.comfyui_dir())
             .args(args.iter().copied()))

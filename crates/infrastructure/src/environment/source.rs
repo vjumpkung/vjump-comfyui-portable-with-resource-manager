@@ -83,12 +83,14 @@ impl GitSource {
     }
 
     fn git_command(&self, layout: &Layout) -> Result<CommandSpec, ProvisionError> {
-        Ok(command(layout, Tool::Git, self.git(layout)?).args([
-            "-c",
-            "core.longpaths=true",
-            "-c",
-            "advice.detachedHead=false",
-        ]))
+        Ok(command(layout, Tool::Git, self.git(layout)?)
+            .args([
+                "-c",
+                "core.longpaths=true",
+                "-c",
+                "advice.detachedHead=false",
+            ])
+            .args(["-c", "core.autocrlf=input", "-c", "core.eol=lf"]))
     }
 }
 

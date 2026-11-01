@@ -536,3 +536,73 @@ async fn latest_commit_without_a_default_branch_fails_before_checkout() {
     assert_eq!(git(&install.comfy, &["rev-parse", "HEAD"]), head);
     assert_eq!(git(&install.comfy, &["show-ref", "--heads"]), branches);
 }
+
+#[test]
+fn git_commands_check_out_lf_line_endings() {
+    let source = GitSource::with(Downloader::new(), Endpoints::pinned(), Some(locate_git()));
+    let repository = GitRepository::with_git(Arc::new(source), locate_git());
+    let spec = repository
+        .command(Path::new("install root"), &["status"])
+        .unwrap();
+    for setting in ["core.autocrlf=input", "core.eol=lf"] {
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|pair| pair[0] == "-c" && pair[1] == setting),
+            "{setting} in {:?}",
+            spec.args
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_crlf_checkout_is_not_dirty_and_updates_with_lf_endings() {
+    let install = Install::new();
+    fs::write(install.remote.join("notes.txt"), "one\ntwo\n").unwrap();
+    git(&install.remote, &["add", "-A"]);
+    git(&install.remote, &["commit", "-m", "notes"]);
+    // A checkout made outside the app the way Git for Windows makes it: CRLF working files.
+    fs::remove_dir_all(&install.comfy).unwrap();
+    git(
+        &install.root,
+        &["-c", "core.autocrlf=true", "clone", "../remote", "ComfyUI"],
+    );
+    let listing = git(&install.comfy, &["ls-files", "--eol", "notes.txt"]);
+    assert!(listing.contains("w/crlf"), "{listing}");
+    // A new modification time with the same size makes Git compare the content.
+    fs::File::options()
+        .write(true)
+        .open(install.comfy.join("notes.txt"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + Duration::from_secs(3600))
+        .unwrap();
+    let repository = install.repository();
+    let state = repository.status(&install.root).await.unwrap();
+    assert!(!state.dirty, "{}", state.status);
+
+    fs::write(install.remote.join("more.txt"), "three\nfour\n").unwrap();
+    git(&install.remote, &["add", "-A"]);
+    git(&install.remote, &["commit", "-m", "more"]);
+    let tip = git(&install.remote, &["rev-parse", "HEAD"]);
+    repository
+        .fetch(&install.root, &UpdateTarget::BranchFfOnly, &ctx())
+        .await
+        .unwrap();
+    let frozen = repository
+        .freeze(&install.root, &UpdateTarget::BranchFfOnly)
+        .await
+        .unwrap();
+    assert_eq!(frozen.commit, tip);
+    repository
+        .apply(&install.root, &frozen, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(git(&install.comfy, &["rev-parse", "HEAD"]), tip);
+    assert_eq!(
+        fs::read(install.comfy.join("more.txt")).unwrap(),
+        b"three\nfour\n",
+        "files written by the update are checked out with LF"
+    );
+    let state = repository.status(&install.root).await.unwrap();
+    assert!(!state.dirty, "{}", state.status);
+}

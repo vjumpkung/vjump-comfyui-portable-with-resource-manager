@@ -5,7 +5,10 @@ use super::{
     port::TcpPortProbe,
 };
 use crate::{
-    environment::layout::{Layout, Tool, command, venv_python},
+    environment::{
+        layout::{Layout, Tool, command, venv_python},
+        tools::configure_mingit_line_endings,
+    },
     shared::{
         process::{self, CommandSpec, RunLimits},
         procscan::{self, SnapshotFn},
@@ -399,6 +402,12 @@ impl ComfyRuntimeSupervisor {
             log: log.clone(),
             spawned: tokio::sync::Notify::new(),
         });
+        // Best effort: ComfyUI-Manager's own Git clones inside ComfyUI use the portable MinGit.
+        if cfg!(windows)
+            && let Err(error) = configure_mingit_line_endings(&Layout::new(&self.inner.root))
+        {
+            tracing::warn!(%error, "the portable Git line-ending defaults could not be set");
+        }
         let mut spec = command(
             &Layout::new(&self.inner.root),
             Tool::Python,

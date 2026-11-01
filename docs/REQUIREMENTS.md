@@ -499,6 +499,7 @@ Remote profile updates are **P2**. If added, they MUST be signed, with the signa
 - **File placement is atomic.** Downloads, registry node folders and node updates are staged, then renamed into place. Env setup and activation are side-by-side, switching only after verification.
 - **In-place dependency changes are not rolled back** (owner decision, 2026-10-15). A failed `uv pip` or `install.py` step inside the active env marks it `repair_required`, shown in the UI with Retry and Repair. Repair reinstalls the profile and node requirements under the pin guard. The app does not snapshot venvs, and it cannot undo effects of arbitrary scripts outside managed state.
 - Git operations never reset, force or discard local changes.
+- Line-ending-only differences that Git reports as unchanged are not local changes; before an update the app rewrites such files to fresh-checkout line endings after proving each file's content equals the committed version.
 - On startup, the app recovers from a crash or kill: interrupted jobs return to `paused`, stale `.part` files are reconciled, and staging dirs are cleaned.
 
 ### 6.3 Windows and Linux specifics

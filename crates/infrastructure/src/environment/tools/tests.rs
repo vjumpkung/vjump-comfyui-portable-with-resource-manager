@@ -309,6 +309,93 @@ async fn mingit_keeps_its_directory_layout() {
     );
 }
 
+/// A root whose `tools/git` holds a stand-in `cmd/git.exe` and, optionally, `etc/gitconfig`.
+fn mingit_layout(config: Option<&str>) -> (tempfile::TempDir, Layout) {
+    let directory = tempfile::tempdir().unwrap();
+    let layout = Layout::new(directory.path().join("install root ไทย"));
+    fs::create_dir_all(layout.mingit_exe().parent().unwrap()).unwrap();
+    fs::write(layout.mingit_exe(), b"fake").unwrap();
+    if let Some(config) = config {
+        fs::create_dir_all(layout.git_dir().join("etc")).unwrap();
+        fs::write(layout.git_dir().join("etc/gitconfig"), config).unwrap();
+    }
+    (directory, layout)
+}
+
+const MINGIT_CONFIG: &str = "[core]\n\tsymlinks = false\n\tautocrlf = true\n[include]\n\tpath = C:/Program Files (x86)/Git/etc/gitconfig\n\tpath = C:/Program Files/Git/etc/gitconfig\n";
+
+#[test]
+fn the_mingit_line_endings_block_is_appended_once_after_the_includes() {
+    let (_directory, layout) = mingit_layout(Some(MINGIT_CONFIG));
+    let path = layout.git_dir().join("etc/gitconfig");
+    assert!(configure_mingit_line_endings(&layout).unwrap());
+    let text = fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        text,
+        format!(
+            "{MINGIT_CONFIG}{MINGIT_LINE_ENDINGS_MARKER}\n[core]\n\tautocrlf = input\n\teol = lf\n"
+        )
+    );
+    assert!(
+        text.rfind("[include]").unwrap() < text.find(MINGIT_LINE_ENDINGS_MARKER).unwrap(),
+        "later values win, so the block comes after the includes"
+    );
+    assert!(!configure_mingit_line_endings(&layout).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(text.matches(MINGIT_LINE_ENDINGS_MARKER).count(), 1);
+}
+
+#[test]
+fn the_mingit_line_endings_block_starts_on_its_own_line() {
+    let (_directory, layout) = mingit_layout(Some("[core]\n\tsymlinks = false"));
+    assert!(configure_mingit_line_endings(&layout).unwrap());
+    let text = fs::read_to_string(layout.git_dir().join("etc/gitconfig")).unwrap();
+    assert!(
+        text.starts_with("[core]\n\tsymlinks = false\n# vjumpkung-comfyui"),
+        "{text:?}"
+    );
+}
+
+#[test]
+fn a_missing_mingit_config_is_created_and_a_missing_mingit_is_left_alone() {
+    let (_directory, layout) = mingit_layout(None);
+    assert!(configure_mingit_line_endings(&layout).unwrap());
+    assert_eq!(
+        fs::read_to_string(layout.git_dir().join("etc/gitconfig")).unwrap(),
+        format!("{MINGIT_LINE_ENDINGS_MARKER}\n[core]\n\tautocrlf = input\n\teol = lf\n")
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let layout = Layout::new(directory.path());
+    assert!(!configure_mingit_line_endings(&layout).unwrap());
+    assert!(!layout.git_dir().exists());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn ensuring_git_sets_the_line_endings_on_install_and_on_reuse() {
+    let fixture = Fixture::new().await;
+    let archive = zip_of(&[
+        ("cmd/git.exe", shell_bytes()),
+        ("etc/gitconfig", MINGIT_CONFIG.as_bytes().to_vec()),
+    ]);
+    let mut tools = fixture.tools(&archive, ArchiveKind::Zip, "cmd/git.exe", "git version");
+    tools.sources.mingit.version_args = version_args("git version 2.55.0.windows.3");
+    tools.sources.mingit.version_contains = MINGIT_GIT_VERSION.to_owned();
+    let config = fixture.root.join("tools/git/etc/gitconfig");
+
+    tools.ensure_git(&fixture.root, &ctx()).await.unwrap();
+    let installed = fs::read_to_string(&config).unwrap();
+    assert!(installed.starts_with(MINGIT_CONFIG));
+    assert_eq!(installed.matches(MINGIT_LINE_ENDINGS_MARKER).count(), 1);
+
+    // An install made before this existed gets the block when it is reused.
+    fs::write(&config, MINGIT_CONFIG).unwrap();
+    tools.ensure_git(&fixture.root, &ctx()).await.unwrap();
+    assert_eq!(fixture.requests(), 1, "the tool was reused");
+    assert_eq!(fs::read_to_string(&config).unwrap(), installed);
+}
+
 #[test]
 fn git_versions_are_parsed_and_compared() {
     assert_eq!(parse_git_version("git version 2.43.0"), Some((2, 43)));

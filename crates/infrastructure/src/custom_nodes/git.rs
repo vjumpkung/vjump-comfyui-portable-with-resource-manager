@@ -136,27 +136,49 @@ fn tracked_paths(bytes: &[u8]) -> Result<HashSet<String>, NodeAppError> {
     Ok(paths)
 }
 
-fn crlf_mismatch_path(bytes: &[u8]) -> Result<Option<String>, NodeAppError> {
+/// A tracked text file whose working copy has other line endings than a fresh checkout would
+/// have, listed with its index entry so that it can be proven and rewritten.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EolCandidate {
+    pub mode: String,
+    pub oid: String,
+    pub path: String,
+}
+
+/// Parses `git ls-files --eol -s -z`: `<mode> <oid> <stage>\t<i/..> <w/..> <attr/..>\t<path>`.
+fn eol_candidates(bytes: &[u8]) -> Result<Vec<EolCandidate>, NodeAppError> {
+    let mut candidates = Vec::new();
     if bytes.is_empty() {
-        return Ok(None);
+        return Ok(candidates);
     }
     let records = bytes.strip_suffix(&[0]).ok_or_else(tree_listing_failed)?;
-    let mut mismatch = None;
     for (index, record) in records.split(|byte| *byte == 0).enumerate() {
         if index >= MAX_ENTRIES {
             return Err(NodeAppError::UnsafeSource);
         }
         let record = std::str::from_utf8(record).map_err(|_| NodeAppError::UnsafeSource)?;
-        let (header, path) = record.split_once('\t').ok_or_else(tree_listing_failed)?;
+        let mut parts = record.splitn(3, '\t');
+        let (Some(entry), Some(info), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return Err(tree_listing_failed());
+        };
         if path.is_empty() {
             return Err(NodeAppError::UnsafeSource);
         }
-        let (index, rest) = header.split_once(' ').ok_or_else(tree_listing_failed)?;
+        let mut fields = entry.split(' ');
+        let (Some(mode), Some(oid), Some(stage), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err(tree_listing_failed());
+        };
+        let (index_eol, rest) = info.split_once(' ').ok_or_else(tree_listing_failed)?;
         let (worktree, attrs) = rest
             .trim_start_matches(' ')
             .split_once(' ')
             .ok_or_else(tree_listing_failed)?;
-        let index = index.strip_prefix("i/").ok_or_else(tree_listing_failed)?;
+        let index_eol = index_eol
+            .strip_prefix("i/")
+            .ok_or_else(tree_listing_failed)?;
         let worktree = worktree
             .strip_prefix("w/")
             .ok_or_else(tree_listing_failed)?;
@@ -165,18 +187,42 @@ fn crlf_mismatch_path(bytes: &[u8]) -> Result<Option<String>, NodeAppError> {
             .strip_prefix("attr/")
             .ok_or_else(tree_listing_failed)?
             .trim_end_matches(' ');
-        if header.chars().any(char::is_control)
-            || ![index, worktree]
+        if entry.chars().any(char::is_control)
+            || info.chars().any(char::is_control)
+            || stage.len() != 1
+            || !stage.bytes().all(|byte| byte.is_ascii_digit())
+            || ![index_eol, worktree]
                 .iter()
                 .all(|eol| matches!(*eol, "" | "-text" | "none" | "lf" | "crlf" | "mixed"))
         {
             return Err(tree_listing_failed());
         }
-        if mismatch.is_none() && index == "lf" && worktree == "crlf" && attrs.is_empty() {
-            mismatch = Some(path.to_owned());
+        if !is_object_id(oid) || mode.len() != 6 || !mode.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(tree_listing_failed());
+        }
+        validate_components(&path.split('/').map(str::to_owned).collect::<Vec<_>>())?;
+        let attrs: Vec<&str> = attrs.split(' ').filter(|word| !word.is_empty()).collect();
+        let expects_crlf = attrs.contains(&"eol=crlf");
+        let differs = if expects_crlf {
+            matches!(worktree, "lf" | "mixed")
+        } else {
+            matches!(worktree, "crlf" | "mixed")
+        };
+        if stage == "0"
+            && matches!(mode, "100644" | "100755")
+            && index_eol == "lf"
+            && !attrs.contains(&"-text")
+            && differs
+        {
+            candidates.push(EolCandidate {
+                mode: mode.to_owned(),
+                oid: oid.to_owned(),
+                path: path.to_owned(),
+            });
         }
     }
-    Ok(mismatch)
+    Ok(candidates)
 }
 
 pub(crate) fn admit_root_tree(bytes: &[u8]) -> Result<(), NodeAppError> {
@@ -216,6 +262,26 @@ fn safe_config(config: &str) -> bool {
                         "false" | "no" | "off" | "0"
                     ))
         })
+}
+
+fn git_outcome(
+    outcome: Result<process::Output, RunError>,
+    limits: &RunLimits,
+) -> Result<String, NodeAppError> {
+    match outcome {
+        Ok(output) if output.stdout.len() < limits.max_stdout_bytes => Ok(output.stdout),
+        Ok(_) => Err(failed("Git output exceeded the safe capture limit")),
+        Err(RunError::Cancelled { .. }) => Err(NodeAppError::Cancelled),
+        Err(RunError::Failed { tail, .. }) | Err(RunError::TimedOut { tail }) => {
+            if looks_transient(&tail) {
+                Err(NodeAppError::Offline)
+            } else {
+                Err(failed("The Git command failed."))
+            }
+        }
+        Err(RunError::Spawn(std::io::ErrorKind::NotFound)) => Err(NodeAppError::GitUnavailable),
+        Err(_) => Err(failed("Git could not be run")),
+    }
 }
 
 impl GitNodes {
@@ -305,6 +371,7 @@ impl GitNodes {
                 "protocol.https.allow=always",
             ])
             .args(["-c", "credential.helper=", "-c", "core.fsmonitor=false"])
+            .args(["-c", "core.autocrlf=input", "-c", "core.eol=lf"])
             .arg("-c")
             .arg(format!("core.hooksPath={}", hooks.display()));
         if self.allow_local {
@@ -446,20 +513,31 @@ impl GitNodes {
             Some(ctx) => process::run(&spec, &StepSink(ctx), cancel, &limits).await,
             None => process::run(&spec, &DiscardSink, cancel, &limits).await,
         };
-        match outcome {
-            Ok(output) if output.stdout.len() < limits.max_stdout_bytes => Ok(output.stdout),
-            Ok(_) => Err(failed("Git output exceeded the safe capture limit")),
-            Err(RunError::Cancelled { .. }) => Err(NodeAppError::Cancelled),
-            Err(RunError::Failed { tail, .. }) | Err(RunError::TimedOut { tail }) => {
-                if looks_transient(&tail) {
-                    Err(NodeAppError::Offline)
-                } else {
-                    Err(failed("The Git command failed."))
-                }
-            }
-            Err(RunError::Spawn(std::io::ErrorKind::NotFound)) => Err(NodeAppError::GitUnavailable),
-            Err(_) => Err(failed("Git could not be run")),
-        }
+        git_outcome(outcome, &limits)
+    }
+
+    /// Like `run`, with `input` on the command's standard input.
+    async fn run_input(
+        &self,
+        root: &Path,
+        hooks: &Path,
+        dir: &Path,
+        args: &[&str],
+        input: Vec<u8>,
+        cancel: &CancelToken,
+    ) -> Result<String, NodeAppError> {
+        let spec = self
+            .checked_spec(root, hooks, Some(dir), args, cancel)
+            .await?
+            .stdin(Arc::from(input));
+        let limits = RunLimits {
+            timeout: Some(Duration::from_secs(600)),
+            ..Default::default()
+        };
+        git_outcome(
+            process::run(&spec, &DiscardSink, cancel, &limits).await,
+            &limits,
+        )
     }
 
     async fn read(
@@ -520,24 +598,108 @@ impl GitNodes {
         tracked_paths(&bytes)
     }
 
-    pub(crate) async fn crlf_mismatch(
+    async fn list_eol_candidates(
         &self,
         root: &Path,
         hooks: &Path,
         dir: &Path,
-    ) -> Result<Option<String>, NodeAppError> {
+        cancel: &CancelToken,
+    ) -> Result<Vec<EolCandidate>, NodeAppError> {
         let bytes = self
-            .read_raw(
+            .read_raw(root, hooks, dir, &["ls-files", "--eol", "-s", "-z"], cancel)
+            .await?;
+        eol_candidates(&bytes)
+    }
+
+    /// Rewrites tracked text files that differ from the repository only in line endings (for
+    /// example a checkout made with `core.autocrlf=true`) the way a fresh checkout would write
+    /// them. Each file's content is first proven equal to its committed blob; if any file cannot
+    /// be proven, nothing is written and the update is refused. Returns the number of files.
+    pub(crate) async fn normalize_line_endings(
+        &self,
+        root: &Path,
+        hooks: &Path,
+        dir: &Path,
+        ctx: &StepContext,
+    ) -> Result<usize, NodeAppError> {
+        const EXPLANATION: &str = "Some files in this checkout have line endings that differ from the repository, and the app could not prove that their content is unchanged, so it did not update the node. Commit or discard your edits to those files, or reinstall the node from the app.";
+        let refuse =
+            |path: &str| refused("", &format!("{EXPLANATION} First affected file: {path}"));
+        let cancel = &ctx.cancel;
+        let candidates = self.list_eol_candidates(root, hooks, dir, cancel).await?;
+        let Some(first) = candidates.first() else {
+            return Ok(0);
+        };
+        // Git hashes each file the way it would commit it. A candidate is rewritten only when
+        // that is exactly the blob the index already holds.
+        let mut paths = Vec::new();
+        for candidate in &candidates {
+            paths.extend_from_slice(candidate.path.as_bytes());
+            paths.push(b'\n');
+        }
+        let hashed = self
+            .run_input(
                 root,
                 hooks,
                 dir,
-                &["ls-files", "--eol", "-z"],
-                &CancelToken::new(),
+                &["hash-object", "--stdin-paths"],
+                paths,
+                cancel,
             )
             .await?;
-        crlf_mismatch_path(&bytes)
+        let hashes: Vec<&str> = hashed.lines().map(str::trim).collect();
+        if hashes.len() != candidates.len() {
+            return Err(refuse(&first.path));
+        }
+        if let Some(candidate) = candidates
+            .iter()
+            .zip(&hashes)
+            .find_map(|(candidate, hash)| (candidate.oid != *hash).then_some(candidate))
+        {
+            return Err(refuse(&candidate.path));
+        }
+        let mut entries = Vec::new();
+        let mut names = Vec::new();
+        for candidate in &candidates {
+            entries.extend_from_slice(
+                format!("{} {} 0\t{}", candidate.mode, candidate.oid, candidate.path).as_bytes(),
+            );
+            entries.push(0);
+            names.extend_from_slice(candidate.path.as_bytes());
+            names.push(0);
+        }
+        self.run_input(
+            root,
+            hooks,
+            dir,
+            &["update-index", "-z", "--index-info"],
+            entries,
+            cancel,
+        )
+        .await?;
+        self.run_input(
+            root,
+            hooks,
+            dir,
+            &["checkout-index", "-f", "-u", "-z", "--stdin"],
+            names,
+            cancel,
+        )
+        .await?;
+        if let Some(left) = self
+            .list_eol_candidates(root, hooks, dir, cancel)
+            .await?
+            .first()
+        {
+            return Err(refuse(&left.path));
+        }
+        self.require_clean(root, hooks, dir).await?;
+        ctx.log(format!(
+            "Normalized the line endings of {} files to match a fresh checkout",
+            candidates.len()
+        ));
+        Ok(candidates.len())
     }
-
     /// Resolves the reference to one immutable commit. A name that matches both a branch and a
     /// tag is rejected instead of guessed.
     pub async fn resolve(
@@ -1187,80 +1349,196 @@ mod tests {
         }
     }
 
-    #[test]
-    fn eol_parser_finds_first_unattributed_lf_crlf_mismatch() {
-        assert_eq!(crlf_mismatch_path(b""), Ok(None));
-        assert_eq!(
-            crlf_mismatch_path(
-                b"i/lf    w/lf    attr/                  \tclean.py\0i/lf    w/crlf  attr/    \tfirst.py\0i/lf w/crlf attr/\tsub/second.py\0"
-            ),
-            Ok(Some("first.py".into()))
-        );
-        for eol in ["", "-text", "none", "lf", "crlf", "mixed"] {
-            assert_eq!(
-                crlf_mismatch_path(format!("i/{eol} w/{eol} attr/\tfile.py\0").as_bytes()),
-                Ok(None)
-            );
-        }
+    const OID: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// One `git ls-files --eol -s -z` record, padded like Git pads it.
+    fn record(
+        mode: &str,
+        stage: u8,
+        index: &str,
+        worktree: &str,
+        attrs: &str,
+        path: &str,
+    ) -> Vec<u8> {
+        format!("{mode} {OID} {stage}\ti/{index:<5} w/{worktree:<5} attr/{attrs:<17}\t{path}\0")
+            .into_bytes()
+    }
+
+    fn listing(index: &str, worktree: &str, attrs: &str) -> Vec<u8> {
+        record("100644", 0, index, worktree, attrs, "file.py")
+    }
+
+    fn candidate_paths(bytes: &[u8]) -> Vec<String> {
+        eol_candidates(bytes)
+            .unwrap()
+            .into_iter()
+            .map(|candidate| candidate.path)
+            .collect()
     }
 
     #[test]
-    fn eol_parser_ignores_explicit_attributes() {
+    fn eol_candidates_follow_the_line_endings_a_fresh_checkout_would_write() {
+        assert_eq!(eol_candidates(b""), Ok(Vec::new()));
+        // (attributes, working tree) pairs that differ from a fresh checkout of an LF blob.
+        let expected = |attrs: &str, worktree: &str| {
+            if attrs.split(' ').any(|word| word == "eol=crlf") {
+                matches!(worktree, "lf" | "mixed")
+            } else {
+                matches!(worktree, "crlf" | "mixed")
+            }
+        };
         for attrs in [
+            "",
             "text",
             "text=auto",
+            "text eol=crlf",
             "eol=crlf",
-            "eol=lf",
-            "text=auto eol=crlf",
-            "-text",
+            "text eol=lf",
+        ] {
+            for worktree in ["lf", "crlf", "mixed"] {
+                assert_eq!(
+                    candidate_paths(&listing("lf", worktree, attrs)).len(),
+                    usize::from(expected(attrs, worktree)),
+                    "{attrs:?} w/{worktree}"
+                );
+            }
+        }
+        let found = eol_candidates(&listing("lf", "crlf", "text=auto")).unwrap();
+        assert_eq!(
+            found,
+            [EolCandidate {
+                mode: "100644".into(),
+                oid: OID.into(),
+                path: "file.py".into()
+            }]
+        );
+        assert_eq!(
+            eol_candidates(&record("100755", 0, "lf", "mixed", "", "run.sh")).unwrap()[0].mode,
+            "100755"
+        );
+    }
+
+    #[test]
+    fn eol_candidates_skip_everything_that_is_not_an_lf_text_blob() {
+        for (index, worktree, attrs) in [
+            ("lf", "crlf", "-text"),
+            ("-text", "-text", "-text"),
+            ("none", "none", ""),
+            ("", "", ""),
+            ("-text", "crlf", ""),
+            ("crlf", "crlf", ""),
+            ("crlf", "lf", "text=auto"),
+            ("mixed", "crlf", ""),
+            ("lf", "none", ""),
+            ("lf", "", ""),
+            ("lf", "-text", ""),
         ] {
             assert_eq!(
-                crlf_mismatch_path(
-                    format!("i/lf    w/crlf  attr/{attrs}        \tfile.py\0").as_bytes()
-                ),
-                Ok(None),
-                "{attrs}"
+                candidate_paths(&listing(index, worktree, attrs)),
+                Vec::<String>::new(),
+                "i/{index} w/{worktree} {attrs}"
+            );
+        }
+        for mode in ["120000", "160000"] {
+            assert!(
+                candidate_paths(&record(mode, 0, "lf", "crlf", "", "link")).is_empty(),
+                "{mode}"
+            );
+        }
+        for stage in 1..=3 {
+            assert!(
+                candidate_paths(&record("100644", stage, "lf", "crlf", "", "conflict.py"))
+                    .is_empty(),
+                "stage {stage}"
             );
         }
     }
 
     #[test]
-    fn eol_parser_refuses_malformed_records() {
-        for bytes in [
-            &b"i/lf w/crlf attr/\tfile.py"[..],
-            &b"i/lf w/crlf attr/\tfile.py\0unfinished"[..],
-            &b"i/lf w/crlf attr/ file.py\0"[..],
-            &b"i/lf attr/\tfile.py\0"[..],
-            &b"w/lf i/crlf attr/\tfile.py\0"[..],
-            &b"i/lf w/crlf attrs/\tfile.py\0"[..],
-            &b"i/unknown w/crlf attr/\tfile.py\0"[..],
-            &b"i/lf w/unknown attr/\tfile.py\0"[..],
-            &b"i/lf w/crlf attr/\r\tfile.py\0"[..],
-            &b"i/lf w/crlf attr/\tfirst.py\0broken\0"[..],
-        ] {
+    fn eol_candidates_collect_every_candidate_in_order() {
+        let mut bytes = record("100644", 0, "lf", "lf", "", "clean.py");
+        bytes.extend(record("100644", 0, "lf", "crlf", "", "first.py"));
+        bytes.extend(record(
+            "100644",
+            0,
+            "lf",
+            "crlf",
+            "text=auto",
+            "sub/second.py",
+        ));
+        bytes.extend(record("100644", 0, "-text", "-text", "-text", "image.bin"));
+        assert_eq!(candidate_paths(&bytes), ["first.py", "sub/second.py"]);
+    }
+
+    #[test]
+    fn eol_candidates_refuse_malformed_records() {
+        let good = listing("lf", "crlf", "");
+        let mut unfinished = good.clone();
+        unfinished.pop();
+        let mut trailing = good.clone();
+        trailing.extend(b"broken\0");
+        let text = |bytes: &[u8]| String::from_utf8(bytes.to_vec()).unwrap();
+        let bad = [
+            unfinished,
+            trailing,
+            text(&good).replacen('\t', " ", 1).into_bytes(),
+            text(&good).replace("\ti/", "\tx/").into_bytes(),
+            text(&good).replace(" w/", " v/").into_bytes(),
+            text(&good).replace(" attr/", " attrs/").into_bytes(),
+            text(&good).replace("i/lf", "i/unknown").into_bytes(),
+            text(&good).replace("w/crlf", "w/unknown").into_bytes(),
+            text(&good).replace("attr/", "attr/\r").into_bytes(),
+            text(&good).replace(OID, "not-an-object-id").into_bytes(),
+            text(&good).replace("100644", "1006").into_bytes(),
+            text(&good).replace("100644", "10064x").into_bytes(),
+            text(&good).replace(" 0\t", " 00\t").into_bytes(),
+            text(&good).replace(" 0\t", " x\t").into_bytes(),
+            text(&good).replace(" 0\t", " 0 0\t").into_bytes(),
+            text(&good).replace("100644 ", "").into_bytes(),
+            b"file.py\0".to_vec(),
+            b"\0".to_vec(),
+        ];
+        for bytes in bad {
             assert_eq!(
-                crlf_mismatch_path(bytes),
+                eol_candidates(&bytes),
                 Err(tree_listing_failed()),
-                "{bytes:?}"
+                "{:?}",
+                String::from_utf8_lossy(&bytes)
             );
-        }
-        for bytes in [
-            &b"i/lf w/crlf attr/\t\xff\0"[..],
-            &b"i/lf w/crlf attr/\t\0"[..],
-        ] {
-            assert_eq!(crlf_mismatch_path(bytes), Err(NodeAppError::UnsafeSource));
         }
     }
 
     #[test]
-    fn eol_parser_preserves_tabs_in_the_verbatim_path() {
-        assert_eq!(
-            crlf_mismatch_path(b"i/lf w/crlf attr/\tname\twith-tab.py\0"),
-            Ok(Some("name\twith-tab.py".into()))
-        );
-        assert_eq!(
-            crlf_mismatch_path(b"i/lf w/crlf attr/text=auto\tname\twith-tab.py\0"),
-            Ok(None)
-        );
+    fn eol_candidates_refuse_unsafe_paths_and_encodings() {
+        for path in [
+            "",
+            "../x",
+            "/x",
+            "a//b",
+            "a\\b",
+            "CON",
+            "bad\tname.py",
+            "line\nbreak",
+            "q\"uote",
+        ] {
+            assert_eq!(
+                eol_candidates(&record("100644", 0, "lf", "crlf", "", path)),
+                Err(NodeAppError::UnsafeSource),
+                "{path:?}"
+            );
+        }
+        let mut bytes = b"100644 ".to_vec();
+        bytes.extend(OID.as_bytes());
+        bytes.extend(b" 0\ti/lf    w/crlf  attr/                 \t\xff\0");
+        assert_eq!(eol_candidates(&bytes), Err(NodeAppError::UnsafeSource));
+    }
+
+    #[test]
+    fn eol_candidates_are_bounded() {
+        let one = record("100644", 0, "lf", "lf", "", "f.py");
+        let mut bytes = one.repeat(MAX_ENTRIES);
+        assert_eq!(eol_candidates(&bytes), Ok(Vec::new()));
+        bytes.extend(&one);
+        assert_eq!(eol_candidates(&bytes), Err(NodeAppError::UnsafeSource));
     }
 }

@@ -261,6 +261,9 @@ pub struct StagedNode {
     pub name: SafeFileName,
     pub tree_digest: String,
     pub untracked_digest: Option<String>,
+    /// The live tree digest after the adapter normalized line endings during prepare; replaces
+    /// the prior snapshot.
+    pub prior_tree_digest: Option<String>,
     pub artifact_digest: Option<String>,
     pub requirement_lines: Vec<String>,
     pub requirements_digest: Option<String>,
