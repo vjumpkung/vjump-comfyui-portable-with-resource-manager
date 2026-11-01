@@ -398,7 +398,7 @@ export function CustomNodesPage({
         ) : (
           <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="min-w-0 overflow-x-auto">
-              <div className="min-w-[64rem]">
+              <div className="min-w-[64rem] [&:lang(th)]:min-w-[72rem]">
                 <InstalledTable
                   nodes={visible}
                   selected={selected}

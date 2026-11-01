@@ -13,7 +13,7 @@ import { Chip, DependencyChip, EnabledChip, HealthChip } from './status-chips'
 
 export const ROW_HEIGHT = 56
 const COLUMNS =
-  'grid grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_6.5rem_7.5rem_5.5rem_minmax(7rem,1fr)]'
+  'grid grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_6.5rem_7.5rem_5.5rem_minmax(7rem,1fr)] [&:lang(th)]:grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_6.5rem_11rem_5.5rem_minmax(11rem,1fr)]'
 const KIND_LABEL = { registry: 'customNodes.source.registry', git: 'customNodes.source.git', manual: 'customNodes.source.manual' } as const satisfies Record<InstalledNodeDto['source']['kind'], keyof typeof import('@/shared/i18n/translations.json').en>
 
 interface Props {

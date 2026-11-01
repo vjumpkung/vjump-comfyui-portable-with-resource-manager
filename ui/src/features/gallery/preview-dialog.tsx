@@ -98,7 +98,7 @@ export function PreviewDialog({ entry, files, onNavigate, onClose }: Props) {
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-4xl" onKeyDown={onKeyDown}>
         <DialogHeader>
-          <DialogTitle className="truncate pr-8" title={entry.name}>
+          <DialogTitle className="truncate pr-8 leading-normal" title={entry.name}>
             {entry.name}
           </DialogTitle>
           <DialogDescription>

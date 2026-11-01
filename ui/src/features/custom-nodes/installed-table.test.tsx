@@ -159,6 +159,21 @@ it('shows source, version, branch, state, dependencies, origin, conflict and Git
   }
 })
 
+it('installed_table_widens_dependency_and_git_columns_in_thai', () => {
+  render(<Harness nodes={[node({ id: 'a', name: 'Alpha' })]} />)
+  const header = screen.getByRole('grid', { name: 'Installed custom nodes' }).querySelector('[aria-rowindex="1"]')
+  for (const element of [header, row('a')]) {
+    const classes = [...(element?.classList ?? [])]
+    // The English template stays; Thai chips are wider, so only :lang(th) widens tracks 7 and 9.
+    expect(classes).toContain(
+      'grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_6.5rem_7.5rem_5.5rem_minmax(7rem,1fr)]',
+    )
+    const thai = classes.find((name) => name.startsWith('[&:lang(th)]:grid-cols-['))
+    expect(thai).toBeDefined()
+    expect(thai).toContain('_11rem_5.5rem_minmax(11rem,1fr)]')
+  }
+})
+
 it('installed_table_active_row_keeps_readable_contrast', () => {
   const [a, b] = [node({ id: 'a', name: 'Alpha' }), node({ id: 'b', name: 'Beta' })]
   render(<Harness nodes={[a, b]} initial={a.id} />)

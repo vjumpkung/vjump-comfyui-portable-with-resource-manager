@@ -89,7 +89,7 @@ function Row({
       className="focus-visible:ring-2 focus-visible:ring-ring"
       style={{ height: ROW_HEIGHT }}
     >
-      <TableCell className="max-w-72 align-top whitespace-normal">
+      <TableCell className="max-w-64 align-top whitespace-normal">
         <p className="text-sm font-semibold break-words [overflow-wrap:anywhere]">
           {label}
         </p>
@@ -108,7 +108,7 @@ function Row({
           ) : null}
         </div>
       </TableCell>
-      <TableCell className="min-w-56 align-top whitespace-normal">
+      <TableCell className="min-w-48 align-top whitespace-normal">
         {showBar ? (
           <div className="flex flex-col gap-1">
             <Progress
