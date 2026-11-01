@@ -75,7 +75,9 @@ function doneText(action: BatchAction, count: number): string {
 
 function problemText(result: GalleryItemResultDto): string {
   const reason =
-    result.error?.message ??
+    (result.error?.code === 'gallery_repository_file'
+      ? translate('common.repositoryFile')
+      : result.error?.message) ??
     translate(
       result.outcome === 'source_retained'
         ? 'gallery.report.sourceRetained'

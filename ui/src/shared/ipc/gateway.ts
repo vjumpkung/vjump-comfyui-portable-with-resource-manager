@@ -95,6 +95,7 @@ async function unwrap<T>(call: () => Promise<IpcResult<T>>): Promise<T> {
 }
 
 export const gateway = {
+  appReady: (): Promise<boolean> => unwrap(async () => ({ status: 'ok', data: await commands.appReady() })),
   appInfo: (): Promise<AppInfoDto> => unwrap(() => commands.appInfo()),
   settingsGet: (): Promise<SettingsDto> => unwrap(() => commands.settingsGet()),
   settingsSet: (input: UpdateSettingsDto): Promise<SettingsDto> =>
@@ -180,6 +181,7 @@ export const gateway = {
   dlPause: (jobId: string) => unwrap(() => commands.dlPause(jobId)),
   dlCancel: (jobId: string) => unwrap(() => commands.dlCancel(jobId)),
   dlRetry: (jobId: string) => unwrap(() => commands.dlRetry(jobId)),
+  dlRemove: (id: string, generation: number | null) => unwrap(() => commands.dlRemove(id, generation)),
   dlResume: (
     jobId: string,
     decision: { decisionId: string; choice: ConflictChoiceDto } | null = null,

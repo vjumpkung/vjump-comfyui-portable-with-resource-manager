@@ -201,8 +201,8 @@ it('offers_latest_commit_and_tag_updates', async () => {
     await screen.findByRole('button', { name: 'Update to latest release' }),
   ).toBeTruthy()
   expect(
-    screen.getByRole('button', { name: 'Fast-forward release/v0.40' }),
-  ).toBeTruthy()
+    screen.queryByRole('button', { name: /Fast-forward/ }),
+  ).toBeNull()
   expect(
     screen.getByText('Switches to origin’s default branch, normally master. Development code may be less stable than a release.'),
   ).toBeTruthy()

@@ -7,6 +7,7 @@
   ],
   "permissions": [
     "core:default",
+    "allow-app-ready",
     "allow-app-info",
     "allow-settings-get",
     "allow-settings-set",
@@ -54,6 +55,7 @@
     "allow-dl-resume",
     "allow-dl-cancel",
     "allow-dl-retry",
+    "allow-dl-remove",
     "allow-dl-subscribe",
     "allow-dl-unsubscribe",
     "allow-dl-import-pack",

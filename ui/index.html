@@ -4,9 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>vjumpkung ComfyUI</title>
+    <link rel="stylesheet" href="/splash.css">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="startup-splash" role="status" aria-busy="true">
+        <span class="startup-spinner" aria-hidden="true"></span>
+        <span>vjumpkung ComfyUI</span>
+      </div>
+    </div>
     <script type="module" src="/src/app/main.tsx"></script>
   </body>
 </html>

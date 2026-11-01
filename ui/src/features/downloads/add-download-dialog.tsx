@@ -10,6 +10,7 @@ import {
   type ResolutionDto,
 } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
+import { useSkipSecurityConfirmations } from '@/shared/lib/settings-queries'
 import { Alert, AlertDescription } from '@/shared/ui/alert'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
@@ -50,7 +51,9 @@ function initialSelection(resolution: ResolutionDto): Set<number> {
 export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) {
   const { t } = useTranslation()
   const [url, setUrl] = useState('')
-  const [httpConfirmed, setHttpConfirmed] = useState(false)
+  const skip = useSkipSecurityConfirmations()
+  const [httpOverride, setHttpConfirmed] = useState<boolean | undefined>(undefined)
+  const httpConfirmed = httpOverride ?? skip
   const [resolution, setResolution] = useState<ResolutionDto | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [filter, setFilter] = useState('')

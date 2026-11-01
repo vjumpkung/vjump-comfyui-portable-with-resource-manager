@@ -33,6 +33,171 @@ fn name(text: &str) -> SafeFileName {
 fn code(result: Result<impl Sized>) -> GalleryErrorCode {
     result.err().expect("the operation must fail").0
 }
+
+#[tokio::test]
+async fn tracked_files_are_hidden_but_folders_remain_and_stale_mutations_are_refused() {
+    use crate::comfy_runtime::tracked::tests::{git, repository};
+    let fx = Fixture::new();
+    let comfy = repository(&fx.root);
+    fx.write(&inp("example.png"), b"tracked");
+    fx.write(&inp("nested/example.png"), b"tracked nested");
+    fx.write(&out("example.wav"), b"tracked audio");
+    fx.write(&out("user.png"), b"user");
+    let file = fx.entry(&inp("example.png")).await;
+    let folder = fx.entry(&inp("nested")).await;
+    let plan = fx.files.plan_delete(&fx.root, &file).await.unwrap();
+    let folder_plan = fx.files.plan_delete(&fx.root, &folder).await.unwrap();
+    git(&comfy, &["add", "input", "output/example.wav"]);
+    let listing = fx.list(&inp("")).await;
+    assert_eq!(listing.entries.len(), 1);
+    assert_eq!(listing.entries[0].name.as_str(), "nested");
+    assert!(fx.list(&inp("nested")).await.entries.is_empty());
+    for entry in [&file, &folder] {
+        assert_eq!(
+            code(fx.files.rename(&fx.root, entry, &name("renamed")).await),
+            GalleryErrorCode::RepositoryFile
+        );
+        assert_eq!(
+            code(fx.files.plan_delete(&fx.root, entry).await),
+            GalleryErrorCode::RepositoryFile
+        );
+        let result = fx
+            .files
+            .transfer(
+                &fx.root,
+                entry,
+                &out(""),
+                TransferMode::Move,
+                "protected",
+                Retained::default(),
+            )
+            .await;
+        assert_eq!(result.outcome, ItemOutcome::Failed);
+        assert_eq!(result.error.unwrap().0, GalleryErrorCode::RepositoryFile);
+    }
+    assert_eq!(
+        code(fx.files.trash(&fx.root, &plan).await),
+        GalleryErrorCode::RepositoryFile
+    );
+    assert_eq!(
+        code(fx.files.trash(&fx.root, &folder_plan).await),
+        GalleryErrorCode::RepositoryFile
+    );
+    assert_eq!(fx.read(&inp("example.png")), b"tracked");
+    assert_eq!(fx.list(&out("")).await.entries.len(), 1);
+}
+
+#[tokio::test]
+async fn tracked_destinations_and_conflict_suffixes_cannot_be_written() {
+    use crate::comfy_runtime::tracked::tests::{git, repository};
+    let fx = Fixture::new();
+    let comfy = repository(&fx.root);
+    fx.write(&inp("owned.png"), b"tracked destination");
+    fx.write(&inp("folder/owned.png"), b"tracked descendant");
+    fx.write(&inp("clip (1).png"), b"tracked suffix");
+    git(&comfy, &["add", "input"]);
+    fs::remove_file(fx.path(&inp("owned.png"))).unwrap();
+    fs::remove_file(fx.path(&inp("clip (1).png"))).unwrap();
+    fx.write(&inp("user.png"), b"user");
+    let user = fx.entry(&inp("user.png")).await;
+    assert_eq!(
+        code(fx.files.rename(&fx.root, &user, &name("owned.png")).await),
+        GalleryErrorCode::RepositoryFile
+    );
+    fx.write(&out("owned.png"), b"source");
+    fx.mkdir(&out("folder"));
+    fx.write(&inp("clip.png"), b"conflict");
+    fx.write(&out("clip.png"), b"source");
+    for path in ["owned.png", "folder", "clip.png"] {
+        let source = fx.entry(&out(path)).await;
+        for mode in [TransferMode::Move, TransferMode::Copy] {
+            let result = fx
+                .files
+                .transfer(
+                    &fx.root,
+                    &source,
+                    &inp(""),
+                    mode,
+                    &format!("protect-{path}-{mode:?}"),
+                    Retained::default(),
+                )
+                .await;
+            assert_eq!(
+                result.error.unwrap().0,
+                GalleryErrorCode::RepositoryFile,
+                "{path}"
+            );
+            assert!(fx.exists(&out(path)));
+        }
+    }
+    assert!(!fx.exists(&inp("owned.png")));
+    assert!(!fx.exists(&inp("clip (1).png")));
+    assert_eq!(fx.read(&inp("clip.png")), b"conflict");
+}
+
+#[tokio::test]
+async fn tracked_files_and_folders_are_allowed_copy_sources() {
+    use crate::comfy_runtime::tracked::tests::{git, repository};
+    let fx = Fixture::new();
+    let comfy = repository(&fx.root);
+    fx.write(&inp("owned.png"), b"tracked");
+    fx.write(&inp("nested/owned.png"), b"nested tracked");
+    let file = fx.entry(&inp("owned.png")).await;
+    let folder = fx.entry(&inp("nested")).await;
+    git(&comfy, &["add", "input"]);
+    for entry in [&file, &folder] {
+        let result = fx
+            .files
+            .transfer(
+                &fx.root,
+                entry,
+                &out(""),
+                TransferMode::Copy,
+                &format!("copy-{}", entry.location.path().as_string()),
+                Retained::default(),
+            )
+            .await;
+        assert_eq!(result.outcome, ItemOutcome::Succeeded, "{result:?}");
+    }
+    for path in ["owned.png", "nested/owned.png"] {
+        assert_eq!(fx.read(&inp(path)), fx.read(&out(path)));
+    }
+}
+
+#[tokio::test]
+async fn unavailable_repository_protection_keeps_previous_mutation_behavior() {
+    let fx = Fixture::new();
+    fx.write(&out("user.png"), b"user");
+    fs::write(fx.root.join("ComfyUI/.git"), "gitdir: missing").unwrap();
+    assert_eq!(fx.list(&out("")).await.entries.len(), 1);
+    let entry = fx.entry(&out("user.png")).await;
+    let renamed = fx
+        .files
+        .rename(&fx.root, &entry, &name("other.png"))
+        .await
+        .unwrap();
+    let entry = fx.entry(&renamed).await;
+    fx.files.plan_delete(&fx.root, &entry).await.unwrap();
+    let result = fx
+        .files
+        .transfer(
+            &fx.root,
+            &entry,
+            &inp(""),
+            TransferMode::Move,
+            "unavailable",
+            Retained::default(),
+        )
+        .await;
+    assert_eq!(result.outcome, ItemOutcome::Succeeded, "{result:?}");
+    assert_eq!(fx.read(&inp("other.png")), b"user");
+    let entry = fx.entry(&inp("other.png")).await;
+    let plan = fx.files.plan_delete(&fx.root, &entry).await.unwrap();
+    // Reach the existing trash adapter (which can fail environmentally), rather
+    // than stopping at RepositoryFile before any attempt.
+    let result = fx.files.trash(&fx.root, &plan).await;
+    assert!(result.is_ok() || code(result) == GalleryErrorCode::TrashFailed);
+}
 /// What walking through a link yields: Windows refuses the reparse point; on Linux the
 /// no-follow directory open reports "not a directory".
 fn refused(code: GalleryErrorCode) -> bool {

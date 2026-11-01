@@ -108,6 +108,7 @@ pub enum GalleryEntryKind {
 pub enum GalleryMediaKind {
     Image,
     Video,
+    Audio,
     Model3d,
     Other,
 }
@@ -123,6 +124,7 @@ pub fn classify_media(name: &SafeFileName) -> GalleryMediaKind {
     match extension.as_str() {
         "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "avif" => GalleryMediaKind::Image,
         "mp4" | "webm" | "mov" | "m4v" => GalleryMediaKind::Video,
+        "mp3" | "wav" | "flac" | "ogg" | "oga" | "opus" | "m4a" | "aac" => GalleryMediaKind::Audio,
         "glb" | "gltf" | "obj" | "fbx" | "stl" | "ply" => GalleryMediaKind::Model3d,
         _ => GalleryMediaKind::Other,
     }
@@ -160,6 +162,14 @@ mod tests {
             ("a.WEBM", Video),
             ("a.mov", Video),
             ("a.m4v", Video),
+            ("a.mp3", Audio),
+            ("a.WAV", Audio),
+            ("a.flac", Audio),
+            ("a.ogg", Audio),
+            ("a.oga", Audio),
+            ("a.OPUS", Audio),
+            ("a.m4a", Audio),
+            ("a.AAC", Audio),
             ("a.glb", Model3d),
             ("a.gltf", Model3d),
             ("a.obj", Model3d),

@@ -38,6 +38,7 @@ fn input() -> UpdateSettingsInput {
         language: "th".into(),
         registry_cache_ttl: 24,
         bandwidth_cap_kib_s: Some(512),
+        skip_security_confirmations: true,
     }
 }
 
@@ -51,6 +52,7 @@ fn settings_default_load_and_one_call_save() {
             .execute(input())
             .await
             .unwrap();
+        assert!(updated.skip_security_confirmations);
         assert_eq!(get.execute().await.unwrap(), updated);
         assert_eq!(*repository.saves.lock().unwrap(), 1);
     });
@@ -95,6 +97,7 @@ fn language_round_trips_through_settings_repository() {
             input.language = language.as_str().into();
             let updated = update.execute(input).await.unwrap();
             assert_eq!(updated.language, language);
+            assert!(updated.skip_security_confirmations);
             assert_eq!(get.execute().await.unwrap(), updated);
         }
         assert_eq!(*repository.saves.lock().unwrap(), 2);
@@ -232,6 +235,32 @@ fn credential_errors_are_preserved() {
             assert!(
                 matches!(GetCredentialStatus::new(store).execute(CredentialKind::HuggingFace).await,
                 Err(SettingsAppError::Credential(actual)) if actual == error)
+            );
+        }
+    });
+}
+
+#[test]
+fn security_preference_can_be_enabled_and_disabled() {
+    block_on(async {
+        let repository = Arc::new(FakeRepository::default());
+        let update = UpdateSettings::new(repository.clone());
+        let get = GetSettings::new(repository);
+        assert!(!get.execute().await.unwrap().skip_security_confirmations);
+        for skip in [true, false] {
+            let mut value = input();
+            value.skip_security_confirmations = skip;
+            assert_eq!(
+                update
+                    .execute(value)
+                    .await
+                    .unwrap()
+                    .skip_security_confirmations,
+                skip
+            );
+            assert_eq!(
+                get.execute().await.unwrap().skip_security_confirmations,
+                skip
             );
         }
     });

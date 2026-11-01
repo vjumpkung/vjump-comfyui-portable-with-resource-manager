@@ -1,4 +1,4 @@
-import { RuntimeControls } from '@/features/comfy-runtime'
+import { RuntimeControls } from '@/features/comfy-runtime/runtime-controls'
 
 import { ThemeToggle } from './theme-toggle'
 

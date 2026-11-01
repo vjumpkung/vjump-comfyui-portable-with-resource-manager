@@ -56,6 +56,14 @@ export function createDownloadsStore(api: Api = gateway) {
         set({ jobs: { ...state.jobs, [job.id]: job }, progress })
         break
       }
+      case 'job:removed': {
+        const jobs = { ...state.jobs }
+        const progress = { ...state.progress }
+        delete jobs[event.id]
+        delete progress[event.id]
+        set({ jobs, progress })
+        break
+      }
       case 'job:progress': {
         const { progress } = event
         const job = state.jobs[progress.id]

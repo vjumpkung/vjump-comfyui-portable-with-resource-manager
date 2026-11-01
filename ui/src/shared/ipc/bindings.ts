@@ -4,6 +4,7 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 
 /** Commands */
 export const commands = {
+	appReady: () => __TAURI_INVOKE<boolean>("app_ready"),
 	appInfo: () => typedError<AppInfoDto, IpcError>(__TAURI_INVOKE("app_info")),
 	settingsGet: () => typedError<SettingsDto, IpcError>(__TAURI_INVOKE("settings_get")),
 	settingsSet: (input: UpdateSettingsDto) => typedError<SettingsDto, IpcError>(__TAURI_INVOKE("settings_set", { input })),
@@ -67,6 +68,7 @@ export const commands = {
 } | null) => typedError<DownloadJobDto, IpcError>(__TAURI_INVOKE("dl_resume", { jobId, decision })),
 	dlCancel: (jobId: string) => typedError<DownloadJobDto, IpcError>(__TAURI_INVOKE("dl_cancel", { jobId })),
 	dlRetry: (jobId: string) => typedError<DownloadJobDto, IpcError>(__TAURI_INVOKE("dl_retry", { jobId })),
+	dlRemove: (id: string, generation: number | null) => typedError<null, IpcError>(__TAURI_INVOKE("dl_remove", { id, generation })),
 	/**
 	 *  Registers a per-subscription channel. The first event is an authoritative snapshot; closing
 	 *  the channel or reloading the UI never stops a download.
@@ -380,7 +382,7 @@ export type DownloadErrorDto = {
 };
 
 /**  Events of one subscription. The first event is always an authoritative snapshot. */
-export type DownloadEventDto = { kind: "snapshot"; cursor: DownloadCursorDto; jobs: DownloadJobDto[]; gap: boolean } | { kind: "job:state"; cursor: DownloadCursorDto; job: DownloadJobDto } | { kind: "job:progress"; cursor: DownloadCursorDto; progress: ProgressDto } | 
+export type DownloadEventDto = { kind: "snapshot"; cursor: DownloadCursorDto; jobs: DownloadJobDto[]; gap: boolean } | { kind: "job:state"; cursor: DownloadCursorDto; job: DownloadJobDto } | { kind: "job:progress"; cursor: DownloadCursorDto; progress: ProgressDto } | { kind: "job:removed"; cursor: DownloadCursorDto; id: string } | 
 /**  The subscriber fell behind; subscribe again for a fresh snapshot. */
 { kind: "gap"; cursor: DownloadCursorDto };
 
@@ -539,7 +541,7 @@ export type GalleryLocationDto = {
 	path: string,
 };
 
-export type GalleryMediaKindDto = "image" | "video" | "model3d" | "other";
+export type GalleryMediaKindDto = "image" | "video" | "audio" | "model3d" | "other";
 
 export type GalleryRenameInput = {
 	entry: GalleryEntryRefDto,
@@ -1137,6 +1139,7 @@ export type SettingsDto = {
 	language: LanguageDto,
 	registryCacheTtl: number,
 	bandwidthCapKibS: number | null,
+	skipSecurityConfirmations: boolean,
 };
 
 export type SetupActionDto = { kind: "new"; request: SetupRequestDto } | { kind: "retry"; runId: string; managerConsent: string | null; curatedDecisions: CommitInput[] } | { kind: "skipStep"; runId: string; step: string };
@@ -1290,6 +1293,7 @@ export type UpdateSettingsDto = {
 	language: LanguageDto,
 	registryCacheTtl: number,
 	bandwidthCapKibS: number | null,
+	skipSecurityConfirmations: boolean,
 };
 
 export type UpdateStatusDto = {

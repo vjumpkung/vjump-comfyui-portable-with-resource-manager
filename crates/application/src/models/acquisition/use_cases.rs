@@ -242,6 +242,29 @@ impl CancelJob {
 pub struct ListJobs {
     pub repository: Arc<dyn JobRepository>,
 }
+pub struct RemoveJob {
+    pub repository: Arc<dyn JobRepository>,
+    pub events: Arc<dyn DownloadEvents>,
+}
+impl RemoveJob {
+    pub async fn execute(&self, id: &JobId, generation: u64) -> Result<()> {
+        let job = self.repository.get(id).await?;
+        if job.generation != generation
+            || !matches!(
+                job.state,
+                DownloadState::Completed | DownloadState::Failed | DownloadState::Cancelled
+            )
+            || (job.publication.is_some() && job.state != DownloadState::Completed)
+        {
+            return Err(DownloadErrorCode::InvalidTransition.into());
+        }
+        if !self.repository.remove(id, generation).await? {
+            return Err(DownloadErrorCode::InvalidTransition.into());
+        }
+        self.events.removed(id);
+        Ok(())
+    }
+}
 pub struct RetryJob {
     pub resume: ResumeJob,
 }

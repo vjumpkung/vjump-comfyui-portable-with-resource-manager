@@ -172,15 +172,6 @@ export function VersionsPanel() {
               >
                 {t('runtime.versions.updateRelease')}
               </Button>
-              {data.current.branch ? (
-                <Button
-                  variant="outline"
-                  disabled={update.isPending}
-                  onClick={() => ask({ kind: 'branch_ff_only' })}
-                >
-                  {t('runtime.versions.fastForward', { branch: data.current.branch })}
-                </Button>
-              ) : null}
             </div>
             <p className="text-xs text-muted-foreground">
               {t('runtime.versions.branchHint')}

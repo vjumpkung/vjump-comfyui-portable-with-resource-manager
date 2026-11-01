@@ -58,6 +58,11 @@ function PreviewBody({ entry }: { entry: GalleryEntryDto }) {
       />
     )
   }
+  if (entry.media === 'audio') {
+    return (
+      <audio controls preload="metadata" aria-label={entry.name} src={src} onError={fail} />
+    )
+  }
   return (
     <Suspense
       fallback={<LoaderCircle className="animate-spin" aria-label={t('common.loadingLabel')} />}
@@ -83,8 +88,8 @@ export function PreviewDialog({ entry, files, onNavigate, onClose }: Props) {
   const next = index >= 0 && index < files.length - 1 ? files[index + 1] : null
 
   function onKeyDown(event: KeyboardEvent<HTMLElement>) {
-    // The arrows seek inside a playing video, so they only step when focus is elsewhere.
-    if (event.target instanceof HTMLVideoElement) return
+    // The arrows seek inside media controls, so they only step when focus is elsewhere.
+    if (event.target instanceof HTMLMediaElement) return
     if (event.key === 'ArrowLeft' && previous) {
       event.preventDefault()
       onNavigate(previous)

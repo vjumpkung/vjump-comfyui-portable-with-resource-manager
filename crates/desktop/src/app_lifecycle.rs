@@ -315,9 +315,17 @@ pub fn keep_core_alive<R: Runtime>(app: &AppHandle<R>) -> bool {
         )
 }
 
-/// Handles `WindowEvent::CloseRequested` of the manager. The close is always deferred; the
-/// decision runs outside the synchronous event handler.
+/// Defers close decisions once ready; startup close hides the window until composition ends.
 pub fn on_manager_close_requested<R: Runtime>(app: &AppHandle<R>, api: &tauri::CloseRequestApi) {
+    if let Some(gate) = app.try_state::<Arc<crate::startup::StartupGate>>()
+        && gate.begin_exit()
+    {
+        api.prevent_close();
+        if let Some(window) = app.get_webview_window(MANAGER_WINDOW) {
+            let _ = window.hide();
+        }
+        return;
+    }
     api.prevent_close();
     if app.try_state::<AppState>().is_none() {
         return;
@@ -405,17 +413,24 @@ pub async fn perform<R: Runtime>(app: AppHandle<R>, action: CloseAction) {
 
 /// Second launch: restores the manager window, which is absent in background mode.
 pub fn restore_manager<R: Runtime>(app: &AppHandle<R>) {
-    let Some(state) = app.try_state::<AppState>() else {
+    if let Some(gate) = app.try_state::<Arc<crate::startup::StartupGate>>()
+        && gate.is_exiting()
+    {
         return;
-    };
-    let close = state.close.clone();
+    }
     if let Some(window) = app.get_webview_window(MANAGER_WINDOW) {
-        close.set_headless(false);
+        if let Some(state) = app.try_state::<AppState>() {
+            state.close.set_headless(false);
+        }
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
         return;
     }
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let close = state.close.clone();
     let app = app.clone();
     // Windows are created outside synchronous event handlers to avoid a deadlock.
     tauri::async_runtime::spawn(async move {

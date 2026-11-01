@@ -1,9 +1,8 @@
 import { QueryClientProvider, useMutation } from '@tanstack/react-query'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 
-import { ReviewDialog } from '@/features/custom-nodes'
-import { useSettings } from '@/features/settings'
-import { RebuildSetup, type CuratedReviewProps } from '@/features/setup'
+import { useSettings } from '@/features/settings/queries'
+import type { CuratedReviewProps } from '@/features/setup/model'
 import { setLanguage, useTranslation } from '@/shared/i18n'
 import { gateway, IpcClientError, type SetupModeDto, type SetupStatusDto } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
@@ -19,7 +18,10 @@ import { Skeleton } from '@/shared/ui/skeleton'
 
 import { AppShell } from './shell/app-shell'
 import { ThemeToggle } from './shell/theme-toggle'
-import { SetupWizardPreferences } from './setup-wizard-preferences'
+
+const SetupWizardPreferences = lazy(() => import('./setup-wizard-preferences').then((m) => ({ default: m.SetupWizardPreferences })))
+const RebuildSetup = lazy(() => import('@/features/setup/rebuild-setup').then((m) => ({ default: m.RebuildSetup })))
+const ReviewDialog = lazy(() => import('@/features/custom-nodes/review-dialog').then((m) => ({ default: m.ReviewDialog })))
 
 function CuratedReview(props: CuratedReviewProps) {
   const { t } = useTranslation()
@@ -28,7 +30,7 @@ function CuratedReview(props: CuratedReviewProps) {
 }
 
 function renderCuratedReview(props: CuratedReviewProps) {
-  return <CuratedReview {...props} />
+  return <Suspense fallback={<Skeleton className="h-64" />}><CuratedReview {...props} /></Suspense>
 }
 
 function SetupFrame({ children, showThemeToggle = false }: { children: ReactNode; showThemeToggle?: boolean }) {
@@ -193,7 +195,9 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <TooltipProvider>
-          <Workspace />
+          <Suspense fallback={<SetupFrame><Skeleton className="h-64" /></SetupFrame>}>
+            <Workspace />
+          </Suspense>
           <Toaster />
         </TooltipProvider>
       </ThemeProvider>

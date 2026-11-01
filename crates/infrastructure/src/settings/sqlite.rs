@@ -58,7 +58,10 @@ fn decode(values: BTreeMap<String, String>) -> Result<Option<Settings>, Settings
                 .map_err(|_| invalid("invalid bandwidth cap"))?,
         ),
     };
-    Settings::new(concurrency, engine, close, theme, language, ttl, cap)
+    let skip = get("skip_security_confirmations")?
+        .parse()
+        .map_err(|_| invalid("invalid security confirmation preference"))?;
+    Settings::new(concurrency, engine, close, theme, language, ttl, cap, skip)
         .map(Some)
         .map_err(|_| invalid("settings violate domain validation"))
 }
@@ -100,6 +103,7 @@ impl SettingsRepository for SqliteSettingsRepository {
                 ("close_behavior", settings.close_behavior.as_str().into()),
                 ("theme", settings.theme.as_str().into()),
                 ("language", settings.language.as_str().into()),
+                ("skip_security_confirmations", settings.skip_security_confirmations.to_string()),
                 ("registry_cache_ttl", settings.registry_cache_ttl.get().to_string()),
                 ("bandwidth_cap_kib_s", settings.bandwidth_cap_kib_s.map(|value| value.get().to_string()).unwrap_or_else(|| "unlimited".into())),
             ];
@@ -167,6 +171,7 @@ mod tests {
             Language::Th,
             u32::MAX,
             Some(1024),
+            true,
         )
         .unwrap();
         repository.save(&settings).await.unwrap();
@@ -188,6 +193,7 @@ mod tests {
             ("close_behavior", "private-invalid-value"),
             ("theme", "private-invalid-value"),
             ("language", "private-invalid-value"),
+            ("skip_security_confirmations", "private-invalid-value"),
             ("download_concurrency", "4294967296"),
         ] {
             repository.save(&Settings::default()).await.unwrap();
@@ -203,7 +209,7 @@ mod tests {
             assert!(matches!(error, SettingsRepoError::InvalidPersisted(_)));
             assert!(!error.to_string().contains(value));
         }
-        for key in ["theme", "language"] {
+        for key in ["theme", "language", "skip_security_confirmations"] {
             repository.save(&Settings::default()).await.unwrap();
             db.connection
                 .lock()
@@ -236,6 +242,7 @@ mod tests {
             Language::Th,
             99,
             Some(100),
+            false,
         )
         .unwrap();
         assert_eq!(

@@ -160,6 +160,7 @@ pub struct SettingsDto {
     pub language: LanguageDto,
     pub registry_cache_ttl: u32,
     pub bandwidth_cap_kib_s: Option<u32>,
+    pub skip_security_confirmations: bool,
 }
 
 impl From<&Settings> for SettingsDto {
@@ -172,6 +173,7 @@ impl From<&Settings> for SettingsDto {
             language: value.language.into(),
             registry_cache_ttl: value.registry_cache_ttl.get(),
             bandwidth_cap_kib_s: value.bandwidth_cap_kib_s.map(|cap| cap.get()),
+            skip_security_confirmations: value.skip_security_confirmations,
         }
     }
 }
@@ -186,6 +188,7 @@ pub struct UpdateSettingsDto {
     pub language: LanguageDto,
     pub registry_cache_ttl: u32,
     pub bandwidth_cap_kib_s: Option<u32>,
+    pub skip_security_confirmations: bool,
 }
 
 /// Secret-bearing input. Deliberately has no `Debug` implementation.

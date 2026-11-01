@@ -150,6 +150,14 @@ fn content_types_follow_the_lowercase_extension() {
         ("a.m4v", "video/mp4"),
         ("a.webm", "video/webm"),
         ("a.mov", "video/quicktime"),
+        ("a.mp3", "audio/mpeg"),
+        ("a.WAV", "audio/wav"),
+        ("a.flac", "audio/flac"),
+        ("a.ogg", "audio/ogg"),
+        ("a.oga", "audio/ogg"),
+        ("a.OPUS", "audio/ogg"),
+        ("a.m4a", "audio/mp4"),
+        ("a.AAC", "audio/aac"),
         ("a.glb", "model/gltf-binary"),
         ("a.gltf", "model/gltf+json"),
         ("ภาพ.Png", "image/png"),
@@ -305,6 +313,33 @@ fn a_range_gets_exactly_those_bytes() {
         );
         assert_data_headers(&response, "video/mp4");
     }
+}
+
+#[test]
+fn audio_supports_get_head_and_range_responses() {
+    let fixture = Fixture::new();
+    let data = pattern(2_000);
+    fixture.write("output/track.MP3", &data);
+
+    let whole = fixture.get("/output/track.MP3", None);
+    assert_eq!(whole.status(), StatusCode::OK);
+    assert_eq!(whole.body(), &data);
+    assert_eq!(text(&whole, header::CONTENT_LENGTH), "2000");
+    assert!(whole.headers().get(header::CONTENT_RANGE).is_none());
+    assert_data_headers(&whole, "audio/mpeg");
+
+    let head = fixture.send(MANAGER_WINDOW, "HEAD", "/output/track.MP3", None);
+    assert_eq!(head.status(), StatusCode::OK);
+    assert!(head.body().is_empty());
+    assert_eq!(text(&head, header::CONTENT_LENGTH), "2000");
+    assert_data_headers(&head, "audio/mpeg");
+
+    let partial = fixture.get("/output/track.MP3", Some("bytes=10-19"));
+    assert_eq!(partial.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(partial.body(), &data[10..20]);
+    assert_eq!(text(&partial, header::CONTENT_LENGTH), "10");
+    assert_eq!(text(&partial, header::CONTENT_RANGE), "bytes 10-19/2000");
+    assert_data_headers(&partial, "audio/mpeg");
 }
 
 #[test]

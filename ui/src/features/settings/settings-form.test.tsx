@@ -20,6 +20,7 @@ const settings: SettingsDto = {
   language: 'en',
   registryCacheTtl: 24,
   bandwidthCapKibS: 128,
+  skipSecurityConfirmations: false,
 }
 
 function mount() {
@@ -31,6 +32,11 @@ function mount() {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  })
   vi.resetAllMocks()
   vi.mocked(gateway.settingsGet).mockResolvedValue(settings)
   vi.mocked(gateway.settingsSet).mockImplementation((input) => Promise.resolve(input))
@@ -39,6 +45,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   setLanguage('en')
+  vi.unstubAllGlobals()
 })
 
 it('bandwidth_empty_means_unlimited_and_zero_is_invalid', async () => {
@@ -106,4 +113,16 @@ it('failed_save_keeps_the_active_language_and_the_draft', async () => {
   await waitFor(() => expect(screen.getByRole('button', { name: 'Save settings' })).toHaveProperty('disabled', false))
   expect(getLanguage()).toBe('en')
   expect(screen.getByLabelText('Language')).toHaveProperty('value', 'th')
+})
+
+it('dangerous security preference defaults off and is saved explicitly', async () => {
+  mount()
+  const checkbox = await screen.findByRole('checkbox', { name: 'Dangerously skip security confirmations' })
+  expect(checkbox.getAttribute('aria-checked')).toBe('false')
+  expect(screen.getByText('Danger zone')).toBeTruthy()
+  expect(screen.getByText(/Protected-package changes and source builds stay blocked/)).toBeTruthy()
+  fireEvent.click(checkbox)
+  expect(gateway.settingsSet).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+  await waitFor(() => expect(gateway.settingsSet).toHaveBeenCalledWith({ ...settings, skipSecurityConfirmations: true }))
 })

@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Box, File as FileIcon, Film, Folder, ImageOff } from 'lucide-react'
+import { Box, File as FileIcon, FileAudio, Film, Folder, ImageOff } from 'lucide-react'
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
 
 import { useTranslation } from '@/shared/i18n'
@@ -34,6 +34,7 @@ const ICON_CLASS = 'size-10 text-muted-foreground'
 function EntryIcon({ entry }: { entry: GalleryEntryDto }) {
   if (entry.kind === 'directory') return <Folder className={ICON_CLASS} aria-hidden="true" />
   if (entry.media === 'video') return <Film className={ICON_CLASS} aria-hidden="true" />
+  if (entry.media === 'audio') return <FileAudio className={ICON_CLASS} aria-hidden="true" />
   if (entry.media === 'model3d') return <Box className={ICON_CLASS} aria-hidden="true" />
   if (entry.media === 'image') return <ImageOff className={ICON_CLASS} aria-hidden="true" />
   return <FileIcon className={ICON_CLASS} aria-hidden="true" />

@@ -29,6 +29,7 @@ fn settings() -> Settings {
         Language::Th,
         12,
         Some(2048),
+        false,
     )
     .unwrap()
 }

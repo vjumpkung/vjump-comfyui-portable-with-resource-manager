@@ -913,6 +913,7 @@ async fn choosing_another_root_carries_settings_and_draft_to_the_restarted_app()
         Language::Th,
         24,
         Some(4096),
+        false,
     )
     .unwrap();
     machine.settings.save(&settings).await.unwrap();

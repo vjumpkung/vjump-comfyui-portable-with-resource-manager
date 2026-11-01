@@ -52,6 +52,20 @@ impl JobRepository for SqliteDownloads {
         let id = id.as_str().to_owned();
         self.db.run(move |c| read(c, &id)).await.map_err(db_error)
     }
+    async fn remove(&self, id: &JobId, generation: u64) -> Result<bool> {
+        let id = id.as_str().to_owned();
+        self.db
+            .run(move |c| {
+                c.execute(
+                    "DELETE FROM jobs WHERE id=?1 AND generation=?2 AND state IN ('completed','failed','cancelled') AND (finalize_phase IS NULL OR state='completed')",
+                    params![id, integer(generation)?],
+                )
+                .map(|rows| rows == 1)
+                .map_err(|_| DbError::Unavailable)
+            })
+            .await
+            .map_err(db_error)
+    }
     async fn list(&self, before: Option<u64>, limit: u32) -> Result<Vec<DownloadJob>> {
         self.db.run(move|c| {
             let mut q=c.prepare("SELECT document FROM jobs WHERE (?1 IS NULL OR created_at<?1) ORDER BY created_at DESC,id DESC LIMIT ?2").map_err(|_|DbError::Unavailable)?;

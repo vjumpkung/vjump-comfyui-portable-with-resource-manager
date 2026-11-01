@@ -6,13 +6,15 @@ import {
   type UpdateSettingsDto,
 } from '@/shared/ipc/gateway'
 
-export const settingsKey = ['settings'] as const
+import { settingsKey, useSettingsQuery } from '@/shared/lib/settings-queries'
+
+export { settingsKey } from '@/shared/lib/settings-queries'
 const settingsUpdateKey = ['settings', 'update'] as const
 export const credentialStatusKey = (kind: CredentialKindDto) =>
   ['credential-status', kind] as const
 
 export function useSettings() {
-  return useQuery({ queryKey: settingsKey, queryFn: () => gateway.settingsGet() })
+  return useSettingsQuery()
 }
 
 export function useUpdateSettings() {

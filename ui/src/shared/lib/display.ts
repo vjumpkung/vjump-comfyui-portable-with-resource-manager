@@ -2,6 +2,12 @@ import { t } from '@/shared/i18n'
 import { IpcClientError } from '@/shared/ipc/gateway'
 
 export function errorMessage(error: unknown): string {
+  if (
+    error instanceof IpcClientError &&
+    (error.code === 'gallery_repository_file' || error.code === 'model_repository_file')
+  ) {
+    return t('common.repositoryFile')
+  }
   return error instanceof IpcClientError
     ? error.message
     : t('common.operationError')

@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod gallery_protocol;
 pub mod ipc;
 pub mod picker;
+mod startup;
 pub mod state;
 pub mod updates;
 
@@ -52,6 +53,7 @@ pub fn run() {
     let setup_guard = logging_guard.clone();
     // Retain the coordinator (and any exit lease) through run_return and log flushing.
     let close = Arc::new(OnceLock::new());
+    let startup_worker = Arc::new(Mutex::new(None));
 
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -99,8 +101,9 @@ pub fn run() {
         builder,
         context,
         close.clone(),
-        move |app| {
-            let picker = Arc::new(picker::DialogPicker::new(app.handle().clone()));
+        startup_worker.clone(),
+        move |handle| {
+            let picker = Arc::new(picker::DialogPicker::new(handle.clone()));
             // The install root is resolved before anything is opened: debug override, the
             // bootstrap pointer, then the platform default. An unusable pointer never falls
             // back to another root; the app starts in recovery mode instead.
@@ -138,23 +141,30 @@ pub fn run() {
                     picker,
                 ))?,
             };
-            state.install_shell(Arc::new(app_lifecycle::TauriShell(app.handle().clone())));
-            state.install_clipboard(Arc::new(diagnostics::TauriClipboard::new(
-                app.handle().clone(),
-            )));
+            state.install_shell(Arc::new(app_lifecycle::TauriShell(handle.clone())));
+            state.install_clipboard(Arc::new(diagnostics::TauriClipboard::new(handle.clone())));
             state.install_updater(Arc::new(updates::SignedUpdater::new(
                 updater_config.clone(),
-                |_| Box::new(updates::PluginChannel::new(app.handle().clone())),
+                |_| Box::new(updates::PluginChannel::new(handle.clone())),
                 Arc::new(updates::AppQuiesce::new(
-                    app.handle().clone(),
+                    handle.clone(),
                     setup_guard.clone(),
                 )),
                 Arc::new(RandomIds::default()),
             )));
             Ok(state)
         },
+        |handle, code| handle.exit(code),
         on_run_event,
     );
+    if let Some(worker) = startup_worker
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+        && worker.join().is_err()
+    {
+        tracing::error!("startup worker panicked");
+    }
     // Dropping the guard flushes the non-blocking log writer.
     drop(
         logging_guard
@@ -169,18 +179,55 @@ fn run_with_runtime<R: tauri::Runtime>(
     builder: tauri::Builder<R>,
     context: tauri::Context<R>,
     close: Arc<OnceLock<Arc<app_lifecycle::CloseCoordinator>>>,
-    state_factory: impl FnOnce(&mut tauri::App<R>) -> Result<AppState, Box<dyn std::error::Error>>
+    startup_worker: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    state_factory: impl FnOnce(&AppHandle<R>) -> Result<AppState, Box<dyn std::error::Error>>
     + Send
     + 'static,
+    request_exit: impl Fn(&AppHandle<R>, i32) + Send + 'static,
     on_event: impl FnMut(&AppHandle<R>, RunEvent) + 'static,
 ) -> i32 {
     let app = builder
         .setup(move |app| {
-            let state = state_factory(app)?;
-            let _ = close.set(state.close.clone());
-            app.manage(state);
-            app_lifecycle::spawn_runtime_watch(app.handle().clone());
-            tracing::info!("application setup finished");
+            let gate = Arc::new(startup::StartupGate::default());
+            app.manage(gate.clone());
+            let handle = app.handle().clone();
+            let worker = std::thread::Builder::new()
+                .name("startup".into())
+                .stack_size(WORKER_STACK_BYTES)
+                .spawn(move || {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        state_factory(&handle)
+                    })) {
+                        Ok(Ok(state)) => match gate.publish(state, |state| {
+                            let _ = close.set(state.close.clone());
+                            handle.manage(state);
+                        }) {
+                            Ok(()) => {
+                                app_lifecycle::spawn_runtime_watch(handle.clone());
+                                handle.state::<AppState>().start_services();
+                                tracing::info!("application setup finished");
+                            }
+                            Err(state) => {
+                                tracing::info!("startup state discarded after exit began");
+                                drop(state);
+                                request_exit(&handle, 0);
+                            }
+                        },
+                        Ok(Err(error)) => {
+                            tracing::error!(%error, "application setup failed");
+                            gate.begin_exit();
+                            request_exit(&handle, 1);
+                        }
+                        Err(_) => {
+                            tracing::error!("application setup panicked");
+                            gate.begin_exit();
+                            request_exit(&handle, 1);
+                        }
+                    }
+                })?;
+            *startup_worker
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(worker);
             Ok(())
         })
         .build(context)
@@ -189,6 +236,24 @@ fn run_with_runtime<R: tauri::Runtime>(
 }
 
 fn on_run_event<R: tauri::Runtime>(app: &AppHandle<R>, event: RunEvent) {
+    if let RunEvent::ExitRequested {
+        code: None, api, ..
+    } = &event
+        && let Some(gate) = app.try_state::<Arc<startup::StartupGate>>()
+        && gate.begin_exit()
+    {
+        api.prevent_exit();
+        for window in app.webview_windows().values() {
+            let _ = window.hide();
+        }
+        return;
+    }
+    if matches!(event, RunEvent::Exit)
+        && app.try_state::<AppState>().is_none()
+        && let Some(gate) = app.try_state::<Arc<startup::StartupGate>>()
+    {
+        gate.begin_exit();
+    }
     // The last window closing must not end a retained background runtime.
     if let RunEvent::Exit = event
         && let Some(state) = app.try_state::<AppState>()

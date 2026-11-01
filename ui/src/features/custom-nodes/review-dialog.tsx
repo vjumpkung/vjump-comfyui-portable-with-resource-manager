@@ -2,6 +2,7 @@ import { useId, useState, type ReactNode } from 'react'
 
 import { useTranslation } from '@/shared/i18n'
 import type { CommitInput, PlanReviewDto } from '@/shared/ipc/gateway'
+import { useSkipSecurityConfirmations } from '@/shared/lib/settings-queries'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { Checkbox } from '@/shared/ui/checkbox'
@@ -11,7 +12,7 @@ import { Field, FieldGroup, FieldLabel, FieldLegend, FieldSet } from '@/shared/u
 import {
   canCommit,
   decision,
-  EMPTY_CONSENT,
+  effectiveConsent,
   hasTrustNamespace,
   normalizeConsent,
   reviewKey,
@@ -117,7 +118,8 @@ function ReviewSession({ plans, busy, onCommit, onClose, onCancel, notice,
   allowRememberSource = true }: ReviewDialogProps) {
   const { t } = useTranslation()
   const [consents, setConsents] = useState<Record<string, Consent>>({})
-  const consentOf = (plan: PlanReviewDto) => consents[plan.id] ?? EMPTY_CONSENT
+  const skip = useSkipSecurityConfirmations()
+  const consentOf = (plan: PlanReviewDto) => effectiveConsent(plan, consents[plan.id], skip)
   const ready = plans.length > 0 && plans.every((plan) => canCommit(plan, consentOf(plan)))
   return <>
     <DialogHeader>
@@ -127,6 +129,7 @@ function ReviewSession({ plans, busy, onCommit, onClose, onCancel, notice,
       </DialogDescription>
     </DialogHeader>
     {notice}
+    {skip && <Alert><AlertDescription>{t('customNodes.review.securityPreTicked')}</AlertDescription></Alert>}
     <fieldset disabled={busy} className="flex min-w-0 flex-col gap-6">
       {plans.map((plan) => <PlanConsent key={reviewKey(plan)} plan={plan} value={consentOf(plan)} allowRememberSource={allowRememberSource}
         onChange={(value) => setConsents((current) => ({ ...current, [plan.id]: value }))} />)}

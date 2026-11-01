@@ -5,6 +5,7 @@ fn main() {
 
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "app_ready",
             "app_info",
             "settings_get",
             "settings_set",
@@ -52,6 +53,7 @@ fn main() {
             "dl_resume",
             "dl_cancel",
             "dl_retry",
+            "dl_remove",
             "dl_subscribe",
             "dl_unsubscribe",
             "dl_import_pack",

@@ -122,6 +122,119 @@ fn loc(path: &str) -> ModelLocation {
 }
 
 #[tokio::test]
+async fn tracked_files_are_removed_from_persisted_catalog_and_extra_roots_are_unaffected() {
+    use crate::comfy_runtime::tracked::tests::{git, repository};
+    let fx = Fx::with_extras(|models| {
+        let extra = models
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("extra-configs");
+        fs::create_dir_all(&extra).unwrap();
+        fs::write(extra.join("default.yaml"), b"extra config").unwrap();
+        vec![ModelRoot {
+            section: "test".into(),
+            category: "configs".into(),
+            path: extra,
+            is_default: false,
+        }]
+    })
+    .await;
+    fx.write("configs/default.yaml", b"config");
+    fx.write("checkpoints/a.pt", b"model");
+    fx.write("checkpoints/a.preview.png", b"preview");
+    fx.scan().await;
+    assert!(
+        fx.stack
+            .deps
+            .catalog
+            .get(&loc("configs/default.yaml"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let comfy = repository(fx.stack.roots.install_root());
+    git(
+        &comfy,
+        &[
+            "add",
+            "models/configs/default.yaml",
+            "models/checkpoints/a.preview.png",
+        ],
+    );
+    // The old row is still present until the complete scan; mutations must already refuse it.
+    assert_eq!(
+        fx.stack
+            .deps
+            .rename(&loc("configs/default.yaml"), "other.yaml", false)
+            .await
+            .unwrap_err()
+            .0,
+        LibraryErrorCode::RepositoryFile
+    );
+    assert_eq!(
+        fx.stack
+            .deps
+            .move_to(
+                &loc("configs/default.yaml"),
+                "models",
+                RelativeModelPath::new("other").unwrap()
+            )
+            .await
+            .unwrap_err()
+            .0,
+        LibraryErrorCode::RepositoryFile
+    );
+    let plan = fx
+        .stack
+        .deps
+        .plan_delete(vec![loc("configs/default.yaml")], DeleteKind::Trash)
+        .await
+        .unwrap();
+    let report = fx
+        .stack
+        .deps
+        .execute_delete(&plan.id, DeleteKind::Trash)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.results[0].outcome,
+        DeleteOutcome::Failed(LibraryErrorCode::RepositoryFile)
+    );
+    assert!(fx.models.join("configs/default.yaml").exists());
+    fx.scan().await;
+    assert!(
+        fx.stack
+            .deps
+            .catalog
+            .get(&loc("configs/default.yaml"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !fx.stack
+            .deps
+            .catalog
+            .get(&loc("checkpoints/a.pt"))
+            .await
+            .unwrap()
+            .unwrap()
+            .sidecars
+            .preview
+    );
+    let listing = fx.list().await;
+    assert_eq!(listing.len(), 2);
+    assert!(listing.contains(&"models:checkpoints/a.pt".to_owned()));
+    assert!(
+        listing
+            .iter()
+            .any(|path| path.starts_with("extra-") && path.ends_with(":default.yaml"))
+    );
+}
+
+#[tokio::test]
 async fn scanning_catalogs_models_hides_sidecars_and_a_cached_rescan_changes_nothing() {
     let fx = Fx::new().await;
     fx.write("checkpoints/a.safetensors", b"aaaa");
@@ -233,8 +346,11 @@ async fn a_stale_scan_cannot_overwrite_a_newer_catalog_change() {
         })
         .await
         .unwrap();
-    let observations =
-        super::scan::scan_root(&fx.stack.roots.spec("models").unwrap(), &Default::default());
+    let observations = super::scan::scan_root(
+        &fx.stack.roots.spec("models").unwrap(),
+        &Default::default(),
+        &crate::comfy_runtime::tracked::TrackedFiles::NotRepository,
+    );
     let applied = fx
         .stack
         .catalog
@@ -467,6 +583,119 @@ async fn startup_reconciliation_finishes_a_crashed_rename_on_real_files() {
     assert_eq!(fx.names("checkpoints"), ["b.json", "b.safetensors"]);
     assert_eq!(fx.list().await, ["models:checkpoints/b.safetensors"]);
     assert!(fx.stack.deps.journal.unfinished().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn unavailable_git_does_not_block_startup_roll_forward() {
+    let fx = Fx::new().await;
+    fx.write("checkpoints/a.safetensors", b"model");
+    fx.write("checkpoints/a.json", b"{}");
+    fx.scan().await;
+    fs::write(fx.models.parent().unwrap().join(".git"), "gitdir: missing").unwrap();
+    fs::rename(
+        fx.models.join("checkpoints/a.json"),
+        fx.models.join("checkpoints/b.json"),
+    )
+    .unwrap();
+    fx.stack
+        .deps
+        .journal
+        .begin(&OperationRecord {
+            id: "unavailable-recovery".into(),
+            kind: OperationKind::Rename,
+            phase: OperationPhase::Intent,
+            members: vec![
+                OperationMember {
+                    from: loc("checkpoints/a.safetensors"),
+                    to: loc("checkpoints/b.safetensors"),
+                    via: None,
+                    model: true,
+                },
+                OperationMember {
+                    from: loc("checkpoints/a.json"),
+                    to: loc("checkpoints/b.json"),
+                    via: None,
+                    model: false,
+                },
+            ],
+            created_at: "t".into(),
+        })
+        .await
+        .unwrap();
+    let report = fx.stack.deps.reconcile().await.unwrap();
+    assert_eq!(
+        report,
+        ReconcileReport {
+            completed: 1,
+            blocked: 0
+        }
+    );
+    assert_eq!(fx.names("checkpoints"), ["b.json", "b.safetensors"]);
+    assert_eq!(fx.list().await, ["models:checkpoints/b.safetensors"]);
+    assert!(fx.stack.deps.journal.unfinished().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn unavailable_git_does_not_block_compensation_after_a_partial_rename() {
+    // Introduce a sidecar conflict after preflight, at the durable intent seam.
+    // All file operations, including compensation, use LocalModelFiles.
+    struct ConflictAfterIntent {
+        journal: SqliteJournal,
+        models: PathBuf,
+    }
+    #[async_trait]
+    impl OperationJournal for ConflictAfterIntent {
+        async fn begin(&self, record: &OperationRecord) -> Result<()> {
+            self.journal.begin(record).await?;
+            fs::write(self.models.join("checkpoints/b.json"), b"conflict").unwrap();
+            fs::write(
+                self.models.parent().unwrap().join(".git"),
+                "gitdir: missing",
+            )
+            .unwrap();
+            Ok(())
+        }
+        async fn set_phase(&self, id: &str, phase: OperationPhase) -> Result<()> {
+            self.journal.set_phase(id, phase).await
+        }
+        async fn complete(&self, id: &str) -> Result<()> {
+            self.journal.complete(id).await
+        }
+        async fn unfinished(&self) -> Result<Vec<OperationRecord>> {
+            self.journal.unfinished().await
+        }
+    }
+    let fx = Fx::new().await;
+    fx.write("checkpoints/a.safetensors", b"model");
+    fx.write("checkpoints/a.json", b"{}");
+    fx.scan().await;
+    let mut deps = fx.stack.deps.clone();
+    deps.journal = Arc::new(ConflictAfterIntent {
+        journal: SqliteJournal { db: fx.db.clone() },
+        models: fx.models.clone(),
+    });
+    assert_eq!(
+        deps.rename(&loc("checkpoints/a.safetensors"), "b.safetensors", false)
+            .await
+            .unwrap_err()
+            .0,
+        LibraryErrorCode::TargetExists
+    );
+    assert_eq!(
+        fs::read(fx.models.join("checkpoints/a.safetensors")).unwrap(),
+        b"model"
+    );
+    assert!(!fx.models.join("checkpoints/b.safetensors").exists());
+    assert_eq!(
+        fs::read(fx.models.join("checkpoints/a.json")).unwrap(),
+        b"{}"
+    );
+    assert_eq!(
+        fs::read(fx.models.join("checkpoints/b.json")).unwrap(),
+        b"conflict"
+    );
+    assert_eq!(fx.list().await, ["models:checkpoints/a.safetensors"]);
+    assert!(deps.journal.unfinished().await.unwrap().is_empty());
 }
 
 #[tokio::test]

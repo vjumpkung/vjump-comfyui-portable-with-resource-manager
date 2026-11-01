@@ -18,14 +18,17 @@ const runtimeState = vi.hoisted(() => ({
   status: { lifecycle: 'running' },
 }))
 
-vi.mock('@/features/comfy-runtime', () => ({
+vi.mock('@/features/comfy-runtime/comfy-page', () => ({
   ComfyPage: () => <p>ComfyUI page</p>,
+}))
+vi.mock('@/features/comfy-runtime/close-request-dialog', () => ({
   CloseRequestDialog: () => null,
-  RuntimeControls: () => null,
+}))
+vi.mock('@/features/comfy-runtime/use-runtime', () => ({
   useRuntime: () => ({ status: runtimeState.status }),
   useRuntimeActions: () => runtimeActions,
 }))
-vi.mock('@/features/custom-nodes', () => ({
+vi.mock('@/features/custom-nodes/custom-nodes-page', () => ({
   CustomNodesPage: (props: CustomNodesPageProps) => {
     const [result, setResult] = useState('none')
     return (
@@ -41,20 +44,21 @@ vi.mock('@/features/custom-nodes', () => ({
     )
   },
 }))
-vi.mock('@/features/downloads', () => ({ DownloadsPage: () => null }))
-vi.mock('@/features/gallery', () => ({ GalleryPage: () => <p>Gallery feature</p> }))
-vi.mock('@/features/library', () => ({ LibraryPage: () => null }))
-vi.mock('@/features/overview', () => ({ OverviewPage: () => <p>Overview page</p> }))
-vi.mock('@/features/settings', () => ({ SettingsPage: () => null }))
-vi.mock('@/features/environment', () => ({ EnvironmentPage: () => null }))
+vi.mock('@/features/downloads/downloads-page', () => ({ DownloadsPage: () => null }))
+vi.mock('@/features/gallery/gallery-page', () => ({ GalleryPage: () => <p>Gallery feature</p> }))
+vi.mock('@/features/library/library-page', () => ({ LibraryPage: () => null }))
+vi.mock('@/features/overview/overview-page', () => ({ OverviewPage: () => <p>Overview page</p> }))
+vi.mock('@/features/settings/settings-page', () => ({ SettingsPage: () => null }))
+vi.mock('@/features/environment/environment-page', () => ({ EnvironmentPage: () => null }))
 vi.mock('./top-bar', () => ({ TopBar: () => null }))
 
 const onSetup = vi.fn()
 const onResume = vi.fn()
 
-function mount(status: SetupStatusDto = { ...setupStatus, phase: 'ready' }) {
+async function mount(status: SetupStatusDto = { ...setupStatus, phase: 'ready' }) {
   render(<AppShell status={status} onSetup={onSetup} onResume={onResume} />)
   fireEvent.click(screen.getByRole('button', { name: 'Custom Nodes' }))
+  await screen.findByText('Custom Nodes feature')
 }
 
 beforeEach(() => {
@@ -64,36 +68,36 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-it('custom_nodes_navigation_renders_the_feature', () => {
-  mount()
+it('custom_nodes_navigation_renders_the_feature', async () => {
+  await mount()
   expect(screen.getByText('Custom Nodes feature')).toBeTruthy()
   // The shell hands the feature the maintenance flag and the live runtime status.
   expect(screen.getByText('busy:false runtime:running actions:false')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Open ComfyUI stub' }))
-  expect(screen.getByText('ComfyUI page')).toBeTruthy()
+  expect(await screen.findByText('ComfyUI page')).toBeTruthy()
   expect(screen.queryByText('Custom Nodes feature')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Overview' }))
-  expect(screen.getByText('Overview page')).toBeTruthy()
+  expect(await screen.findByText('Overview page')).toBeTruthy()
 })
 
-it('gallery_navigation_follows_custom_nodes_and_renders_the_feature', () => {
+it('gallery_navigation_follows_custom_nodes_and_renders_the_feature', async () => {
   render(<AppShell status={{ ...setupStatus, phase: 'ready' }} onSetup={onSetup} onResume={onResume} />)
   const labels = within(screen.getByRole('navigation', { name: 'Main' }))
     .getAllByRole('button')
     .map((item) => item.getAttribute('aria-label'))
   expect(labels.indexOf('Gallery')).toBe(labels.indexOf('Custom Nodes') + 1)
   fireEvent.click(screen.getByRole('button', { name: 'Gallery' }))
-  expect(screen.getByText('Gallery feature')).toBeTruthy()
+  expect(await screen.findByText('Gallery feature')).toBeTruthy()
   expect(screen.getByRole('button', { name: 'Gallery' }).getAttribute('aria-current')).toBe('page')
 })
 
-it('reports_setup_in_progress_as_maintenance_busy', () => {
-  mount({ ...setupStatus, phase: 'run_in_progress' })
+it('reports_setup_in_progress_as_maintenance_busy', async () => {
+  await mount({ ...setupStatus, phase: 'run_in_progress' })
   expect(screen.getByText('busy:true runtime:running actions:false')).toBeTruthy()
 })
 
-it('node_repair_uses_existing_setup_facade', () => {
-  mount()
+it('node_repair_uses_existing_setup_facade', async () => {
+  await mount()
   fireEvent.click(screen.getByRole('button', { name: 'Repair stub' }))
   expect(onSetup).toHaveBeenCalledTimes(1)
   expect(onSetup).toHaveBeenCalledWith('repair')
@@ -102,7 +106,7 @@ it('node_repair_uses_existing_setup_facade', () => {
 it('node_restart_uses_runtime_action_result', async () => {
   const conflict: StartResultDto = { kind: 'port_conflict', requested: 8188, suggested: 8189 }
   runtimeActions.restart.mutateAsync.mockResolvedValue(conflict)
-  mount()
+  await mount()
   fireEvent.click(screen.getByRole('button', { name: 'Restart stub' }))
   // The feature receives the unchanged result, so a port conflict is never reported as started.
   await waitFor(() => expect(screen.getByText('restart result:port_conflict')).toBeTruthy())
@@ -112,7 +116,7 @@ it('node_restart_uses_runtime_action_result', async () => {
 it('awaits_the_stop_mutation_for_the_feature', async () => {
   let release: () => void = () => undefined
   runtimeActions.stop.mutateAsync.mockReturnValue(new Promise<void>((resolve) => { release = resolve }))
-  mount()
+  await mount()
   fireEvent.click(screen.getByRole('button', { name: 'Stop stub' }))
   await new Promise((resolve) => setTimeout(resolve, 20))
   expect(screen.getByText('restart result:none')).toBeTruthy()

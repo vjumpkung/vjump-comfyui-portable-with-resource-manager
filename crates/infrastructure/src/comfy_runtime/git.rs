@@ -5,7 +5,10 @@ use crate::{
         source::placement::{default_branch, placement, placement_with_default},
         tools::git_program,
     },
-    shared::process::{self, CommandSpec, RunLimits},
+    shared::{
+        logging::redact,
+        process::{self, CommandSpec, RunLimits},
+    },
 };
 use application::{
     comfy_runtime::*,
@@ -74,10 +77,7 @@ impl GitRepository {
             Ok(_) => Err(RuntimeError::Failed(
                 "Git output exceeded the safe capture limit".into(),
             )),
-            Err(process::RunError::Cancelled { .. }) => Err(RuntimeError::Cancelled),
-            Err(_) => Err(RuntimeError::Failed(
-                "Git command failed; inspect repository status and retry".into(),
-            )),
+            Err(error) => Err(run_error(error)),
         }
     }
     async fn read(&self, root: &Path, args: &[&str]) -> Result<String, RuntimeError> {
@@ -240,7 +240,7 @@ impl ComfyRepository for GitRepository {
                 "fetch",
                 "--tags",
                 "origin",
-                "refs/heads/*:refs/remotes/origin/*",
+                "+refs/heads/*:refs/remotes/origin/*",
             ]
         } else {
             &["fetch", "--tags"]
@@ -372,6 +372,37 @@ impl ComfyRepository for GitRepository {
         })
     }
 }
+fn run_error(error: process::RunError) -> RuntimeError {
+    let (message, tail) = match error {
+        process::RunError::Cancelled { .. } => return RuntimeError::Cancelled,
+        process::RunError::Spawn(kind) => {
+            return RuntimeError::Failed(format!("Git could not be started ({kind:?})"));
+        }
+        process::RunError::TimedOut { tail } => ("Git command timed out".into(), tail),
+        process::RunError::Failed { exit_code, tail } => (
+            exit_code.map_or_else(
+                || "Git command failed without an exit code".into(),
+                |code| format!("Git command exited with code {code}"),
+            ),
+            tail,
+        ),
+        process::RunError::InputFailed { tail } => ("Git command input failed".into(), tail),
+        process::RunError::CleanupFailed { tail } => ("Git command cleanup failed".into(), tail),
+    };
+    let combined = tail.join("\n");
+    let redacted = redact(&combined);
+    let start = redacted
+        .char_indices()
+        .rev()
+        .nth(599)
+        .map_or(0, |(index, _)| index);
+    let tail = redacted[start..].trim();
+    RuntimeError::Failed(if tail.is_empty() {
+        message
+    } else {
+        format!("{message}: {tail}")
+    })
+}
 pub(crate) fn porcelain_dirty(output: &str) -> Result<bool, RuntimeError> {
     // M1's bounded line capture adds a final LF to a NUL-terminated record.
     let output = output.strip_suffix('\n').unwrap_or(output);
@@ -400,6 +431,32 @@ mod placement_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn git_error_messages_redact_and_bound_the_output_tail() {
+        let error = run_error(process::RunError::Failed {
+            exit_code: Some(1),
+            tail: vec!["\u{e01}".repeat(2_000), "token=secret-credential".into()],
+        });
+        let RuntimeError::Failed(message) = error else {
+            panic!("expected a Git failure");
+        };
+        assert!(message.starts_with("Git command exited with code 1: "));
+        assert!(message.contains("token=[REDACTED]"));
+        assert!(!message.contains("secret-credential"));
+        assert!(message.chars().count() <= 650);
+        assert_eq!(
+            run_error(process::RunError::Cancelled { tail: vec![] }),
+            RuntimeError::Cancelled
+        );
+        assert_eq!(
+            run_error(process::RunError::TimedOut { tail: vec![] }),
+            RuntimeError::Failed("Git command timed out".into())
+        );
+        assert_eq!(
+            run_error(process::RunError::Spawn(std::io::ErrorKind::NotFound)),
+            RuntimeError::Failed("Git could not be started (NotFound)".into())
+        );
+    }
     #[test]
     fn nul_status_counts_as_dirty_even_for_newlines_and_renames() {
         assert!(!porcelain_dirty("").unwrap());

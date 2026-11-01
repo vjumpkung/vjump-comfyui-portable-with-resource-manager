@@ -25,6 +25,7 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
     use Expect::*;
     let new_root = app.root.parent().unwrap().join("chosen root");
     vec![
+        ("app_ready", json!({}), Success),
         ("app_info", json!({}), Success),
         ("settings_get", json!({}), Success),
         (
@@ -37,7 +38,8 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
                     "theme": "dark",
                     "language": "en",
                     "registryCacheTtl": 6,
-                    "bandwidthCapKibS": null
+                    "bandwidthCapKibS": null,
+                    "skipSecurityConfirmations": false
                 }
             }),
             Success,
@@ -194,6 +196,11 @@ fn commands(app: &TestApp) -> Vec<(&'static str, Value, Expect)> {
         ),
         ("dl_cancel", json!({ "jobId": "job-unknown" }), HandlerError),
         ("dl_retry", json!({ "jobId": "job-unknown" }), HandlerError),
+        (
+            "dl_remove",
+            json!({ "id": "job-unknown", "generation": 1 }),
+            HandlerError,
+        ),
         (
             "dl_subscribe",
             json!({ "afterCursor": null, "onEvent": "__CHANNEL__:3" }),
@@ -551,7 +558,10 @@ fn every_command_is_covered_by_the_acl_test() {
     desktop::ipc::bindings::builder::<MockRuntime>()
         .export(specta_typescript::Typescript::default(), &path)
         .unwrap();
-    let generated = std::fs::read_to_string(path).unwrap();
+    // A plain boolean command uses a typed invoke; Result commands use typedError.
+    let generated = std::fs::read_to_string(path)
+        .unwrap()
+        .replace("TAURI_INVOKE<boolean>(", "TAURI_INVOKE(");
     for cmd in &tested {
         assert_eq!(
             generated
@@ -566,6 +576,24 @@ fn every_command_is_covered_by_the_acl_test() {
         tested.len(),
         "a registered command is not covered by the ACL test"
     );
+}
+
+#[test]
+fn manager_can_query_readiness_before_state_exists() {
+    use tauri::{Manager, WebviewWindowBuilder};
+
+    let mut context = tauri::generate_context!();
+    context.config_mut().app.windows.clear();
+    let app = tauri::test::mock_builder()
+        .invoke_handler(desktop::ipc::bindings::builder::<MockRuntime>().invoke_handler())
+        .build(context)
+        .unwrap();
+    assert!(app.try_state::<desktop::AppState>().is_none());
+    let window = WebviewWindowBuilder::new(&app, MANAGER_WINDOW, Default::default())
+        .build()
+        .unwrap();
+    let response = get_ipc_response(&window, request("app_ready", local_url(), json!({}))).unwrap();
+    assert!(!response.deserialize::<bool>().unwrap());
 }
 
 #[test]
@@ -586,19 +614,41 @@ fn manager_window_with_local_origin_can_invoke_all_commands() {
             ),
         }
         assert!(
-            app.calls.count() > before || matches!(expect, Expect::HandlerError),
+            cmd == "app_ready"
+                || app.calls.count() > before
+                || matches!(expect, Expect::HandlerError),
             "manager/local: `{cmd}` must reach an application port"
         );
     }
 }
 
 #[test]
-fn settings_language_round_trips_through_ipc() {
+fn download_removal_rejects_unsafe_or_fractional_generations() {
+    let app = build_app();
+    let window = manager_window(&app);
+    let before = app.calls.count();
+    for generation in [-1.0, 0.5, 9_007_199_254_740_992.0] {
+        let error = get_ipc_response(
+            &window,
+            request(
+                "dl_remove",
+                local_url(),
+                json!({ "id": "job-unknown", "generation": generation }),
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(error["code"], "validation");
+    }
+    assert_eq!(app.calls.count(), before);
+}
+
+#[test]
+fn settings_language_and_security_preference_round_trip_through_ipc() {
     let app = build_app();
     let window = manager_window(&app);
     let call = |cmd: &str, body: Value| get_ipc_response(&window, request(cmd, local_url(), body));
 
-    for language in ["th", "en"] {
+    for (language, skip) in [("th", true), ("en", false)] {
         let response = call(
             "settings_set",
             json!({
@@ -609,13 +659,15 @@ fn settings_language_round_trips_through_ipc() {
                     "theme": "dark",
                     "language": language,
                     "registryCacheTtl": 6,
-                    "bandwidthCapKibS": null
+                    "bandwidthCapKibS": null,
+                    "skipSecurityConfirmations": skip
                 }
             }),
         )
         .unwrap();
         let saved: Value = response.deserialize().unwrap();
         assert_eq!(saved["language"], language);
+        assert_eq!(saved["skipSecurityConfirmations"], skip);
         let response = call("settings_get", json!({})).unwrap();
         let loaded: Value = response.deserialize().unwrap();
         assert_eq!(loaded, saved);

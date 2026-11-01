@@ -8,8 +8,11 @@ import type {
   SettingsDto,
   ThemeDto,
 } from '@/shared/ipc/gateway'
+import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
+import { Checkbox } from '@/shared/ui/checkbox'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
+import { Field as FormField, FieldLabel, FieldLegend, FieldSet } from '@/shared/ui/field'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 
@@ -44,6 +47,7 @@ interface Draft {
   language: Language
   registryCacheTtl: string
   bandwidthCap: string
+  skipSecurityConfirmations: boolean
 }
 
 type DraftErrors = Partial<Record<keyof Draft, `settings.validation.${'concurrency' | 'ttl' | 'bandwidth'}`>>
@@ -55,6 +59,7 @@ function toDraft(settings: SettingsDto): Draft {
     closeBehavior: settings.closeBehavior,
     theme: settings.theme,
     language: settings.language,
+    skipSecurityConfirmations: settings.skipSecurityConfirmations,
     registryCacheTtl: String(settings.registryCacheTtl),
     bandwidthCap: settings.bandwidthCapKibS === null ? '' : String(settings.bandwidthCapKibS),
   }
@@ -124,6 +129,7 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
         closeBehavior: draft.closeBehavior,
         theme: draft.theme,
         language: draft.language,
+        skipSecurityConfirmations: draft.skipSecurityConfirmations,
         registryCacheTtl: ttl,
         bandwidthCapKibS: cap,
       },
@@ -213,6 +219,18 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
           </p>
         </Field>
       </div>
+      <FieldSet>
+        <FieldLegend>{t('settings.dangerZone')}</FieldLegend>
+        <FormField orientation="horizontal">
+          <Checkbox id="skip-security-confirmations" checked={draft.skipSecurityConfirmations}
+            onCheckedChange={(checked) => patch('skipSecurityConfirmations', checked === true)} />
+          <FieldLabel htmlFor="skip-security-confirmations">{t('settings.skipSecurityConfirmations')}</FieldLabel>
+        </FormField>
+        <Alert variant="destructive">
+          <AlertTitle>{t('settings.skipSecurityConfirmations')}</AlertTitle>
+          <AlertDescription>{t('settings.skipSecurityWarning')}</AlertDescription>
+        </Alert>
+      </FieldSet>
       <div>
         <Button type="submit" disabled={update.isPending}>
           {t('settings.save')}

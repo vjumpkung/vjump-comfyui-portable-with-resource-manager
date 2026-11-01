@@ -17,6 +17,8 @@ pub enum LibraryErrorCode {
     OutsideRoot,
     /// The operating system refused access (distinct from a sharing violation).
     AccessDenied,
+    /// Owned by ComfyUI, or repository protection could not be established.
+    RepositoryFile,
     TrashFailed,
     AmbiguousSidecar,
     /// A download or another operation owns the destination.

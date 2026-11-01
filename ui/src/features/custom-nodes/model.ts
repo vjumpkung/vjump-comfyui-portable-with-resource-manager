@@ -88,6 +88,13 @@ export const EMPTY_CONSENT: Consent = {
   remember: false, rememberHook: false,
 }
 
+export function effectiveConsent(plan: PlanReviewDto, explicit: Consent | undefined, skip: boolean): Consent {
+  return explicit ?? (skip ? normalizeConsent(plan, {
+    execute: true, hook: plan.hasInstallPy, warnings: plan.warnings.length > 0,
+    pins: false, remember: false, rememberHook: false,
+  }) : EMPTY_CONSENT)
+}
+
 /** Clears every selection that the plan does not offer, or that a parent selection no longer allows. */
 export function normalizeConsent(plan: PlanReviewDto, consent: Consent): Consent {
   const namespace = hasTrustNamespace(plan.source)

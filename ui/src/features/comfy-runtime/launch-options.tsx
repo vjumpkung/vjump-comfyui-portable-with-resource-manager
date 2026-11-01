@@ -13,6 +13,7 @@ import {
   type VramModeDto,
 } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
+import { useSkipSecurityConfirmations } from '@/shared/lib/settings-queries'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import {
@@ -63,7 +64,7 @@ interface Draft {
   listenLan: boolean
   /** One launch argument per line, so a path with spaces stays one token. */
   extraArgs: string
-  lanAcknowledged: boolean
+  lanAcknowledged: boolean | undefined
 }
 
 function toDraft(options: LaunchOptionsDto): Draft {
@@ -75,7 +76,7 @@ function toDraft(options: LaunchOptionsDto): Draft {
     enableManager: options.enableManager,
     listenLan: options.listenLan,
     extraArgs: options.extraArgs.join('\n'),
-    lanAcknowledged: options.listenLan,
+    lanAcknowledged: undefined,
   }
 }
 
@@ -117,6 +118,8 @@ function Form({
   const client = useQueryClient()
   const [draft, setDraft] = useState<Draft>(() => toDraft(options))
   const [portInvalid, setPortInvalid] = useState(false)
+  const skip = useSkipSecurityConfirmations()
+  const lanAcknowledged = draft.lanAcknowledged ?? skip
   const save = useMutation({
     mutationFn: (next: LaunchOptionsDto) => gateway.comfySetLaunchOptions(next),
     onSuccess: (saved) => {
@@ -130,7 +133,7 @@ function Form({
     setDraft((current) => ({ ...current, [key]: value }))
   }
   const lanBlocked =
-    draft.listenLan && !options.listenLan && !draft.lanAcknowledged
+    draft.listenLan && !options.listenLan && !lanAcknowledged
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -219,7 +222,7 @@ function Form({
           checked={draft.listenLan}
           onCheckedChange={(checked) => {
             patch('listenLan', checked === true)
-            if (checked !== true) patch('lanAcknowledged', false)
+            if (checked !== true) patch('lanAcknowledged', undefined)
           }}
         />
         <Label htmlFor="launch-lan">
@@ -238,7 +241,7 @@ function Form({
               <div className="flex items-center gap-2">
                 <Checkbox
                   id="launch-lan-ack"
-                  checked={draft.lanAcknowledged}
+                  checked={lanAcknowledged}
                   onCheckedChange={(checked) =>
                     patch('lanAcknowledged', checked === true)
                   }

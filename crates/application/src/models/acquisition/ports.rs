@@ -61,6 +61,7 @@ pub trait JobRepository: Send + Sync {
     /// Atomic active-identity check, destination reservation, and insertion.
     async fn enqueue(&self, request: EnqueueRequest) -> Result<EnqueueOutcome>;
     async fn get(&self, id: &JobId) -> Result<DownloadJob>;
+    async fn remove(&self, id: &JobId, generation: u64) -> Result<bool>;
     async fn list(&self, before: Option<u64>, limit: u32) -> Result<Vec<DownloadJob>>;
     async fn unfinished(&self) -> Result<Vec<DownloadJob>>;
     /// Compare-and-swap generation; stale worker writes are rejected.
@@ -130,6 +131,7 @@ pub struct DownloadCursor {
 pub enum DownloadEventKind {
     Snapshot(Vec<DownloadJob>),
     State(Box<DownloadJob>),
+    Removed(JobId),
     Progress {
         id: JobId,
         generation: u64,
@@ -144,6 +146,7 @@ pub struct DownloadEvent {
 }
 pub trait DownloadEvents: Send + Sync {
     fn state(&self, job: &DownloadJob);
+    fn removed(&self, id: &JobId);
 }
 
 #[derive(Debug, Clone)]

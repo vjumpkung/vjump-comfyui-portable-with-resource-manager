@@ -101,3 +101,18 @@ it('takes a fresh snapshot after a gap and ignores the old subscription', async 
   expect(Object.keys(store.getSnapshot().jobs)).toEqual(['fresh'])
   release()
 })
+
+it('removes only the matching job and its progress', async () => {
+  const store = createDownloadsStore(api)
+  const release = store.acquire()
+  await Promise.resolve()
+  handlers[0]({ kind: 'snapshot', cursor: cursor(1), jobs: [job({ state: 'downloading' }), job({ id: 'keep' })], gap: false })
+  handlers[0]({ kind: 'job:progress', cursor: cursor(2), progress: {
+    id: 'job-1', generation: 1, bytes: 1, total: { kind: 'unknown', bytes: null },
+    bytesPerSecond: 1, etaSeconds: null, estimated: false,
+  } })
+  handlers[0]({ kind: 'job:removed', cursor: cursor(3), id: 'job-1' })
+  expect(Object.keys(store.getSnapshot().jobs)).toEqual(['keep'])
+  expect(store.getSnapshot().progress).toEqual({})
+  release()
+})

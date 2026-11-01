@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const commands = vi.hoisted(() => ({
+  appReady: vi.fn(),
   appInfo: vi.fn(),
   settingsGet: vi.fn(),
   settingsSet: vi.fn(),
@@ -45,6 +46,17 @@ import { gateway, IpcClientError, type CommitInput, type SetupActionDto } from '
 describe('gateway', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+  })
+
+  it('app_ready_returns_the_boolean_without_a_state_payload', async () => {
+    commands.appReady.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    await expect(gateway.appReady()).resolves.toBe(false)
+    await expect(gateway.appReady()).resolves.toBe(true)
+    expect(commands.appReady).toHaveBeenCalledWith()
+    commands.appReady.mockRejectedValueOnce(new Error('private transport details'))
+    await expect(gateway.appReady()).rejects.toMatchObject({
+      name: 'IpcClientError', code: 'transport', message: 'Could not reach the application backend.',
+    })
   })
 
   it('setup_curated_catalog_takes_no_arguments', async () => {
@@ -300,6 +312,7 @@ describe('gateway', () => {
         language: 'en',
         registryCacheTtl: 6,
         bandwidthCapKibS: null,
+        skipSecurityConfirmations: false,
       })
       .catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(IpcClientError)

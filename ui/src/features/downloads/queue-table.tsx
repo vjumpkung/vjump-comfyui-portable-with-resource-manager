@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query'
-import { Pause, Play, RotateCw, X } from 'lucide-react'
+import { Pause, Play, RotateCw, Trash2, X } from 'lucide-react'
 import { useState, type KeyboardEvent } from 'react'
 import { toast } from 'sonner'
 
@@ -13,6 +13,7 @@ import {
 import { errorMessage } from '@/shared/lib/display'
 import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/ui/dialog'
 import { Progress } from '@/shared/ui/progress'
 import {
   Table,
@@ -61,11 +62,13 @@ function Row({
   progress,
   onOpenSettings,
   onResolve,
+  onRemove,
 }: {
   job: DownloadJobDto
   progress: ProgressDto | undefined
   onOpenSettings: () => void
   onResolve: (job: DownloadJobDto) => void
+  onRemove: (job: DownloadJobDto) => void
 }) {
   const { t } = useTranslation()
   const pause = useJobAction((id: string) => gateway.dlPause(id))
@@ -213,6 +216,14 @@ function Row({
               <X aria-hidden="true" />
             </Button>
           ) : null}
+          {['completed', 'failed', 'cancelled'].includes(job.state) &&
+            (!job.finalizing || job.state === 'completed') ? (
+            <Button variant="ghost" size="icon-sm"
+              aria-label={t('downloads.removeFromList')} title={t('downloads.removeFromList')}
+              disabled={busy} onClick={() => onRemove(job)}>
+              <Trash2 aria-hidden="true" />
+            </Button>
+          ) : null}
         </div>
       </TableCell>
     </TableRow>
@@ -224,6 +235,12 @@ export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
   const { t } = useTranslation()
   const [scrollTop, setScrollTop] = useState(0)
   const [conflictId, setConflictId] = useState<string | null>(null)
+  const [removeJob, setRemoveJob] = useState<DownloadJobDto | null>(null)
+  const remove = useMutation({
+    mutationFn: (job: DownloadJobDto) => gateway.dlRemove(job.id, job.generation),
+    onError: (error) => toast.error(errorMessage(error)),
+    onSuccess: () => setRemoveJob(null),
+  })
   // Derived from the live list so a refreshed prompt carries the newest observed identity.
   const conflictJob = jobs.find((job) => job.id === conflictId) ?? null
   const sorted = sortJobs(jobs)
@@ -306,6 +323,7 @@ export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
                 progress={progress[job.id]}
                 onOpenSettings={onOpenSettings}
                 onResolve={(job) => setConflictId(job.id)}
+                onRemove={setRemoveJob}
               />
             ))}
             {windowed && end < sorted.length ? (
@@ -317,6 +335,22 @@ export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
           </TableBody>
         </Table>
       </div>
+      <Dialog open={removeJob !== null} onOpenChange={(open) => {
+        if (!open && !remove.isPending) setRemoveJob(null)
+      }}>
+        <DialogContent showCloseButton={!remove.isPending}>
+          <DialogHeader>
+            <DialogTitle>{t('downloads.removeTitle')}</DialogTitle>
+            <DialogDescription>{t('downloads.removeDescription')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" disabled={remove.isPending} onClick={() => setRemoveJob(null)}>{t('common.cancel')}</Button>
+            <Button variant="destructive" disabled={remove.isPending} onClick={() => {
+              if (removeJob) remove.mutate(removeJob)
+            }}>{t('downloads.remove')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {conflictJob ? (
         <ChoiceDialog
           title={t('downloads.fileAppeared')}

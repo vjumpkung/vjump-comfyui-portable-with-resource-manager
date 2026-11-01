@@ -7,8 +7,14 @@ import type { PlanReviewDto } from '@/shared/ipc/gateway'
 import { plan } from './fixtures'
 import { ReviewDialog } from './review-dialog'
 
+let skipSecurity = false
+vi.mock('@/shared/lib/settings-queries', () => ({
+  useSkipSecurityConfirmations: () => skipSecurity,
+}))
+
 beforeEach(() => {
   vi.clearAllMocks()
+  skipSecurity = false
   vi.stubGlobal(
     'ResizeObserver',
     class {
@@ -189,4 +195,35 @@ it('setup_review_hides_trust_memory_and_keeps_decisions_unremembered', () => {
   })])
   fireEvent.click(screen.getByRole('button', { name: 'Back to setup' }))
   expect(onClose).toHaveBeenCalledTimes(1)
+})
+
+it('late security preference pre-ticks valid plan-bound consent without trust or pins', () => {
+  const reviewed = plan({ hasInstallPy: true, warnings: ['Reviewed warning'], protectedChanges: [] })
+  const view = render(ui([reviewed]))
+  expect(checked(/execute third-party code/)).toBe(false)
+  skipSecurity = true
+  view.rerender(ui([reviewed]))
+  expect(checked(/execute third-party code/)).toBe(true)
+  expect(checked(/install\.py script/)).toBe(true)
+  expect(checked(/acknowledge.*warnings/i)).toBe(true)
+  expect(screen.getByText(/Security confirmations are pre-ticked because/)).toBeTruthy()
+  fireEvent.click(apply())
+  expect(onCommit).toHaveBeenCalledWith([{
+    planId: reviewed.id, binding: reviewed.binding, executeNodeCode: true,
+    runInstallPy: true, acknowledgeWarnings: true, confirmedChanges: [],
+    rememberSource: false, rememberInstallPy: false,
+  }])
+  fireEvent.click(box(/execute third-party code/))
+  view.rerender(ui([reviewed]))
+  expect(checked(/execute third-party code/)).toBe(false)
+  expect(apply()).toHaveProperty('disabled', true)
+  view.rerender(ui([{ ...reviewed, binding: 'changed' }]))
+  expect(checked(/execute third-party code/)).toBe(true)
+})
+
+it('skip preference never pre-ticks protected-package changes', () => {
+  skipSecurity = true
+  render(ui([plan({ protectedChanges: [{ name: 'torch', from: '1', to: '2' }] })]))
+  expect(checked(/protected.*changes/i)).toBe(false)
+  expect(apply()).toHaveProperty('disabled', true)
 })

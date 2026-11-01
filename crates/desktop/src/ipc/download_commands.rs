@@ -233,6 +233,28 @@ pub async fn dl_retry(
     Ok(DownloadJobDto::from(&job))
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn dl_remove(
+    state: State<'_, AppState>,
+    id: String,
+    generation: f64,
+) -> Result<(), IpcError> {
+    if !generation.is_finite()
+        || !(0.0..=9_007_199_254_740_991.0).contains(&generation)
+        || generation.fract() != 0.0
+    {
+        return Err(validation("The download generation is not valid."));
+    }
+    state
+        .services()?
+        .downloads
+        .remove
+        .execute(&parse_job_id(&id)?, generation as u64)
+        .await?;
+    Ok(())
+}
+
 /// Registers a per-subscription channel. The first event is an authoritative snapshot; closing
 /// the channel or reloading the UI never stops a download.
 #[tauri::command]

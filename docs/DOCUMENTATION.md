@@ -915,6 +915,8 @@ Notes:
 
 ## 17. IPC and generated bindings
 
+`app_ready()` is available before `AppState` exists and returns the startup gate's readiness (false if the gate is absent). Recovery mode counts as ready. The manager polls it while showing the startup loading screen; state-dependent queries wait for readiness. It takes no state parameter and is allowed only by `allow-app-ready` in the manager capability. Startup composition runs on the named `startup` thread, publishes state under the startup gate, then starts the runtime watch and library/download services. An early close/exit prevents late publication; fatal factory errors request exit code 1. Shutdown joins that worker before flushing the logging guard.
+
 IPC uses **tauri-specta** `2.0.0-rc.25` (a pinned prerelease, a deliberate exception to "stable only"). The command list is defined once, in `crates/desktop/src/ipc/bindings.rs` (`collect_commands!`), and is shared by `run()`, the binding export test and the ACL tests. The TypeScript output is `ui/src/shared/ipc/bindings.ts`, which is checked in.
 
 - **Never edit `bindings.ts` by hand.**
@@ -928,6 +930,8 @@ IPC uses **tauri-specta** `2.0.0-rc.25` (a pinned prerelease, a deliberate excep
 - Wrap new commands in `ui/src/shared/ipc/gateway.ts`. All Tauri channels stay inside the gateway.
 - Channels carry progress and change events (runtime, downloads, model library, custom nodes). A `Gap` event means the UI must refetch authoritative state. Setup events use a channel too, and closing the UI channel does not stop the setup run.
 - IPC errors are sanitised codes with a fixed message. No secret, signed URL or path outside an authorised root crosses IPC.
+
+`dl_remove(id, generation)` removes one terminal download history row after UI confirmation. It preserves the downloaded file and model provenance, refuses active or pending-finalization work, and compares the reviewed generation so a concurrent retry cannot be removed. Its `job:removed { cursor, id }` event updates the live list; hub tombstones prevent late events from restoring it. Like other download commands, it is allowed only by `allow-dl-remove` in the manager capability.
 
 ## 18. Capabilities, ACL and adding a command
 

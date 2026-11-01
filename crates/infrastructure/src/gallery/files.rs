@@ -4,6 +4,7 @@
 //! below `<area>/.vjump-gallery-staging/<operation>/` and published with a no-replace rename, so
 //! an incomplete copy is never visible. Deletion only ever goes to the recycle bin.
 use crate::{
+    comfy_runtime::tracked::{Protected, TrackedFiles, comfy_tracked_files},
     custom_nodes::tree::is_link,
     models::library::file_ops::is_cross_volume,
     shared::{
@@ -79,6 +80,9 @@ fn take_faults() -> Faults {
 /// `PermissionDenied` kind is a refusal raised by the pinned traversal itself (a link, a
 /// reparse point or a special file).
 fn classify(error: &io::Error) -> GalleryErrorCode {
+    if error.get_ref().is_some_and(|cause| cause.is::<Protected>()) {
+        return GalleryErrorCode::RepositoryFile;
+    }
     match error.raw_os_error() {
         #[cfg(windows)]
         Some(32 | 33) => GalleryErrorCode::Locked,
@@ -132,6 +136,18 @@ fn trash_error(error: &io::Error) -> GalleryError {
 
 fn constant(name: &str) -> SafeFileName {
     SafeFileName::new(name).expect("constant is a safe file name")
+}
+fn comfy_path(location: &GalleryLocation) -> String {
+    format!(
+        "{}/{}",
+        location.area().dir_name(),
+        location.path().as_string()
+    )
+}
+fn guard(tracked: &TrackedFiles, location: &GalleryLocation) -> Result<()> {
+    tracked
+        .guard(&comfy_path(location))
+        .map_err(|_| GalleryError(GalleryErrorCode::RepositoryFile))
 }
 /// Opaque revision text: any change of identity, size or modification time changes it.
 fn revision_of(identity: &FileIdentity) -> String {
@@ -221,8 +237,9 @@ impl LocalGalleryFiles {
 #[async_trait]
 impl GalleryFiles for LocalGalleryFiles {
     async fn list(&self, root: &Path, directory: &GalleryLocation) -> Result<GalleryListing> {
+        let tracked = comfy_tracked_files(root).await;
         let (root, directory) = (root.to_owned(), directory.clone());
-        blocking(move || list_directory(&root, &directory)).await
+        blocking(move || list_directory(&root, &directory, &tracked)).await
     }
 
     async fn rename(
@@ -231,8 +248,9 @@ impl GalleryFiles for LocalGalleryFiles {
         entry: &GalleryEntryRef,
         new_name: &SafeFileName,
     ) -> Result<GalleryLocation> {
+        let tracked = comfy_tracked_files(root).await;
         let (root, entry, new_name) = (root.to_owned(), entry.clone(), new_name.clone());
-        blocking(move || rename_entry(&root, &entry, &new_name)).await
+        blocking(move || rename_entry(&root, &entry, &new_name, &tracked)).await
     }
 
     async fn transfer(
@@ -244,6 +262,7 @@ impl GalleryFiles for LocalGalleryFiles {
         operation: &str,
         retained: Retained,
     ) -> ItemResult {
+        let tracked = comfy_tracked_files(root).await;
         let source = entry.location.clone();
         let job = Job {
             root: root.to_owned(),
@@ -252,6 +271,7 @@ impl GalleryFiles for LocalGalleryFiles {
             mode,
             operation: operation.to_owned(),
             faults: take_faults(),
+            tracked,
         };
         let outcome = tokio::task::spawn_blocking(move || {
             // The gate's protection outlives the file work, even when the caller stops waiting.
@@ -284,8 +304,10 @@ impl GalleryFiles for LocalGalleryFiles {
     }
 
     async fn plan_delete(&self, root: &Path, entry: &GalleryEntryRef) -> Result<DeletePlanItem> {
+        let tracked = comfy_tracked_files(root).await;
         let (root, entry) = (root.to_owned(), entry.clone());
         blocking(move || {
+            guard(&tracked, &entry.location)?;
             let (parent, name) = resolve_parent(&root, &entry.location, true)?;
             let described = describe(&parent, &name)?;
             if revision_of(&described.identity) != entry.revision.0 {
@@ -302,8 +324,10 @@ impl GalleryFiles for LocalGalleryFiles {
     }
 
     async fn trash(&self, root: &Path, item: &DeletePlanItem) -> Result<()> {
+        let tracked = comfy_tracked_files(root).await;
         let (root, item) = (root.to_owned(), item.clone());
         blocking(move || {
+            guard(&tracked, &item.entry.location)?;
             let (parent, name) = resolve_parent(&root, &item.entry.location, true)?;
             let described = describe(&parent, &name)?;
             if revision_of(&described.identity) != item.entry.revision.0
@@ -398,7 +422,11 @@ impl GalleryMedia for LocalMedia {
 
 // ---- listing ----
 
-fn list_directory(root: &Path, directory: &GalleryLocation) -> Result<GalleryListing> {
+fn list_directory(
+    root: &Path,
+    directory: &GalleryLocation,
+    tracked: &TrackedFiles,
+) -> Result<GalleryListing> {
     let pinned = resolve_directory(root, directory, true)?;
     let mut entries = Vec::new();
     let mut warnings = Vec::new();
@@ -422,6 +450,9 @@ fn list_directory(root: &Path, directory: &GalleryLocation) -> Result<GalleryLis
             None => Err(GalleryWarningCode::UnsafeName),
         };
         match listed {
+            Ok(Some(entry))
+                if entry.kind == GalleryEntryKind::File
+                    && tracked.hides(&comfy_path(&entry.location)) => {}
             Ok(Some(entry)) => entries.push(entry),
             Ok(None) => {}
             Err(code) => warnings.push(GalleryWarning {
@@ -504,7 +535,16 @@ fn rename_entry(
     root: &Path,
     entry: &GalleryEntryRef,
     new_name: &SafeFileName,
+    tracked: &TrackedFiles,
 ) -> Result<GalleryLocation> {
+    guard(tracked, &entry.location)?;
+    let destination = entry
+        .location
+        .parent()
+        .ok_or(GalleryErrorCode::InvalidRequest)?
+        .join(new_name.clone())
+        .map_err(|_| GalleryErrorCode::InvalidName)?;
+    guard(tracked, &destination)?;
     if new_name.as_str().eq_ignore_ascii_case(STAGING_DIR) {
         return Err(GalleryErrorCode::InvalidName.into());
     }
@@ -575,6 +615,7 @@ struct Job {
     mode: TransferMode,
     operation: String,
     faults: Faults,
+    tracked: TrackedFiles,
 }
 
 struct Placed {
@@ -599,7 +640,21 @@ fn place(job: Job) -> Result<Placed> {
         mode,
         operation,
         faults,
+        tracked,
     } = job;
+    if mode == TransferMode::Move {
+        guard(&tracked, &entry.location)?;
+    }
+    let target = destination
+        .join(
+            entry
+                .location
+                .name()
+                .ok_or(GalleryErrorCode::InvalidRequest)?
+                .clone(),
+        )
+        .map_err(|_| GalleryErrorCode::InvalidName)?;
+    guard(&tracked, &target)?;
     if entry.location.is_root() || entry.location.contains(&destination) {
         return Err(GalleryErrorCode::InvalidRequest.into());
     }
@@ -608,7 +663,14 @@ fn place(job: Job) -> Result<Placed> {
     let is_directory = handle.metadata().map_err(err)?.is_dir();
     let target_dir = resolve_directory(&root, &destination, true)?;
     if mode == TransferMode::Move && !faults.force_cross_device {
-        match publish(&source_parent, &name, &handle, &target_dir, &name) {
+        match publish(
+            &source_parent,
+            &name,
+            &handle,
+            &target_dir,
+            &name,
+            (&tracked, &destination),
+        ) {
             Ok(target) => {
                 return Ok(Placed {
                     location: destination
@@ -634,6 +696,7 @@ fn place(job: Job) -> Result<Placed> {
         mode,
         operation,
         faults,
+        tracked,
     }
     .staged()
 }
@@ -646,6 +709,7 @@ fn publish(
     file: &File,
     target: &PinnedDirectory,
     wanted: &SafeFileName,
+    protection: (&TrackedFiles, &GalleryLocation),
 ) -> io::Result<SafeFileName> {
     for attempt in 0..=MAX_SUFFIX {
         let candidate = if attempt == 0 {
@@ -655,6 +719,14 @@ fn publish(
                 .with_suffix(attempt)
                 .map_err(|_| io::Error::from(io::ErrorKind::InvalidFilename))?
         };
+        let location = protection
+            .1
+            .join(candidate.clone())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidFilename))?;
+        protection
+            .0
+            .guard(&comfy_path(&location))
+            .map_err(io::Error::other)?;
         match rename_no_replace(source, name, file, target, &candidate) {
             Ok(()) => return Ok(candidate),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
@@ -676,6 +748,7 @@ struct Transfer {
     mode: TransferMode,
     operation: String,
     faults: Faults,
+    tracked: TrackedFiles,
 }
 
 impl Transfer {
@@ -772,8 +845,15 @@ impl Transfer {
             return Err(GalleryErrorCode::Io.into());
         }
         let staged = directory.open_entry(&self.name).map_err(err)?;
-        let target =
-            publish(directory, &self.name, &staged, &self.target_dir, &self.name).map_err(err)?;
+        let target = publish(
+            directory,
+            &self.name,
+            &staged,
+            &self.target_dir,
+            &self.name,
+            (&self.tracked, &self.destination),
+        )
+        .map_err(err)?;
         Ok((target, records))
     }
 }

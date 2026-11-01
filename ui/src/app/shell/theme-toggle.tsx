@@ -1,7 +1,7 @@
 import { Moon, Sun } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { useSettings, useSettingsSavePending, useUpdateSettings } from '@/features/settings'
+import { useSettings, useSettingsSavePending, useUpdateSettings } from '@/features/settings/queries'
 import { t as translate, useTranslation } from '@/shared/i18n'
 import { IpcClientError } from '@/shared/ipc/gateway'
 import { useTheme } from '@/shared/lib/theme'

@@ -1,7 +1,7 @@
 //! Blocking directory traversal of one model root. It never follows links, never hashes, and
 //! only opens files whose size or modification time differ from the catalog.
 use super::roots::RootSpec;
-use crate::shared::model_paths;
+use crate::{comfy_runtime::tracked::TrackedFiles, shared::model_paths};
 use application::models::library::{ScanWarning, ScanWarningCode};
 use domain::{
     models::{
@@ -72,7 +72,7 @@ struct Candidate {
     absolute: PathBuf,
 }
 
-pub fn scan_root(spec: &RootSpec, known: &KnownFiles) -> RootScan {
+pub fn scan_root(spec: &RootSpec, known: &KnownFiles, tracked_hidden: &TrackedFiles) -> RootScan {
     let mut scan = RootScan {
         root_id: spec.id.clone(),
         complete: true,
@@ -132,7 +132,10 @@ pub fn scan_root(spec: &RootSpec, known: &KnownFiles) -> RootScan {
             }
             continue;
         }
-        if !entry.file_type().is_file() || ignored_name(&name) {
+        if !entry.file_type().is_file()
+            || ignored_name(&name)
+            || tracked_hidden.hides(&relative_path)
+        {
             continue;
         }
         let Some(relative) = components(&spec.path, entry.path()) else {
@@ -284,6 +287,31 @@ mod tests {
     }
 
     #[test]
+    fn tracked_files_are_dropped_before_sidecar_grouping() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        write(&root.join("configs/default.yaml"), b"tracked config");
+        write(&root.join("checkpoints/a.pt"), b"model");
+        write(&root.join("checkpoints/a.preview.png"), b"tracked preview");
+        write(&root.join("checkpoints/a.json"), b"tracked metadata");
+        let tracked = TrackedFiles::Known(
+            [
+                "configs/default.yaml",
+                "checkpoints/a.preview.png",
+                "checkpoints/a.json",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        );
+        let scan = scan_root(&spec(root, None), &KnownFiles::new(), &tracked);
+        assert!(scan.complete);
+        assert_eq!(scan.files.len(), 1);
+        assert_eq!(scan.files[0].path, "checkpoints/a.pt");
+        assert_eq!(scan.files[0].sidecars, SidecarSet::default());
+    }
+
+    #[test]
     fn sidecars_partials_hidden_files_and_loose_files_are_not_models() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
@@ -298,7 +326,11 @@ mod tests {
         write(&root.join("checkpoints/put_checkpoints_here"), b"");
         write(&root.join("loras/sub/ไทย model.pt"), b"thai");
         write(&root.join("loose.bin"), b"ignored");
-        let scan = scan_root(&spec(root, None), &KnownFiles::new());
+        let scan = scan_root(
+            &spec(root, None),
+            &KnownFiles::new(),
+            &TrackedFiles::NotRepository,
+        );
         assert!(scan.complete);
         let mut paths: Vec<_> = scan.files.iter().map(|f| f.path.as_str()).collect();
         paths.sort();
@@ -334,7 +366,11 @@ mod tests {
         write(&root.join("nested/a.safetensors"), b"a");
         write(&root.join("bad name .safetensors"), b"b");
         write(&root.join("odd..name.pt"), b"c");
-        let scan = scan_root(&spec(root, Some("loras")), &KnownFiles::new());
+        let scan = scan_root(
+            &spec(root, Some("loras")),
+            &KnownFiles::new(),
+            &TrackedFiles::NotRepository,
+        );
         let paths: Vec<_> = scan.files.iter().map(|f| f.path.as_str()).collect();
         assert!(paths.contains(&"nested/a.safetensors"));
         assert!(paths.contains(&"bad name .safetensors"));
@@ -352,14 +388,18 @@ mod tests {
         let root = directory.path();
         write(&root.join("checkpoints/a.pt"), b"aaaa");
         write(&root.join("checkpoints/b.pt"), b"bbbb");
-        let first = scan_root(&spec(root, None), &KnownFiles::new());
+        let first = scan_root(
+            &spec(root, None),
+            &KnownFiles::new(),
+            &TrackedFiles::NotRepository,
+        );
         assert!(first.files.iter().all(|f| f.identity.is_some()));
         let mut known = KnownFiles::new();
         for file in &first.files {
             known.insert(file.path.clone(), (file.size, file.modified_ns));
         }
         write(&root.join("checkpoints/b.pt"), b"bbbbbbbb");
-        let second = scan_root(&spec(root, None), &known);
+        let second = scan_root(&spec(root, None), &known, &TrackedFiles::NotRepository);
         let a = second
             .files
             .iter()
@@ -383,7 +423,11 @@ mod tests {
         let root = directory.path();
         fs::create_dir_all(root.join("checkpoints")).unwrap();
         std::os::unix::fs::symlink(outside.path(), root.join("checkpoints/linked")).unwrap();
-        let scan = scan_root(&spec(root, None), &KnownFiles::new());
+        let scan = scan_root(
+            &spec(root, None),
+            &KnownFiles::new(),
+            &TrackedFiles::NotRepository,
+        );
         assert!(scan.files.is_empty());
         assert!(
             scan.warnings
@@ -411,7 +455,11 @@ mod tests {
             eprintln!("junction creation is unavailable; skipping");
             return;
         }
-        let scan = scan_root(&spec(root, None), &KnownFiles::new());
+        let scan = scan_root(
+            &spec(root, None),
+            &KnownFiles::new(),
+            &TrackedFiles::NotRepository,
+        );
         assert!(scan.files.is_empty(), "{:?}", scan.files);
         assert!(
             scan.warnings
@@ -431,14 +479,14 @@ mod tests {
             );
         }
         let spec = spec(root, None);
-        let first = scan_root(&spec, &KnownFiles::new());
+        let first = scan_root(&spec, &KnownFiles::new(), &TrackedFiles::NotRepository);
         assert_eq!(first.files.len(), 2000);
         let mut known = KnownFiles::new();
         for file in &first.files {
             known.insert(file.path.clone(), (file.size, file.modified_ns));
         }
         let started = Instant::now();
-        let second = scan_root(&spec, &known);
+        let second = scan_root(&spec, &known, &TrackedFiles::NotRepository);
         let elapsed = started.elapsed();
         assert_eq!(second.files.len(), 2000);
         assert!(second.files.iter().all(|f| f.identity.is_none()));

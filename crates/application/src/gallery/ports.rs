@@ -19,6 +19,8 @@ pub enum GalleryErrorCode {
     Locked,
     /// The operating system refused access, or the path crosses a link.
     AccessDenied,
+    /// Owned by ComfyUI, or repository protection could not be established.
+    RepositoryFile,
     TrashFailed,
     Unsupported,
     /// The copy succeeded but the moved source could not be fully removed.

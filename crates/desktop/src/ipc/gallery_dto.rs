@@ -121,6 +121,7 @@ impl From<GalleryEntryKind> for GalleryEntryKindDto {
 pub enum GalleryMediaKindDto {
     Image,
     Video,
+    Audio,
     #[serde(rename = "model3d")]
     Model3d,
     Other,
@@ -130,6 +131,7 @@ impl From<GalleryMediaKind> for GalleryMediaKindDto {
         match value {
             GalleryMediaKind::Image => Self::Image,
             GalleryMediaKind::Video => Self::Video,
+            GalleryMediaKind::Audio => Self::Audio,
             GalleryMediaKind::Model3d => Self::Model3d,
             GalleryMediaKind::Other => Self::Other,
         }
@@ -319,6 +321,10 @@ impl From<&DeletePlan> for GalleryDeletePlanDto {
 pub fn describe(code: GalleryErrorCode) -> (&'static str, &'static str) {
     use GalleryErrorCode as E;
     match code {
+        E::RepositoryFile => (
+            "gallery_repository_file",
+            "This file is part of the ComfyUI installation and can't be changed here.",
+        ),
         E::NotInstalled => ("gallery_not_installed", "ComfyUI is not installed yet."),
         E::NotFound => ("gallery_not_found", "The file or folder no longer exists."),
         E::Stale => (
@@ -461,6 +467,16 @@ mod tests {
     }
 
     #[test]
+    fn audio_media_maps_to_its_wire_name() {
+        let dto = GalleryMediaKindDto::from(GalleryMediaKind::Audio);
+        assert_eq!(dto, GalleryMediaKindDto::Audio);
+        assert_eq!(
+            serde_json::to_value(dto).unwrap(),
+            serde_json::json!("audio")
+        );
+    }
+
+    #[test]
     fn a_failed_item_carries_the_sanitized_error() {
         let source = GalleryLocationDto {
             area: GalleryAreaDto::Input,
@@ -491,6 +507,7 @@ mod tests {
             GalleryErrorCode::InvalidRequest,
             GalleryErrorCode::Locked,
             GalleryErrorCode::AccessDenied,
+            GalleryErrorCode::RepositoryFile,
             GalleryErrorCode::TrashFailed,
             GalleryErrorCode::Unsupported,
             GalleryErrorCode::SourceRetained,

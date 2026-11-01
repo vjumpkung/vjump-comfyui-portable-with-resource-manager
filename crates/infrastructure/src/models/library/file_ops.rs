@@ -2,6 +2,7 @@
 //! re-established for every operation; no unchecked absolute path is ever mutated.
 use super::roots::LibraryRoots;
 use crate::{
+    comfy_runtime::tracked::comfy_tracked_files,
     models::acquisition::stack::DEFAULT_MODEL_ROOT_ID,
     shared::{
         model_paths::{self, PinnedDirectory},
@@ -73,6 +74,24 @@ fn scratch_name(prefix: &str, scratch: &str, suffix: &str) -> io::Result<SafeFil
 }
 
 impl LocalModelFiles {
+    async fn guard(&self, locations: &[&ModelLocation]) -> Result<()> {
+        if !locations
+            .iter()
+            .any(|location| location.root_id == DEFAULT_MODEL_ROOT_ID)
+        {
+            return Ok(());
+        }
+        let tracked = comfy_tracked_files(self.roots.install_root()).await;
+        for location in locations {
+            if location.root_id == DEFAULT_MODEL_ROOT_ID {
+                tracked
+                    .guard(&format!("models/{}", location.path.as_string()))
+                    .map_err(|_| LibraryError(LibraryErrorCode::RepositoryFile))?;
+            }
+        }
+        Ok(())
+    }
+
     fn parent(
         &self,
         location: &ModelLocation,
@@ -134,6 +153,7 @@ impl ModelFiles for LocalModelFiles {
     }
 
     async fn check_unlocked(&self, location: &ModelLocation) -> Result<()> {
+        self.guard(&[location]).await?;
         let location = location.clone();
         self.blocking(move |this| {
             let (parent, name) = this.parent(&location, false).map_err(err)?;
@@ -152,6 +172,7 @@ impl ModelFiles for LocalModelFiles {
         expected: Option<&FileIdentity>,
         scratch: &str,
     ) -> Result<Relocated> {
+        self.guard(&[from, to]).await?;
         let (from, to, expected, scratch) = (
             from.clone(),
             to.clone(),
@@ -192,6 +213,7 @@ impl ModelFiles for LocalModelFiles {
     }
 
     async fn trash(&self, location: &ModelLocation, expected: &FileIdentity) -> Result<()> {
+        self.guard(&[location]).await?;
         let (location, expected) = (location.clone(), expected.clone());
         self.blocking(move |this| {
             let (parent, name) = this.parent(&location, false).map_err(err)?;
@@ -211,6 +233,7 @@ impl ModelFiles for LocalModelFiles {
         location: &ModelLocation,
         expected: &FileIdentity,
     ) -> Result<()> {
+        self.guard(&[location]).await?;
         let (location, expected) = (location.clone(), expected.clone());
         self.blocking(move |this| {
             let (parent, name) = this.parent(&location, false).map_err(err)?;
@@ -248,6 +271,7 @@ impl ModelFiles for LocalModelFiles {
         bytes: &[u8],
         replace: bool,
     ) -> Result<()> {
+        self.guard(&[location]).await?;
         let (location, bytes) = (location.clone(), bytes.to_vec());
         self.blocking(move |this| {
             let (parent, name) = this.parent(&location, false).map_err(err)?;
@@ -429,6 +453,100 @@ mod tests {
     }
     fn models_dir(install: &Path) -> std::path::PathBuf {
         install.join("ComfyUI").join("models")
+    }
+
+    #[tokio::test]
+    async fn repository_files_sources_destinations_deletes_and_sidecar_writes_are_protected() {
+        use crate::comfy_runtime::tracked::tests::{git, repository};
+        let install = tempfile::tempdir().unwrap();
+        let comfy = repository(install.path());
+        let (_, files) = fixture(install.path());
+        let dir = models_dir(install.path()).join("checkpoints");
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["owned.pt", "owned.preview.png", "user.pt", "destination.pt"] {
+            std::fs::write(dir.join(name), b"original").unwrap();
+        }
+        let owned = loc("checkpoints/owned.pt");
+        let user = loc("checkpoints/user.pt");
+        let identity = files.inspect(&owned).await.unwrap().unwrap();
+        git(
+            &comfy,
+            &[
+                "add",
+                "models/checkpoints/owned.pt",
+                "models/checkpoints/owned.preview.png",
+                "models/checkpoints/destination.pt",
+            ],
+        );
+        std::fs::remove_file(dir.join("destination.pt")).unwrap();
+        for destination in [loc("checkpoints/new.pt"), loc("loras/owned.pt")] {
+            assert_eq!(
+                files
+                    .relocate(&owned, &destination, None, "t")
+                    .await
+                    .unwrap_err()
+                    .0,
+                LibraryErrorCode::RepositoryFile
+            );
+        }
+        assert_eq!(
+            files
+                .relocate(&user, &loc("checkpoints/destination.pt"), None, "t")
+                .await
+                .unwrap_err()
+                .0,
+            LibraryErrorCode::RepositoryFile
+        );
+        assert_eq!(
+            files.trash(&owned, &identity).await.unwrap_err().0,
+            LibraryErrorCode::RepositoryFile
+        );
+        assert_eq!(
+            files
+                .delete_permanently(&owned, &identity)
+                .await
+                .unwrap_err()
+                .0,
+            LibraryErrorCode::RepositoryFile
+        );
+        let preview = loc("checkpoints/owned.preview.png");
+        assert_eq!(
+            files
+                .relocate(&preview, &loc("checkpoints/new.preview.png"), None, "t")
+                .await
+                .unwrap_err()
+                .0,
+            LibraryErrorCode::RepositoryFile
+        );
+        assert_eq!(
+            files
+                .write_sidecar(&preview, b"new", true)
+                .await
+                .unwrap_err()
+                .0,
+            LibraryErrorCode::RepositoryFile
+        );
+        assert_eq!(std::fs::read(dir.join("owned.pt")).unwrap(), b"original");
+        assert_eq!(
+            std::fs::read(dir.join("owned.preview.png")).unwrap(),
+            b"original"
+        );
+
+        std::fs::remove_dir_all(comfy.join(".git")).unwrap();
+        std::fs::write(comfy.join(".git"), "gitdir: missing").unwrap();
+        files
+            .relocate(&user, &loc("loras/user.pt"), None, "t")
+            .await
+            .unwrap();
+        files
+            .write_sidecar(&loc("checkpoints/user.json"), b"{}", false)
+            .await
+            .unwrap();
+        let moved = loc("loras/user.pt");
+        let identity = files.inspect(&moved).await.unwrap().unwrap();
+        files.check_unlocked(&moved).await.unwrap();
+        files.delete_permanently(&moved, &identity).await.unwrap();
+        assert!(!dir.parent().unwrap().join("loras/user.pt").exists());
     }
 
     #[tokio::test]

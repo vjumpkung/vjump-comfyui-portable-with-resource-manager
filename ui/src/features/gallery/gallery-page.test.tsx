@@ -406,6 +406,48 @@ it('opens a preview with the enter key and shows the file in the system file man
   expect(gateway.galleryReveal).toHaveBeenCalledWith(file('notes.txt', 'other').location)
 })
 
+it('previews audio with labeled controls and metadata preload', async () => {
+  tree.set('input:', [file('track.mp3', 'audio')])
+  mount()
+  fireEvent.doubleClick(await findTile('track.mp3'))
+  const dialog = await screen.findByRole('dialog')
+  const audio = within(dialog).getByLabelText<HTMLAudioElement>('track.mp3')
+  expect(audio.tagName).toBe('AUDIO')
+  expect(audio.controls).toBe(true)
+  expect(audio.preload).toBe('metadata')
+  expect(audio.getAttribute('src')).toBe(
+    'http://gallery.localhost/input/track.mp3?v=rev-track.mp3',
+  )
+  expect(audio.autoplay).toBe(false)
+})
+
+it('shows the existing preview failure fallback when audio cannot be decoded', async () => {
+  tree.set('input:', [file('track.mp3', 'audio')])
+  mount()
+  fireEvent.doubleClick(await findTile('track.mp3'))
+  const dialog = await screen.findByRole('dialog')
+  fireEvent.error(within(dialog).getByLabelText('track.mp3'))
+  expect(within(dialog).getByText("This file can't be previewed.")).toBeTruthy()
+  expect(dialog.querySelector('audio')).toBeNull()
+  expect(within(dialog).getByRole('button', { name: 'Show in Explorer' })).toBeTruthy()
+})
+
+it.each(['audio', 'video'] as const)('leaves arrow keys on %s controls for seeking', async (media) => {
+  const name = media === 'audio' ? 'track.mp3' : 'clip.mp4'
+  tree.set('input:', [file('cat.png'), file(name, media), file('notes.txt', 'other')])
+  mount()
+  fireEvent.doubleClick(await findTile(name))
+  const dialog = await screen.findByRole('dialog')
+  const controls = dialog.querySelector(media) as HTMLMediaElement
+  for (const key of ['ArrowLeft', 'ArrowRight']) {
+    expect(fireEvent.keyDown(controls, { key })).toBe(true)
+    expect(within(dialog).getByRole('heading', { name })).toBeTruthy()
+    expect(dialog.querySelector(media)).toBe(controls)
+  }
+  fireEvent.keyDown(dialog, { key: 'ArrowRight' })
+  expect(within(dialog).getByRole('heading', { name: 'notes.txt' })).toBeTruthy()
+})
+
 it('falls back with a message when an image, video or 3D file cannot be previewed', async () => {
   viewer.fail = true
   mount()

@@ -25,6 +25,8 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
     dlResume: vi.fn(),
     dlCancel: vi.fn(),
     dlRetry: vi.fn(),
+    dlRemove: vi.fn(),
+    settingsGet: vi.fn(),
     dlImportPack: vi.fn(),
     dlExport: vi.fn(),
   },
@@ -321,4 +323,27 @@ it('echoes the observed destination identity when overwriting after a late confl
       choice: { kind: 'overwrite', approved: observed },
     }),
   )
+})
+
+it('confirms removal for the selected terminal row and Cancel leaves it alone', async () => {
+  vi.mocked(gateway.dlRemove).mockResolvedValue(null)
+  mount()
+  await snapshot([
+    job({ id: 'completed', state: 'completed', generation: 7 }),
+    job({ id: 'failed', state: 'failed' }), job({ id: 'cancelled', state: 'cancelled' }),
+    ...(['queued', 'resolving', 'downloading', 'verifying', 'paused'] as const).map((state) => job({ id: state, state })),
+    job({ id: 'finalizing', state: 'failed', finalizing: true }),
+  ])
+  await waitFor(() => expect(screen.getAllByRole('button', { name: 'Remove from list' })).toHaveLength(3))
+  const completed = screen.getByText('Completed', { exact: true }).closest('tr')!
+  const target = completed.querySelector<HTMLButtonElement>('button[title="Remove from list"]')!
+  fireEvent.click(target)
+  expect(screen.getByRole('dialog', { name: 'Remove this download from the list?' })).toBeTruthy()
+  expect(screen.getByText('Only the list entry is removed. The downloaded file stays where it is.')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(gateway.dlRemove).not.toHaveBeenCalled()
+  fireEvent.click(target)
+  fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+  await waitFor(() => expect(gateway.dlRemove).toHaveBeenCalledTimes(1))
+  expect(gateway.dlRemove).toHaveBeenCalledWith('completed', 7)
 })

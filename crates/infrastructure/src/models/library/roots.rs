@@ -58,6 +58,10 @@ fn display(path: &Path) -> String {
 }
 
 impl LibraryRoots {
+    pub fn install_root(&self) -> &Path {
+        &self.install_root
+    }
+
     pub fn new(
         install_root: &Path,
         extra: Arc<dyn ExtraModelPaths>,

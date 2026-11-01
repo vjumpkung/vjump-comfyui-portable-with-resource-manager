@@ -119,7 +119,7 @@ fn tree_listing_failed() -> NodeAppError {
     failed("The repository tree could not be listed")
 }
 
-fn tracked_paths(bytes: &[u8]) -> Result<HashSet<String>, NodeAppError> {
+pub(crate) fn tracked_paths(bytes: &[u8]) -> Result<HashSet<String>, NodeAppError> {
     let mut paths = HashSet::new();
     if bytes.is_empty() {
         return Ok(paths);

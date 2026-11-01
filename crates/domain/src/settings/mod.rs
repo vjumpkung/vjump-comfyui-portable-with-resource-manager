@@ -195,9 +195,11 @@ pub struct Settings {
     pub language: Language,
     pub registry_cache_ttl: TtlHours,
     pub bandwidth_cap_kib_s: Option<NonZeroU32>,
+    pub skip_security_confirmations: bool,
 }
 
 impl Settings {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         download_concurrency: u32,
         hf_engine: HfEngine,
@@ -206,9 +208,11 @@ impl Settings {
         language: Language,
         registry_cache_ttl: u32,
         bandwidth_cap_kib_s: Option<u32>,
+        skip_security_confirmations: bool,
     ) -> Result<Self, SettingsError> {
         Ok(Self {
             download_concurrency: Concurrency::new(download_concurrency)?,
+            skip_security_confirmations,
             hf_engine,
             close_behavior,
             theme,
@@ -235,6 +239,7 @@ mod tests {
         assert_eq!(settings.language, Language::En);
         assert_eq!(settings.registry_cache_ttl.get(), 6);
         assert_eq!(settings.bandwidth_cap_kib_s, None);
+        assert!(!settings.skip_security_confirmations);
     }
 
     #[test]
@@ -253,7 +258,8 @@ mod tests {
                 Theme::Dark,
                 Language::En,
                 1,
-                Some(0)
+                Some(0),
+                false,
             ),
             Err(SettingsError::InvalidBandwidthCap)
         );
@@ -265,9 +271,11 @@ mod tests {
             Language::Th,
             u32::MAX,
             Some(u32::MAX),
+            true,
         )
         .unwrap();
         assert_eq!(settings.bandwidth_cap_kib_s.unwrap().get(), u32::MAX);
+        assert!(settings.skip_security_confirmations);
     }
 
     #[test]

@@ -31,8 +31,8 @@ use application::{
     models::{
         acquisition::{
             CancelJob, DownloadFiles, EnqueueDownloads, ExportResourceList, ImportPack,
-            JobRepository, ListJobs, ModelPacks, PauseJob, ResolveDownload, ResumeJob, RetryJob,
-            SourceResolver,
+            JobRepository, ListJobs, ModelPacks, PauseJob, RemoveJob, ResolveDownload, ResumeJob,
+            RetryJob, SourceResolver,
         },
         library::{
             DeleteModels, DeleteModelsPermanently, GetLibraryStatus, GetModelDetails,
@@ -284,6 +284,7 @@ pub struct DownloadServices {
     pub(crate) pause: PauseJob,
     pub(crate) cancel: CancelJob,
     pub(crate) retry: RetryJob,
+    pub(crate) remove: RemoveJob,
     pub(crate) list: ListJobs,
     pub(crate) import: ImportPack,
     pub(crate) export: ExportResourceList,
@@ -326,6 +327,10 @@ impl DownloadServices {
                 control: stack.supervisor.clone(),
             },
             retry: RetryJob { resume: resume() },
+            remove: RemoveJob {
+                repository: repository.clone(),
+                events: stack.hub.clone(),
+            },
             list: ListJobs {
                 repository: repository.clone(),
             },
@@ -1103,11 +1108,17 @@ impl AppState {
         } else {
             services.nodes.reconcile().await;
         }
-        services.library.start();
-        services.downloads.start();
         let mut state = Self::new(Ok(services), credentials, ingress, picker, paths.data_dir);
         state.configure_opener(Some(services_root(resolved)), None)?;
         Ok(state)
+    }
+
+    /// Starts background work only after the state has been published to the app.
+    pub fn start_services(&self) {
+        if let Ok(services) = self.services() {
+            services.library.start();
+            services.downloads.start();
+        }
     }
 
     /// The state for a start without a usable root: credentials still work, everything that

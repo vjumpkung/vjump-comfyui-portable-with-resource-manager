@@ -134,6 +134,7 @@ async fn moved_rebuild(original_present: bool) {
         Language::Th,
         21,
         Some(1024),
+        false,
     )
     .unwrap();
     machine.settings.save(&settings).await.unwrap();

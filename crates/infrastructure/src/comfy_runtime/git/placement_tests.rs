@@ -498,6 +498,73 @@ async fn latest_commit_fetches_origin_even_when_current_upstream_is_elsewhere() 
 }
 
 #[tokio::test]
+async fn latest_commit_fetch_accepts_rewritten_remote_branches_and_preserves_local_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let remote = directory.path().join("remote");
+    let root = directory.path().join("install root");
+    let comfy = root.join("ComfyUI");
+    fs::create_dir_all(&remote).unwrap();
+    fs::create_dir_all(&root).unwrap();
+    git(&remote, &["init", "-b", "main"]);
+    fs::write(remote.join("README.md"), "initial default tip").unwrap();
+    git(&remote, &["add", "-A"]);
+    git(&remote, &["commit", "-m", "initial default tip"]);
+    git(&remote, &["checkout", "-b", "feature"]);
+    fs::write(remote.join("feature.txt"), "old feature").unwrap();
+    git(&remote, &["add", "-A"]);
+    git(&remote, &["commit", "-m", "old feature"]);
+    git(&remote, &["checkout", "main"]);
+    // A local bundle exercises real fetches without needing a transport shell.
+    let bundle = directory.path().join("origin.bundle");
+    git(
+        &remote,
+        &["bundle", "create", bundle.to_str().unwrap(), "--all"],
+    );
+    git(&root, &["clone", bundle.to_str().unwrap(), "ComfyUI"]);
+    let old_feature = git(&comfy, &["rev-parse", "origin/feature"]);
+
+    git(&comfy, &["checkout", "-b", "my-work"]);
+    fs::write(comfy.join("mine.txt"), "unpublished").unwrap();
+    git(&comfy, &["add", "-A"]);
+    git(&comfy, &["commit", "-m", "unpublished"]);
+    let local = git(&comfy, &["rev-parse", "HEAD"]);
+    git(&comfy, &["checkout", "main"]);
+
+    // Replacing the upstream branch is equivalent to fetching a force-push.
+    git(&remote, &["branch", "-D", "feature"]);
+    git(&remote, &["checkout", "-b", "feature"]);
+    fs::write(remote.join("feature.txt"), "rewritten feature").unwrap();
+    git(&remote, &["add", "-A"]);
+    git(&remote, &["commit", "-m", "rewritten feature"]);
+    let feature = git(&remote, &["rev-parse", "HEAD"]);
+    assert_ne!(feature, old_feature);
+    git(&remote, &["checkout", "main"]);
+    fs::write(remote.join("README.md"), "new default tip").unwrap();
+    git(&remote, &["commit", "-am", "advance main"]);
+    let tip = git(&remote, &["rev-parse", "HEAD"]);
+    git(
+        &remote,
+        &["bundle", "create", bundle.to_str().unwrap(), "--all"],
+    );
+
+    let source = GitSource::with(Downloader::new(), Endpoints::pinned(), Some(locate_git()));
+    let repository = GitRepository::with_git(Arc::new(source), locate_git());
+    repository
+        .fetch(&root, &UpdateTarget::LatestCommit, &ctx())
+        .await
+        .unwrap();
+    let frozen = repository
+        .freeze(&root, &UpdateTarget::LatestCommit)
+        .await
+        .unwrap();
+    repository.apply(&root, &frozen, &ctx()).await.unwrap();
+    assert_eq!(git(&comfy, &["rev-parse", "HEAD"]), tip);
+    assert_eq!(git(&comfy, &["rev-parse", "origin/feature"]), feature);
+    assert_eq!(git(&comfy, &["rev-parse", "my-work"]), local);
+    assert_eq!(git(&comfy, &["show", "my-work:mine.txt"]), "unpublished");
+}
+
+#[tokio::test]
 async fn latest_commit_without_a_default_branch_fails_before_checkout() {
     let install = Install::new();
     let repository = install.repository();

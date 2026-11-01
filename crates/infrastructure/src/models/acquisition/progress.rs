@@ -1,7 +1,7 @@
 use application::models::acquisition::*;
 use domain::{models::acquisition::DownloadJob, shared::model_values::JobId};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Mutex,
     time::Instant,
 };
@@ -16,6 +16,7 @@ struct State {
     jobs: HashMap<JobId, DownloadJob>,
     subscribers: HashMap<u64, Subscriber>,
     last_progress: HashMap<JobId, Instant>,
+    tombstones: HashSet<JobId>,
     history: VecDeque<DownloadEvent>,
 }
 pub struct DownloadHub {
@@ -40,6 +41,7 @@ impl DownloadHub {
                 jobs: HashMap::new(),
                 subscribers: HashMap::new(),
                 last_progress: HashMap::new(),
+                tombstones: HashSet::new(),
                 history: VecDeque::new(),
             }),
             notify: tokio::sync::Notify::new(),
@@ -48,7 +50,9 @@ impl DownloadHub {
     pub fn seed(&self, jobs: impl IntoIterator<Item = DownloadJob>) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         for job in jobs {
-            state.jobs.insert(job.id.clone(), job);
+            if !state.tombstones.contains(&job.id) {
+                state.jobs.insert(job.id.clone(), job);
+            }
         }
     }
     pub fn subscribe(&self, after: Option<&DownloadCursor>) -> DownloadSubscription {
@@ -148,12 +152,20 @@ impl DownloadHub {
     }
 }
 impl DownloadEvents for DownloadHub {
+    fn removed(&self, id: &JobId) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.jobs.remove(id);
+        state.last_progress.remove(id);
+        state.tombstones.insert(id.clone());
+        self.publish(&mut state, DownloadEventKind::Removed(id.clone()));
+    }
     fn state(&self, job: &DownloadJob) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        if state
-            .jobs
-            .get(&job.id)
-            .is_some_and(|old| old.generation > job.generation)
+        if state.tombstones.contains(&job.id)
+            || state
+                .jobs
+                .get(&job.id)
+                .is_some_and(|old| old.generation > job.generation)
         {
             return;
         }

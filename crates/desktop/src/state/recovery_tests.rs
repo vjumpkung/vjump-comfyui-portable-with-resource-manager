@@ -298,7 +298,7 @@ fn bundled_profile() -> SetupProfile {
 }
 
 async fn compose_at(root: &Path) -> AppState {
-    AppState::compose(
+    let state = AppState::compose(
         &ResolvedRoot {
             root: root.to_owned(),
             source: RootSource::Bootstrap,
@@ -306,7 +306,141 @@ async fn compose_at(root: &Path) -> AppState {
         Arc::new(NoPicker),
     )
     .await
-    .unwrap()
+    .unwrap();
+    state.start_services();
+    state
+}
+
+#[test]
+fn startup_publishes_before_watching_and_starting_services() {
+    use application::comfy_runtime::{RuntimeEvents, RuntimeSubscription};
+    use std::sync::{Mutex, OnceLock, mpsc};
+    use tauri::{
+        Manager, RunEvent,
+        test::{mock_builder, mock_context, noop_assets},
+    };
+
+    struct WatchEvents {
+        app: tauri::AppHandle<tauri::test::MockRuntime>,
+        hub: RuntimeLogHub,
+        observed: mpsc::Sender<()>,
+    }
+    impl RuntimeEvents for WatchEvents {
+        fn subscribe(&self, after: Option<u64>) -> RuntimeSubscription {
+            assert!(
+                self.app.try_state::<AppState>().is_some(),
+                "watch must follow manage"
+            );
+            self.observed.send(()).unwrap();
+            self.hub.subscribe(after)
+        }
+        fn unsubscribe(&self, id: u64) {
+            self.hub.unsubscribe(id);
+        }
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().to_owned();
+    let worker = Arc::new(Mutex::new(None));
+    let event_worker = worker.clone();
+    let (observed, observation) = mpsc::channel();
+    let mut checked = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut context = mock_context(noop_assets());
+    context
+        .config_mut()
+        .app
+        .windows
+        .push(tauri::utils::config::WindowConfig {
+            label: crate::MANAGER_WINDOW.into(),
+            ..Default::default()
+        });
+    crate::run_with_runtime(
+        mock_builder(),
+        context,
+        Arc::new(OnceLock::new()),
+        worker.clone(),
+        move |app| {
+            let mut state = tauri::async_runtime::block_on(AppState::compose(
+                &ResolvedRoot {
+                    root,
+                    source: RootSource::DebugOverride,
+                },
+                Arc::new(NoPicker),
+            ))?;
+            let services = state.services.as_mut().unwrap();
+            assert!(
+                services.library.run.lock().unwrap().is_none(),
+                "compose must not start scans"
+            );
+            assert!(
+                services.downloads.run.lock().unwrap().is_none(),
+                "compose must not start downloads"
+            );
+            services.comfy.events = Arc::new(WatchEvents {
+                app: app.clone(),
+                hub: services.comfy.hub.clone(),
+                observed,
+            });
+            Ok(state)
+        },
+        |_, code| panic!("unexpected startup exit {code}"),
+        move |app, event| match event {
+            RunEvent::MainEventsCleared if !checked => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "services did not start"
+                );
+                if !event_worker
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|worker| worker.is_finished())
+                    || observation.try_recv().is_err()
+                {
+                    return;
+                }
+                checked = true;
+                let state = app.state::<AppState>();
+                let services = state.services().unwrap();
+                assert!(services.library.run.lock().unwrap().is_some());
+                assert!(services.downloads.run.lock().unwrap().is_some());
+                app.get_webview_window(crate::MANAGER_WINDOW)
+                    .unwrap()
+                    .destroy()
+                    .unwrap();
+            }
+            RunEvent::ExitRequested { .. } => {}
+            event => crate::on_run_event(app, event),
+        },
+    );
+    worker.lock().unwrap().take().unwrap().join().unwrap();
+}
+
+#[tokio::test]
+async fn startup_exit_discards_composed_state_without_starting_services() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = AppState::compose(
+        &ResolvedRoot {
+            root: directory.path().to_owned(),
+            source: RootSource::DebugOverride,
+        },
+        Arc::new(NoPicker),
+    )
+    .await
+    .unwrap();
+    let weak = Arc::downgrade(&state.close);
+    let gate = crate::startup::StartupGate::default();
+    assert!(gate.begin_exit());
+    let state = gate
+        .publish(state, |_| panic!("publication after exit"))
+        .err()
+        .unwrap();
+    let services = state.services().unwrap();
+    assert!(services.library.run.lock().unwrap().is_none());
+    assert!(services.downloads.run.lock().unwrap().is_none());
+    drop(state);
+    assert!(weak.upgrade().is_none());
 }
 
 /// Publishes `install.json` in `root`; `recorded` is the root the manifest names, which differs

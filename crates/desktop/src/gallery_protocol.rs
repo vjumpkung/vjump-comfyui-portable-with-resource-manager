@@ -1,6 +1,6 @@
 //! The `gallery` preview protocol: read-only access to gallery files for the manager window's
-//! `<img>`, `<video>` and model viewers. A request is `<scheme>/<area>/<path>`; the optional query
-//! (`?v=`) only busts the webview cache.
+//! `<img>`, `<video>`, `<audio>` and model viewers. A request is `<scheme>/<area>/<path>`;
+//! the optional query (`?v=`) only busts the webview cache.
 //!
 //! Custom protocols are not covered by the IPC capability ACL, so the requesting webview is
 //! checked here: only the manager window may read gallery files, never the ComfyUI window. Files
@@ -232,6 +232,12 @@ fn content_type(name: &str) -> &'static str {
         "mp4" | "m4v" => "video/mp4",
         "webm" => "video/webm",
         "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
         "glb" => "model/gltf-binary",
         "gltf" => "model/gltf+json",
         _ => OCTET_STREAM,

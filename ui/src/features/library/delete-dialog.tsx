@@ -307,7 +307,9 @@ function Report({
               <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">
                 {names.get(keyOf(result.location)) ?? result.location.path}
                 <span className="block text-xs text-muted-foreground">
-                  {t(OUTCOME_KEYS[result.outcome.kind])}
+                  {result.outcome.kind === 'failed' && result.outcome.error.code === 'model_repository_file'
+                    ? t('common.repositoryFile')
+                    : t(OUTCOME_KEYS[result.outcome.kind])}
                 </span>
               </span>
             </li>

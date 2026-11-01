@@ -10,12 +10,14 @@ import { setupStatus } from '@/shared/testing/environment'
 import { TooltipProvider } from '@/shared/ui/tooltip'
 
 import { SetupWizardPreferences } from './setup-wizard-preferences'
+import { BootGate } from './boot-gate'
 import { ThemeToggle } from './shell/theme-toggle'
 
 vi.mock('@/shared/ui/log-view', () => ({ LogView: () => null }))
 vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/shared/ipc/gateway')>()),
   gateway: {
+    appReady: vi.fn(),
     settingsGet: vi.fn(),
     settingsSet: vi.fn(),
     setupSelectRoot: vi.fn(),
@@ -32,6 +34,7 @@ const settings: SettingsDto = {
   language: 'en',
   registryCacheTtl: 6,
   bandwidthCapKibS: 256,
+  skipSecurityConfirmations: false,
 }
 
 function deferred<T>() {
@@ -53,8 +56,8 @@ function mount() {
       <ThemeProvider>
         <TooltipProvider>
           <ThemeToggle />
-          <SetupWizardPreferences status={setupStatus} mode="first_run"
-            onClose={vi.fn()} refresh={vi.fn()} renderCuratedReview={() => null} />
+          <BootGate><SetupWizardPreferences status={setupStatus} mode="first_run"
+            onClose={vi.fn()} refresh={vi.fn()} renderCuratedReview={() => null} /></BootGate>
         </TooltipProvider>
       </ThemeProvider>
     </QueryClientProvider>,
@@ -63,6 +66,7 @@ function mount() {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  vi.mocked(gateway.appReady).mockResolvedValue(true)
   window.localStorage.clear()
   vi.mocked(gateway.settingsGet).mockResolvedValue(settings)
   vi.mocked(gateway.settingsSet).mockImplementation((input) => Promise.resolve(input))

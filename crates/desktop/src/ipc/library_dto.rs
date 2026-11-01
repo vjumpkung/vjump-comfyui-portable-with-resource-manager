@@ -532,6 +532,10 @@ impl From<LibraryErrorCode> for LibraryErrorDto {
 pub fn describe(code: LibraryErrorCode) -> (&'static str, &'static str) {
     use LibraryErrorCode as E;
     match code {
+        E::RepositoryFile => (
+            "model_repository_file",
+            "This file is part of the ComfyUI installation and can't be changed here.",
+        ),
         E::Locked => (
             "model_locked",
             "Another program is using the file. Close it, or stop ComfyUI, then retry.",

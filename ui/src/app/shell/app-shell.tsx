@@ -1,18 +1,7 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 
-import {
-  CloseRequestDialog,
-  ComfyPage,
-  useRuntime,
-  useRuntimeActions,
-} from '@/features/comfy-runtime'
-import { CustomNodesPage } from '@/features/custom-nodes'
-import { DownloadsPage } from '@/features/downloads'
-import { GalleryPage } from '@/features/gallery'
-import { LibraryPage } from '@/features/library'
-import { OverviewPage } from '@/features/overview'
-import { SettingsPage } from '@/features/settings'
-import { EnvironmentPage } from '@/features/environment'
+import { CloseRequestDialog } from '@/features/comfy-runtime/close-request-dialog'
+import { useRuntime, useRuntimeActions } from '@/features/comfy-runtime/use-runtime'
 import {
   gateway,
   type SetupModeDto,
@@ -20,10 +9,20 @@ import {
 } from '@/shared/ipc/gateway'
 import { useTranslation } from '@/shared/i18n'
 import { EmptyState } from '@/shared/ui/empty-state'
+import { Skeleton } from '@/shared/ui/skeleton'
 
 import { type NavId } from './nav'
 import { Sidebar } from './sidebar'
 import { TopBar } from './top-bar'
+
+const ComfyPage = lazy(() => import('@/features/comfy-runtime/comfy-page').then((m) => ({ default: m.ComfyPage })))
+const CustomNodesPage = lazy(() => import('@/features/custom-nodes/custom-nodes-page').then((m) => ({ default: m.CustomNodesPage })))
+const DownloadsPage = lazy(() => import('@/features/downloads/downloads-page').then((m) => ({ default: m.DownloadsPage })))
+const GalleryPage = lazy(() => import('@/features/gallery/gallery-page').then((m) => ({ default: m.GalleryPage })))
+const LibraryPage = lazy(() => import('@/features/library/library-page').then((m) => ({ default: m.LibraryPage })))
+const OverviewPage = lazy(() => import('@/features/overview/overview-page').then((m) => ({ default: m.OverviewPage })))
+const SettingsPage = lazy(() => import('@/features/settings/settings-page').then((m) => ({ default: m.SettingsPage })))
+const EnvironmentPage = lazy(() => import('@/features/environment/environment-page').then((m) => ({ default: m.EnvironmentPage })))
 
 /** Features cannot import each other, so the shell hands the library a way to stop ComfyUI. */
 async function stopComfy(): Promise<void> {
@@ -114,14 +113,14 @@ export function AppShell({ status, onSetup, onResume }: PageActions) {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <TopBar />
         <main className="relative min-h-0 flex-1 overflow-y-auto p-6">
-          <Page
+          <Suspense fallback={<Skeleton className="h-64" />}><Page
             active={active}
             status={status}
             onSetup={onSetup}
             onResume={onResume}
             onOpenSettings={() => setActive('settings')}
             onOpenComfy={() => setActive('comfyui')}
-          />
+          /></Suspense>
         </main>
       </div>
       <CloseRequestDialog />

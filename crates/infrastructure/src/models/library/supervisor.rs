@@ -6,7 +6,11 @@ use super::{
     sqlite::SqliteCatalog,
     watch::{self, DirtyRoots, RootWatcher},
 };
-use crate::shared::clock::SystemClock;
+use crate::{
+    comfy_runtime::tracked::{TrackedFiles, comfy_tracked_files},
+    models::acquisition::stack::DEFAULT_MODEL_ROOT_ID,
+    shared::clock::SystemClock,
+};
 use application::{
     models::library::*,
     shared::{Clock, IdGenerator},
@@ -113,6 +117,20 @@ impl LibrarySupervisor {
 
     async fn scan_inner(&self, only: Option<HashSet<String>>) -> Result<()> {
         let mut warnings = self.roots.refresh().await;
+        let tracked = comfy_tracked_files(self.roots.install_root()).await;
+        let hidden = match tracked {
+            TrackedFiles::Known(paths) => TrackedFiles::Known(
+                paths
+                    .into_iter()
+                    .filter_map(|path| {
+                        let (area, relative) = path.split_once('/')?;
+                        (area == "models" || (cfg!(windows) && area.eq_ignore_ascii_case("models")))
+                            .then(|| relative.to_owned())
+                    })
+                    .collect(),
+            ),
+            _ => TrackedFiles::NotRepository,
+        };
         self.sync_watcher();
         let specs: Vec<_> = self
             .roots
@@ -126,9 +144,14 @@ impl LibrarySupervisor {
             let mut scans: Vec<RootScan> = Vec::new();
             for spec in &specs {
                 let known = self.catalog.known_files(&spec.id).await?;
+                let hidden = if spec.id == DEFAULT_MODEL_ROOT_ID {
+                    hidden.clone()
+                } else {
+                    TrackedFiles::NotRepository
+                };
                 let spec = spec.clone();
                 scans.push(
-                    tokio::task::spawn_blocking(move || scan_root(&spec, &known))
+                    tokio::task::spawn_blocking(move || scan_root(&spec, &known, &hidden))
                         .await
                         .map_err(|_| LibraryError(LibraryErrorCode::Io))?,
                 );

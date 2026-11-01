@@ -25,6 +25,7 @@ import { queryClient } from '@/shared/lib/query'
 import { environment, profile, run, setupStatus } from '@/shared/testing/environment'
 
 import { App } from './App'
+import { BootGate } from './boot-gate'
 
 const restrictedServices = vi.hoisted(() => ({
   settings: vi.fn<() => { data: SettingsDto | null }>(() => ({ data: null })),
@@ -34,6 +35,7 @@ const restrictedServices = vi.hoisted(() => ({
 vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/shared/ipc/gateway')>()),
   gateway: {
+    appReady: vi.fn(),
     setupStatus: vi.fn(),
     settingsSet: vi.fn(),
     setupDetectHardware: vi.fn(),
@@ -52,8 +54,8 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
     nodeUpdateAll: vi.fn(),
   },
 }))
-vi.mock('@/features/settings', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/features/settings')>()),
+vi.mock('@/features/settings/queries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/features/settings/queries')>()),
   useSettings: restrictedServices.settings,
 }))
 vi.mock('@/shared/ui/log-view', () => ({ LogView: () => <p>Live setup log</p> }))
@@ -125,7 +127,7 @@ function rebuildStatus(code: 'moved' | 'interpreter_broken' = 'moved'): SetupSta
 
 function mount(status: SetupStatusDto) {
   currentStatus = status
-  return render(<App />)
+  return render(<BootGate><App /></BootGate>)
 }
 
 function updateStatus(status: SetupStatusDto) {
@@ -159,6 +161,7 @@ async function startFirstRun() {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  vi.mocked(gateway.appReady).mockResolvedValue(true)
   restrictedServices.settings.mockReturnValue({ data: null })
   restrictedServices.themeToggle.mockReturnValue(null)
   queryClient.clear()
@@ -208,6 +211,7 @@ it.each(['wizard', 'shell'] as const)('language_sync_applies_backend_language_on
     language: 'th',
     registryCacheTtl: 24,
     bandwidthCapKibS: null,
+    skipSecurityConfirmations: false,
   } })
   mount(route === 'wizard' ? setupStatus : { ...setupStatus, phase: 'ready', activeEnv: environment })
   await waitFor(() => expect(getLanguage()).toBe('th'))

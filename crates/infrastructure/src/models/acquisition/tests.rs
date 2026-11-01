@@ -976,3 +976,201 @@ async fn a_deferred_download_stack_creates_nothing_under_the_root() {
     );
     assert!(!root.join("ComfyUI").exists());
 }
+
+#[tokio::test]
+async fn remove_is_conditional_persistent_and_keeps_files_and_provenance() {
+    let f = Fixture::new();
+    for state in [
+        DownloadState::Queued,
+        DownloadState::Resolving,
+        DownloadState::Downloading,
+        DownloadState::Verifying,
+        DownloadState::Paused,
+        DownloadState::Completed,
+        DownloadState::Failed,
+        DownloadState::Cancelled,
+    ] {
+        let mut job = f
+            .insert(f.job(state.as_str(), "https://example.com/file"))
+            .await;
+        job.state = state;
+        f.repository.save(&job, 0).await.unwrap();
+        assert!(!f.repository.remove(&job.id, 1).await.unwrap());
+        let terminal = matches!(
+            state,
+            DownloadState::Completed | DownloadState::Failed | DownloadState::Cancelled
+        );
+        assert_eq!(f.repository.remove(&job.id, 0).await.unwrap(), terminal);
+        if terminal {
+            assert!(!f.repository.remove(&job.id, 0).await.unwrap());
+        }
+    }
+    for state in [
+        DownloadState::Completed,
+        DownloadState::Failed,
+        DownloadState::Cancelled,
+    ] {
+        let id = format!("pending-{}", state.as_str());
+        let mut job = f.insert(f.job(&id, "https://example.com/file")).await;
+        job.state = state;
+        fs::write(f.staging.root.path.join(&id), b"kept").unwrap();
+        let (identity, digest) = f
+            .files
+            .verify(&id, None, DownloadSize::Exact(4))
+            .await
+            .unwrap();
+        job.publication = Some(PublicationIntent {
+            phase: FinalizePhase::Verified,
+            staged_key: id.clone(),
+            staged_identity: identity,
+            digest,
+            external_verified: false,
+            backup_name: SafeFileName::new("backup.bin").unwrap(),
+            published_identity: None,
+        });
+        f.repository.save(&job, 0).await.unwrap();
+        assert_eq!(
+            f.repository.remove(&job.id, 0).await.unwrap(),
+            state == DownloadState::Completed
+        );
+    }
+    let mut job = f
+        .insert(f.job("provenance", "https://example.com/model.bin"))
+        .await;
+    fs::write(f.staging.root.path.join("provenance"), b"model").unwrap();
+    let (identity, digest) = f
+        .files
+        .verify("provenance", None, DownloadSize::Exact(5))
+        .await
+        .unwrap();
+    job.state = DownloadState::Verifying;
+    job.publication = Some(PublicationIntent {
+        phase: FinalizePhase::Verified,
+        staged_key: "provenance".into(),
+        staged_identity: identity,
+        digest,
+        external_verified: false,
+        backup_name: SafeFileName::new("backup.bin").unwrap(),
+        published_identity: None,
+    });
+    f.repository.save(&job, 0).await.unwrap();
+    FinalizeDownload {
+        repository: f.repository.clone(),
+        files: f.files.clone(),
+        events: f.hub.clone(),
+    }
+    .execute(&mut job)
+    .await
+    .unwrap();
+    assert!(f.repository.remove(&job.id, job.generation).await.unwrap());
+    assert_eq!(
+        fs::read(f.models.join("checkpoints/provenance.bin")).unwrap(),
+        b"model"
+    );
+    let reopened = SqliteDownloads {
+        db: Db {
+            connection: Arc::new(Mutex::new(
+                rusqlite::Connection::open(f._temp.path().join("test.db")).unwrap(),
+            )),
+        },
+    };
+    assert!(
+        reopened
+            .list(None, 500)
+            .await
+            .unwrap()
+            .iter()
+            .all(|j| j.id != job.id)
+    );
+    reopened
+        .db
+        .run(|c| {
+            let id: String = c
+                .query_row("SELECT source_job_id FROM models", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(id, "provenance");
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn removed_hub_job_cannot_be_resurrected_by_late_events_or_seeding() {
+    let f = Fixture::new();
+    let mut job = f.job("removed", "https://example.com/file");
+    job.state = DownloadState::Downloading;
+    f.hub.state(&job);
+    let sub = f.hub.subscribe(None);
+    f.hub.drain(sub.id, 10).unwrap();
+    f.hub.sample(
+        &job.id,
+        0,
+        TransferProgress {
+            bytes: 2,
+            total: DownloadSize::Unknown,
+            bytes_per_second: 1.0,
+            eta_seconds: None,
+            estimated: false,
+        },
+    );
+    f.hub.drain(sub.id, 10).unwrap();
+    f.hub.removed(&job.id);
+    let events = f.hub.drain(sub.id, 10).unwrap();
+    assert!(matches!(&events[0].kind, DownloadEventKind::Removed(id) if id == &job.id));
+    job.state = DownloadState::Completed;
+    f.hub.state(&job);
+    f.hub.seed([job.clone()]);
+    assert!(f.hub.current(&job.id).is_none());
+    assert!(f.hub.drain(sub.id, 10).unwrap().is_empty());
+    let reconnect = f.hub.subscribe(Some(&events[0].cursor));
+    assert!(
+        matches!(&f.hub.drain(reconnect.id, 10).unwrap()[0].kind, DownloadEventKind::Snapshot(jobs) if jobs.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn concurrent_retry_and_remove_have_one_winner_without_resurrection() {
+    let f = Fixture::new();
+    for index in 0..20 {
+        let mut job = f
+            .insert(f.job(&format!("race-{index}"), "https://example.com/file"))
+            .await;
+        job.state = DownloadState::Failed;
+        f.repository.save(&job, 0).await.unwrap();
+        f.hub.state(&job);
+        let retry = RetryJob {
+            resume: ResumeJob {
+                repository: f.repository.clone(),
+                files: f.files.clone(),
+                events: f.hub.clone(),
+                control: Arc::new(NoControl),
+            },
+        };
+        let remove = RemoveJob {
+            repository: f.repository.clone(),
+            events: f.hub.clone(),
+        };
+        let (retried, removed) = tokio::join!(retry.execute(&job.id), remove.execute(&job.id, 0));
+        assert_ne!(retried.is_ok(), removed.is_ok());
+        if removed.is_ok() {
+            f.hub.state(&job);
+            f.hub.seed([job.clone()]);
+            assert!(f.hub.current(&job.id).is_none());
+            assert!(
+                f.repository
+                    .list(None, 500)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|j| j.id != job.id)
+            );
+        } else {
+            assert_eq!(
+                f.repository.get(&job.id).await.unwrap().state,
+                DownloadState::Queued
+            );
+            assert_eq!(f.hub.current(&job.id).unwrap().state, DownloadState::Queued);
+        }
+    }
+}

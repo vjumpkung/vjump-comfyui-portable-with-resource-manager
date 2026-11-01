@@ -1,6 +1,6 @@
 use application::settings::UpdateSettingsInput;
 use domain::settings::{CloseBehavior, CredentialKind, HfEngine, Language, Theme};
-use tauri::State;
+use tauri::{Manager, State};
 
 use super::{
     dto::{
@@ -10,6 +10,13 @@ use super::{
     error::IpcError,
 };
 use crate::state::AppState;
+
+#[tauri::command]
+#[specta::specta]
+pub fn app_ready<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bool {
+    app.try_state::<std::sync::Arc<crate::startup::StartupGate>>()
+        .is_some_and(|gate| gate.is_ready())
+}
 
 #[tauri::command]
 #[specta::specta]
@@ -47,6 +54,7 @@ pub async fn settings_set(
             language: Language::from(input.language).as_str().to_owned(),
             registry_cache_ttl: input.registry_cache_ttl,
             bandwidth_cap_kib_s: input.bandwidth_cap_kib_s,
+            skip_security_confirmations: input.skip_security_confirmations,
         })
         .await?;
     // The queue applies a lowered limit to new admissions only; running transfers continue.

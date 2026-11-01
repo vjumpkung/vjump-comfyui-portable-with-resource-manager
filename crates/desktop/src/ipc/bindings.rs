@@ -10,6 +10,8 @@ use super::{
 pub fn builder<R: tauri::Runtime>() -> Builder<R> {
     Builder::<R>::new()
         .commands(collect_commands![
+            // Specta needs a concrete runtime for metadata; the invoke handler stays generic.
+            commands::app_ready::<tauri::Wry>,
             commands::app_info,
             commands::settings_get,
             commands::settings_set,
@@ -57,6 +59,7 @@ pub fn builder<R: tauri::Runtime>() -> Builder<R> {
             download_commands::dl_resume,
             download_commands::dl_cancel,
             download_commands::dl_retry,
+            download_commands::dl_remove,
             download_commands::dl_subscribe,
             download_commands::dl_unsubscribe,
             download_commands::dl_import_pack,

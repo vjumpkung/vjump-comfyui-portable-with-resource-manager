@@ -105,6 +105,7 @@ pub struct UpdateSettingsInput {
     pub language: String,
     pub registry_cache_ttl: u32,
     pub bandwidth_cap_kib_s: Option<u32>,
+    pub skip_security_confirmations: bool,
 }
 
 pub struct UpdateSettings {
@@ -125,6 +126,7 @@ impl UpdateSettings {
             input.language.parse()?,
             input.registry_cache_ttl,
             input.bandwidth_cap_kib_s,
+            input.skip_security_confirmations,
         )?;
         self.repository.save(&settings).await?;
         Ok(settings)

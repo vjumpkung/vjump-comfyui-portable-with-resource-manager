@@ -136,6 +136,16 @@ Long paths, model names and URLs wrap with `break-words [overflow-wrap:anywhere]
 - **Empty states.** `rounded-xl border border-dashed p-12 text-center text-sm text-muted-foreground`, plus one primary action, e.g. "Add download".
 - **Links.** `font-semibold underline decoration-brand-pink decoration-2 underline-offset-2`. External links open in the system browser and show an `ExternalLink` icon.
 
+### Startup loading screen
+
+The manager first paints a static splash from `index.html`, using the static `splash.css` stylesheet: centered product name and a cyan spinner, with no untranslated status copy. It uses the background/foreground pairs `#e0e5ec` / `#2a313a` (light) and `#2a313a` / `#e0e5ec` (dark), selected by `prefers-color-scheme`; the spinner track uses `muted` and its top uses `brand-cyan`.
+
+The splash stylesheet is external because Tauri injects a style nonce into inline `<style>` elements. That nonce disables CSP `'unsafe-inline'` for runtime-injected styles, including Sonner toasts and Radix scroll lock.
+
+React replaces the splash with the shared `LoadingScreen`, using the same layout and theme tokens plus translated “Starting…” text. `BootGate` polls `app_ready` one request at a time; state-dependent queries mount only after startup state is published. The lazy app import starts immediately alongside readiness polling. Shell pages, setup/rebuild and curated review load as separate chunks, with Skeleton fallbacks while their imports finish. Both startup screens use `role="status"` and `aria-busy="true"`, hide the decorative spinner from assistive technology, and disable its animation for `prefers-reduced-motion`.
+
+Startup composition runs on the named startup worker. A locked Initializing/Ready/Exiting gate prevents publication after an early close/exit; background services start only after state publication. The existing manager can be restored and focused before readiness.
+
 ## 6. Motion
 - Default `transition-colors`; cards use `transition-all duration-300`.
 - Micro-motion: arrow nudge on hover, button press, a 2 s cyan check after copying.

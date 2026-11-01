@@ -32,6 +32,9 @@ pub fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../../migrations/010_node_operation_git_evidence.sql"
         )),
+        M::up(include_str!(
+            "../../migrations/011_settings_skip_security.sql"
+        )),
     ])
 }
 
@@ -135,7 +138,7 @@ mod tests {
             let version: u32 = connection
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 10);
+            assert_eq!(version, 11);
             let theme: String = connection
                 .query_row(
                     "SELECT value FROM settings WHERE key = 'theme'",
@@ -193,6 +196,7 @@ mod tests {
             Language::En,
             24,
             Some(1024),
+            false,
         )
         .unwrap();
         assert_eq!(repository.load().await.unwrap(), Some(expected));
@@ -232,6 +236,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(language, "th");
+    }
+
+    #[tokio::test]
+    async fn security_migration_defaults_existing_settings_and_keeps_empty_database_empty() {
+        for populated in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("app.db");
+            {
+                let mut connection = Connection::open(&path).unwrap();
+                migrations().to_version(&mut connection, 10).unwrap();
+                if populated {
+                    connection.execute("INSERT INTO settings(key, value, updated_at) VALUES ('theme', 'dark', 't')", []).unwrap();
+                }
+            }
+            let db = Db::open(&path).await.unwrap();
+            db.run(move |c| {
+                let count: u32 = c
+                    .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(count, if populated { 2 } else { 0 });
+                if populated {
+                    let value: String = c
+                        .query_row(
+                            "SELECT value FROM settings WHERE key='skip_security_confirmations'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(value, "false");
+                    let theme: String = c
+                        .query_row("SELECT value FROM settings WHERE key='theme'", [], |row| {
+                            row.get(0)
+                        })
+                        .unwrap();
+                    assert_eq!(theme, "dark");
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn security_migration_never_overwrites_an_existing_preference() {
+        let mut c = Connection::open_in_memory().unwrap();
+        migrations().to_version(&mut c, 10).unwrap();
+        c.execute("INSERT INTO settings(key, value, updated_at) VALUES ('skip_security_confirmations', 'true', 't')", []).unwrap();
+        migrations().to_latest(&mut c).unwrap();
+        c.execute_batch(include_str!(
+            "../../migrations/011_settings_skip_security.sql"
+        ))
+        .unwrap();
+        let row: (String, String) = c
+            .query_row(
+                "SELECT value, updated_at FROM settings WHERE key='skip_security_confirmations'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("true".into(), "t".into()));
     }
 
     #[tokio::test]

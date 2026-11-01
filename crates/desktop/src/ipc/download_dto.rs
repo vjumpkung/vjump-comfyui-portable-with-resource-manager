@@ -521,6 +521,11 @@ pub enum DownloadEventDto {
         cursor: DownloadCursorDto,
         progress: ProgressDto,
     },
+    #[serde(rename = "job:removed", rename_all = "camelCase")]
+    Removed {
+        cursor: DownloadCursorDto,
+        id: String,
+    },
     /// The subscriber fell behind; subscribe again for a fresh snapshot.
     #[serde(rename_all = "camelCase")]
     Gap { cursor: DownloadCursorDto },
@@ -546,6 +551,10 @@ impl DownloadEventDto {
             } => Self::Progress {
                 cursor,
                 progress: ProgressDto::new(id.as_str(), *generation, progress),
+            },
+            DownloadEventKind::Removed(id) => Self::Removed {
+                cursor,
+                id: id.as_str().to_owned(),
             },
             DownloadEventKind::Gap => Self::Gap { cursor },
         }
