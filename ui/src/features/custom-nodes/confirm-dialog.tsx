@@ -15,7 +15,13 @@ import { trashName } from './model'
 export type NodeConfirmation = 'enable' | 'disable' | 'uninstall'
 
 /** Direct changes have no cancellation key, so the dialog states exactly what will move. */
-export function ConfirmDialog({ node, action, busy, onConfirm, onClose }: {
+export function ConfirmDialog({
+  node,
+  action,
+  busy,
+  onConfirm,
+  onClose,
+}: {
   node: InstalledNodeDto
   action: NodeConfirmation
   busy: boolean
@@ -42,15 +48,26 @@ export function ConfirmDialog({ node, action, busy, onConfirm, onClose }: {
     },
   }[action]
   return (
-    <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose() }}>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose()
+      }}
+    >
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{copy.title}</DialogTitle>
           <DialogDescription>{copy.body}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" disabled={busy} onClick={onClose}>{t('common.cancel')}</Button>
-          <Button variant={action === 'uninstall' ? 'destructive' : 'default'} disabled={busy} onClick={onConfirm}>
+          <Button variant="outline" disabled={busy} onClick={onClose}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant={action === 'uninstall' ? 'destructive' : 'default'}
+            disabled={busy}
+            onClick={onConfirm}
+          >
             {busy ? t('customNodes.confirm.working') : copy.confirm}
           </Button>
         </DialogFooter>

@@ -1,4 +1,12 @@
-import { Archive, ExternalLink, LoaderCircle, RefreshCw, Search, Star, TriangleAlert } from 'lucide-react'
+import {
+  Archive,
+  ExternalLink,
+  LoaderCircle,
+  RefreshCw,
+  Search,
+  Star,
+  TriangleAlert,
+} from 'lucide-react'
 import { toast } from 'sonner'
 
 import { t as translate, useTranslation } from '@/shared/i18n'
@@ -25,7 +33,11 @@ async function openRepository(repository: string) {
 }
 
 /** Remote text is rendered as plain text only. */
-function RegistryRow({ node, installDisabledReason, onInstall }: {
+function RegistryRow({
+  node,
+  installDisabledReason,
+  onInstall,
+}: {
   node: RegistryNodeDto
   installDisabledReason: string | null
   onInstall: (node: RegistryNodeDto) => void
@@ -35,10 +47,10 @@ function RegistryRow({ node, installDisabledReason, onInstall }: {
     <li className="flex flex-col gap-3 rounded-xl border bg-card p-4 transition-colors hover:border-brand-cyan">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-base font-bold tracking-tight break-words [overflow-wrap:anywhere]">
+          <h3 className="text-base font-bold tracking-tight [overflow-wrap:anywhere] break-words">
             {node.name}
           </h3>
-          <p className="font-mono text-xs text-muted-foreground break-words [overflow-wrap:anywhere]">
+          <p className="font-mono text-xs [overflow-wrap:anywhere] break-words text-muted-foreground">
             {node.id} · {unknownText(node.publisher)}
           </p>
         </div>
@@ -65,10 +77,12 @@ function RegistryRow({ node, installDisabledReason, onInstall }: {
           </Button>
         </div>
       </div>
-      <p className="text-sm leading-relaxed break-words [overflow-wrap:anywhere]">
-        {node.description === null || node.description.trim() === ''
-          ? <span className="text-muted-foreground">{t('customNodes.registry.noDescription')}</span>
-          : node.description}
+      <p className="text-sm leading-relaxed [overflow-wrap:anywhere] break-words">
+        {node.description === null || node.description.trim() === '' ? (
+          <span className="text-muted-foreground">{t('customNodes.registry.noDescription')}</span>
+        ) : (
+          node.description
+        )}
       </p>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs sm:grid-cols-4">
         <div>
@@ -88,15 +102,23 @@ function RegistryRow({ node, installDisabledReason, onInstall }: {
         </div>
         <div>
           <dt className="text-muted-foreground">{t('customNodes.registry.registryStatus')}</dt>
-          <dd className="break-words [overflow-wrap:anywhere]">{unknownText(node.status)}</dd>
+          <dd className="[overflow-wrap:anywhere] break-words">{unknownText(node.status)}</dd>
         </div>
       </dl>
       <div className="flex flex-wrap gap-2">
         <SupportChip name={t('customNodes.registry.os')} value={node.os} />
         <SupportChip name={t('customNodes.registry.accelerator')} value={node.accelerator} />
         <SupportChip name="ComfyUI" value={node.comfyui} />
-        {node.flagged && <Chip icon={TriangleAlert} className="bg-brand-pink">{t('customNodes.registry.flagged')}</Chip>}
-        {node.deprecated && <Chip icon={Archive} className="bg-brand-pink">{t('customNodes.registry.deprecated')}</Chip>}
+        {node.flagged && (
+          <Chip icon={TriangleAlert} className="bg-brand-pink">
+            {t('customNodes.registry.flagged')}
+          </Chip>
+        )}
+        {node.deprecated && (
+          <Chip icon={Archive} className="bg-brand-pink">
+            {t('customNodes.registry.deprecated')}
+          </Chip>
+        )}
       </div>
       <dl className="grid gap-x-4 gap-y-1 font-mono text-xs sm:grid-cols-3">
         <div>
@@ -104,17 +126,23 @@ function RegistryRow({ node, installDisabledReason, onInstall }: {
           <dd>{formatList(node.supportedOs)}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.registry.supportedAccelerators')}</dt>
+          <dt className="text-muted-foreground">
+            {t('customNodes.registry.supportedAccelerators')}
+          </dt>
           <dd>{formatList(node.supportedAccelerators)}</dd>
         </div>
         <div>
           <dt className="text-muted-foreground">{t('customNodes.registry.supportedComfyui')}</dt>
-          <dd className="break-words [overflow-wrap:anywhere]">{unknownText(node.supportedComfyuiVersion)}</dd>
+          <dd className="[overflow-wrap:anywhere] break-words">
+            {unknownText(node.supportedComfyuiVersion)}
+          </dd>
         </div>
       </dl>
       {node.warnings.length > 0 && (
-        <ul className="list-disc pl-5 text-xs break-words [overflow-wrap:anywhere]">
-          {node.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+        <ul className="list-disc pl-5 text-xs [overflow-wrap:anywhere] break-words">
+          {node.warnings.map((warning, index) => (
+            <li key={index}>{warning}</li>
+          ))}
         </ul>
       )}
     </li>
@@ -134,7 +162,10 @@ function loadFailure(error: unknown) {
   return { title: translate('customNodes.registry.loadFailed'), body: errorMessage(error) }
 }
 
-export function RegistryBrowser({ installDisabledReason, onInstall }: {
+export function RegistryBrowser({
+  installDisabledReason,
+  onInstall,
+}: {
   /** Why installs are unavailable (repair mode, busy work), or null. */
   installDisabledReason: string | null
   onInstall: (node: RegistryNodeDto) => void
@@ -172,34 +203,47 @@ export function RegistryBrowser({ installDisabledReason, onInstall }: {
           onChange={(event) => controls.setLimit(Number(event.target.value))}
         >
           {REGISTRY_LIMITS.map((limit) => (
-            <option key={limit} value={limit}>{t('customNodes.registry.perPage', { limit })}</option>
+            <option key={limit} value={limit}>
+              {t('customNodes.registry.perPage', { limit })}
+            </option>
           ))}
         </select>
         <Button variant="outline" disabled={registry.refreshing} onClick={registry.refresh}>
-          {registry.refreshing
-            ? <LoaderCircle className="animate-spin" aria-hidden="true" />
-            : <RefreshCw aria-hidden="true" />}
+          {registry.refreshing ? (
+            <LoaderCircle className="animate-spin" aria-hidden="true" />
+          ) : (
+            <RefreshCw aria-hidden="true" />
+          )}
           {t('common.refresh')}
         </Button>
       </div>
       {data && (
         <p className="font-mono text-xs text-muted-foreground">
-          {t(registry.isFetching ? 'customNodes.registry.fetchedUpdating' : 'customNodes.registry.fetched', { count: data.total ?? 0, date: formatFetched(data.fetchedAt), total: formatCount(data.total) })}
+          {t(
+            registry.isFetching
+              ? 'customNodes.registry.fetchedUpdating'
+              : 'customNodes.registry.fetched',
+            {
+              count: data.total ?? 0,
+              date: formatFetched(data.fetchedAt),
+              total: formatCount(data.total),
+            },
+          )}
         </p>
       )}
       {data?.stale && (
         <Alert>
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{t('customNodes.registry.cachedTitle')}</AlertTitle>
-          <AlertDescription>
-            {t('customNodes.registry.cachedHint')}
-          </AlertDescription>
+          <AlertDescription>{t('customNodes.registry.cachedHint')}</AlertDescription>
         </Alert>
       )}
       {refreshFailure && (
         <Alert variant="destructive">
           <TriangleAlert aria-hidden="true" />
-          <AlertTitle>{t('customNodes.registry.refreshFailed', { title: refreshFailure.title })}</AlertTitle>
+          <AlertTitle>
+            {t('customNodes.registry.refreshFailed', { title: refreshFailure.title })}
+          </AlertTitle>
           <AlertDescription>
             {t('customNodes.registry.notRefreshed', { error: refreshFailure.body })}
           </AlertDescription>
@@ -211,23 +255,38 @@ export function RegistryBrowser({ installDisabledReason, onInstall }: {
           <AlertTitle>{failure.title}</AlertTitle>
           <AlertDescription>
             {failure.body}
-            <Button variant="outline" size="sm" onClick={registry.retry}>{t('common.tryAgain')}</Button>
+            <Button variant="outline" size="sm" onClick={registry.retry}>
+              {t('common.tryAgain')}
+            </Button>
           </AlertDescription>
         </Alert>
       )}
       {registry.isPending && !failure ? (
-        <p role="status" className="text-sm text-muted-foreground">{t('customNodes.registry.loading')}</p>
+        <p role="status" className="text-sm text-muted-foreground">
+          {t('customNodes.registry.loading')}
+        </p>
       ) : data && data.nodes.length === 0 ? (
-        <EmptyState title={t('customNodes.registry.noMatch')} description={t('customNodes.registry.changeSearch')} />
+        <EmptyState
+          title={t('customNodes.registry.noMatch')}
+          description={t('customNodes.registry.changeSearch')}
+        />
       ) : data ? (
         <ul aria-label={t('customNodes.registry.nodes')} className="flex flex-col gap-3">
           {data.nodes.map((node) => (
-            <RegistryRow key={node.id} node={node} installDisabledReason={reason} onInstall={onInstall} />
+            <RegistryRow
+              key={node.id}
+              node={node}
+              installDisabledReason={reason}
+              onInstall={onInstall}
+            />
           ))}
         </ul>
       ) : null}
       {data && (
-        <nav aria-label={t('customNodes.registry.pages')} className="flex items-center justify-between gap-2">
+        <nav
+          aria-label={t('customNodes.registry.pages')}
+          className="flex items-center justify-between gap-2"
+        >
           <Button
             variant="outline"
             size="sm"
@@ -237,7 +296,10 @@ export function RegistryBrowser({ installDisabledReason, onInstall }: {
             {t('customNodes.registry.previousPage')}
           </Button>
           <span className="font-mono text-xs text-muted-foreground">
-            {t('customNodes.registry.pageOf', { page: data.page, total: Math.max(1, data.totalPages) })}
+            {t('customNodes.registry.pageOf', {
+              page: data.page,
+              total: Math.max(1, data.totalPages),
+            })}
           </span>
           <Button
             variant="outline"

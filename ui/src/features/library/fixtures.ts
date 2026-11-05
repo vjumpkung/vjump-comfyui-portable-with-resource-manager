@@ -1,8 +1,4 @@
-import type {
-  LibrarySnapshotDto,
-  LibraryStatusDto,
-  ModelEntryDto,
-} from '@/shared/ipc/gateway'
+import type { LibrarySnapshotDto, LibraryStatusDto, ModelEntryDto } from '@/shared/ipc/gateway'
 
 /** A complete model DTO for tests; override only what a case cares about. */
 export function model(overrides: Partial<ModelEntryDto> = {}): ModelEntryDto {
@@ -23,9 +19,7 @@ export function model(overrides: Partial<ModelEntryDto> = {}): ModelEntryDto {
   }
 }
 
-export function status(
-  overrides: Partial<LibraryStatusDto> = {},
-): LibraryStatusDto {
+export function status(overrides: Partial<LibraryStatusDto> = {}): LibraryStatusDto {
   return {
     sequence: 1,
     roots: [

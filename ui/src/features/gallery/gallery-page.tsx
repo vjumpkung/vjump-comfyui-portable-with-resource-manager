@@ -23,12 +23,7 @@ import { keyOf } from './format'
 import { PreviewDialog } from './preview-dialog'
 import { RenameDialog } from './rename-dialog'
 import { TransferDialog } from './transfer-dialog'
-import {
-  isNotInstalled,
-  reveal,
-  useGalleryListing,
-  type TransferMode,
-} from './use-gallery'
+import { isNotInstalled, reveal, useGalleryListing, type TransferMode } from './use-gallery'
 
 type Dialogs =
   | { kind: 'rename'; entry: GalleryEntryDto }
@@ -122,15 +117,25 @@ export function GalleryPage() {
 
       {chosen.length > 0 ? (
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" disabled={single === null} onClick={() => single && setDialog({ kind: 'rename', entry: single })}>
+          <Button
+            variant="outline"
+            disabled={single === null}
+            onClick={() => single && setDialog({ kind: 'rename', entry: single })}
+          >
             <Pencil aria-hidden="true" />
             {t('common.rename')}
           </Button>
-          <Button variant="outline" onClick={() => setDialog({ kind: 'transfer', mode: 'move', entries: chosen })}>
+          <Button
+            variant="outline"
+            onClick={() => setDialog({ kind: 'transfer', mode: 'move', entries: chosen })}
+          >
             <FolderInput aria-hidden="true" />
             {t('gallery.moveTo')}
           </Button>
-          <Button variant="outline" onClick={() => setDialog({ kind: 'transfer', mode: 'copy', entries: chosen })}>
+          <Button
+            variant="outline"
+            onClick={() => setDialog({ kind: 'transfer', mode: 'copy', entries: chosen })}
+          >
             <Copy aria-hidden="true" />
             {t('gallery.copyTo')}
           </Button>
@@ -138,7 +143,11 @@ export function GalleryPage() {
             <Trash2 aria-hidden="true" />
             {t('common.delete')}
           </Button>
-          <Button variant="outline" disabled={single === null} onClick={() => single && void reveal(single.location)}>
+          <Button
+            variant="outline"
+            disabled={single === null}
+            onClick={() => single && void reveal(single.location)}
+          >
             <FolderOpen aria-hidden="true" />
             {t('common.showInExplorer')}
           </Button>

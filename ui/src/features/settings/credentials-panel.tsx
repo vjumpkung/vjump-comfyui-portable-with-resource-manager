@@ -32,7 +32,10 @@ const TEST_RESULTS = {
   backend_unavailable: 'settings.credentials.unavailable',
   backend_locked: 'settings.credentials.locked',
   network_failure: 'settings.credentials.network',
-} as const satisfies Record<CredentialTestResultDto, keyof typeof import('@/shared/i18n/translations.json').en>
+} as const satisfies Record<
+  CredentialTestResultDto,
+  keyof typeof import('@/shared/i18n/translations.json').en
+>
 
 const TEST_TOASTS = {
   invalid: 'settings.credentials.invalidToast',
@@ -40,13 +43,19 @@ const TEST_TOASTS = {
   backend_unavailable: 'settings.credentials.unavailableToast',
   backend_locked: 'settings.credentials.lockedToast',
   network_failure: 'settings.credentials.networkToast',
-} as const satisfies Record<Exclude<CredentialTestResultDto, 'valid'>, keyof typeof import('@/shared/i18n/translations.json').en>
+} as const satisfies Record<
+  Exclude<CredentialTestResultDto, 'valid'>,
+  keyof typeof import('@/shared/i18n/translations.json').en
+>
 
 function describeTest(status: CredentialStatusDto | undefined): string | null {
   const test = status?.lastTest
   if (!test) return null
   const when = new Date((test.testedAt ?? 0) * 1000).toLocaleString()
-  return translate('settings.credentials.tested', { result: translate(TEST_RESULTS[test.result]), when })
+  return translate('settings.credentials.tested', {
+    result: translate(TEST_RESULTS[test.result]),
+    when,
+  })
 }
 
 function CredentialRow({
@@ -64,12 +73,12 @@ function CredentialRow({
   const test = useMutation({
     mutationFn: () => gateway.secretTest(kind),
     onSuccess: (result) => {
-      if (result.result === 'valid') toast.success(translate('settings.credentials.acceptedToast', { provider: label }))
+      if (result.result === 'valid')
+        toast.success(translate('settings.credentials.acceptedToast', { provider: label }))
       else toast.error(translate(TEST_TOASTS[result.result]))
     },
     onError: (error) => toast.error(errorMessage(error)),
-    onSettled: () =>
-      queryClient.invalidateQueries({ queryKey: credentialStatusKey(kind) }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: credentialStatusKey(kind) }),
   })
   const inputRef = useRef<HTMLInputElement>(null)
   const [saving, setSaving] = useState(false)
@@ -106,13 +115,19 @@ function CredentialRow({
         </Label>
         <Badge
           variant={isSet ? 'default' : 'outline'}
-          className="font-mono text-[9px] uppercase tracking-widest"
+          className="font-mono text-[9px] tracking-widest uppercase"
         >
-          {status ? (isSet ? t('settings.credentials.set') : t('settings.credentials.notSet')) : '...'}
+          {status
+            ? isSet
+              ? t('settings.credentials.set')
+              : t('settings.credentials.notSet')
+            : '...'}
         </Badge>
         {status ? (
           <span className="font-mono text-xs text-muted-foreground">
-            {status.backend === 'keyring' ? t('settings.credentials.keyring') : t('settings.credentials.session')}
+            {status.backend === 'keyring'
+              ? t('settings.credentials.keyring')
+              : t('settings.credentials.session')}
           </span>
         ) : null}
       </div>
@@ -148,7 +163,8 @@ function CredentialRow({
           disabled={!isSet || clear.isPending}
           onClick={() =>
             clear.mutate(kind, {
-              onSuccess: () => toast.success(translate('settings.credentials.clearedToast', { provider: label })),
+              onSuccess: () =>
+                toast.success(translate('settings.credentials.clearedToast', { provider: label })),
               onError: (error) => toast.error(errorMessage(error)),
             })
           }
@@ -157,9 +173,7 @@ function CredentialRow({
         </Button>
       </form>
       {describeTest(status) ? (
-        <p className="font-mono text-xs text-muted-foreground">
-          {describeTest(status)}
-        </p>
+        <p className="font-mono text-xs text-muted-foreground">{describeTest(status)}</p>
       ) : null}
     </div>
   )
@@ -176,10 +190,10 @@ export function CredentialsPanel() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg font-bold tracking-tight">{t('settings.credentials.title')}</CardTitle>
-        <CardDescription>
-          {t('settings.credentials.hint')}
-        </CardDescription>
+        <CardTitle className="text-lg font-bold tracking-tight">
+          {t('settings.credentials.title')}
+        </CardTitle>
+        <CardDescription>{t('settings.credentials.hint')}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
         {sessionOnly ? (
@@ -188,9 +202,7 @@ export function CredentialsPanel() {
             className="flex items-start gap-2 rounded-lg border border-brand-pink bg-brand-pink/20 p-3 text-sm"
           >
             <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <p>
-              {t('settings.credentials.sessionHint')}
-            </p>
+            <p>{t('settings.credentials.sessionHint')}</p>
           </div>
         ) : null}
         {KINDS.map(({ kind, label }, index) => (

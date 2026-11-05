@@ -16,11 +16,7 @@ export function lifecycleLabel(lifecycle: LifecycleDto | undefined, translate = 
   return lifecycle ? translate(LABEL_KEYS[lifecycle]) : translate('runtime.lifecycle.connecting')
 }
 
-export function LifecycleBadge({
-  lifecycle,
-}: {
-  lifecycle: LifecycleDto | undefined
-}) {
+export function LifecycleBadge({ lifecycle }: { lifecycle: LifecycleDto | undefined }) {
   const { t } = useTranslation()
   const busy = lifecycle === 'starting' || lifecycle === 'stopping'
   const Icon =

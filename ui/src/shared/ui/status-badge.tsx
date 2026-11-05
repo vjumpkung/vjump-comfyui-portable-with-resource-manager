@@ -36,24 +36,10 @@ export function StatusBadge({ status }: { status: string }) {
   const good = ['verified', 'succeeded', 'ready'].includes(status)
   const busy = ['running', 'registered', 'provisioning'].includes(status)
   const bad = ['failed', 'error'].includes(status)
-  const attention = ['repair_required', 'warning', 'interrupted'].includes(
-    status,
-  )
-  const Icon = good
-    ? Check
-    : busy
-      ? LoaderCircle
-      : bad
-        ? CircleX
-        : attention
-          ? Wrench
-          : Clock
+  const attention = ['repair_required', 'warning', 'interrupted'].includes(status)
+  const Icon = good ? Check : busy ? LoaderCircle : bad ? CircleX : attention ? Wrench : Clock
   return (
-    <Badge
-      variant={
-        good ? 'default' : busy ? 'secondary' : bad ? 'destructive' : 'outline'
-      }
-    >
+    <Badge variant={good ? 'default' : busy ? 'secondary' : bad ? 'destructive' : 'outline'}>
       <Icon aria-hidden="true" />
       {Object.hasOwn(STATUS_LABELS, status)
         ? t(STATUS_LABELS[status as keyof typeof STATUS_LABELS])

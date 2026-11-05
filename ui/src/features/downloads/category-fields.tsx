@@ -34,9 +34,7 @@ export function CategoryFields({
         <select
           id={`${idPrefix}-category`}
           value={selectValue}
-          onChange={(event) =>
-            onCategory(event.target.value === CUSTOM ? ' ' : event.target.value)
-          }
+          onChange={(event) => onCategory(event.target.value === CUSTOM ? ' ' : event.target.value)}
           className="h-9 w-full rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:border-brand-cyan focus-visible:ring-2 focus-visible:ring-brand-cyan/35"
         >
           <option value="">{t('downloads.chooseFolder')}</option>
@@ -67,9 +65,7 @@ export function CategoryFields({
         ) : null}
       </div>
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor={`${idPrefix}-subdirectory`}>
-          {t('downloads.subfolder')}
-        </Label>
+        <Label htmlFor={`${idPrefix}-subdirectory`}>{t('downloads.subfolder')}</Label>
         <Input
           id={`${idPrefix}-subdirectory`}
           autoComplete="off"

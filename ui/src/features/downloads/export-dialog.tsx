@@ -40,9 +40,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   function save() {
     if (!data) return
-    const url = URL.createObjectURL(
-      new Blob([data.json], { type: 'application/json' }),
-    )
+    const url = URL.createObjectURL(new Blob([data.json], { type: 'application/json' }))
     const link = document.createElement('a')
     link.href = url
     link.download = 'resource_list.json'
@@ -60,9 +58,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t('downloads.exportTitle')}</DialogTitle>
-          <DialogDescription>
-            {t('downloads.exportHint')}
-          </DialogDescription>
+          <DialogDescription>{t('downloads.exportHint')}</DialogDescription>
         </DialogHeader>
         {exported.isError ? (
           <Alert variant="destructive">

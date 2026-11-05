@@ -33,22 +33,15 @@ export function profileReasons(
   validation?: PythonValidationDto,
 ): string[] {
   const reasons = profile.reasons.map((reason) => reason.message)
-  if (!profile.enabled && !reasons.length)
-    reasons.push(t('setup.profileUnavailable'))
+  if (!profile.enabled && !reasons.length) reasons.push(t('setup.profileUnavailable'))
   if (
     active &&
     ['repair', 'change_torch'].includes(mode) &&
     minor(active.pythonVersion) !== minor(profile.python)
   ) {
-    reasons.push(
-      t('setup.profilePythonRequired'),
-    )
+    reasons.push(t('setup.profilePythonRequired'))
   }
-  if (
-    active &&
-    mode === 'change_python' &&
-    minor(active.pythonVersion) === minor(profile.python)
-  ) {
+  if (active && mode === 'change_python' && minor(active.pythonVersion) === minor(profile.python)) {
     reasons.push(t('setup.profileDifferentPython'))
   }
   if (
@@ -56,18 +49,10 @@ export function profileReasons(
     validation.target !== 'empty_folder' &&
     minor(validation.pythonVersion) !== minor(profile.python)
   ) {
-    reasons.push(
-      t('setup.validatedInterpreter', { version: minor(validation.pythonVersion) }),
-    )
+    reasons.push(t('setup.validatedInterpreter', { version: minor(validation.pythonVersion) }))
   }
-  if (
-    validation?.checks.some(
-      (check) => !check.passed && check.blocks.includes('triton'),
-    )
-  ) {
-    reasons.push(
-      t('setup.profileTritonRequired'),
-    )
+  if (validation?.checks.some((check) => !check.passed && check.blocks.includes('triton'))) {
+    reasons.push(t('setup.profileTritonRequired'))
   }
   return reasons
 }
@@ -78,9 +63,7 @@ export function canSkip(run: RunSnapshotDto): boolean {
     run.failure?.canSkip === true &&
     run.steps.some(
       (step) =>
-        step.step === run.failure?.step &&
-        step.policy === 'optional' &&
-        step.status === 'failed',
+        step.step === run.failure?.step && step.policy === 'optional' && step.status === 'failed',
     )
   )
 }
@@ -112,12 +95,7 @@ export function readDraft(raw: string | null): Partial<WizardDraft> {
   if (!raw) return {}
   try {
     const value: unknown = JSON.parse(raw)
-    if (
-      !value ||
-      typeof value !== 'object' ||
-      !('version' in value) ||
-      value.version !== 1
-    )
+    if (!value || typeof value !== 'object' || !('version' in value) || value.version !== 1)
       return {}
     const draft: Partial<WizardDraft> = {}
     if ('profileId' in value && typeof value.profileId === 'string')

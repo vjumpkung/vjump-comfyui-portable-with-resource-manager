@@ -1,12 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { gateway, IpcClientError } from '@/shared/ipc/gateway'
@@ -57,9 +51,7 @@ function removeButton() {
 }
 
 it('generates_with_the_chosen_folder_and_refreshes_the_list', async () => {
-  vi.mocked(gateway.comfyReadExtraModelPaths)
-    .mockResolvedValueOnce([])
-    .mockResolvedValue([appRoot])
+  vi.mocked(gateway.comfyReadExtraModelPaths).mockResolvedValueOnce([]).mockResolvedValue([appRoot])
   vi.mocked(gateway.comfyGenerateExtraModelPaths).mockResolvedValue(null)
   vi.mocked(gateway.pickFolder).mockResolvedValue('D:\\Models')
   render(card())
@@ -71,9 +63,7 @@ it('generates_with_the_chosen_folder_and_refreshes_the_list', async () => {
 
   fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
   await waitFor(() =>
-    expect(
-      screen.getByLabelText<HTMLInputElement>('Model base folder').value,
-    ).toBe('D:\\Models'),
+    expect(screen.getByLabelText<HTMLInputElement>('Model base folder').value).toBe('D:\\Models'),
   )
   expect(gateway.pickFolder).toHaveBeenCalledTimes(1)
 
@@ -82,9 +72,7 @@ it('generates_with_the_chosen_folder_and_refreshes_the_list', async () => {
   })
   fireEvent.click(generate)
   await waitFor(() =>
-    expect(gateway.comfyGenerateExtraModelPaths).toHaveBeenCalledWith(
-      'D:\\Models',
-    ),
+    expect(gateway.comfyGenerateExtraModelPaths).toHaveBeenCalledWith('D:\\Models'),
   )
   expect(await screen.findByText('D:\\Models\\checkpoints')).toBeTruthy()
   expect(gateway.comfyReadExtraModelPaths).toHaveBeenCalledTimes(2)
@@ -98,17 +86,12 @@ it('remove_is_offered_only_for_the_app_section', async () => {
   expect(removeButton().disabled).toBe(true)
   first.unmount()
 
-  vi.mocked(gateway.comfyReadExtraModelPaths).mockResolvedValue([
-    handWritten,
-    appRoot,
-  ])
+  vi.mocked(gateway.comfyReadExtraModelPaths).mockResolvedValue([handWritten, appRoot])
   render(card())
   await screen.findByText('D:\\Models\\checkpoints')
   await waitFor(() => expect(removeButton().disabled).toBe(false))
   fireEvent.click(removeButton())
-  await waitFor(() =>
-    expect(gateway.comfyRemoveExtraModelPaths).toHaveBeenCalledTimes(1),
-  )
+  await waitFor(() => expect(gateway.comfyRemoveExtraModelPaths).toHaveBeenCalledTimes(1))
 })
 
 it('shows_restart_hint_while_comfyui_runs', async () => {
@@ -127,9 +110,7 @@ it('shows_restart_hint_while_comfyui_runs', async () => {
     target: { value: 'D:\\Models' },
   })
   fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-  expect(
-    await screen.findByText('Restart ComfyUI to use the new paths.'),
-  ).toBeTruthy()
+  expect(await screen.findByText('Restart ComfyUI to use the new paths.')).toBeTruthy()
 
   // The hint belongs to the running session that has not seen the change.
   view.rerender(page(false))

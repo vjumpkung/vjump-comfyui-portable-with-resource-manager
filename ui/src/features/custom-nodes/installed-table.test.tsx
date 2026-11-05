@@ -15,7 +15,11 @@ configure({ asyncUtilTimeout: 5000 })
 
 type Restore = () => void
 const restores: Restore[] = []
-function define(name: string, descriptor: PropertyDescriptor, prototype: object = HTMLElement.prototype) {
+function define(
+  name: string,
+  descriptor: PropertyDescriptor,
+  prototype: object = HTMLElement.prototype,
+) {
   const original = Object.getOwnPropertyDescriptor(prototype, name)
   Object.defineProperty(prototype, name, { configurable: true, ...descriptor })
   restores.push(() => {
@@ -42,7 +46,11 @@ afterEach(() => {
   while (restores.length > 0) restores.pop()?.()
 })
 
-function Harness({ nodes, initial = null, onToggle }: {
+function Harness({
+  nodes,
+  initial = null,
+  onToggle,
+}: {
   nodes: readonly InstalledNodeDto[]
   initial?: string | null
   onToggle?: (id: string) => void
@@ -78,10 +86,14 @@ it('virtualizes_only_above_200_rows', () => {
   expect(rows()).toHaveLength(200)
   cleanup()
   const big = render(<Harness nodes={manyNodes(201)} />)
-  expect(big.container.querySelector('[data-virtualized]')?.getAttribute('data-virtualized')).toBe('true')
+  expect(big.container.querySelector('[data-virtualized]')?.getAttribute('data-virtualized')).toBe(
+    'true',
+  )
   expect(rows().length).toBeGreaterThan(0)
   expect(rows().length).toBeLessThan(60)
-  expect(screen.getByRole('grid', { name: 'Installed custom nodes' }).getAttribute('aria-rowcount')).toBe('202')
+  expect(
+    screen.getByRole('grid', { name: 'Installed custom nodes' }).getAttribute('aria-rowcount'),
+  ).toBe('202')
 })
 
 it('end_scrolls_then_focuses_the_last_row', async () => {
@@ -91,12 +103,24 @@ it('end_scrolls_then_focuses_the_last_row', async () => {
   })
   define('scrollTo', { value: scrollTo })
   // jsdom has no layout: describe the scroll container the way a browser would.
-  define('scrollHeight', {
-    get(this: HTMLElement) { return this.dataset.virtualized === 'true' ? 56 * 1000 : 0 },
-  }, Element.prototype)
-  define('clientHeight', {
-    get(this: HTMLElement) { return this.dataset.virtualized === 'true' ? 480 : 0 },
-  }, Element.prototype)
+  define(
+    'scrollHeight',
+    {
+      get(this: HTMLElement) {
+        return this.dataset.virtualized === 'true' ? 56 * 1000 : 0
+      },
+    },
+    Element.prototype,
+  )
+  define(
+    'clientHeight',
+    {
+      get(this: HTMLElement) {
+        return this.dataset.virtualized === 'true' ? 480 : 0
+      },
+    },
+    Element.prototype,
+  )
   const nodes = manyNodes(1000)
   render(<Harness nodes={nodes} />)
   const first = row(nodes[0].id) as HTMLElement
@@ -116,7 +140,10 @@ it('end_scrolls_then_focuses_the_last_row', async () => {
 it('filtering_preserves_or_repairs_active_identity', () => {
   const [a, b, c] = manyNodes(3)
   const view = render(<Harness nodes={[a, b, c]} initial={b.id} />)
-  const tabStops = () => rows().filter((element) => element.tabIndex === 0).map((element) => element.dataset.key)
+  const tabStops = () =>
+    rows()
+      .filter((element) => element.tabIndex === 0)
+      .map((element) => element.dataset.key)
   expect(tabStops()).toEqual([b.id])
   // The active node survives a filter that still lists it.
   view.rerender(<Harness nodes={[b, c]} initial={b.id} />)
@@ -150,18 +177,42 @@ it('keyboard_selection_uses_node_ids', () => {
 })
 
 it('shows source, version, branch, state, dependencies, origin, conflict and Git health', () => {
-  render(<Harness nodes={[
-    node({ id: 'g', name: 'Gitty', dirty: true, conflict: true, dependencies: 'failed', enabled: false, origin: 'observed' }),
-  ]} />)
+  render(
+    <Harness
+      nodes={[
+        node({
+          id: 'g',
+          name: 'Gitty',
+          dirty: true,
+          conflict: true,
+          dependencies: 'failed',
+          enabled: false,
+          origin: 'observed',
+        }),
+      ]}
+    />,
+  )
   const gitty = row('g') as HTMLElement
-  for (const text of ['Gitty', 'Git', 'aaaaaaaaaa', 'main', 'Disabled', 'Deps failed', 'Observed', 'Conflict', 'Local changes']) {
+  for (const text of [
+    'Gitty',
+    'Git',
+    'aaaaaaaaaa',
+    'main',
+    'Disabled',
+    'Deps failed',
+    'Observed',
+    'Conflict',
+    'Local changes',
+  ]) {
     expect(gitty.textContent).toContain(text)
   }
 })
 
 it('installed_table_widens_dependency_and_git_columns_in_thai', () => {
   render(<Harness nodes={[node({ id: 'a', name: 'Alpha' })]} />)
-  const header = screen.getByRole('grid', { name: 'Installed custom nodes' }).querySelector('[aria-rowindex="1"]')
+  const header = screen
+    .getByRole('grid', { name: 'Installed custom nodes' })
+    .querySelector('[aria-rowindex="1"]')
   for (const element of [header, row('a')]) {
     const classes = [...(element?.classList ?? [])]
     // The English template stays; Thai chips are wider, so only :lang(th) widens tracks 7 and 9.

@@ -88,7 +88,10 @@ export function TransferDialog({
             className="flex max-h-56 min-h-24 flex-col gap-1 overflow-auto rounded-md border p-1"
           >
             {listing.isPending ? (
-              <li role="status" className="flex items-center gap-2 p-2 text-sm text-muted-foreground">
+              <li
+                role="status"
+                className="flex items-center gap-2 p-2 text-sm text-muted-foreground"
+              >
                 <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
                 {t('gallery.loading')}
               </li>
@@ -97,7 +100,9 @@ export function TransferDialog({
                 {galleryErrorMessage(listing.error)}
               </li>
             ) : folders.length === 0 ? (
-              <li className="p-2 text-sm text-muted-foreground">{t('gallery.transfer.noFolders')}</li>
+              <li className="p-2 text-sm text-muted-foreground">
+                {t('gallery.transfer.noFolders')}
+              </li>
             ) : (
               folders.map((folder) => (
                 <li key={keyOf(folder.location)}>
@@ -132,7 +137,9 @@ export function TransferDialog({
             {t('common.cancel')}
           </Button>
           <Button disabled={listing.data === undefined || transfer.isPending} onClick={confirm}>
-            {transfer.isPending ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}
+            {transfer.isPending ? (
+              <LoaderCircle className="animate-spin" aria-hidden="true" />
+            ) : null}
             {mode === 'move' ? t('gallery.move.confirm') : t('gallery.copy.confirm')}
           </Button>
         </DialogFooter>

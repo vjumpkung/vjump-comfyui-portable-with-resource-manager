@@ -2,7 +2,15 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getLanguage, initLanguage, isLanguage, LANGUAGES, setLanguage, t, useTranslation } from './index'
+import {
+  getLanguage,
+  initLanguage,
+  isLanguage,
+  LANGUAGES,
+  setLanguage,
+  t,
+  useTranslation,
+} from './index'
 import translations from './translations.json'
 
 const originalTranslations = {
@@ -57,7 +65,9 @@ describe('t', () => {
 
   it('interpolates named string and number values and preserves missing placeholders', () => {
     translations.en['common.language'] = '{name}: {count}; {missing}; {name}'
-    expect(t('common.language', { name: 'ComfyUI', count: 0 })).toBe('ComfyUI: 0; {missing}; ComfyUI')
+    expect(t('common.language', { name: 'ComfyUI', count: 0 })).toBe(
+      'ComfyUI: 0; {missing}; ComfyUI',
+    )
     expect(t('common.language')).toBe('{name}: {count}; {missing}; {name}')
   })
 
@@ -136,14 +146,17 @@ describe('language preferences', () => {
     expect(document.documentElement.lang).toBe('th')
   })
 
-  it.each([null, 'invalid'])('defaults to English for a missing or invalid cache (%s)', (cached) => {
-    setLanguage('th')
-    if (cached === null) window.localStorage.removeItem('vjumpkung-comfyui.language')
-    else window.localStorage.setItem('vjumpkung-comfyui.language', cached)
-    initLanguage()
-    expect(getLanguage()).toBe('en')
-    expect(document.documentElement.lang).toBe('en')
-  })
+  it.each([null, 'invalid'])(
+    'defaults to English for a missing or invalid cache (%s)',
+    (cached) => {
+      setLanguage('th')
+      if (cached === null) window.localStorage.removeItem('vjumpkung-comfyui.language')
+      else window.localStorage.setItem('vjumpkung-comfyui.language', cached)
+      initLanguage()
+      expect(getLanguage()).toBe('en')
+      expect(document.documentElement.lang).toBe('en')
+    },
+  )
 
   it('defaults to English when storage access is unavailable', () => {
     setLanguage('th')

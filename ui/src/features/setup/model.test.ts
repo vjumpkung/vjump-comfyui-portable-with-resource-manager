@@ -19,11 +19,7 @@ describe('setup policies', () => {
       'Choose a different Python minor version for this mode.',
     )
     expect(
-      profileReasons(
-        { ...profile, python: '3.12.12' },
-        'change_torch',
-        environment,
-      ),
+      profileReasons({ ...profile, python: '3.12.12' }, 'change_torch', environment),
     ).toHaveLength(1)
   })
   it('allows skip only for the exact failed optional step, never required or best effort', () => {
@@ -37,9 +33,7 @@ describe('setup policies', () => {
           steps: run.steps.map((step) => ({ ...step, policy })),
         }),
       ).toBe(false)
-    expect(
-      canSkip({ ...run, failure: { ...run.failure!, step: 'torch' } }),
-    ).toBe(false)
+    expect(canSkip({ ...run, failure: { ...run.failure!, step: 'torch' } })).toBe(false)
   })
   it('restores only versioned draft fields and never restores consent', () => {
     expect(readDraft('{broken')).toEqual({})
@@ -59,8 +53,7 @@ describe('setup policies', () => {
     })
   })
   it('reads_the_comfy_source_and_maps_the_legacy_use_tag_flag', () => {
-    const read = (fields: object) =>
-      readDraft(JSON.stringify({ version: 1, ...fields }))
+    const read = (fields: object) => readDraft(JSON.stringify({ version: 1, ...fields }))
     expect(read({ comfySource: 'master' })).toEqual({ comfySource: 'master' })
     expect(read({ comfySource: 'tag', useTag: false })).toEqual({
       comfySource: 'tag',

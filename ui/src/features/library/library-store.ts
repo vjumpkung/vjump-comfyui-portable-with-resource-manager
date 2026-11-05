@@ -15,10 +15,7 @@ export interface LibraryState {
   rescanning: boolean
 }
 
-type Api = Pick<
-  typeof gateway,
-  'modelSubscribe' | 'modelUnsubscribe' | 'modelList' | 'modelRescan'
->
+type Api = Pick<typeof gateway, 'modelSubscribe' | 'modelUnsubscribe' | 'modelList' | 'modelRescan'>
 
 /**
  * One shared library subscription. Change notices are coalesced by the backend; every notice

@@ -26,11 +26,7 @@ import {
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 
-import {
-  guessProvider,
-  MODEL_CATEGORIES,
-  PROVIDER_LABELS,
-} from './categories'
+import { guessProvider, MODEL_CATEGORIES, PROVIDER_LABELS } from './categories'
 import { formatSize } from './format'
 import { CategoryFields } from './category-fields'
 import { CREDENTIAL_CODES } from './use-enqueue'
@@ -66,8 +62,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
   const plainHttp = url.trim().toLowerCase().startsWith('http://')
 
   const resolve = useMutation({
-    mutationFn: () =>
-      gateway.dlResolve({ url: url.trim(), httpConfirmed: httpConfirmed }),
+    mutationFn: () => gateway.dlResolve({ url: url.trim(), httpConfirmed: httpConfirmed }),
     onSuccess: (result) => {
       setResolution(result)
       const chosen = initialSelection(result)
@@ -130,17 +125,14 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t('downloads.add')}</DialogTitle>
-          <DialogDescription>
-            {t('downloads.linkHint')}
-          </DialogDescription>
+          <DialogDescription>{t('downloads.linkHint')}</DialogDescription>
         </DialogHeader>
 
         <form
           className="flex flex-col gap-2"
           onSubmit={(event) => {
             event.preventDefault()
-            if (url.trim() !== '' && !(plainHttp && !httpConfirmed))
-              resolve.mutate()
+            if (url.trim() !== '' && !(plainHttp && !httpConfirmed)) resolve.mutate()
           }}
         >
           <Label htmlFor="download-url">{t('downloads.link')}</Label>
@@ -166,17 +158,10 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
             </div>
             <Button
               type="submit"
-              disabled={
-                resolve.isPending ||
-                url.trim() === '' ||
-                (plainHttp && !httpConfirmed)
-              }
+              disabled={resolve.isPending || url.trim() === '' || (plainHttp && !httpConfirmed)}
             >
               {resolve.isPending ? (
-                <LoaderCircle
-                  className="motion-safe:animate-spin"
-                  aria-hidden="true"
-                />
+                <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
               ) : null}
               {t('downloads.lookUp')}
             </Button>
@@ -184,7 +169,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
           {provider ? (
             <Badge
               variant="outline"
-              className="w-fit font-mono text-[9px] uppercase tracking-widest"
+              className="w-fit font-mono text-[9px] tracking-widest uppercase"
             >
               {provider === 'direct' ? t(PROVIDER_LABELS.direct) : PROVIDER_LABELS[provider]}
             </Badge>
@@ -228,7 +213,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
             {files.length > 1 ? (
               <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="font-mono text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  <p className="font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">
                     {t('downloads.filesSelected', { count: selected.size, total: files.length })}
                   </p>
                   {files.length > 8 ? (
@@ -243,23 +228,20 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
                 </div>
                 <ul className="max-h-60 divide-y overflow-y-auto rounded-lg border">
                   {shown.map((file) => (
-                    <li
-                      key={file.index}
-                      className="flex items-center gap-3 px-3 py-2"
-                    >
+                    <li key={file.index} className="flex items-center gap-3 px-3 py-2">
                       <Checkbox
                         id={`file-${file.index}`}
                         checked={selected.has(file.index)}
-                        onCheckedChange={(value) =>
-                          toggle(file.index, value === true)
-                        }
+                        onCheckedChange={(value) => toggle(file.index, value === true)}
                       />
                       <Label
                         htmlFor={`file-${file.index}`}
                         className="flex min-w-0 flex-1 flex-col items-start gap-0.5"
                       >
-                        <span className="text-sm font-semibold break-words [overflow-wrap:anywhere]">
-                          {file.primary ? t('downloads.primaryFile', { filename: file.filename }) : file.filename}
+                        <span className="text-sm font-semibold [overflow-wrap:anywhere] break-words">
+                          {file.primary
+                            ? t('downloads.primaryFile', { filename: file.filename })
+                            : file.filename}
                         </span>
                         <span className="font-mono text-xs font-normal text-muted-foreground">
                           {formatSize(file.size)}
@@ -270,11 +252,12 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
                 </ul>
               </div>
             ) : files[0] ? (
-              <p className="text-sm break-words [overflow-wrap:anywhere]">
+              <p className="text-sm [overflow-wrap:anywhere] break-words">
                 <span className="font-semibold">{files[0].filename}</span>{' '}
                 <span className="font-mono text-xs text-muted-foreground">
                   {formatSize(files[0].size)}
-                  {' · '}{files[0].sha256 ? t('downloads.checksumPublished') : t('status.unverified')}
+                  {' · '}
+                  {files[0].sha256 ? t('downloads.checksumPublished') : t('status.unverified')}
                 </span>
               </p>
             ) : null}
@@ -284,24 +267,17 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
               onCategory={setCategory}
               subdirectory={subdirectory}
               onSubdirectory={setSubdirectory}
-              suggested={
-                files.find((file) => selected.has(file.index))
-                  ?.suggestedCategory ?? null
-              }
+              suggested={files.find((file) => selected.has(file.index))?.suggestedCategory ?? null}
               known={MODEL_CATEGORIES}
             />
 
             {single ? (
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="download-filename">
-                  {t('downloads.optionalFilename')}
-                </Label>
+                <Label htmlFor="download-filename">{t('downloads.optionalFilename')}</Label>
                 <Input
                   id="download-filename"
                   autoComplete="off"
-                  placeholder={
-                    files.find((file) => selected.has(file.index))?.filename
-                  }
+                  placeholder={files.find((file) => selected.has(file.index))?.filename}
                   value={filename}
                   onChange={(event) => setFilename(event.target.value)}
                 />
@@ -314,12 +290,12 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
           <Button variant="outline" onClick={onClose}>
             {t('common.cancel')}
           </Button>
-          <Button
-            disabled={!ready || submitting}
-            onClick={() => void submit()}
-          >
+          <Button disabled={!ready || submitting} onClick={() => void submit()}>
             {selected.size > 1
-              ? t('downloads.downloadFiles', { count: selected.size, size: formatTotal(totalBytes) })
+              ? t('downloads.downloadFiles', {
+                  count: selected.size,
+                  size: formatTotal(totalBytes),
+                })
               : t('common.download')}
           </Button>
         </DialogFooter>
@@ -329,5 +305,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
 }
 
 function formatTotal(bytes: number): string {
-  return bytes > 0 ? formatSize({ kind: 'exact', bytes }) : translate('downloads.sizeUnknownLowercase')
+  return bytes > 0
+    ? formatSize({ kind: 'exact', bytes })
+    : translate('downloads.sizeUnknownLowercase')
 }

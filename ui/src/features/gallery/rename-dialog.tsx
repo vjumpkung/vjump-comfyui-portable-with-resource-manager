@@ -33,10 +33,7 @@ export function RenameDialog({ entry, onClose }: Props) {
   const extension = entry.kind === 'file' ? extensionOf(entry.name) : ''
 
   function submit() {
-    rename.mutate(
-      { entry: entryRefs([entry])[0], newName: trimmed },
-      { onSuccess: onClose },
-    )
+    rename.mutate({ entry: entryRefs([entry])[0], newName: trimmed }, { onSuccess: onClose })
   }
 
   return (

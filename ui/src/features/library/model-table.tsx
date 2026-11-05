@@ -8,13 +8,7 @@ import { cn } from '@/shared/lib/utils'
 import { Badge } from '@/shared/ui/badge'
 import { Checkbox } from '@/shared/ui/checkbox'
 
-import {
-  formatBytes,
-  formatModified,
-  keyOf,
-  sourceLabel,
-  VIRTUALIZE_AFTER,
-} from './model-list'
+import { formatBytes, formatModified, keyOf, sourceLabel, VIRTUALIZE_AFTER } from './model-list'
 
 export const ROW_HEIGHT = 40
 const COLUMNS =
@@ -62,9 +56,7 @@ export function ModelTable({
   useEffect(() => {
     const wanted = pendingFocus.current
     if (wanted === null || wanted !== activeKey) return
-    const rows = scroller.current?.querySelectorAll<HTMLElement>(
-      '[role="row"][data-key]',
-    )
+    const rows = scroller.current?.querySelectorAll<HTMLElement>('[role="row"][data-key]')
     const row = [...(rows ?? [])].find((element) => element.dataset.key === wanted)
     if (row) {
       pendingFocus.current = null
@@ -72,8 +64,7 @@ export function ModelTable({
     }
   })
 
-  const allSelected =
-    models.length > 0 && models.every((m) => selected.has(keyOf(m.location)))
+  const allSelected = models.length > 0 && models.every((m) => selected.has(keyOf(m.location)))
 
   function move(to: number) {
     if (models.length === 0) return
@@ -241,9 +232,7 @@ export function ModelTable({
         data-virtualized={virtualize}
       >
         {virtualize ? (
-          <div
-            style={{ height: virtualizer.getTotalSize(), position: 'relative' }}
-          >
+          <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
             {virtualItems.map((item) => renderRow(item.index, item.start))}
           </div>
         ) : (

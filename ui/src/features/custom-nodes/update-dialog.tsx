@@ -2,7 +2,12 @@ import { useQuery } from '@tanstack/react-query'
 import { useId, useState } from 'react'
 
 import { useTranslation } from '@/shared/i18n'
-import { gateway, IpcClientError, type InstalledNodeDto, type NodeGitStatusDto } from '@/shared/ipc/gateway'
+import {
+  gateway,
+  IpcClientError,
+  type InstalledNodeDto,
+  type NodeGitStatusDto,
+} from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
@@ -51,12 +56,14 @@ export function GitStatusView({ status }: { status: NodeGitStatusDto }) {
         </div>
         <div>
           <dt className="text-muted-foreground">{t('customNodes.aheadBehind')}</dt>
-          <dd>{status.ahead ?? '—'} / {status.behind ?? '—'}</dd>
+          <dd>
+            {status.ahead ?? '—'} / {status.behind ?? '—'}
+          </dd>
         </div>
       </dl>
       <pre
         aria-label={t('customNodes.gitStatus')}
-        className="max-h-40 overflow-auto rounded-md border bg-muted p-2 font-mono text-xs whitespace-pre-wrap break-all"
+        className="max-h-40 overflow-auto rounded-md border bg-muted p-2 font-mono text-xs break-all whitespace-pre-wrap"
       >
         {status.status.trim() === '' ? t('customNodes.update.cleanTree') : status.status}
       </pre>
@@ -65,7 +72,11 @@ export function GitStatusView({ status }: { status: NodeGitStatusDto }) {
 }
 
 /** Inspects the repository first, then asks only for what an update still needs. */
-export function UpdateDialog({ node, onPrepare, onClose }: {
+export function UpdateDialog({
+  node,
+  onPrepare,
+  onClose,
+}: {
   node: InstalledNodeDto
   onPrepare: (reference: string | null) => void
   onClose: () => void
@@ -77,32 +88,41 @@ export function UpdateDialog({ node, onPrepare, onClose }: {
   const [reference, setReference] = useState('')
   const check = git.data ? checkGitStatus(git.data) : null
   const target = reference.trim()
-  const blocked = isGit && (check === null || check.refusals.length > 0 ||
-    (check.needsReference && target === ''))
+  const blocked =
+    isGit &&
+    (check === null || check.refusals.length > 0 || (check.needsReference && target === ''))
 
   return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{t('customNodes.updateName', { name: node.name })}</DialogTitle>
           <DialogDescription>
-            {isGit
-              ? t('customNodes.update.gitHint')
-              : t('customNodes.update.registryHint')}
+            {isGit ? t('customNodes.update.gitHint') : t('customNodes.update.registryHint')}
           </DialogDescription>
         </DialogHeader>
         {isGit && git.isPending && (
-          <p role="status" className="text-sm text-muted-foreground">{t('customNodes.inspecting')}</p>
+          <p role="status" className="text-sm text-muted-foreground">
+            {t('customNodes.inspecting')}
+          </p>
         )}
         {isGit && git.isError && (
           <Alert variant="destructive">
             <AlertTitle>{t('customNodes.inspectionError')}</AlertTitle>
             <AlertDescription>
               {errorMessage(git.error)}{' '}
-              {git.error instanceof IpcClientError && failureKind(git.error.code) === 'git_unavailable'
+              {git.error instanceof IpcClientError &&
+              failureKind(git.error.code) === 'git_unavailable'
                 ? t(FAILURE_GUIDANCE.git_unavailable)
                 : ''}
-              <Button variant="outline" size="sm" onClick={() => void git.refetch()}>{t('customNodes.inspectAgain')}</Button>
+              <Button variant="outline" size="sm" onClick={() => void git.refetch()}>
+                {t('customNodes.inspectAgain')}
+              </Button>
             </AlertDescription>
           </Alert>
         )}
@@ -111,9 +131,15 @@ export function UpdateDialog({ node, onPrepare, onClose }: {
           <Alert variant="destructive">
             <AlertTitle>{t('customNodes.refusedTitle')}</AlertTitle>
             <AlertDescription>
-              <ul>{check.refusals.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+              <ul>
+                {check.refusals.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
               {t('customNodes.resolveHint')}
-              <Button variant="outline" size="sm" onClick={() => void git.refetch()}>{t('customNodes.inspectAgain')}</Button>
+              <Button variant="outline" size="sm" onClick={() => void git.refetch()}>
+                {t('customNodes.inspectAgain')}
+              </Button>
             </AlertDescription>
           </Alert>
         )}
@@ -126,14 +152,16 @@ export function UpdateDialog({ node, onPrepare, onClose }: {
               value={reference}
               onChange={(event) => setReference(event.target.value)}
             />
-            <p className="text-xs text-muted-foreground">
-              {t('customNodes.targetHint')}
-            </p>
+            <p className="text-xs text-muted-foreground">{t('customNodes.targetHint')}</p>
           </div>
         )}
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>{t('common.cancel')}</Button>
-          <Button disabled={blocked} onClick={() => onPrepare(target || null)}>{t('customNodes.prepareUpdate')}</Button>
+          <Button variant="outline" onClick={onClose}>
+            {t('common.cancel')}
+          </Button>
+          <Button disabled={blocked} onClick={() => onPrepare(target || null)}>
+            {t('customNodes.prepareUpdate')}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

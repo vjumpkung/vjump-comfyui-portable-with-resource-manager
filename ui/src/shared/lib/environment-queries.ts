@@ -13,7 +13,6 @@ export function useSetupStatus() {
   return useQuery({
     queryKey: environmentKeys.status,
     queryFn: gateway.setupStatus,
-    refetchInterval: (query) =>
-      query.state.data?.phase === 'run_in_progress' ? 1500 : 5000,
+    refetchInterval: (query) => (query.state.data?.phase === 'run_in_progress' ? 1500 : 5000),
   })
 }

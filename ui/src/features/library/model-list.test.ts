@@ -36,9 +36,7 @@ it('sorts by name naturally, size and modified time in both directions', () => {
     model({ name: 'm1.pt', size: 7, modifiedMs: 20 }),
   ]
   const order = (sort: 'name' | 'size' | 'modified', descending = false) =>
-    filterModels(models, { ...DEFAULT_FILTERS, sort, descending }).map(
-      (m) => m.name,
-    )
+    filterModels(models, { ...DEFAULT_FILTERS, sort, descending }).map((m) => m.name)
   expect(order('name')).toEqual(['m1.pt', 'm2.pt', 'm10.pt'])
   expect(order('size')).toEqual(['m10.pt', 'm1.pt', 'm2.pt'])
   expect(order('modified', true)).toEqual(['m10.pt', 'm1.pt', 'm2.pt'])

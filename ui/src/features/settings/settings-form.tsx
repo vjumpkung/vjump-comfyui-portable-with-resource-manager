@@ -1,13 +1,14 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { toast } from 'sonner'
 
-import { LANGUAGES, setLanguage, t as translate, useTranslation, type Language } from '@/shared/i18n'
-import type {
-  CloseBehaviorDto,
-  HfEngineDto,
-  SettingsDto,
-  ThemeDto,
-} from '@/shared/ipc/gateway'
+import {
+  LANGUAGES,
+  setLanguage,
+  t as translate,
+  useTranslation,
+  type Language,
+} from '@/shared/i18n'
+import type { CloseBehaviorDto, HfEngineDto, SettingsDto, ThemeDto } from '@/shared/ipc/gateway'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { Checkbox } from '@/shared/ui/checkbox'
@@ -23,19 +24,28 @@ import { SelectField } from './select-field'
 const HF_ENGINES = [
   { value: 'hf_cli', labelKey: 'settings.engine.hfCli' },
   { value: 'native', labelKey: 'settings.engine.native' },
-] as const satisfies readonly { value: HfEngineDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
+] as const satisfies readonly {
+  value: HfEngineDto
+  labelKey: keyof typeof import('@/shared/i18n/translations.json').en
+}[]
 
 const CLOSE_BEHAVIORS = [
   { value: 'ask', labelKey: 'settings.close.ask' },
   { value: 'stop_comfy', labelKey: 'settings.close.stop' },
   { value: 'keep_running_headless', labelKey: 'settings.close.background' },
-] as const satisfies readonly { value: CloseBehaviorDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
+] as const satisfies readonly {
+  value: CloseBehaviorDto
+  labelKey: keyof typeof import('@/shared/i18n/translations.json').en
+}[]
 
 const THEMES = [
   { value: 'system', labelKey: 'settings.theme.system' },
   { value: 'light', labelKey: 'settings.theme.light' },
   { value: 'dark', labelKey: 'settings.theme.dark' },
-] as const satisfies readonly { value: ThemeDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
+] as const satisfies readonly {
+  value: ThemeDto
+  labelKey: keyof typeof import('@/shared/i18n/translations.json').en
+}[]
 
 const U32_MAX = 4_294_967_295
 
@@ -50,7 +60,9 @@ interface Draft {
   skipSecurityConfirmations: boolean
 }
 
-type DraftErrors = Partial<Record<keyof Draft, `settings.validation.${'concurrency' | 'ttl' | 'bandwidth'}`>>
+type DraftErrors = Partial<
+  Record<keyof Draft, `settings.validation.${'concurrency' | 'ttl' | 'bandwidth'}`>
+>
 
 function toDraft(settings: SettingsDto): Draft {
   return {
@@ -163,7 +175,10 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
           <SelectField
             id="hf-engine"
             value={draft.hfEngine}
-            options={HF_ENGINES.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
+            options={HF_ENGINES.map((option) => ({
+              value: option.value,
+              label: t(option.labelKey),
+            }))}
             onChange={(value) => patch('hfEngine', value)}
           />
         </Field>
@@ -171,7 +186,10 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
           <SelectField
             id="close-behavior"
             value={draft.closeBehavior}
-            options={CLOSE_BEHAVIORS.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
+            options={CLOSE_BEHAVIORS.map((option) => ({
+              value: option.value,
+              label: t(option.labelKey),
+            }))}
             onChange={(value) => patch('closeBehavior', value)}
           />
         </Field>
@@ -204,7 +222,11 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
             aria-invalid={errors.registryCacheTtl ? true : undefined}
           />
         </Field>
-        <Field id="bandwidth-cap" label={t('settings.bandwidth')} error={errors.bandwidthCap && t(errors.bandwidthCap)}>
+        <Field
+          id="bandwidth-cap"
+          label={t('settings.bandwidth')}
+          error={errors.bandwidthCap && t(errors.bandwidthCap)}
+        >
           <Input
             id="bandwidth-cap"
             inputMode="numeric"
@@ -222,9 +244,14 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
       <FieldSet>
         <FieldLegend>{t('settings.dangerZone')}</FieldLegend>
         <FormField orientation="horizontal">
-          <Checkbox id="skip-security-confirmations" checked={draft.skipSecurityConfirmations}
-            onCheckedChange={(checked) => patch('skipSecurityConfirmations', checked === true)} />
-          <FieldLabel htmlFor="skip-security-confirmations">{t('settings.skipSecurityConfirmations')}</FieldLabel>
+          <Checkbox
+            id="skip-security-confirmations"
+            checked={draft.skipSecurityConfirmations}
+            onCheckedChange={(checked) => patch('skipSecurityConfirmations', checked === true)}
+          />
+          <FieldLabel htmlFor="skip-security-confirmations">
+            {t('settings.skipSecurityConfirmations')}
+          </FieldLabel>
         </FormField>
         <Alert variant="destructive">
           <AlertTitle>{t('settings.skipSecurityConfirmations')}</AlertTitle>
@@ -247,7 +274,9 @@ export function SettingsForm() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg font-bold tracking-tight">{t('settings.preferences')}</CardTitle>
+        <CardTitle className="text-lg font-bold tracking-tight">
+          {t('settings.preferences')}
+        </CardTitle>
         <CardDescription>{t('settings.storageHint')}</CardDescription>
       </CardHeader>
       <CardContent>

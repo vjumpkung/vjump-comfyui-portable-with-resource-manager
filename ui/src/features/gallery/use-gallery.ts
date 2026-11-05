@@ -38,16 +38,12 @@ export function isBusy(error: unknown): boolean {
 
 /** The sanitized message, with a stale reference turned into a request to refresh. */
 export function galleryErrorMessage(error: unknown): string {
-  return hasCode(error, 'gallery_stale')
-    ? translate('gallery.error.stale')
-    : errorMessage(error)
+  return hasCode(error, 'gallery_stale') ? translate('gallery.error.stale') : errorMessage(error)
 }
 
 /** The message a dialog shows inline. A busy backend is toasted instead, so the dialog stays retryable. */
 export function inlineError(error: unknown): string | null {
-  return error === null || error === undefined || isBusy(error)
-    ? null
-    : galleryErrorMessage(error)
+  return error === null || error === undefined || isBusy(error) ? null : galleryErrorMessage(error)
 }
 
 export function useGalleryListing(area: GalleryAreaDto, path: string) {

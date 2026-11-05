@@ -71,24 +71,14 @@ export function LogView({ lines }: { lines: string[] }) {
   }, [lines])
   return (
     <div className="setup-log h-72 min-w-0 overflow-hidden rounded-lg border border-secondary p-3">
-      <div
-        ref={host}
-        aria-label={t('setup.sanitizedLog')}
-        className="h-full min-w-0"
-      />
+      <div ref={host} aria-label={t('setup.sanitizedLog')} className="h-full min-w-0" />
     </div>
   )
 }
 
 /** Streams raw output into a terminal, preserving carriage returns so progress bars redraw in
  * place. `text` only grows by appending; any other change rewrites the terminal. */
-export function StreamLogView({
-  text,
-  label,
-}: {
-  text: string
-  label: string
-}) {
+export function StreamLogView({ text, label }: { text: string; label: string }) {
   const host = useRef<HTMLDivElement>(null)
   const terminal = useRef<Terminal | null>(null)
   const written = useRef('')

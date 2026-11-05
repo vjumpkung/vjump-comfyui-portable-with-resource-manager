@@ -5,23 +5,10 @@ import { useTranslation } from '@/shared/i18n'
 import { gateway } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
 import { Button } from '@/shared/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/shared/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/shared/ui/table'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 
 import { comfyKeys } from './use-runtime'
 
@@ -48,8 +35,7 @@ export function ExtraModelPathsCard({ running }: { running: boolean }) {
     },
     onError: (failure: unknown) => setError(failure),
     // The backend rescans the library after a write; the list is refetched here.
-    onSettled: () =>
-      void client.invalidateQueries({ queryKey: comfyKeys.extraPaths }),
+    onSettled: () => void client.invalidateQueries({ queryKey: comfyKeys.extraPaths }),
   }
   const generate = useMutation({
     mutationFn: (path: string) => gateway.comfyGenerateExtraModelPaths(path),
@@ -68,9 +54,7 @@ export function ExtraModelPathsCard({ running }: { running: boolean }) {
   })
 
   const busy = generate.isPending || remove.isPending
-  const hasAppSection = (extraPaths.data ?? []).some(
-    (root) => root.section === APP_SECTION,
-  )
+  const hasAppSection = (extraPaths.data ?? []).some((root) => root.section === APP_SECTION)
 
   return (
     <Card>
@@ -78,9 +62,7 @@ export function ExtraModelPathsCard({ running }: { running: boolean }) {
         <CardTitle className="text-lg font-bold tracking-tight">
           {t('runtime.paths.title')}
         </CardTitle>
-        <CardDescription>
-          {t('runtime.paths.hint')}
-        </CardDescription>
+        <CardDescription>{t('runtime.paths.hint')}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
@@ -93,11 +75,7 @@ export function ExtraModelPathsCard({ running }: { running: boolean }) {
               spellCheck={false}
               onChange={(event) => setBasePath(event.target.value)}
             />
-            <Button
-              variant="outline"
-              disabled={browse.isPending}
-              onClick={() => browse.mutate()}
-            >
+            <Button variant="outline" disabled={browse.isPending} onClick={() => browse.mutate()}>
               {t('common.browse')}
             </Button>
           </div>
@@ -127,9 +105,7 @@ export function ExtraModelPathsCard({ running }: { running: boolean }) {
             {t('runtime.paths.restart')}
           </p>
         ) : null}
-        <p className="text-xs text-muted-foreground">
-          {t('runtime.paths.readFrom')}
-        </p>
+        <p className="text-xs text-muted-foreground">{t('runtime.paths.readFrom')}</p>
         {extraPaths.data && extraPaths.data.length > 0 ? (
           <Table>
             <TableHeader>
@@ -143,25 +119,21 @@ export function ExtraModelPathsCard({ running }: { running: boolean }) {
               {extraPaths.data.map((root) => (
                 <TableRow key={`${root.section}/${root.category}/${root.path}`}>
                   <TableCell>
-                    {root.isDefault ? t('runtime.paths.defaultSection', { section: root.section }) : root.section}
+                    {root.isDefault
+                      ? t('runtime.paths.defaultSection', { section: root.section })
+                      : root.section}
                   </TableCell>
                   <TableCell>{root.category}</TableCell>
-                  <TableCell className="font-mono text-xs break-all">
-                    {root.path}
-                  </TableCell>
+                  <TableCell className="font-mono text-xs break-all">{root.path}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         ) : extraPaths.isError ? (
-          <p className="text-sm text-destructive">
-            {errorMessage(extraPaths.error)}
-          </p>
+          <p className="text-sm text-destructive">{errorMessage(extraPaths.error)}</p>
         ) : (
           <p className="text-sm text-muted-foreground">
-            {extraPaths.isPending
-              ? t('common.loading')
-              : t('runtime.paths.empty')}
+            {extraPaths.isPending ? t('common.loading') : t('runtime.paths.empty')}
           </p>
         )}
       </CardContent>

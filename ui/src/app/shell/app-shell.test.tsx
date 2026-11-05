@@ -34,12 +34,19 @@ vi.mock('@/features/custom-nodes/custom-nodes-page', () => ({
     return (
       <div>
         <p>Custom Nodes feature</p>
-        <p>busy:{String(props.maintenanceBusy)} runtime:{props.runtime?.lifecycle ?? 'none'} actions:{String(props.runtimeBusy)}</p>
+        <p>
+          busy:{String(props.maintenanceBusy)} runtime:{props.runtime?.lifecycle ?? 'none'} actions:
+          {String(props.runtimeBusy)}
+        </p>
         <p>restart result:{result}</p>
         <button onClick={props.onRepair}>Repair stub</button>
         <button onClick={props.onOpenComfy}>Open ComfyUI stub</button>
-        <button onClick={() => void props.onStopComfy().then(() => setResult('stopped'))}>Stop stub</button>
-        <button onClick={() => void props.onRestartComfy().then((value) => setResult(value.kind))}>Restart stub</button>
+        <button onClick={() => void props.onStopComfy().then(() => setResult('stopped'))}>
+          Stop stub
+        </button>
+        <button onClick={() => void props.onRestartComfy().then((value) => setResult(value.kind))}>
+          Restart stub
+        </button>
       </div>
     )
   },
@@ -81,7 +88,9 @@ it('custom_nodes_navigation_renders_the_feature', async () => {
 })
 
 it('gallery_navigation_follows_custom_nodes_and_renders_the_feature', async () => {
-  render(<AppShell status={{ ...setupStatus, phase: 'ready' }} onSetup={onSetup} onResume={onResume} />)
+  render(
+    <AppShell status={{ ...setupStatus, phase: 'ready' }} onSetup={onSetup} onResume={onResume} />,
+  )
   const labels = within(screen.getByRole('navigation', { name: 'Main' }))
     .getAllByRole('button')
     .map((item) => item.getAttribute('aria-label'))
@@ -115,7 +124,11 @@ it('node_restart_uses_runtime_action_result', async () => {
 
 it('awaits_the_stop_mutation_for_the_feature', async () => {
   let release: () => void = () => undefined
-  runtimeActions.stop.mutateAsync.mockReturnValue(new Promise<void>((resolve) => { release = resolve }))
+  runtimeActions.stop.mutateAsync.mockReturnValue(
+    new Promise<void>((resolve) => {
+      release = resolve
+    }),
+  )
   await mount()
   fireEvent.click(screen.getByRole('button', { name: 'Stop stub' }))
   await new Promise((resolve) => setTimeout(resolve, 20))
@@ -125,7 +138,9 @@ it('awaits_the_stop_mutation_for_the_feature', async () => {
 })
 
 it('shell_contains_overflow_inside_main', () => {
-  const view = render(<AppShell status={{ ...setupStatus, phase: 'ready' }} onSetup={onSetup} onResume={onResume} />)
+  const view = render(
+    <AppShell status={{ ...setupStatus, phase: 'ready' }} onSetup={onSetup} onResume={onResume} />,
+  )
   // A positioned, clipped shell keeps absolutely positioned descendants from extending the document.
   const root = view.container.firstElementChild as HTMLElement
   expect(root.classList.contains('overflow-hidden')).toBe(true)

@@ -13,16 +13,16 @@ import {
 import { errorMessage } from '@/shared/lib/display'
 import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/ui/dialog'
-import { Progress } from '@/shared/ui/progress'
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/shared/ui/table'
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/shared/ui/dialog'
+import { Progress } from '@/shared/ui/progress'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 
 import { ChoiceDialog } from './choice-dialog'
 import { isActive, percent, progressText } from './format'
@@ -80,8 +80,7 @@ function Row({
   const total = progress?.total ?? job.size
   const value = percent(done, total)
   const showBar = ['downloading', 'verifying', 'paused'].includes(job.state)
-  const busy =
-    pause.isPending || resume.isPending || cancel.isPending || retry.isPending
+  const busy = pause.isPending || resume.isPending || cancel.isPending || retry.isPending
   const waitingForDecision = job.state === 'paused' && job.decisionId !== null
   const label = job.destination.filename
 
@@ -93,22 +92,18 @@ function Row({
       style={{ height: ROW_HEIGHT }}
     >
       <TableCell className="max-w-64 align-top whitespace-normal">
-        <p className="text-sm font-semibold break-words [overflow-wrap:anywhere]">
-          {label}
-        </p>
-        <p className="font-mono text-xs text-muted-foreground break-words [overflow-wrap:anywhere]">
+        <p className="text-sm font-semibold [overflow-wrap:anywhere] break-words">{label}</p>
+        <p className="font-mono text-xs [overflow-wrap:anywhere] break-words text-muted-foreground">
           {job.destination.relativePath}
         </p>
-        <p className="font-mono text-xs text-muted-foreground break-words [overflow-wrap:anywhere]">
+        <p className="font-mono text-xs [overflow-wrap:anywhere] break-words text-muted-foreground">
           {job.label}
         </p>
       </TableCell>
       <TableCell className="align-top">
         <div className="flex flex-col items-start gap-1">
           <StatusChip state={job.state} />
-          {job.state === 'completed' ? (
-            <IntegrityChip verified={job.verified} />
-          ) : null}
+          {job.state === 'completed' ? <IntegrityChip verified={job.verified} /> : null}
         </div>
       </TableCell>
       <TableCell className="min-w-48 align-top whitespace-normal">
@@ -120,9 +115,7 @@ function Row({
               className={cn(job.state === 'paused' && '[&>div]:bg-brand-pink')}
             />
             <p className="font-mono text-xs text-muted-foreground">
-              {job.finalizing
-                ? t('downloads.finalizing')
-                : progressText(job, progress)}
+              {job.finalizing ? t('downloads.finalizing') : progressText(job, progress)}
             </p>
           </div>
         ) : null}
@@ -142,9 +135,7 @@ function Row({
           </div>
         ) : null}
         {job.state === 'paused' && job.restartsFromZero && !job.finalizing ? (
-          <p className="text-xs text-muted-foreground">
-            {t('downloads.resumeRestartHint')}
-          </p>
+          <p className="text-xs text-muted-foreground">{t('downloads.resumeRestartHint')}</p>
         ) : null}
       </TableCell>
       <TableCell className="align-top">
@@ -154,11 +145,7 @@ function Row({
               variant="ghost"
               size="icon-sm"
               aria-label={t('downloads.pauseFile', { filename: label })}
-              title={
-                job.restartsFromZero
-                  ? t('downloads.pauseRestart')
-                  : t('common.pause')
-              }
+              title={job.restartsFromZero ? t('downloads.pauseRestart') : t('common.pause')}
               disabled={busy}
               onClick={() => pause.mutate(job.id)}
             >
@@ -167,12 +154,7 @@ function Row({
           ) : null}
           {job.state === 'paused' ? (
             waitingForDecision ? (
-              <Button
-                variant="outline"
-                size="xs"
-                disabled={busy}
-                onClick={() => onResolve(job)}
-              >
+              <Button variant="outline" size="xs" disabled={busy} onClick={() => onResolve(job)}>
                 {t('downloads.resolveConflict')}
               </Button>
             ) : (
@@ -180,11 +162,7 @@ function Row({
                 variant="ghost"
                 size="icon-sm"
                 aria-label={t('downloads.resumeFile', { filename: label })}
-                title={
-                  job.restartsFromZero
-                    ? t('downloads.resumeRestart')
-                    : t('common.resume')
-                }
+                title={job.restartsFromZero ? t('downloads.resumeRestart') : t('common.resume')}
                 disabled={busy}
                 onClick={() => resume.mutate(job.id)}
               >
@@ -217,10 +195,15 @@ function Row({
             </Button>
           ) : null}
           {['completed', 'failed', 'cancelled'].includes(job.state) &&
-            (!job.finalizing || job.state === 'completed') ? (
-            <Button variant="ghost" size="icon-sm"
-              aria-label={t('downloads.removeFromList')} title={t('downloads.removeFromList')}
-              disabled={busy} onClick={() => onRemove(job)}>
+          (!job.finalizing || job.state === 'completed') ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t('downloads.removeFromList')}
+              title={t('downloads.removeFromList')}
+              disabled={busy}
+              onClick={() => onRemove(job)}
+            >
               <Trash2 aria-hidden="true" />
             </Button>
           ) : null}
@@ -247,13 +230,7 @@ export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
   const windowed = sorted.length > WINDOW_AFTER
 
   const decide = useMutation({
-    mutationFn: ({
-      job,
-      choice,
-    }: {
-      job: DownloadJobDto
-      choice: ConflictChoiceDto
-    }) =>
+    mutationFn: ({ job, choice }: { job: DownloadJobDto; choice: ConflictChoiceDto }) =>
       gateway.dlResume(job.id, {
         decisionId: job.decisionId ?? '',
         choice,
@@ -270,9 +247,7 @@ export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
 
   const first = windowed ? Math.floor(scrollTop / ROW_HEIGHT) : 0
   const start = windowed ? Math.max(0, first - 4) : 0
-  const end = windowed
-    ? Math.min(sorted.length, first + VIEWPORT_ROWS + 4)
-    : sorted.length
+  const end = windowed ? Math.min(sorted.length, first + VIEWPORT_ROWS + 4) : sorted.length
   const visible = sorted.slice(start, end)
 
   function onKeyDown(event: KeyboardEvent<HTMLTableSectionElement>) {
@@ -280,10 +255,7 @@ export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
     const target = event.target as HTMLElement
     const row = target.closest<HTMLElement>('[data-row]')
     if (!row || target !== row) return
-    const sibling =
-      event.key === 'ArrowDown'
-        ? row.nextElementSibling
-        : row.previousElementSibling
+    const sibling = event.key === 'ArrowDown' ? row.nextElementSibling : row.previousElementSibling
     if (sibling instanceof HTMLElement && sibling.hasAttribute('data-row')) {
       event.preventDefault()
       sibling.focus()
@@ -307,9 +279,7 @@ export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
               <TableHead className="text-[#2a313a]">{t('common.download')}</TableHead>
               <TableHead className="text-[#2a313a]">{t('common.status')}</TableHead>
               <TableHead className="text-[#2a313a]">{t('common.progress')}</TableHead>
-              <TableHead className="text-right text-[#2a313a]">
-                {t('common.actions')}
-              </TableHead>
+              <TableHead className="text-right text-[#2a313a]">{t('common.actions')}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody onKeyDown={onKeyDown}>
@@ -327,34 +297,48 @@ export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
               />
             ))}
             {windowed && end < sorted.length ? (
-              <tr
-                aria-hidden="true"
-                style={{ height: (sorted.length - end) * ROW_HEIGHT }}
-              />
+              <tr aria-hidden="true" style={{ height: (sorted.length - end) * ROW_HEIGHT }} />
             ) : null}
           </TableBody>
         </Table>
       </div>
-      <Dialog open={removeJob !== null} onOpenChange={(open) => {
-        if (!open && !remove.isPending) setRemoveJob(null)
-      }}>
+      <Dialog
+        open={removeJob !== null}
+        onOpenChange={(open) => {
+          if (!open && !remove.isPending) setRemoveJob(null)
+        }}
+      >
         <DialogContent showCloseButton={!remove.isPending}>
           <DialogHeader>
             <DialogTitle>{t('downloads.removeTitle')}</DialogTitle>
             <DialogDescription>{t('downloads.removeDescription')}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" disabled={remove.isPending} onClick={() => setRemoveJob(null)}>{t('common.cancel')}</Button>
-            <Button variant="destructive" disabled={remove.isPending} onClick={() => {
-              if (removeJob) remove.mutate(removeJob)
-            }}>{t('downloads.remove')}</Button>
+            <Button
+              variant="outline"
+              disabled={remove.isPending}
+              onClick={() => setRemoveJob(null)}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => {
+                if (removeJob) remove.mutate(removeJob)
+              }}
+            >
+              {t('downloads.remove')}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
       {conflictJob ? (
         <ChoiceDialog
           title={t('downloads.fileAppeared')}
-          description={t('downloads.finishedConflict', { path: conflictJob.destination.relativePath })}
+          description={t('downloads.finishedConflict', {
+            path: conflictJob.destination.relativePath,
+          })}
           note={t('downloads.overwriteDisclosure')}
           busy={decide.isPending || abandon.isPending}
           choices={[

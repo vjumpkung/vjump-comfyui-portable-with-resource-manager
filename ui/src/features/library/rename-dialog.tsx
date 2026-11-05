@@ -37,10 +37,7 @@ export function RenameDialog({ model, onClose, onSubmit }: Props) {
   const [busy, setBusy] = useState(false)
   const trimmed = name.trim()
   const changedExtension = extensionOf(trimmed) !== extensionOf(model.name)
-  const ready =
-    trimmed !== '' &&
-    trimmed !== model.name &&
-    (!changedExtension || acknowledged)
+  const ready = trimmed !== '' && trimmed !== model.name && (!changedExtension || acknowledged)
 
   async function submit() {
     setBusy(true)
@@ -61,9 +58,7 @@ export function RenameDialog({ model, onClose, onSubmit }: Props) {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t('library.rename.title')}</DialogTitle>
-          <DialogDescription>
-            {t('library.rename.hint')}
-          </DialogDescription>
+          <DialogDescription>{t('library.rename.hint')}</DialogDescription>
         </DialogHeader>
         <form
           className="flex flex-col gap-4"
@@ -97,9 +92,7 @@ export function RenameDialog({ model, onClose, onSubmit }: Props) {
                     checked={acknowledged}
                     onCheckedChange={(checked) => setAcknowledged(checked === true)}
                   />
-                  <Label htmlFor="rename-extension-ack">
-                    {t('library.rename.extensionAck')}
-                  </Label>
+                  <Label htmlFor="rename-extension-ack">{t('library.rename.extensionAck')}</Label>
                 </span>
               </AlertDescription>
             </Alert>

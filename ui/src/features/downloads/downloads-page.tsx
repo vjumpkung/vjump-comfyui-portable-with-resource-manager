@@ -15,11 +15,7 @@ import { isActive } from './format'
 
 type Dialog = 'add' | 'import' | 'export' | null
 
-export function DownloadsPage({
-  onOpenSettings,
-}: {
-  onOpenSettings: () => void
-}) {
+export function DownloadsPage({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { t } = useTranslation()
   const { jobs, progress, connected } = useDownloads()
   const [dialog, setDialog] = useState<Dialog>(null)
@@ -67,11 +63,7 @@ export function DownloadsPage({
           description={t('downloads.emptyHint')}
         />
       ) : (
-        <QueueTable
-          jobs={list}
-          progress={progress}
-          onOpenSettings={onOpenSettings}
-        />
+        <QueueTable jobs={list} progress={progress} onOpenSettings={onOpenSettings} />
       )}
 
       {dialog === 'add' ? (
@@ -82,14 +74,9 @@ export function DownloadsPage({
         />
       ) : null}
       {dialog === 'import' ? (
-        <ImportPackDialog
-          onClose={() => setDialog(null)}
-          onSubmit={flow.submit}
-        />
+        <ImportPackDialog onClose={() => setDialog(null)} onSubmit={flow.submit} />
       ) : null}
-      {dialog === 'export' ? (
-        <ExportDialog onClose={() => setDialog(null)} />
-      ) : null}
+      {dialog === 'export' ? <ExportDialog onClose={() => setDialog(null)} /> : null}
       {flow.prompts}
     </div>
   )

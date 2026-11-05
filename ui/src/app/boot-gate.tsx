@@ -12,7 +12,9 @@ export function BootGate({ children }: { children: ReactNode }) {
     let timer: ReturnType<typeof setTimeout> | undefined
     async function poll() {
       try {
-        request.current ??= gateway.appReady().finally(() => { request.current = null })
+        request.current ??= gateway.appReady().finally(() => {
+          request.current = null
+        })
         const isReady = await request.current
         if (cancelled) return
         if (isReady) {
@@ -22,7 +24,10 @@ export function BootGate({ children }: { children: ReactNode }) {
       } catch {
         // Startup IPC may be temporarily unavailable; keep the loading screen.
       }
-      if (!cancelled) timer = setTimeout(() => { void poll() }, 150)
+      if (!cancelled)
+        timer = setTimeout(() => {
+          void poll()
+        }, 150)
     }
     void poll()
     return () => {

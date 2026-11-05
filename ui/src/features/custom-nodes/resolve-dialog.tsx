@@ -12,7 +12,12 @@ import {
 
 import { KIND_LABEL } from './operations-panel'
 
-export function ResolveDialog({ operation, busy, onConfirm, onClose }: {
+export function ResolveDialog({
+  operation,
+  busy,
+  onConfirm,
+  onClose,
+}: {
   operation: OperationDto
   busy: boolean
   onConfirm: () => void
@@ -20,16 +25,26 @@ export function ResolveDialog({ operation, busy, onConfirm, onClose }: {
 }) {
   const { t } = useTranslation()
   return (
-    <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose() }}>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose()
+      }}
+    >
       <DialogContent showCloseButton={!busy}>
         <DialogHeader>
           <DialogTitle>
-            {t('customNodes.resolve.title', { action: t(KIND_LABEL[operation.kind]).toLowerCase(), name: operation.nodeName })}
+            {t('customNodes.resolve.title', {
+              action: t(KIND_LABEL[operation.kind]).toLowerCase(),
+              name: operation.nodeName,
+            })}
           </DialogTitle>
           <DialogDescription>{t('customNodes.resolve.body')}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" disabled={busy} onClick={onClose}>{t('common.cancel')}</Button>
+          <Button variant="outline" disabled={busy} onClick={onClose}>
+            {t('common.cancel')}
+          </Button>
           <Button disabled={busy} onClick={onConfirm}>
             {busy ? t('customNodes.resolve.working') : t('customNodes.resolve.confirm')}
           </Button>

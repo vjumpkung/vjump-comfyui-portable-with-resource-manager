@@ -51,14 +51,29 @@ function toError(error: unknown): { code: string; message: string | NodeText } {
     : { code: 'other', message: { key: 'common.operationError' } }
 }
 
-export function prepareNode(preparation: NodePreparation, requestId: string): Promise<PlanReviewDto> {
+export function prepareNode(
+  preparation: NodePreparation,
+  requestId: string,
+): Promise<PlanReviewDto> {
   switch (preparation.kind) {
     case 'registry':
-      return gateway.nodePrepareRegistry({ requestId, id: preparation.id, version: preparation.version })
+      return gateway.nodePrepareRegistry({
+        requestId,
+        id: preparation.id,
+        version: preparation.version,
+      })
     case 'git':
-      return gateway.nodePrepareGit({ requestId, repository: preparation.repository, reference: preparation.reference })
+      return gateway.nodePrepareGit({
+        requestId,
+        repository: preparation.repository,
+        reference: preparation.reference,
+      })
     case 'update':
-      return gateway.nodePrepareUpdate({ requestId, nodeId: preparation.nodeId, reference: preparation.reference })
+      return gateway.nodePrepareUpdate({
+        requestId,
+        nodeId: preparation.nodeId,
+        reference: preparation.reference,
+      })
     case 'retry':
       return gateway.nodePrepareRetryDeps({ requestId, nodeId: preparation.nodeId })
   }
@@ -150,7 +165,10 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
       if (cancelled.current) {
         // An explicit cancellation raced with a successful preparation: discard what came back.
         await gateway.nodeCancel(plan.id).catch(() => undefined)
-        setNotice({ message: { key: 'customNodes.result.preparationCancelled' }, cleanupPending: false })
+        setNotice({
+          message: { key: 'customNodes.result.preparationCancelled' },
+          cleanupPending: false,
+        })
       } else {
         preparations.current.set(plan.id, preparation)
         setReview([plan])
@@ -191,10 +209,12 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
   /** Idle review only: explicitly discards every plan; never called on unmount. */
   async function discard(plans: PlanReviewDto[]): Promise<void> {
     setReview(null)
-    await Promise.all(plans.map(async (plan) => {
-      preparations.current.delete(plan.id)
-      await gateway.nodeCancel(plan.id).catch(() => undefined)
-    }))
+    await Promise.all(
+      plans.map(async (plan) => {
+        preparations.current.delete(plan.id)
+        await gateway.nodeCancel(plan.id).catch(() => undefined)
+      }),
+    )
     settle()
   }
 
@@ -206,7 +226,8 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
 
   /** Cancellation is a request: the command or status outcome is still awaited. */
   function requestCancel() {
-    const key = busy?.kind === 'prepare' ? busy.requestId : busy?.kind === 'commit' ? busy.planId : null
+    const key =
+      busy?.kind === 'prepare' ? busy.requestId : busy?.kind === 'commit' ? busy.planId : null
     if (key === null) return
     cancelled.current = true
     setCancelRequested(true)

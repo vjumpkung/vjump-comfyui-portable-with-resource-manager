@@ -3,11 +3,7 @@ import { LoaderCircle } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import { useTranslation } from '@/shared/i18n'
-import {
-  gateway,
-  type EnqueueItemInput,
-  type PackPreviewRowDto,
-} from '@/shared/ipc/gateway'
+import { gateway, type EnqueueItemInput, type PackPreviewRowDto } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
 import { Alert, AlertDescription } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
@@ -48,16 +44,11 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
   const fileInput = useRef<HTMLInputElement>(null)
 
   const preview = useMutation({
-    mutationFn: (input: { source: 'json' | 'url'; value: string }) =>
-      gateway.dlImportPack(input),
+    mutationFn: (input: { source: 'json' | 'url'; value: string }) => gateway.dlImportPack(input),
     onSuccess: (result) => {
       setRows(result)
       setDeselected(
-        new Set(
-          result.flatMap((row, index) =>
-            row.resolution === null ? [index] : [],
-          ),
-        ),
+        new Set(result.flatMap((row, index) => (row.resolution === null ? [index] : []))),
       )
       setChoices({})
     },
@@ -67,8 +58,7 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
     !deselected.has(index) && rowFile(row, choices[index]) ? [index] : [],
   )
   const totalBytes = queueable.reduce(
-    (sum, index) =>
-      sum + (rowFile(rows![index], choices[index])?.size.bytes ?? 0),
+    (sum, index) => sum + (rowFile(rows![index], choices[index])?.size.bytes ?? 0),
     0,
   )
 
@@ -112,9 +102,7 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>{t('downloads.importTitle')}</DialogTitle>
-          <DialogDescription>
-            {t('downloads.importHint')}
-          </DialogDescription>
+          <DialogDescription>{t('downloads.importHint')}</DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -154,10 +142,7 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
             }
           >
             {preview.isPending ? (
-              <LoaderCircle
-                className="motion-safe:animate-spin"
-                aria-hidden="true"
-              />
+              <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
             ) : null}
             {t('downloads.preview')}
           </Button>
@@ -194,7 +179,7 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
                     }
                   />
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <p className="text-sm font-semibold break-words [overflow-wrap:anywhere]">
+                    <p className="text-sm font-semibold [overflow-wrap:anywhere] break-words">
                       {row.name}
                     </p>
                     <p className="font-mono text-xs text-muted-foreground">
@@ -202,9 +187,7 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
                       {file ? ` · ${file.filename} · ${formatSize(file.size)}` : ''}
                     </p>
                     {row.error ? (
-                      <p className="text-xs text-destructive">
-                        {row.error.message}
-                      </p>
+                      <p className="text-xs text-destructive">{row.error.message}</p>
                     ) : null}
                     {files.length > 1 ? (
                       <select
@@ -236,14 +219,15 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
           <Button variant="outline" onClick={onClose}>
             {t('common.cancel')}
           </Button>
-          <Button
-            disabled={queueable.length === 0 || submitting}
-            onClick={() => void queue()}
-          >
+          <Button disabled={queueable.length === 0 || submitting} onClick={() => void queue()}>
             {queueable.length > 0
-              ? t('downloads.queueCount', { count: queueable.length, size: totalBytes > 0
-                  ? formatSize({ kind: 'exact', bytes: totalBytes })
-                  : t('downloads.sizeUnknownLowercase') })
+              ? t('downloads.queueCount', {
+                  count: queueable.length,
+                  size:
+                    totalBytes > 0
+                      ? formatSize({ kind: 'exact', bytes: totalBytes })
+                      : t('downloads.sizeUnknownLowercase'),
+                })
               : t('downloads.queue')}
           </Button>
         </DialogFooter>

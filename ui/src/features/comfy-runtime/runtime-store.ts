@@ -14,10 +14,7 @@ export interface RuntimeState {
   closeRequest: string | null
 }
 
-type Api = Pick<
-  typeof gateway,
-  'comfySubscribe' | 'comfyUnsubscribe' | 'comfyStatus'
->
+type Api = Pick<typeof gateway, 'comfySubscribe' | 'comfyUnsubscribe' | 'comfyStatus'>
 
 function bounded(text: string): string {
   return text.length > MAX_LOG_CHARS ? text.slice(-MAX_LOG_CHARS) : text

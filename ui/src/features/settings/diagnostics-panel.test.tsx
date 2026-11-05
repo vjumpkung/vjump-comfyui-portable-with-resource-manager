@@ -1,12 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { gateway, IpcClientError } from '@/shared/ipc/gateway'
@@ -37,9 +31,7 @@ it('diagnostics_copy_failure_exposes_read_only_fallback', async () => {
   })
   copy()
 
-  const report = await screen.findByLabelText<HTMLTextAreaElement>(
-    'Diagnostics report',
-  )
+  const report = await screen.findByLabelText<HTMLTextAreaElement>('Diagnostics report')
   expect(report.readOnly).toBe(true)
   expect(report.value).toBe('REDACTED REPORT')
   expect(gateway.appCopyDiagnostics).toHaveBeenCalledWith()
@@ -55,8 +47,7 @@ it('a_copied_report_shows_no_fallback', async () => {
   await waitFor(() => expect(gateway.appCopyDiagnostics).toHaveBeenCalled())
   await waitFor(() =>
     expect(
-      screen.getByRole<HTMLButtonElement>('button', { name: /copy diagnostics/i })
-        .disabled,
+      screen.getByRole<HTMLButtonElement>('button', { name: /copy diagnostics/i }).disabled,
     ).toBe(false),
   )
   expect(screen.queryByLabelText('Diagnostics report')).toBeNull()

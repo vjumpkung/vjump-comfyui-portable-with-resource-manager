@@ -1,6 +1,15 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  act,
+  cleanup,
+  configure,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -63,7 +72,10 @@ vi.mock('@/shared/ui/log-view', () => ({
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (error: unknown) => void
-  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
   return { promise, resolve, reject }
 }
 
@@ -95,10 +107,17 @@ beforeEach(() => {
   vi.mocked(gateway.nodeOperationStatus).mockResolvedValue(operation())
   vi.mocked(gateway.nodeGitStatus).mockResolvedValue(gitStatus())
   vi.mocked(gateway.nodePrepareRegistry).mockResolvedValue(plan())
-  vi.mocked(gateway.nodePrepareGit).mockResolvedValue(plan({
-    name: 'pack',
-    source: { kind: 'git', repository: 'https://github.com/example/pack', commit: 'e'.repeat(40), branch: 'main' },
-  }))
+  vi.mocked(gateway.nodePrepareGit).mockResolvedValue(
+    plan({
+      name: 'pack',
+      source: {
+        kind: 'git',
+        repository: 'https://github.com/example/pack',
+        commit: 'e'.repeat(40),
+        branch: 'main',
+      },
+    }),
+  )
   vi.mocked(gateway.nodePrepareUpdate).mockResolvedValue(plan({ kind: 'update' }))
   vi.mocked(gateway.nodePrepareRetryDeps).mockResolvedValue(plan({ kind: 'retry_dependencies' }))
   vi.mocked(gateway.nodeCommit).mockResolvedValue(outcome())
@@ -111,7 +130,9 @@ afterEach(() => {
 
 function ui(overrides: Partial<CustomNodesPageProps> = {}) {
   return (
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
       <CustomNodesPage {...props} {...overrides} />
     </QueryClientProvider>
   )
@@ -144,11 +165,15 @@ it('registry_install_requires_exact_review_before_commit', async () => {
   await loaded()
   fireEvent.click(button('Browse Registry'))
   fireEvent.click(await screen.findByRole('button', { name: 'Install Example Pack' }))
-  fireEvent.change(await screen.findByLabelText('Version (optional)'), { target: { value: ' 1.2.3 ' } })
+  fireEvent.change(await screen.findByLabelText('Version (optional)'), {
+    target: { value: ' 1.2.3 ' },
+  })
   fireEvent.click(screen.getByRole('button', { name: 'Prepare review' }))
   await screen.findByText('Review custom node plan')
   expect(gateway.nodePrepareRegistry).toHaveBeenCalledWith({
-    requestId: expect.any(String) as string, id: 'example-pack', version: '1.2.3',
+    requestId: expect.any(String) as string,
+    id: 'example-pack',
+    version: '1.2.3',
   })
   // Preparation alone never commits.
   expect(gateway.nodeCommit).not.toHaveBeenCalled()
@@ -158,17 +183,24 @@ it('registry_install_requires_exact_review_before_commit', async () => {
   fireEvent.click(executeBox())
   fireEvent.click(button('Apply reviewed plans'))
   await waitFor(() => expect(gateway.nodeCommit).toHaveBeenCalledTimes(1))
-  expect(gateway.nodeCommit).toHaveBeenCalledWith(expect.objectContaining({
-    planId: 'plan-1', binding: 'binding-1', executeNodeCode: true, runInstallPy: false,
-  }))
+  expect(gateway.nodeCommit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      planId: 'plan-1',
+      binding: 'binding-1',
+      executeNodeCode: true,
+      runInstallPy: false,
+    }),
+  )
   expect(await screen.findByText('Installed example-pack.')).toBeTruthy()
   expect(screen.getByRole('button', { name: 'Restart ComfyUI' })).toBeTruthy()
 })
 
 it('reload_rediscovers_review_without_consent', async () => {
-  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
-    pendingReviews: [plan({ trustedSource: true, trustedInstallPy: true, hasInstallPy: true })],
-  }))
+  vi.mocked(gateway.nodeList).mockResolvedValue(
+    nodeList({
+      pendingReviews: [plan({ trustedSource: true, trustedInstallPy: true, hasInstallPy: true })],
+    }),
+  )
   mount()
   expect(await screen.findByText('A prepared plan is waiting for review')).toBeTruthy()
   fireEvent.click(button('Resume review'))
@@ -183,10 +215,21 @@ it('reload_rediscovers_review_without_consent', async () => {
 })
 
 it('failed_operation_remains_visible_after_remount', async () => {
-  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
-    recent: [operation({ id: 'op-9', phase: 'failed', nodeName: 'Broken Pack', failure: 'Installing the dependencies failed.' })],
-    unresolved: [operation({ id: 'op-10', phase: 'published', nodeName: 'Half Done', blocksStart: true })],
-  }))
+  vi.mocked(gateway.nodeList).mockResolvedValue(
+    nodeList({
+      recent: [
+        operation({
+          id: 'op-9',
+          phase: 'failed',
+          nodeName: 'Broken Pack',
+          failure: 'Installing the dependencies failed.',
+        }),
+      ],
+      unresolved: [
+        operation({ id: 'op-10', phase: 'published', nodeName: 'Half Done', blocksStart: true }),
+      ],
+    }),
+  )
   const first = mount()
   expect(await screen.findByText('Installing the dependencies failed.')).toBeTruthy()
   expect(screen.getByText('Broken Pack')).toBeTruthy()
@@ -196,27 +239,42 @@ it('failed_operation_remains_visible_after_remount', async () => {
   expect(await screen.findByText('Installing the dependencies failed.')).toBeTruthy()
   expect(screen.getByRole('button', { name: 'Rescan / finish recovery' })).toBeTruthy()
   // The persisted failure shows even when no in-memory log tail exists.
-  fireEvent.click(screen.getByRole('button', { name: /Show details of the install of Broken Pack/ }))
+  fireEvent.click(
+    screen.getByRole('button', { name: /Show details of the install of Broken Pack/ }),
+  )
   expect(await screen.findByText(/No log lines are available/)).toBeTruthy()
 })
 
 it('shows the authoritative log tail of the selected operation', async () => {
-  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
-    recent: [operation({ id: 'op-9', phase: 'failed', nodeName: 'Broken Pack', failure: 'x' })],
-  }))
+  vi.mocked(gateway.nodeList).mockResolvedValue(
+    nodeList({
+      recent: [operation({ id: 'op-9', phase: 'failed', nodeName: 'Broken Pack', failure: 'x' })],
+    }),
+  )
   vi.mocked(gateway.nodeOperationStatus).mockResolvedValue(
-    operation({ id: 'op-9', phase: 'failed', nodeName: 'Broken Pack', failure: 'x', logTail: ['pip failed', 'exit 1'] }),
+    operation({
+      id: 'op-9',
+      phase: 'failed',
+      nodeName: 'Broken Pack',
+      failure: 'x',
+      logTail: ['pip failed', 'exit 1'],
+    }),
   )
   mount()
-  fireEvent.click(await screen.findByRole('button', { name: /Show details of the install of Broken Pack/ }))
+  fireEvent.click(
+    await screen.findByRole('button', { name: /Show details of the install of Broken Pack/ }),
+  )
   const log = await screen.findByTestId('log')
   expect(log.textContent).toBe('pip failed\nexit 1')
 })
 
 it('git_refusal_displays_status', async () => {
-  vi.mocked(gateway.nodePrepareUpdate).mockRejectedValue(new IpcClientError(
-    'node_git_refused', 'The repository has local changes, an unfinished operation, a diverged branch or no selected upstream, so it was not changed.',
-  ))
+  vi.mocked(gateway.nodePrepareUpdate).mockRejectedValue(
+    new IpcClientError(
+      'node_git_refused',
+      'The repository has local changes, an unfinished operation, a diverged branch or no selected upstream, so it was not changed.',
+    ),
+  )
   vi.mocked(gateway.nodeGitStatus)
     .mockResolvedValueOnce(gitStatus())
     .mockResolvedValue(gitStatus({ dirty: true, status: ' M requirements.txt\n?? scratch.py' }))
@@ -233,30 +291,41 @@ it('git_refusal_displays_status', async () => {
 })
 
 it('refuses a dirty repository before preparing and asks for a target when detached', async () => {
-  vi.mocked(gateway.nodeGitStatus).mockResolvedValueOnce(gitStatus({ dirty: true, status: ' M a.py' }))
+  vi.mocked(gateway.nodeGitStatus).mockResolvedValueOnce(
+    gitStatus({ dirty: true, status: ' M a.py' }),
+  )
   mount()
   await loaded()
   fireEvent.click(button('Update'))
   expect(await screen.findByText('This repository will not be updated')).toBeTruthy()
   expect(screen.getByText(/M a\.py/)).toBeTruthy()
   expect(button('Prepare update').disabled).toBe(true)
-  vi.mocked(gateway.nodeGitStatus).mockResolvedValue(gitStatus({ branch: null, hasUpstream: false, ahead: null, behind: null }))
+  vi.mocked(gateway.nodeGitStatus).mockResolvedValue(
+    gitStatus({ branch: null, hasUpstream: false, ahead: null, behind: null }),
+  )
   fireEvent.click(screen.getAllByRole('button', { name: 'Inspect again' })[0])
   const reference = await screen.findByLabelText('Branch, tag or commit (required)')
   expect(button('Prepare update').disabled).toBe(true)
   fireEvent.change(reference, { target: { value: 'v1.4.0' } })
   fireEvent.click(button('Prepare update'))
-  await waitFor(() => expect(gateway.nodePrepareUpdate).toHaveBeenCalledWith({
-    requestId: expect.any(String) as string, nodeId: 'node-1', reference: 'v1.4.0',
-  }))
+  await waitFor(() =>
+    expect(gateway.nodePrepareUpdate).toHaveBeenCalledWith({
+      requestId: expect.any(String) as string,
+      nodeId: 'node-1',
+      reference: 'v1.4.0',
+    }),
+  )
 })
 
 it('stop_is_awaited_before_retry', async () => {
   const stop = deferred<void>()
   vi.mocked(props.onStopComfy).mockReturnValue(stop.promise)
-  vi.mocked(gateway.nodePrepareGit).mockRejectedValueOnce(new IpcClientError(
-    'comfyui_running', 'ComfyUI must be stopped before changing custom nodes. If it is already stopped, close other programs that use the ComfyUI folder, such as a terminal opened there, and retry.',
-  ))
+  vi.mocked(gateway.nodePrepareGit).mockRejectedValueOnce(
+    new IpcClientError(
+      'comfyui_running',
+      'ComfyUI must be stopped before changing custom nodes. If it is already stopped, close other programs that use the ComfyUI folder, such as a terminal opened there, and retry.',
+    ),
+  )
   mount()
   await loaded()
   await prepareFromGit()
@@ -273,9 +342,12 @@ it('stop_is_awaited_before_retry', async () => {
 })
 
 it('stale_commit_requires_new_review', async () => {
-  vi.mocked(gateway.nodeCommit).mockRejectedValueOnce(new IpcClientError(
-    'node_plan_stale', 'The reviewed plan is no longer current. Prepare it again.',
-  ))
+  vi.mocked(gateway.nodeCommit).mockRejectedValueOnce(
+    new IpcClientError(
+      'node_plan_stale',
+      'The reviewed plan is no longer current. Prepare it again.',
+    ),
+  )
   vi.mocked(gateway.nodePrepareGit)
     .mockResolvedValueOnce(plan({ id: 'old', binding: 'old-binding', name: 'pack' }))
     .mockResolvedValueOnce(plan({ id: 'new', binding: 'new-binding', name: 'pack' }))
@@ -318,14 +390,18 @@ it('confirms_the_move_and_resulting_state_before_disabling', async () => {
   expect(within(dialog).getByText(/custom_nodes\/\.disabled/)).toBeTruthy()
   expect(within(dialog).getByText(/Resulting state: disabled/)).toBeTruthy()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Disable node' }))
-  await waitFor(() => expect(gateway.nodeSetEnabled).toHaveBeenCalledWith({ nodeId: 'node-1', enabled: false }))
+  await waitFor(() =>
+    expect(gateway.nodeSetEnabled).toHaveBeenCalledWith({ nodeId: 'node-1', enabled: false }),
+  )
 })
 
 it('repair_mode_keeps_supported_recovery_actions', async () => {
-  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
-    repairRequired: true,
-    nodes: [node({ dependencies: 'failed' })],
-  }))
+  vi.mocked(gateway.nodeList).mockResolvedValue(
+    nodeList({
+      repairRequired: true,
+      nodes: [node({ dependencies: 'failed' })],
+    }),
+  )
   mount()
   await loaded()
   expect(await screen.findByText('This environment needs repair')).toBeTruthy()
@@ -336,16 +412,21 @@ it('repair_mode_keeps_supported_recovery_actions', async () => {
   expect(button('Disable').disabled).toBe(false)
   expect(button('Uninstall').disabled).toBe(false)
   fireEvent.click(button('Browse Registry'))
-  expect((await screen.findByRole<HTMLButtonElement>('button', { name: 'Install Example Pack' })).disabled).toBe(true)
+  expect(
+    (await screen.findByRole<HTMLButtonElement>('button', { name: 'Install Example Pack' }))
+      .disabled,
+  ).toBe(true)
   fireEvent.click(button('Repair environment'))
   expect(props.onRepair).toHaveBeenCalledTimes(1)
 })
 
 it('successful_retry_does_not_clear_repair_banner', async () => {
-  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
-    repairRequired: true,
-    nodes: [node({ dependencies: 'failed' })],
-  }))
+  vi.mocked(gateway.nodeList).mockResolvedValue(
+    nodeList({
+      repairRequired: true,
+      nodes: [node({ dependencies: 'failed' })],
+    }),
+  )
   mount()
   await loaded()
   fireEvent.click(button('Retry dependencies'))
@@ -381,7 +462,9 @@ it('cancel_uses_request_plan_and_batch_keys', async () => {
   vi.mocked(gateway.nodeCancel).mockClear()
   const commit = deferred<NodeOutcomeDto>()
   vi.mocked(gateway.nodeCommit).mockReturnValueOnce(commit.promise)
-  vi.mocked(gateway.nodePrepareGit).mockResolvedValue(plan({ id: 'plan-7', binding: 'b7', name: 'pack' }))
+  vi.mocked(gateway.nodePrepareGit).mockResolvedValue(
+    plan({ id: 'plan-7', binding: 'b7', name: 'pack' }),
+  )
   const second = mount()
   await loaded()
   await installAndApply()
@@ -395,8 +478,12 @@ it('cancel_uses_request_plan_and_batch_keys', async () => {
   vi.mocked(gateway.nodeCancel).mockClear()
   const batch = deferred<BatchOutcomeDto>()
   vi.mocked(gateway.nodeUpdateAll).mockReturnValueOnce(batch.promise)
-  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({ nodes: [registryInstalled({ name: 'Reg Pack' })] }))
-  vi.mocked(gateway.nodePrepareUpdate).mockResolvedValue(plan({ id: 'plan-b', binding: 'bb', kind: 'update', name: 'Reg Pack' }))
+  vi.mocked(gateway.nodeList).mockResolvedValue(
+    nodeList({ nodes: [registryInstalled({ name: 'Reg Pack' })] }),
+  )
+  vi.mocked(gateway.nodePrepareUpdate).mockResolvedValue(
+    plan({ id: 'plan-b', binding: 'bb', kind: 'update', name: 'Reg Pack' }),
+  )
   mount()
   fireEvent.click(await screen.findByRole('button', { name: 'Update all (1)' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Prepare 1 update' }))
@@ -405,7 +492,10 @@ it('cancel_uses_request_plan_and_batch_keys', async () => {
   fireEvent.click(button('Apply reviewed plans'))
   fireEvent.click(await screen.findByRole('button', { name: 'Request cancellation' }))
   expect(gateway.nodeCancel).toHaveBeenCalledWith('update-all')
-  batch.resolve({ items: [{ planId: 'plan-b', outcome: outcome(), error: null }], stoppedForRepair: false })
+  batch.resolve({
+    items: [{ planId: 'plan-b', outcome: outcome(), error: null }],
+    stoppedForRepair: false,
+  })
   await screen.findByText('Update results')
 })
 
@@ -441,7 +531,9 @@ async function succeedAndRestart(result: Promise<StartResultDto>) {
 }
 
 it('restart_port_conflict_is_not_reported_as_started', async () => {
-  await succeedAndRestart(Promise.resolve({ kind: 'port_conflict', requested: 8188, suggested: 8189 }))
+  await succeedAndRestart(
+    Promise.resolve({ kind: 'port_conflict', requested: 8188, suggested: 8189 }),
+  )
   expect(await screen.findByText('Port 8188 is in use, so ComfyUI was not started')).toBeTruthy()
   expect(screen.queryByText('ComfyUI was restarted')).toBeNull()
   expect(screen.getByText(/Port 8189 is free, but it is not used automatically/)).toBeTruthy()
@@ -451,17 +543,31 @@ it('restart_port_conflict_is_not_reported_as_started', async () => {
 })
 
 it('reports_a_started_restart_only_when_the_runtime_started', async () => {
-  await succeedAndRestart(Promise.resolve({
-    kind: 'started',
-    status: { lifecycle: 'running', session: null, failure: null, pendingOperation: null, recovery: null, origin: null, pendingCloseRequest: null },
-  }))
+  await succeedAndRestart(
+    Promise.resolve({
+      kind: 'started',
+      status: {
+        lifecycle: 'running',
+        session: null,
+        failure: null,
+        pendingOperation: null,
+        recovery: null,
+        origin: null,
+        pendingCloseRequest: null,
+      },
+    }),
+  )
   expect(await screen.findByText('ComfyUI was restarted')).toBeTruthy()
 })
 
 it('does_not_offer_a_restart_while_an_operation_blocks_launch', async () => {
-  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
-    unresolved: [operation({ id: 'op-3', phase: 'published', blocksStart: true, nodeName: 'Half Done' })],
-  }))
+  vi.mocked(gateway.nodeList).mockResolvedValue(
+    nodeList({
+      unresolved: [
+        operation({ id: 'op-3', phase: 'published', blocksStart: true, nodeName: 'Half Done' }),
+      ],
+    }),
+  )
   mount()
   await loaded()
   await installAndApply()
@@ -471,7 +577,9 @@ it('does_not_offer_a_restart_while_an_operation_blocks_launch', async () => {
 })
 
 it('offers_rescan_and_shows_its_failure', async () => {
-  vi.mocked(gateway.nodeRescan).mockRejectedValue(new IpcClientError('node_rescan_failed', 'The rescan failed.'))
+  vi.mocked(gateway.nodeRescan).mockRejectedValue(
+    new IpcClientError('node_rescan_failed', 'The rescan failed.'),
+  )
   mount()
   await loaded()
   fireEvent.click(screen.getByRole('button', { name: 'Rescan / finish recovery' }))
@@ -480,16 +588,27 @@ it('offers_rescan_and_shows_its_failure', async () => {
 })
 
 it('confirms_keeping_files_and_moves_the_closed_operation_out_of_unfinished', async () => {
-  const interrupted = operation({ id: 'op-interrupted', phase: 'prepared', blocksStart: true, nodeName: 'Interrupted Pack' })
-  const closed = nodeList({ recent: [operation({ ...interrupted, phase: 'failed', blocksStart: false })] })
+  const interrupted = operation({
+    id: 'op-interrupted',
+    phase: 'prepared',
+    blocksStart: true,
+    nodeName: 'Interrupted Pack',
+  })
+  const closed = nodeList({
+    recent: [operation({ ...interrupted, phase: 'failed', blocksStart: false })],
+  })
   vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({ unresolved: [interrupted] }))
   vi.mocked(gateway.nodeResolveOperation).mockImplementation(() => {
     vi.mocked(gateway.nodeList).mockResolvedValue(closed)
     return Promise.resolve(closed)
   })
   mount()
-  fireEvent.click(await screen.findByRole('button', { name: 'Keep the files of Interrupted Pack as they are' }))
-  const dialog = await screen.findByRole('dialog', { name: 'Close the interrupted install of Interrupted Pack?' })
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Keep the files of Interrupted Pack as they are' }),
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Close the interrupted install of Interrupted Pack?',
+  })
   expect(within(dialog).getByText(/custom_nodes\/\.disabled/)).toBeTruthy()
   expect(within(dialog).getByText(/Dependencies are not installed or repaired/)).toBeTruthy()
   expect(gateway.nodeResolveOperation).not.toHaveBeenCalled()
@@ -506,7 +625,9 @@ it('keeping_files_clears_a_previous_rescan_failure', async () => {
   const interrupted = operation({ id: 'op-interrupted', phase: 'prepared', blocksStart: true })
   const resolved = nodeList()
   vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({ unresolved: [interrupted] }))
-  vi.mocked(gateway.nodeRescan).mockRejectedValue(new IpcClientError('node_rescan_failed', 'The rescan failed.'))
+  vi.mocked(gateway.nodeRescan).mockRejectedValue(
+    new IpcClientError('node_rescan_failed', 'The rescan failed.'),
+  )
   vi.mocked(gateway.nodeResolveOperation).mockImplementation(() => {
     vi.mocked(gateway.nodeList).mockResolvedValue(resolved)
     return Promise.resolve(resolved)
@@ -516,7 +637,11 @@ it('keeping_files_clears_a_previous_rescan_failure', async () => {
   fireEvent.click(button('Rescan / finish recovery'))
   expect((await screen.findByText('The rescan failed')).closest('[role="alert"]')).toBeTruthy()
   fireEvent.click(button('Keep the files of ComfyUI-Example as they are'))
-  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Keep files as they are' }))
+  fireEvent.click(
+    within(await screen.findByRole('dialog')).getByRole('button', {
+      name: 'Keep files as they are',
+    }),
+  )
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   expect(gateway.nodeResolveOperation).toHaveBeenCalledExactlyOnceWith('op-interrupted')
   expect(screen.queryByRole('heading', { name: 'Unfinished' })).toBeNull()
@@ -524,11 +649,15 @@ it('keeping_files_clears_a_previous_rescan_failure', async () => {
 })
 
 it('cancelling_keep_files_does_not_resolve_the_operation', async () => {
-  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
-    unresolved: [operation({ phase: 'published', blocksStart: true })],
-  }))
+  vi.mocked(gateway.nodeList).mockResolvedValue(
+    nodeList({
+      unresolved: [operation({ phase: 'published', blocksStart: true })],
+    }),
+  )
   mount()
-  fireEvent.click(await screen.findByRole('button', { name: 'Keep the files of ComfyUI-Example as they are' }))
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Keep the files of ComfyUI-Example as they are' }),
+  )
   fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }))
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   expect(gateway.nodeResolveOperation).not.toHaveBeenCalled()
@@ -536,33 +665,55 @@ it('cancelling_keep_files_does_not_resolve_the_operation', async () => {
 })
 
 it('keep_files_failure_keeps_the_dialog_open_and_shows_the_failed_alert', async () => {
-  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
-    unresolved: [operation({ phase: 'published', blocksStart: true })],
-  }))
-  vi.mocked(gateway.nodeResolveOperation).mockRejectedValue(new IpcClientError('node_storage', 'The journal is unavailable.'))
+  vi.mocked(gateway.nodeList).mockResolvedValue(
+    nodeList({
+      unresolved: [operation({ phase: 'published', blocksStart: true })],
+    }),
+  )
+  vi.mocked(gateway.nodeResolveOperation).mockRejectedValue(
+    new IpcClientError('node_storage', 'The journal is unavailable.'),
+  )
   mount()
-  fireEvent.click(await screen.findByRole('button', { name: 'Keep the files of ComfyUI-Example as they are' }))
-  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Keep files as they are' }))
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Keep the files of ComfyUI-Example as they are' }),
+  )
+  fireEvent.click(
+    within(await screen.findByRole('dialog')).getByRole('button', {
+      name: 'Keep files as they are',
+    }),
+  )
   const title = await screen.findByText('The operation could not be closed')
   expect(title.closest('[role="alert"]')?.textContent).toContain('The journal is unavailable.')
   expect(screen.getByRole('dialog')).toBeTruthy()
-  expect(within(screen.getByRole('dialog')).getByRole<HTMLButtonElement>('button', { name: 'Keep files as they are' }).disabled).toBe(false)
+  expect(
+    within(screen.getByRole('dialog')).getByRole<HTMLButtonElement>('button', {
+      name: 'Keep files as they are',
+    }).disabled,
+  ).toBe(false)
 })
 
 it('disables_recovery_buttons_and_prevents_closing_while_resolving', async () => {
   const pending = deferred<NodeListDto>()
-  vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({
-    unresolved: [operation({ id: 'op-interrupted', phase: 'published', blocksStart: true })],
-  }))
+  vi.mocked(gateway.nodeList).mockResolvedValue(
+    nodeList({
+      unresolved: [operation({ id: 'op-interrupted', phase: 'published', blocksStart: true })],
+    }),
+  )
   vi.mocked(gateway.nodeResolveOperation).mockReturnValue(pending.promise)
   mount()
-  const keep = await screen.findByRole<HTMLButtonElement>('button', { name: 'Keep the files of ComfyUI-Example as they are' })
+  const keep = await screen.findByRole<HTMLButtonElement>('button', {
+    name: 'Keep the files of ComfyUI-Example as they are',
+  })
   const rescan = button('Rescan / finish recovery')
   fireEvent.click(keep)
   const dialog = await screen.findByRole('dialog')
   fireEvent.click(within(dialog).getByRole('button', { name: 'Keep files as they are' }))
-  expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Closing…' }).disabled).toBe(true)
-  expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Cancel' }).disabled).toBe(true)
+  expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Closing…' }).disabled).toBe(
+    true,
+  )
+  expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Cancel' }).disabled).toBe(
+    true,
+  )
   expect(within(dialog).queryByRole('button', { name: 'Close' })).toBeNull()
   expect(keep.disabled).toBe(true)
   expect(rescan.disabled).toBe(true)
@@ -575,9 +726,12 @@ it('disables_recovery_buttons_and_prevents_closing_while_resolving', async () =>
 })
 
 it('shows_a_node_recovery_failure_from_a_commit_with_a_rescan_action', async () => {
-  vi.mocked(gateway.nodePrepareGit).mockRejectedValueOnce(new IpcClientError(
-    'node_recovery_required', 'An interrupted custom node operation must be resolved first. Rescan the custom nodes.',
-  ))
+  vi.mocked(gateway.nodePrepareGit).mockRejectedValueOnce(
+    new IpcClientError(
+      'node_recovery_required',
+      'An interrupted custom node operation must be resolved first. Rescan the custom nodes.',
+    ),
+  )
   vi.mocked(gateway.nodeRescan).mockResolvedValue(nodeList())
   mount()
   await loaded()
@@ -603,11 +757,14 @@ it('shows_the_active_node_in_the_system_file_manager_and_toasts_a_failure', asyn
   await loaded()
   fireEvent.click(button('Show in Explorer'))
   expect(gateway.nodeReveal).toHaveBeenCalledWith('node-1')
-  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('The file manager could not be opened.'))
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith('The file manager could not be opened.'),
+  )
 })
 
 const LOADING = 'Loading custom nodes…'
-const INCOMPLETE = 'The last custom node scan did not finish, so this list may be out of date. Rescan to check again.'
+const INCOMPLETE =
+  'The last custom node scan did not finish, so this list may be out of date. Rescan to check again.'
 const rowOf = (name = 'ComfyUI-Example') => screen.queryByText(name, { selector: 'p.truncate' })
 const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
@@ -669,7 +826,9 @@ it('a_cancelled_manual_rescan_shows_the_notice_without_a_destructive_alert', asy
 })
 
 it('a_real_manual_rescan_error_still_shows_a_destructive_alert', async () => {
-  vi.mocked(gateway.nodeRescan).mockRejectedValue(new IpcClientError('node_storage', 'The journal is unavailable.'))
+  vi.mocked(gateway.nodeRescan).mockRejectedValue(
+    new IpcClientError('node_storage', 'The journal is unavailable.'),
+  )
   mount()
   await loaded()
   fireEvent.click(button('Rescan / finish recovery'))
@@ -687,11 +846,13 @@ it('scanning_with_an_empty_database_shows_loading_instead_of_the_empty_state', a
 })
 
 it('scanning_hides_rows_and_count_but_keeps_recovery_panels_and_blocks_rescan', async () => {
-  mountList(nodeList({
-    scanning: true,
-    pendingReviews: [plan()],
-    unresolved: [operation({ id: 'op-interrupted', phase: 'published', blocksStart: true })],
-  }))
+  mountList(
+    nodeList({
+      scanning: true,
+      pendingReviews: [plan()],
+      unresolved: [operation({ id: 'op-interrupted', phase: 'published', blocksStart: true })],
+    }),
+  )
   expect(screen.getByText(LOADING)).toBeTruthy()
   expect(rowOf()).toBeNull()
   expect(screen.queryByText(/ installed · /)).toBeNull()
@@ -710,7 +871,9 @@ it('scanning_blocks_update_all_and_every_install_entry_point', async () => {
   expect(git.disabled).toBe(true)
   expect(git.getAttribute('title')).toBe(LOADING)
   fireEvent.click(button('Browse Registry'))
-  const install = await screen.findByRole<HTMLButtonElement>('button', { name: 'Install Example Pack' })
+  const install = await screen.findByRole<HTMLButtonElement>('button', {
+    name: 'Install Example Pack',
+  })
   expect(install.disabled).toBe(true)
 })
 
@@ -718,12 +881,18 @@ it('rows_and_actions_return_when_the_scan_ends_through_the_poll_after_a_missed_e
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   try {
     mountList(nodeList({ scanning: true }))
-    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
     expect(screen.getByText(LOADING)).toBeTruthy()
     expect(rowOf()).toBeNull()
     vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({ scanning: false }))
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
-    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50)
+    })
     expect(rowOf()).toBeTruthy()
     expect(screen.queryByText(LOADING)).toBeNull()
     expect(button('Update all (1)').disabled).toBe(false)
@@ -776,7 +945,9 @@ it('a_failed_refresh_while_scanning_shows_the_error_with_a_retry', async () => {
 it('a_failed_refresh_keeps_a_cached_finished_list_visible', async () => {
   const client = newClient()
   client.setQueryData(NODE_KEY, nodeList({ scanning: false }))
-  vi.mocked(gateway.nodeList).mockRejectedValue(new IpcClientError('node_storage', 'The journal is unavailable.'))
+  vi.mocked(gateway.nodeList).mockRejectedValue(
+    new IpcClientError('node_storage', 'The journal is unavailable.'),
+  )
   mountWith(client)
   await loaded()
   await waitFor(() => expect(gateway.nodeList).toHaveBeenCalled())

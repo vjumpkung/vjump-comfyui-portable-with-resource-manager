@@ -16,12 +16,10 @@ const api = {
 
 beforeEach(() => {
   vi.resetAllMocks()
-  api.modelSubscribe.mockImplementation(
-    (handler: (event: ModelEventDto) => void) => {
-      emit = handler
-      return Promise.resolve(7)
-    },
-  )
+  api.modelSubscribe.mockImplementation((handler: (event: ModelEventDto) => void) => {
+    emit = handler
+    return Promise.resolve(7)
+  })
   api.modelUnsubscribe.mockResolvedValue(null)
   api.modelList.mockResolvedValue(snapshot([model()]))
 })

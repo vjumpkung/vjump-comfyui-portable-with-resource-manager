@@ -5,13 +5,7 @@ import { SettingsForm } from './settings-form'
 import { UpdatesPanel } from './updates-panel'
 import type { SetupModeDto } from '@/shared/ipc/gateway'
 import { Button } from '@/shared/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/shared/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
 
 export function SettingsPage({
   onSetup,
@@ -27,7 +21,7 @@ export function SettingsPage({
         <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
           {t('nav.settings')}
         </h1>
-        <p className="text-sm font-medium leading-relaxed text-muted-foreground">
+        <p className="text-sm leading-relaxed font-medium text-muted-foreground">
           {t('settings.description')}
         </p>
       </header>
@@ -36,17 +30,11 @@ export function SettingsPage({
       <Card>
         <CardHeader>
           <CardTitle>{t('settings.environmentSetup')}</CardTitle>
-          <CardDescription>
-            {t('settings.environmentHint')}
-          </CardDescription>
+          <CardDescription>{t('settings.environmentHint')}</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              disabled={maintenanceBusy}
-              onClick={() => onSetup('repair')}
-            >
+            <Button variant="outline" disabled={maintenanceBusy} onClick={() => onSetup('repair')}>
               {t('common.repair')}
             </Button>
             <Button

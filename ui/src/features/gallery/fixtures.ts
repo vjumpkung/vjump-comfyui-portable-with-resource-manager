@@ -11,7 +11,11 @@ import type {
 const at = (directory: string, name: string) => (directory === '' ? name : `${directory}/${name}`)
 
 /** A folder entry; the revision is derived from the name so tests can predict it. */
-export function folder(name: string, directory = '', area: GalleryAreaDto = 'input'): GalleryEntryDto {
+export function folder(
+  name: string,
+  directory = '',
+  area: GalleryAreaDto = 'input',
+): GalleryEntryDto {
   return {
     location: { area, path: at(directory, name) },
     revision: `rev-${name}`,
@@ -67,5 +71,7 @@ export function report(...results: GalleryItemResultDto[]): GalleryBatchReportDt
 
 /** `n` image files named `image-0000.png` and up. */
 export function many(n: number): GalleryEntryDto[] {
-  return Array.from({ length: n }, (_, index) => file(`image-${String(index).padStart(4, '0')}.png`))
+  return Array.from({ length: n }, (_, index) =>
+    file(`image-${String(index).padStart(4, '0')}.png`),
+  )
 }

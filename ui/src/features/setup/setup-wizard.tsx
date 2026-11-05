@@ -51,8 +51,12 @@ import { useSetupRun } from './use-setup-run'
 const MANAGER_SOURCE = 'https://github.com/Comfy-Org/ComfyUI-Manager'
 const THIRD_PARTY_DISCLOSURE = 'setup.thirdPartyDisclosure'
 const STAGES = [
-  'setup.installRoot', 'setup.hardware', 'setup.pythonSource',
-  'setup.profile', 'setup.options', 'setup.review',
+  'setup.installRoot',
+  'setup.hardware',
+  'setup.pythonSource',
+  'setup.profile',
+  'setup.options',
+  'setup.review',
 ] as const satisfies readonly (keyof typeof import('@/shared/i18n/translations.json').en)[]
 
 const VALIDATION_TARGETS = {
@@ -60,7 +64,10 @@ const VALIDATION_TARGETS = {
   existing_venv: 'setup.validationTarget.existingVenv',
   interpreter: 'setup.validationTarget.interpreter',
   rejected: 'setup.validationTarget.rejected',
-} as const satisfies Record<ValidationTargetDto, keyof typeof import('@/shared/i18n/translations.json').en>
+} as const satisfies Record<
+  ValidationTargetDto,
+  keyof typeof import('@/shared/i18n/translations.json').en
+>
 
 export function SetupWizard({
   status,
@@ -89,28 +96,17 @@ export function SetupWizard({
     if (mode === 'switch_venv') return { kind: 'customVenv', path: '' }
     if (mode === 'change_torch' && status.activeEnv?.source === 'custom_venv')
       return { kind: 'customVenv', path: '' }
-    if (
-      mode === 'change_torch' &&
-      status.activeEnv?.source === 'custom_interpreter'
-    )
+    if (mode === 'change_torch' && status.activeEnv?.source === 'custom_interpreter')
       return { kind: 'customInterpreter', path: '' }
-    return mode === 'first_run'
-      ? (draft.pythonSource ?? { kind: 'managed' })
-      : { kind: 'managed' }
+    return mode === 'first_run' ? (draft.pythonSource ?? { kind: 'managed' }) : { kind: 'managed' }
   })
   const [profileId, setProfileId] = useState(
     draft.profileId ??
-      (mode === 'repair' || mode === 'change_torch'
-        ? (status.activeEnv?.profileId ?? '')
-        : ''),
+      (mode === 'repair' || mode === 'change_torch' ? (status.activeEnv?.profileId ?? '') : ''),
   )
   const [tag, setTag] = useState(draft.tag ?? '')
-  const [comfySource, setComfySource] = useState<ComfySource>(
-    draft.comfySource ?? 'latest',
-  )
-  const [installManager, setInstallManager] = useState(
-    draft.installManager ?? mode === 'first_run',
-  )
+  const [comfySource, setComfySource] = useState<ComfySource>(draft.comfySource ?? 'latest')
+  const [installManager, setInstallManager] = useState(draft.installManager ?? mode === 'first_run')
   const [cleanCache, setCleanCache] = useState(draft.cleanCache ?? false)
   const [acceleratorSelection, setAcceleratorSelection] = useState<{
     profileId: string
@@ -140,11 +136,7 @@ export function SetupWizard({
   const picker = useMutation({
     mutationFn: (kind: 'root' | 'python') =>
       kind === 'root' || source.kind === 'customVenv'
-        ? gateway.pickFolder(
-            kind === 'root'
-              ? t('setup.chooseRoot')
-              : t('setup.chooseVenv'),
-          )
+        ? gateway.pickFolder(kind === 'root' ? t('setup.chooseRoot') : t('setup.chooseVenv'))
         : gateway.pickFile(t('setup.chooseInterpreter')),
     onSuccess: (path, kind) => {
       if (!path) return
@@ -157,12 +149,10 @@ export function SetupWizard({
   })
   const validation = useMutation({ mutationFn: gateway.setupValidatePython })
   const report =
-    validation.data &&
-    JSON.stringify(validation.variables) === JSON.stringify(source)
+    validation.data && JSON.stringify(validation.variables) === JSON.stringify(source)
       ? validation.data
       : undefined
-  const customEnv =
-    source.kind === 'customVenv' && report ? report.resolvedPath : null
+  const customEnv = source.kind === 'customVenv' && report ? report.resolvedPath : null
   const hardware = useQuery({
     queryKey: ['setup-hardware', status.installRoot, customEnv],
     queryFn: () => gateway.setupDetectHardware(null, customEnv),
@@ -182,12 +172,9 @@ export function SetupWizard({
   if (curated.data && curatedSelection === null) setCuratedSelection([])
   const offers = profiles.data ?? []
   // Recommended profiles first; the sort is stable, so the backend order is kept otherwise.
-  const listed = [...offers].sort(
-    (a, b) => Number(b.recommended) - Number(a.recommended),
-  )
+  const listed = [...offers].sort((a, b) => Number(b.recommended) - Number(a.recommended))
   const eligible = offers.filter(
-    (profile) =>
-      profileReasons(profile, mode, status.activeEnv, report).length === 0,
+    (profile) => profileReasons(profile, mode, status.activeEnv, report).length === 0,
   )
   const chosen =
     offers.find((profile) => profile.id === profileId) ??
@@ -201,42 +188,26 @@ export function SetupWizard({
         .map((option) => option.id),
     })
   const accelerators =
-    acceleratorSelection?.profileId === chosen?.id
-      ? (acceleratorSelection?.ids ?? [])
-      : []
-  const profileOK =
-    !!chosen &&
-    profileReasons(chosen, mode, status.activeEnv, report).length === 0
+    acceleratorSelection?.profileId === chosen?.id ? (acceleratorSelection?.ids ?? []) : []
+  const profileOK = !!chosen && profileReasons(chosen, mode, status.activeEnv, report).length === 0
   const pythonOK =
     source.kind === 'managed' ||
-    (!!report?.usable &&
-      (report.target !== 'existing_venv' || adoptedConfirmed))
+    (!!report?.usable && (report.target !== 'existing_venv' || adoptedConfirmed))
   const optionsOK =
     mode !== 'first_run' ||
     ((comfySource !== 'tag' || tag.trim().length > 0) &&
       curated.isSuccess &&
       curatedSelection !== null)
-  const ready =
-    profileOK &&
-    pythonOK &&
-    optionsOK &&
-    !hardware.isFetching &&
-    !profiles.isFetching
+  const ready = profileOK && pythonOK && optionsOK && !hardware.isFetching && !profiles.isFetching
   const changeSource = (kind: string) => {
-    if (
-      kind !== 'managed' &&
-      kind !== 'customVenv' &&
-      kind !== 'customInterpreter'
-    )
-      return
+    if (kind !== 'managed' && kind !== 'customVenv' && kind !== 'customInterpreter') return
     setSource(kind === 'managed' ? { kind } : { kind, path: '' })
     setAdoptedConfirmed(false)
   }
   const sourceLocked = mode === 'change_torch'
   // Only a first run carries the review-step consent; other modes keep the per-install prompts.
   const thirdPartyConsent =
-    mode === 'first_run' &&
-    (installManager || (curatedSelection ?? []).length > 0)
+    mode === 'first_run' && (installManager || (curatedSelection ?? []).length > 0)
   const thirdPartySources = thirdPartyConsent
     ? [
         ...(installManager ? [MANAGER_SOURCE] : []),
@@ -249,9 +220,7 @@ export function SetupWizard({
   if (showRun || (resume && dismissedRun !== status.run?.id))
     return (
       <div className="flex flex-col gap-6">
-        <h1 className="text-2xl font-extrabold tracking-tighter">
-          {t(modeLabels[mode])}
-        </h1>
+        <h1 className="text-2xl font-extrabold tracking-tighter">{t(modeLabels[mode])}</h1>
         <RunProgress
           run={status.run}
           controller={controller}
@@ -277,14 +246,9 @@ export function SetupWizard({
         <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
           {t(modeLabels[mode])}
         </h1>
-        <p className="text-sm text-muted-foreground">
-          {t('setup.intro')}
-        </p>
+        <p className="text-sm text-muted-foreground">{t('setup.intro')}</p>
       </header>
-      <ol
-        aria-label={t('setup.stages')}
-        className="flex flex-wrap gap-3 font-mono text-xs"
-      >
+      <ol aria-label={t('setup.stages')} className="flex flex-wrap gap-3 font-mono text-xs">
         {STAGES.map((name, index) => (
           <li key={name} aria-current={stage === index ? 'step' : undefined}>
             <Badge variant={stage === index ? 'secondary' : 'outline'}>
@@ -297,9 +261,7 @@ export function SetupWizard({
         <Alert>
           <Info />
           <AlertTitle>{t('setup.preserveTitle')}</AlertTitle>
-          <AlertDescription>
-            {t('setup.preserveDescription')}
-          </AlertDescription>
+          <AlertDescription>{t('setup.preserveDescription')}</AlertDescription>
         </Alert>
       )}
       <Card>
@@ -320,10 +282,7 @@ export function SetupWizard({
                     id="install-root"
                     className="font-mono"
                     value={root}
-                    disabled={
-                      status.rootSource === 'debug_override' ||
-                      rootSelection.isSuccess
-                    }
+                    disabled={status.rootSource === 'debug_override' || rootSelection.isSuccess}
                     onChange={(event) => setRoot(event.target.value)}
                   />
                   <Button
@@ -339,15 +298,9 @@ export function SetupWizard({
                     {t('common.browse')}
                   </Button>
                 </div>
-                <FieldDescription>
-                  {t('setup.rootHint')}
-                </FieldDescription>
+                <FieldDescription>{t('setup.rootHint')}</FieldDescription>
               </Field>
-              {status.rootSource === 'debug_override' && (
-                <p>
-                  {t('setup.debugRootHint')}
-                </p>
-              )}
+              {status.rootSource === 'debug_override' && <p>{t('setup.debugRootHint')}</p>}
               {rootSelection.isSuccess && (
                 <Alert>
                   <Check />
@@ -367,9 +320,7 @@ export function SetupWizard({
                 </Alert>
               )}
               {restartApp.isError && <ErrorNotice error={restartApp.error} />}
-              {rootSelection.isError && (
-                <ErrorNotice error={rootSelection.error} />
-              )}
+              {rootSelection.isError && <ErrorNotice error={rootSelection.error} />}
             </FieldGroup>
           )}
           {stage === 1 && (
@@ -411,16 +362,12 @@ export function SetupWizard({
                     </div>
                     <div>
                       <dt>{t('setup.installFree')}</dt>
-                      <dd className="font-mono">
-                        {bytes(hardware.data.installVolumeFreeBytes)}
-                      </dd>
+                      <dd className="font-mono">{bytes(hardware.data.installVolumeFreeBytes)}</dd>
                     </div>
                     {hardware.data.envOnSeparateVolume && (
                       <div>
                         <dt>{t('setup.environmentFree')}</dt>
-                        <dd className="font-mono">
-                          {bytes(hardware.data.envVolumeFreeBytes)}
-                        </dd>
+                        <dd className="font-mono">{bytes(hardware.data.envVolumeFreeBytes)}</dd>
                       </div>
                     )}
                     {hardware.data.os === 'windows' && (
@@ -441,15 +388,11 @@ export function SetupWizard({
                       <li key={gpu.index} className="font-mono text-xs">
                         GPU {gpu.index}: {gpu.name} · CC{' '}
                         {gpu.computeCapability ?? t('common.unknownLowercase')} ·{' '}
-                        {gpu.vramMib === null
-                          ? t('setup.unknownVram')
-                          : `${gpu.vramMib} MiB VRAM`}
+                        {gpu.vramMib === null ? t('setup.unknownVram') : `${gpu.vramMib} MiB VRAM`}
                       </li>
                     ))}
                   </ul>
-                  <p className="text-sm text-muted-foreground">
-                    {t('setup.hardwareHint')}
-                  </p>
+                  <p className="text-sm text-muted-foreground">{t('setup.hardwareHint')}</p>
                   <Button
                     variant="outline"
                     disabled={hardware.isFetching || profiles.isFetching}
@@ -478,10 +421,7 @@ export function SetupWizard({
                 >
                   <ToggleGroupItem
                     value="managed"
-                    disabled={
-                      mode === 'switch_venv' ||
-                      (sourceLocked && source.kind !== 'managed')
-                    }
+                    disabled={mode === 'switch_venv' || (sourceLocked && source.kind !== 'managed')}
                   >
                     {t('setup.appManaged')}
                   </ToggleGroupItem>
@@ -503,8 +443,7 @@ export function SetupWizard({
                 </ToggleGroup>
                 <FieldDescription>
                   {t('setup.pythonSourceHint')}
-                  {sourceLocked &&
-                    t('setup.sourceLockedHint')}
+                  {sourceLocked && t('setup.sourceLockedHint')}
                 </FieldDescription>
               </Field>
               {source.kind !== 'managed' && (
@@ -542,12 +481,10 @@ export function SetupWizard({
                   >
                     {validation.isPending ? t('setup.validating') : t('setup.validatePython')}
                   </Button>
-                  {validation.isError && (
-                    <ErrorNotice error={validation.error} />
-                  )}
+                  {validation.isError && <ErrorNotice error={validation.error} />}
                   {report && (
                     <>
-                      <p className="break-all font-mono text-xs">
+                      <p className="font-mono text-xs break-all">
                         {report.resolvedPath} · Python{' '}
                         {report.pythonVersion ?? t('setup.notCreated')} ·{' '}
                         {Object.hasOwn(VALIDATION_TARGETS, report.target)
@@ -557,9 +494,7 @@ export function SetupWizard({
                       <ul className="flex flex-col gap-2">
                         {report.checks.map((check) => (
                           <li key={check.id} className="flex items-start gap-2">
-                            <StatusBadge
-                              status={check.passed ? 'verified' : 'failed'}
-                            />
+                            <StatusBadge status={check.passed ? 'verified' : 'failed'} />
                             <span>
                               {check.detail}
                               {!check.passed && check.blocks.length > 0
@@ -572,17 +507,13 @@ export function SetupWizard({
                       {report.target === 'existing_venv' && (
                         <FieldSet>
                           <FieldLegend>{t('setup.adoptConsent')}</FieldLegend>
-                          <FieldDescription>
-                            {t('setup.adoptHint')}
-                          </FieldDescription>
+                          <FieldDescription>{t('setup.adoptHint')}</FieldDescription>
                           <FieldGroup>
                             <Field orientation="horizontal">
                               <Checkbox
                                 id="adopt-consent"
                                 checked={adoptedConfirmed}
-                                onCheckedChange={(checked) =>
-                                  setAdoptedConfirmed(checked === true)
-                                }
+                                onCheckedChange={(checked) => setAdoptedConfirmed(checked === true)}
                               />
                               <FieldLabel htmlFor="adopt-consent">
                                 {t('setup.approveAdopted', { path: report.resolvedPath })}
@@ -610,9 +541,7 @@ export function SetupWizard({
               )}
               <FieldSet>
                 <FieldLegend>{t('setup.setupProfile')}</FieldLegend>
-                <FieldDescription>
-                  {t('setup.profileHint')}
-                </FieldDescription>
+                <FieldDescription>{t('setup.profileHint')}</FieldDescription>
                 <FieldGroup>
                   <RadioGroup
                     aria-label={t('setup.setupProfile')}
@@ -620,12 +549,7 @@ export function SetupWizard({
                     onValueChange={setProfileId}
                   >
                     {listed.map((profile) => {
-                      const reasons = profileReasons(
-                        profile,
-                        mode,
-                        status.activeEnv,
-                        report,
-                      )
+                      const reasons = profileReasons(profile, mode, status.activeEnv, report)
                       const disabled = reasons.length > 0
                       return (
                         <Field key={profile.id} data-disabled={disabled}>
@@ -642,12 +566,9 @@ export function SetupWizard({
                             )}
                           </FieldLabel>
                           <FieldDescription>
-                            Python {profile.python} · torch{' '}
-                            {profile.torch.torch} ·{' '}
-                            {profile.torch.cuda === 'cpu'
-                              ? 'CPU'
-                              : `CUDA ${profile.torch.cuda}`}{' '}
-                            · {profile.triton}
+                            Python {profile.python} · torch {profile.torch.torch} ·{' '}
+                            {profile.torch.cuda === 'cpu' ? 'CPU' : `CUDA ${profile.torch.cuda}`} ·{' '}
+                            {profile.triton}
                             <br />
                             {profile.torch.torchaudio
                               ? `torchaudio ${profile.torch.torchaudio}`
@@ -655,7 +576,11 @@ export function SetupWizard({
                             <br />
                             {t('setup.estimatedPeak', {
                               size: bytes(profile.estimatedInstallBytes),
-                              calibration: t(profile.estimateCalibrated ? 'setup.calibrated' : 'setup.notCalibrated'),
+                              calibration: t(
+                                profile.estimateCalibrated
+                                  ? 'setup.calibrated'
+                                  : 'setup.notCalibrated',
+                              ),
                             })}
                           </FieldDescription>
                           {reasons.length > 0 && (
@@ -669,7 +594,7 @@ export function SetupWizard({
                             <summary className="text-xs">
                               {t('setup.compatibilityEvidence')}
                             </summary>
-                            <ul className="break-all font-mono text-xs">
+                            <ul className="font-mono text-xs break-all">
                               {profile.provenance.map((entry) => (
                                 <li key={entry}>{entry}</li>
                               ))}
@@ -681,11 +606,7 @@ export function SetupWizard({
                   </RadioGroup>
                 </FieldGroup>
               </FieldSet>
-              {!profiles.isPending && offers.length === 0 && (
-                <p>
-                  {t('setup.noProfiles')}
-                </p>
-              )}
+              {!profiles.isPending && offers.length === 0 && <p>{t('setup.noProfiles')}</p>}
             </>
           )}
           {stage === 4 && (
@@ -699,28 +620,16 @@ export function SetupWizard({
                       variant="outline"
                       value={comfySource}
                       onValueChange={(value) => {
-                        if (
-                          value === 'latest' ||
-                          value === 'master' ||
-                          value === 'tag'
-                        )
+                        if (value === 'latest' || value === 'master' || value === 'tag')
                           setComfySource(value)
                       }}
                     >
-                      <ToggleGroupItem value="latest">
-                        {t('setup.latestRelease')}
-                      </ToggleGroupItem>
-                      <ToggleGroupItem value="master">
-                        {t('setup.latestMaster')}
-                      </ToggleGroupItem>
-                      <ToggleGroupItem value="tag">
-                        {t('setup.specificTag')}
-                      </ToggleGroupItem>
+                      <ToggleGroupItem value="latest">{t('setup.latestRelease')}</ToggleGroupItem>
+                      <ToggleGroupItem value="master">{t('setup.latestMaster')}</ToggleGroupItem>
+                      <ToggleGroupItem value="tag">{t('setup.specificTag')}</ToggleGroupItem>
                     </ToggleGroup>
                     <FieldDescription>
-                      {comfySource === 'master'
-                        ? t('setup.masterHint')
-                        : t('setup.tagHint')}
+                      {comfySource === 'master' ? t('setup.masterHint') : t('setup.tagHint')}
                     </FieldDescription>
                   </Field>
                   {comfySource === 'tag' && (
@@ -736,30 +645,22 @@ export function SetupWizard({
                   )}
                 </>
               ) : (
-                <p>
-                  {t('setup.keepCheckoutHint')}
-                </p>
+                <p>{t('setup.keepCheckoutHint')}</p>
               )}
               <FieldSet>
                 <FieldLegend>{t('setup.optionalComponents')}</FieldLegend>
                 <FieldGroup>
                   {mode === 'repair' ? (
-                    <p>
-                      {t('setup.repairComponents')}
-                    </p>
+                    <p>{t('setup.repairComponents')}</p>
                   ) : (
                     <>
                       <Field orientation="horizontal">
                         <Checkbox
                           id="manager"
                           checked={installManager}
-                          onCheckedChange={(value) =>
-                            setInstallManager(value === true)
-                          }
+                          onCheckedChange={(value) => setInstallManager(value === true)}
                         />
-                        <FieldLabel htmlFor="manager">
-                          {t('setup.installManager')}
-                        </FieldLabel>
+                        <FieldLabel htmlFor="manager">{t('setup.installManager')}</FieldLabel>
                       </Field>
                       <FieldDescription>
                         {mode === 'first_run'
@@ -768,9 +669,7 @@ export function SetupWizard({
                       </FieldDescription>
                       <FieldSet>
                         <FieldLegend>{t('setup.accelerators')}</FieldLegend>
-                        <FieldDescription>
-                          {t('setup.acceleratorsHint')}
-                        </FieldDescription>
+                        <FieldDescription>{t('setup.acceleratorsHint')}</FieldDescription>
                         <FieldGroup>
                           {chosen?.accelerators.map((option) => (
                             <Field key={option.id}>
@@ -781,9 +680,10 @@ export function SetupWizard({
                                   onCheckedChange={(checked) =>
                                     setAcceleratorSelection({
                                       profileId: chosen.id,
-                                      ids: checked === true
-                                        ? [...accelerators, option.id]
-                                        : accelerators.filter((id) => id !== option.id),
+                                      ids:
+                                        checked === true
+                                          ? [...accelerators, option.id]
+                                          : accelerators.filter((id) => id !== option.id),
                                     })
                                   }
                                 />
@@ -796,9 +696,7 @@ export function SetupWizard({
                               </FieldDescription>
                             </Field>
                           ))}
-                          {chosen?.accelerators.length === 0 && (
-                            <p>{t('setup.noAccelerators')}</p>
-                          )}
+                          {chosen?.accelerators.length === 0 && <p>{t('setup.noAccelerators')}</p>}
                         </FieldGroup>
                       </FieldSet>
                     </>
@@ -809,21 +707,22 @@ export function SetupWizard({
                       checked={cleanCache}
                       onCheckedChange={(value) => setCleanCache(value === true)}
                     />
-                    <FieldLabel htmlFor="clean-cache">
-                      {t('setup.cleanCacheAfter')}
-                    </FieldLabel>
+                    <FieldLabel htmlFor="clean-cache">{t('setup.cleanCacheAfter')}</FieldLabel>
                   </Field>
                 </FieldGroup>
               </FieldSet>
               {mode === 'first_run' && (
                 <FieldSet>
                   <FieldLegend>{t('setup.curatedNodes')}</FieldLegend>
-                  <FieldDescription>
-                    {t('setup.curatedHint')}
-                  </FieldDescription>
+                  <FieldDescription>{t('setup.curatedHint')}</FieldDescription>
                   {curated.isPending && <p role="status">{t('setup.loadingCurated')}</p>}
                   {curated.isError && (
-                    <ErrorNotice error={curated.error} retry={() => { void curated.refetch() }} />
+                    <ErrorNotice
+                      error={curated.error}
+                      retry={() => {
+                        void curated.refetch()
+                      }}
+                    />
                   )}
                   <FieldGroup>
                     {curated.data?.map((entry) => (
@@ -831,24 +730,28 @@ export function SetupWizard({
                         <Field orientation="horizontal">
                           <Checkbox
                             id={`curated-${entry.id}`}
-                            checked={entry.unavailable === null
-                              && (curatedSelection?.includes(entry.id) ?? false)}
+                            checked={
+                              entry.unavailable === null &&
+                              (curatedSelection?.includes(entry.id) ?? false)
+                            }
                             disabled={entry.unavailable !== null}
                             onCheckedChange={(checked) =>
-                              setCuratedSelection((current) => checked === true
-                                ? [...(current ?? []), entry.id]
-                                : (current ?? []).filter((id) => id !== entry.id))
+                              setCuratedSelection((current) =>
+                                checked === true
+                                  ? [...(current ?? []), entry.id]
+                                  : (current ?? []).filter((id) => id !== entry.id),
+                              )
                             }
                           />
-                          <FieldLabel htmlFor={`curated-${entry.id}`}>
-                            {entry.name}
-                          </FieldLabel>
+                          <FieldLabel htmlFor={`curated-${entry.id}`}>{entry.name}</FieldLabel>
                         </Field>
-                        <FieldDescription className="break-all font-mono">
+                        <FieldDescription className="font-mono break-all">
                           {t('setup.curatedRepository', { repository: entry.repository })}
                         </FieldDescription>
                         {entry.unavailable !== null && (
-                          <FieldDescription>{t('setup.curatedUnavailable', { reason: entry.unavailable })}</FieldDescription>
+                          <FieldDescription>
+                            {t('setup.curatedUnavailable', { reason: entry.unavailable })}
+                          </FieldDescription>
                         )}
                       </Field>
                     ))}
@@ -865,7 +768,7 @@ export function SetupWizard({
               <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
                 <div>
                   <dt>{t('setup.installRoot')}</dt>
-                  <dd className="break-all font-mono">{status.installRoot}</dd>
+                  <dd className="font-mono break-all">{status.installRoot}</dd>
                 </div>
                 <div>
                   <dt>{t('setup.mode')}</dt>
@@ -873,7 +776,7 @@ export function SetupWizard({
                 </div>
                 <div>
                   <dt>Python</dt>
-                  <dd className="break-all font-mono">
+                  <dd className="font-mono break-all">
                     {source.kind === 'managed'
                       ? t('setup.managedVersion', { version: chosen?.python ?? '' })
                       : source.path}
@@ -898,29 +801,40 @@ export function SetupWizard({
                 <div>
                   <dt>{t('setup.managerCache')}</dt>
                   <dd>
-                    {mode === 'repair' ? t('setup.recordedComponents') : installManager
-                      ? mode === 'first_run'
-                        ? t('setup.managerSelected')
-                        : t('setup.managerSelectedConsent')
-                      : t('setup.managerOff')}{' '}
+                    {mode === 'repair'
+                      ? t('setup.recordedComponents')
+                      : installManager
+                        ? mode === 'first_run'
+                          ? t('setup.managerSelected')
+                          : t('setup.managerSelectedConsent')
+                        : t('setup.managerOff')}{' '}
                     / {cleanCache ? t('setup.cleanCache') : t('setup.keepCache')}
                   </dd>
                 </div>
                 <div>
                   <dt>{t('setup.accelerators')}</dt>
-                  <dd>{mode === 'repair' ? t('setup.recordedChoices') : chosen?.accelerators
-                    .filter((option) => accelerators.includes(option.id))
-                    .map((option) => option.name).join(', ') || t('common.noneSelected')}</dd>
+                  <dd>
+                    {mode === 'repair'
+                      ? t('setup.recordedChoices')
+                      : chosen?.accelerators
+                          .filter((option) => accelerators.includes(option.id))
+                          .map((option) => option.name)
+                          .join(', ') || t('common.noneSelected')}
+                  </dd>
                 </div>
-                {mode === 'first_run' && <div>
-                  <dt>{t('setup.curatedNodes')}</dt>
-                  <dd>{curated.data?.filter((entry) => curatedSelection?.includes(entry.id))
-                    .map((entry) => entry.name).join(', ') || t('common.noneSelected')}</dd>
-                </div>}
+                {mode === 'first_run' && (
+                  <div>
+                    <dt>{t('setup.curatedNodes')}</dt>
+                    <dd>
+                      {curated.data
+                        ?.filter((entry) => curatedSelection?.includes(entry.id))
+                        .map((entry) => entry.name)
+                        .join(', ') || t('common.noneSelected')}
+                    </dd>
+                  </div>
+                )}
               </dl>
-              <p>
-                {t('setup.reviewHint')}
-              </p>
+              <p>{t('setup.reviewHint')}</p>
               {thirdPartyConsent && (
                 <Alert>
                   <Info />
@@ -929,7 +843,7 @@ export function SetupWizard({
                     <p>{t(THIRD_PARTY_DISCLOSURE)}</p>
                     <ul
                       aria-label={t('setup.thirdPartySources')}
-                      className="break-all font-mono text-xs"
+                      className="font-mono text-xs break-all"
                     >
                       {thirdPartySources.map((source) => (
                         <li key={source}>{source}</li>
@@ -941,14 +855,10 @@ export function SetupWizard({
               {!ready && (
                 <Alert variant="destructive">
                   <AlertTitle>{t('setup.notReady')}</AlertTitle>
-                  <AlertDescription>
-                    {t('setup.notReadyHint')}
-                  </AlertDescription>
+                  <AlertDescription>{t('setup.notReadyHint')}</AlertDescription>
                 </Alert>
               )}
-              {controller.action.isError && (
-                <ErrorNotice error={controller.action.error} />
-              )}
+              {controller.action.isError && <ErrorNotice error={controller.action.error} />}
             </>
           )}
           {picker.isError && <ErrorNotice error={picker.error} />}
@@ -1019,7 +929,7 @@ export function SetupWizard({
                               : { kind: 'latest' },
                       installManager,
                       accelerators: mode === 'repair' ? [] : accelerators,
-                      curatedNodes: mode === 'first_run' ? curatedSelection ?? [] : [],
+                      curatedNodes: mode === 'first_run' ? (curatedSelection ?? []) : [],
                       cleanCache,
                       confirmAdoptedChanges: adoptedConfirmed,
                       allowSourceBuilds: false,
@@ -1030,9 +940,7 @@ export function SetupWizard({
                 )
               }}
             >
-              {controller.action.isPending
-                ? t('setup.registering')
-                : t('setup.start')}
+              {controller.action.isPending ? t('setup.registering') : t('setup.start')}
             </Button>
           )}
         </CardFooter>

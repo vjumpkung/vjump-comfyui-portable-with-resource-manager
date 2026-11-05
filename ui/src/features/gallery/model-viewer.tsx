@@ -68,11 +68,21 @@ function plyObject(geometry: BufferGeometry): Object3D {
   if (!geometry.hasAttribute('normal')) geometry.computeVertexNormals()
   return new Mesh(
     geometry,
-    new MeshStandardMaterial({ color, vertexColors: colored, roughness: 0.6, metalness: 0.1, side: DoubleSide }),
+    new MeshStandardMaterial({
+      color,
+      vertexColors: colored,
+      roughness: 0.6,
+      metalness: 0.1,
+      side: DoubleSide,
+    }),
   )
 }
 
-async function loadModel(extension: string, url: string, manager: LoadingManager): Promise<Object3D> {
+async function loadModel(
+  extension: string,
+  url: string,
+  manager: LoadingManager,
+): Promise<Object3D> {
   switch (extension) {
     case '.glb':
     case '.gltf':
@@ -86,7 +96,12 @@ async function loadModel(extension: string, url: string, manager: LoadingManager
       geometry.computeVertexNormals()
       return new Mesh(
         geometry,
-        new MeshStandardMaterial({ color: SURFACE, roughness: 0.6, metalness: 0.1, side: DoubleSide }),
+        new MeshStandardMaterial({
+          color: SURFACE,
+          roughness: 0.6,
+          metalness: 0.1,
+          side: DoubleSide,
+        }),
       )
     }
     case '.ply':
@@ -188,11 +203,14 @@ export default function ModelViewer({ entry, onError }: Props) {
       const sphere = box.getBoundingSphere(new Sphere())
       const halfVertical = (camera.fov * Math.PI) / 360
       const halfHorizontal = Math.atan(Math.tan(halfVertical) * camera.aspect)
-      const distance = Math.max(sphere.radius, 1e-6) / Math.sin(Math.min(halfVertical, halfHorizontal))
+      const distance =
+        Math.max(sphere.radius, 1e-6) / Math.sin(Math.min(halfVertical, halfHorizontal))
       camera.near = distance / 100
       camera.far = distance * 100
       camera.updateProjectionMatrix()
-      camera.position.copy(sphere.center).addScaledVector(new Vector3(1, 0.6, 1).normalize(), distance * 1.1)
+      camera.position
+        .copy(sphere.center)
+        .addScaledVector(new Vector3(1, 0.6, 1).normalize(), distance * 1.1)
       controls.target.copy(sphere.center)
       controls.update()
     }

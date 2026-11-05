@@ -86,7 +86,10 @@ export function CustomNodesPage({
   const [installTarget, setInstallTarget] = useState<InstallTarget | null>(null)
   const [updateNode, setUpdateNode] = useState<InstalledNodeDto | null>(null)
   const [updateAll, setUpdateAll] = useState<InstalledNodeDto[] | null>(null)
-  const [confirm, setConfirm] = useState<{ node: InstalledNodeDto; action: NodeConfirmation } | null>(null)
+  const [confirm, setConfirm] = useState<{
+    node: InstalledNodeDto
+    action: NodeConfirmation
+  } | null>(null)
   const [operationId, setOperationId] = useState<string | null>(null)
   const [keepFiles, setKeepFiles] = useState<OperationDto | null>(null)
   const [restart, setRestart] = useState<Restart>({ kind: 'idle' })
@@ -121,10 +124,20 @@ export function CustomNodesPage({
 
   const updateScope = selectedNodes.length > 0 ? selectedNodes : all.filter(isUpdateCandidate)
   const updateCount = updateScope.filter(isUpdateCandidate).length
-  const updateAllBlocked = repairRequired || paused || scanning || pendingReviews.length > 0 ||
-    actions.review !== null || updateCount === 0
-  const canRestart = list !== undefined && !repairRequired && !blocksStart &&
-    !maintenanceBusy && !runtimeBusy && !actions.working
+  const updateAllBlocked =
+    repairRequired ||
+    paused ||
+    scanning ||
+    pendingReviews.length > 0 ||
+    actions.review !== null ||
+    updateCount === 0
+  const canRestart =
+    list !== undefined &&
+    !repairRequired &&
+    !blocksStart &&
+    !maintenanceBusy &&
+    !runtimeBusy &&
+    !actions.working
 
   const patchFilters = (change: Partial<NodeFilters>) =>
     setFilters((current) => ({ ...current, ...change }))
@@ -136,11 +149,11 @@ export function CustomNodesPage({
     })
   const toggleAll = () => {
     const ids = visible.map((node) => node.id)
-    setSelected((current) => ids.every((id) => current.has(id)) ? new Set() : new Set(ids))
+    setSelected((current) => (ids.every((id) => current.has(id)) ? new Set() : new Set(ids)))
   }
 
   async function resolveKeepFiles() {
-    if (keepFiles && await actions.resolveOperation(keepFiles.id)) setKeepFiles(null)
+    if (keepFiles && (await actions.resolveOperation(keepFiles.id))) setKeepFiles(null)
   }
 
   async function stopRunning() {
@@ -167,7 +180,11 @@ export function CustomNodesPage({
         setRestart({ kind: 'started' })
       } else {
         // A conflict is never accepted silently: the launch options page resolves it.
-        setRestart({ kind: 'port_conflict', requested: result.requested, suggested: result.suggested })
+        setRestart({
+          kind: 'port_conflict',
+          requested: result.requested,
+          suggested: result.suggested,
+        })
       }
     } catch (error) {
       setRestart({ kind: 'idle' })
@@ -195,13 +212,23 @@ export function CustomNodesPage({
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">{t('nav.customNodes')}</h1>
+          <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
+            {t('nav.customNodes')}
+          </h1>
           <p className="font-mono text-xs text-muted-foreground">
             {loading
               ? null
               : selectedNodes.length > 0
-                ? t('customNodes.summarySelected', { count: selectedNodes.length, installed: all.length, disabled: all.filter((node) => !node.enabled).length })
-                : t('customNodes.summary', { count: all.length, installed: all.length, disabled: all.filter((node) => !node.enabled).length })}
+                ? t('customNodes.summarySelected', {
+                    count: selectedNodes.length,
+                    installed: all.length,
+                    disabled: all.filter((node) => !node.enabled).length,
+                  })
+                : t('customNodes.summary', {
+                    count: all.length,
+                    installed: all.length,
+                    disabled: all.filter((node) => !node.enabled).length,
+                  })}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -220,8 +247,13 @@ export function CustomNodesPage({
           >
             {t('customNodes.installGit')}
           </Button>
-          <Button variant="outline" disabled={updateAllBlocked} onClick={() => setUpdateAll(updateScope)}>
-            {selectedNodes.length > 0 ? t('customNodes.updateSelected') : t('common.updateAll')} ({updateCount})
+          <Button
+            variant="outline"
+            disabled={updateAllBlocked}
+            onClick={() => setUpdateAll(updateScope)}
+          >
+            {selectedNodes.length > 0 ? t('customNodes.updateSelected') : t('common.updateAll')} (
+            {updateCount})
           </Button>
           <Button variant="outline" onClick={() => void openFolder()}>
             <FolderOpen aria-hidden="true" />
@@ -243,7 +275,9 @@ export function CustomNodesPage({
           <AlertTitle>{t('customNodes.repairTitle')}</AlertTitle>
           <AlertDescription>
             {t('customNodes.repairHint')}
-            <Button variant="outline" size="sm" onClick={onRepair}>{t('setup.mode.repair')}</Button>
+            <Button variant="outline" size="sm" onClick={onRepair}>
+              {t('setup.mode.repair')}
+            </Button>
           </AlertDescription>
         </Alert>
       )}
@@ -253,38 +287,51 @@ export function CustomNodesPage({
           <AlertTitle>{t('customNodes.comfyRunning')}</AlertTitle>
           <AlertDescription>
             {t('customNodes.stopHint')}
-            <Button variant="outline" size="sm" disabled={runtimeBusy} onClick={() => void stopRunning()}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={runtimeBusy}
+              onClick={() => void stopRunning()}
+            >
               {t('customNodes.stopComfy')}
             </Button>
           </AlertDescription>
         </Alert>
       )}
 
-      {pendingReviews.length > 0 && !actions.review && updateAll === null && actions.busy === null && (
-        <Alert>
-          <AlertTitle>
-            {t('customNodes.waitingReview', { count: pendingReviews.length })}
-          </AlertTitle>
-          <AlertDescription>
-            {t('customNodes.resumeHint')}
-            <ul className="mt-2 flex flex-col gap-2">
-              {pendingReviews.map((plan) => (
-                <li key={plan.id} className="flex flex-wrap items-center gap-2">
-                  <span className="min-w-0 font-medium break-words [overflow-wrap:anywhere]">
-                    {plan.name} · {sourceLabel(plan.source)}
-                  </span>
-                  <Button size="sm" disabled={paused} onClick={() => actions.resume(plan)}>
-                    {t('customNodes.resumeReview')}
-                  </Button>
-                  <Button variant="ghost" size="sm" disabled={paused} onClick={() => void actions.discard([plan])}>
-                    {t('customNodes.discard')}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          </AlertDescription>
-        </Alert>
-      )}
+      {pendingReviews.length > 0 &&
+        !actions.review &&
+        updateAll === null &&
+        actions.busy === null && (
+          <Alert>
+            <AlertTitle>
+              {t('customNodes.waitingReview', { count: pendingReviews.length })}
+            </AlertTitle>
+            <AlertDescription>
+              {t('customNodes.resumeHint')}
+              <ul className="mt-2 flex flex-col gap-2">
+                {pendingReviews.map((plan) => (
+                  <li key={plan.id} className="flex flex-wrap items-center gap-2">
+                    <span className="min-w-0 font-medium [overflow-wrap:anywhere] break-words">
+                      {plan.name} · {sourceLabel(plan.source)}
+                    </span>
+                    <Button size="sm" disabled={paused} onClick={() => actions.resume(plan)}>
+                      {t('customNodes.resumeReview')}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={paused}
+                      onClick={() => void actions.discard([plan])}
+                    >
+                      {t('customNodes.discard')}
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
 
       {actions.busy && (
         <Alert role="status">
@@ -299,7 +346,12 @@ export function CustomNodesPage({
                 ? t('customNodes.cannotCancel')
                 : t('customNodes.closingHint')}
             {actions.busy.kind === 'prepare' && (
-              <Button variant="outline" size="sm" disabled={actions.cancelRequested} onClick={actions.requestCancel}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={actions.cancelRequested}
+                onClick={actions.requestCancel}
+              >
                 {t('customNodes.cancelPreparation')}
               </Button>
             )}
@@ -309,37 +361,58 @@ export function CustomNodesPage({
       {!actions.review && failureNotice}
       {actions.notice && (
         <Alert role="status">
-          <AlertTitle>{'count' in actions.notice.message
-            ? t('customNodes.updatedCount', { count: actions.notice.message.count })
-            : nodeText(actions.notice.message)}</AlertTitle>
+          <AlertTitle>
+            {'count' in actions.notice.message
+              ? t('customNodes.updatedCount', { count: actions.notice.message.count })
+              : nodeText(actions.notice.message)}
+          </AlertTitle>
           {actions.notice.cleanupPending && (
-            <AlertDescription>
-              {t('customNodes.cleanupHint')}
-            </AlertDescription>
+            <AlertDescription>{t('customNodes.cleanupHint')}</AlertDescription>
           )}
         </Alert>
       )}
       {offerRestart && (
         <Alert role="status">
           <AlertTitle>
-            {restart.kind === 'started' ? t('customNodes.restarted')
-              : restart.kind === 'port_conflict' ? t('customNodes.portInUse', { port: restart.requested })
-                : restart.kind === 'working' ? t('customNodes.restarting')
+            {restart.kind === 'started'
+              ? t('customNodes.restarted')
+              : restart.kind === 'port_conflict'
+                ? t('customNodes.portInUse', { port: restart.requested })
+                : restart.kind === 'working'
+                  ? t('customNodes.restarting')
                   : t('customNodes.restartHint')}
           </AlertTitle>
           <AlertDescription>
             {restart.kind === 'port_conflict' && (
               <>
-                {restart.suggested !== null ? t('customNodes.portFree', { port: restart.suggested }) : ''}
+                {restart.suggested !== null
+                  ? t('customNodes.portFree', { port: restart.suggested })
+                  : ''}
                 {t('customNodes.choosePort')}
-                <Button variant="outline" size="sm" onClick={onOpenComfy}>{t('customNodes.openLaunchOptions')}</Button>
+                <Button variant="outline" size="sm" onClick={onOpenComfy}>
+                  {t('customNodes.openLaunchOptions')}
+                </Button>
               </>
             )}
-            {restart.kind === 'idle' && (canRestart
-              ? <Button size="sm" onClick={() => void restartComfy()}>{t('customNodes.restartComfy')}</Button>
-              : t('customNodes.restartUnavailable'))}
-            {(restart.kind === 'started' || restart.kind === 'port_conflict' || restart.kind === 'idle') && (
-              <Button variant="ghost" size="sm" onClick={() => { setRestart({ kind: 'idle' }); actions.finishRestartOffer() }}>
+            {restart.kind === 'idle' &&
+              (canRestart ? (
+                <Button size="sm" onClick={() => void restartComfy()}>
+                  {t('customNodes.restartComfy')}
+                </Button>
+              ) : (
+                t('customNodes.restartUnavailable')
+              ))}
+            {(restart.kind === 'started' ||
+              restart.kind === 'port_conflict' ||
+              restart.kind === 'idle') && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setRestart({ kind: 'idle' })
+                  actions.finishRestartOffer()
+                }}
+              >
                 {t('common.dismiss')}
               </Button>
             )}
@@ -399,7 +472,9 @@ export function CustomNodesPage({
         {nodes.isError && (!list || scanning) ? (
           <ErrorNotice error={nodes.error} retry={() => void nodes.refetch()} />
         ) : loading ? (
-          <p role="status" className="text-sm text-muted-foreground">{t('customNodes.loading')}</p>
+          <p role="status" className="text-sm text-muted-foreground">
+            {t('customNodes.loading')}
+          </p>
         ) : all.length === 0 && scanIncomplete ? null : all.length === 0 ? (
           <EmptyState
             icon={<Puzzle className="size-8" aria-hidden="true" />}
@@ -407,7 +482,10 @@ export function CustomNodesPage({
             description={t('customNodes.emptyHint')}
           />
         ) : visible.length === 0 ? (
-          <EmptyState title={t('customNodes.noMatch')} description={t('customNodes.changeFilters')} />
+          <EmptyState
+            title={t('customNodes.noMatch')}
+            description={t('customNodes.changeFilters')}
+          />
         ) : (
           <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="min-w-0 overflow-x-auto">
@@ -429,7 +507,9 @@ export function CustomNodesPage({
                 busy={paused}
                 onUpdate={() => setUpdateNode(active)}
                 onRetry={() => void actions.prepare({ kind: 'retry', nodeId: active.id })}
-                onToggle={() => setConfirm({ node: active, action: active.enabled ? 'disable' : 'enable' })}
+                onToggle={() =>
+                  setConfirm({ node: active, action: active.enabled ? 'disable' : 'enable' })
+                }
                 onUninstall={() => setConfirm({ node: active, action: 'uninstall' })}
               />
             )}

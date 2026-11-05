@@ -8,9 +8,7 @@ export function errorMessage(error: unknown): string {
   ) {
     return t('common.repositoryFile')
   }
-  return error instanceof IpcClientError
-    ? error.message
-    : t('common.operationError')
+  return error instanceof IpcClientError ? error.message : t('common.operationError')
 }
 
 export function bytes(value: number | null): string {

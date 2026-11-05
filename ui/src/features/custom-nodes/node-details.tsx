@@ -1,4 +1,13 @@
-import { ArrowUpCircle, ExternalLink, FolderOpen, Power, PowerOff, RotateCw, Trash2, TriangleAlert } from 'lucide-react'
+import {
+  ArrowUpCircle,
+  ExternalLink,
+  FolderOpen,
+  Power,
+  PowerOff,
+  RotateCw,
+  Trash2,
+  TriangleAlert,
+} from 'lucide-react'
 import { toast } from 'sonner'
 
 import { useTranslation } from '@/shared/i18n'
@@ -56,16 +65,27 @@ export function NodeDetails({
   }
 
   return (
-    <section aria-label={t('customNodes.actionsFor', { name: node.name })} className="flex flex-col gap-4 rounded-xl border bg-card p-4">
+    <section
+      aria-label={t('customNodes.actionsFor', { name: node.name })}
+      className="flex flex-col gap-4 rounded-xl border bg-card p-4"
+    >
       <div className="min-w-0">
-        <h2 className="text-lg font-bold tracking-tight break-words [overflow-wrap:anywhere]">{node.name}</h2>
-        <p className="font-mono text-xs text-muted-foreground break-all">{sourceLabel(node.source)}</p>
+        <h2 className="text-lg font-bold tracking-tight [overflow-wrap:anywhere] break-words">
+          {node.name}
+        </h2>
+        <p className="font-mono text-xs break-all text-muted-foreground">
+          {sourceLabel(node.source)}
+        </p>
       </div>
       <div className="flex flex-wrap gap-2">
         <EnabledChip enabled={node.enabled} />
         <DependencyChip state={node.dependencies} />
         <HealthChip health={gitHealth(node)} />
-        {node.conflict && <Chip icon={TriangleAlert} className="bg-brand-pink">{t('customNodes.conflict')}</Chip>}
+        {node.conflict && (
+          <Chip icon={TriangleAlert} className="bg-brand-pink">
+            {t('customNodes.conflict')}
+          </Chip>
+        )}
       </div>
       <div className="flex flex-wrap gap-2">
         <Button variant="outline" disabled={busy || updateReason !== null} onClick={onUpdate}>
@@ -97,8 +117,12 @@ export function NodeDetails({
       </div>
       {(updateReason !== null || retryReason !== null) && (
         <ul className="flex flex-col gap-0.5 text-xs text-muted-foreground">
-          {updateReason !== null && <li>{t('customNodes.updateUnavailable', { reason: updateReason })}</li>}
-          {retryReason !== null && <li>{t('customNodes.retryUnavailable', { reason: retryReason })}</li>}
+          {updateReason !== null && (
+            <li>{t('customNodes.updateUnavailable', { reason: updateReason })}</li>
+          )}
+          {retryReason !== null && (
+            <li>{t('customNodes.retryUnavailable', { reason: retryReason })}</li>
+          )}
         </ul>
       )}
     </section>

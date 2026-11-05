@@ -56,10 +56,18 @@ const tile = (name: string) =>
   screen.getByRole('button', { name: new RegExp(name.replace('.', '\\.')) })
 
 it('shows an image as a lazy thumbnail and everything else as an icon with its name and size', () => {
-  mount([folder('renders'), file('cat.png'), file('clip.mp4', 'video'), file('robot.glb', 'model3d'), file('notes.txt', 'other')])
+  mount([
+    folder('renders'),
+    file('cat.png'),
+    file('clip.mp4', 'video'),
+    file('robot.glb', 'model3d'),
+    file('notes.txt', 'other'),
+  ])
   const thumbnail = document.querySelector('img')
   expect(document.querySelectorAll('img')).toHaveLength(1)
-  expect(thumbnail?.getAttribute('src')).toBe('http://gallery.localhost/input/cat.png?v=rev-cat.png')
+  expect(thumbnail?.getAttribute('src')).toBe(
+    'http://gallery.localhost/input/cat.png?v=rev-cat.png',
+  )
   expect(thumbnail?.getAttribute('loading')).toBe('lazy')
   expect(thumbnail?.getAttribute('decoding')).toBe('async')
   expect(thumbnail?.getAttribute('alt')).toBe('')
@@ -76,7 +84,10 @@ it('falls back to an icon when a thumbnail cannot be loaded', () => {
 })
 
 it('selects with a click, toggles with ctrl or cmd, and exposes the state as aria-pressed', () => {
-  const { onSelect, onToggle } = mount([file('a.png'), file('b.png')], [keyOf(file('b.png').location)])
+  const { onSelect, onToggle } = mount(
+    [file('a.png'), file('b.png')],
+    [keyOf(file('b.png').location)],
+  )
   expect(tile('a.png').getAttribute('aria-pressed')).toBe('false')
   expect(tile('b.png').getAttribute('aria-pressed')).toBe('true')
   fireEvent.click(tile('a.png'))

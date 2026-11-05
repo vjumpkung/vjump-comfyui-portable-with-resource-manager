@@ -16,13 +16,7 @@ import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
 
-import {
-  formatBytes,
-  formatModified,
-  keyOf,
-  sourceLabel,
-  trashName,
-} from './model-list'
+import { formatBytes, formatModified, keyOf, sourceLabel, trashName } from './model-list'
 
 interface Props {
   model: ModelEntryDto
@@ -38,7 +32,7 @@ function Field({ name, children }: { name: string; children: ReactNode }) {
   return (
     <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-2 text-sm">
       <dt className="text-muted-foreground">{name}</dt>
-      <dd className="min-w-0 break-words [overflow-wrap:anywhere]">{children}</dd>
+      <dd className="min-w-0 [overflow-wrap:anywhere] break-words">{children}</dd>
     </div>
   )
 }
@@ -73,9 +67,7 @@ export function DetailsPane({
   return (
     <Card aria-label={t('library.details.title')}>
       <CardHeader>
-        <CardTitle className="break-words [overflow-wrap:anywhere]">
-          {model.name}
-        </CardTitle>
+        <CardTitle className="[overflow-wrap:anywhere] break-words">{model.name}</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {preview ? (
@@ -94,9 +86,7 @@ export function DetailsPane({
         <dl className="flex flex-col gap-2">
           <Field name={t('common.category')}>{model.category}</Field>
           <Field name={t('library.details.folder')}>
-            <span className="font-mono text-xs">
-              {model.location.path}
-            </span>
+            <span className="font-mono text-xs">{model.location.path}</span>
           </Field>
           <Field name={t('common.size')}>{formatBytes(model.size)}</Field>
           <Field name={t('library.modified')}>{formatModified(model.modifiedMs)}</Field>
@@ -105,9 +95,7 @@ export function DetailsPane({
             {model.sha256 ? (
               <span className="font-mono text-xs">{model.sha256}</span>
             ) : (
-              <span className="text-muted-foreground">
-                {t('library.details.notHashed')}
-              </span>
+              <span className="text-muted-foreground">{t('library.details.notHashed')}</span>
             )}
           </Field>
         </dl>
@@ -118,7 +106,9 @@ export function DetailsPane({
             <dl className="flex flex-col gap-2">
               <Field name={t('library.details.model')}>{civitai.modelName}</Field>
               <Field name={t('common.version')}>{civitai.versionName || '-'}</Field>
-              <Field name={t('library.details.baseModel')}>{civitai.baseModel ?? t('common.unknownValue')}</Field>
+              <Field name={t('library.details.baseModel')}>
+                {civitai.baseModel ?? t('common.unknownValue')}
+              </Field>
               <Field name={t('library.details.triggerWords')}>
                 {civitai.triggerWords.length === 0 ? (
                   <span className="text-muted-foreground">{t('common.none')}</span>

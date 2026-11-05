@@ -1,12 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { gateway, type DownloadEventDto } from '@/shared/ipc/gateway'
@@ -107,9 +101,7 @@ it('warns that resuming a tool-driven job restarts from 0%', async () => {
   await snapshot([job({ state: 'paused', restartsFromZero: true })])
   expect(await screen.findByText(/restarts this download from 0%/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Resume model.safetensors' }))
-  await waitFor(() =>
-    expect(gateway.dlResume).toHaveBeenCalledWith('job-1', null),
-  )
+  await waitFor(() => expect(gateway.dlResume).toHaveBeenCalledWith('job-1', null))
 })
 
 it('links a missing-token failure to Settings and offers retry', async () => {
@@ -147,9 +139,7 @@ it('resolves a link, requires a folder and queues the chosen file', async () => 
       },
     ],
   })
-  vi.mocked(gateway.dlEnqueue).mockResolvedValue([
-    { kind: 'queued', jobId: 'job-9' },
-  ])
+  vi.mocked(gateway.dlEnqueue).mockResolvedValue([{ kind: 'queued', jobId: 'job-9' }])
   mount()
   await snapshot([])
   fireEvent.click(screen.getByRole('button', { name: /Add download/ }))
@@ -158,9 +148,7 @@ it('resolves a link, requires a folder and queues the chosen file', async () => 
   })
   fireEvent.click(screen.getByRole('button', { name: 'Look up' }))
   expect(await screen.findByText('real.safetensors')).toBeTruthy()
-  expect(screen.getByLabelText<HTMLSelectElement>('Model folder').value).toBe(
-    'loras',
-  )
+  expect(screen.getByLabelText<HTMLSelectElement>('Model folder').value).toBe('loras')
   fireEvent.change(screen.getByLabelText('Sub-folder (optional)'), {
     target: { value: 'sdxl' },
   })
@@ -268,9 +256,7 @@ it('previews a pack with sizes and queues only the selected rows', async () => {
       error: { code: 'not_found', message: 'The download was not found.' },
     },
   ])
-  vi.mocked(gateway.dlEnqueue).mockResolvedValue([
-    { kind: 'queued', jobId: 'job-a' },
-  ])
+  vi.mocked(gateway.dlEnqueue).mockResolvedValue([{ kind: 'queued', jobId: 'job-a' }])
   mount()
   await snapshot([])
   fireEvent.click(screen.getByRole('button', { name: /Import pack/ }))
@@ -314,9 +300,7 @@ it('echoes the observed destination identity when overwriting after a late confl
     }),
   ])
   fireEvent.click(await screen.findByRole('button', { name: /Resolve conflict/ }))
-  fireEvent.click(
-    await screen.findByRole('button', { name: /Overwrite \(move old to/ }),
-  )
+  fireEvent.click(await screen.findByRole('button', { name: /Overwrite \(move old to/ }))
   await waitFor(() =>
     expect(gateway.dlResume).toHaveBeenCalledWith('job-1', {
       decisionId: 'decision-1',
@@ -330,16 +314,23 @@ it('confirms removal for the selected terminal row and Cancel leaves it alone', 
   mount()
   await snapshot([
     job({ id: 'completed', state: 'completed', generation: 7 }),
-    job({ id: 'failed', state: 'failed' }), job({ id: 'cancelled', state: 'cancelled' }),
-    ...(['queued', 'resolving', 'downloading', 'verifying', 'paused'] as const).map((state) => job({ id: state, state })),
+    job({ id: 'failed', state: 'failed' }),
+    job({ id: 'cancelled', state: 'cancelled' }),
+    ...(['queued', 'resolving', 'downloading', 'verifying', 'paused'] as const).map((state) =>
+      job({ id: state, state }),
+    ),
     job({ id: 'finalizing', state: 'failed', finalizing: true }),
   ])
-  await waitFor(() => expect(screen.getAllByRole('button', { name: 'Remove from list' })).toHaveLength(3))
+  await waitFor(() =>
+    expect(screen.getAllByRole('button', { name: 'Remove from list' })).toHaveLength(3),
+  )
   const completed = screen.getByText('Completed', { exact: true }).closest('tr')!
   const target = completed.querySelector<HTMLButtonElement>('button[title="Remove from list"]')!
   fireEvent.click(target)
   expect(screen.getByRole('dialog', { name: 'Remove this download from the list?' })).toBeTruthy()
-  expect(screen.getByText('Only the list entry is removed. The downloaded file stays where it is.')).toBeTruthy()
+  expect(
+    screen.getByText('Only the list entry is removed. The downloaded file stays where it is.'),
+  ).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
   expect(gateway.dlRemove).not.toHaveBeenCalled()
   fireEvent.click(target)

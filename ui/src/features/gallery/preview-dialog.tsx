@@ -49,19 +49,11 @@ function PreviewBody({ entry }: { entry: GalleryEntryDto }) {
   }
   if (entry.media === 'video') {
     return (
-      <video
-        controls
-        autoPlay={false}
-        src={src}
-        className="max-h-full max-w-full"
-        onError={fail}
-      />
+      <video controls autoPlay={false} src={src} className="max-h-full max-w-full" onError={fail} />
     )
   }
   if (entry.media === 'audio') {
-    return (
-      <audio controls preload="metadata" aria-label={entry.name} src={src} onError={fail} />
-    )
+    return <audio controls preload="metadata" aria-label={entry.name} src={src} onError={fail} />
   }
   return (
     <Suspense
@@ -118,7 +110,11 @@ export function PreviewDialog({ entry, files, onNavigate, onClose }: Props) {
         </div>
         <DialogFooter className="sm:justify-between">
           <div className="flex gap-2">
-            <Button variant="outline" disabled={!previous} onClick={() => previous && onNavigate(previous)}>
+            <Button
+              variant="outline"
+              disabled={!previous}
+              onClick={() => previous && onNavigate(previous)}
+            >
               <ChevronLeft aria-hidden="true" />
               {t('common.previous')}
             </Button>

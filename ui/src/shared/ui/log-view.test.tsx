@@ -24,10 +24,13 @@ import { LogView, plainLog, StreamLogView } from './log-view'
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.stubGlobal('ResizeObserver', class {
-    observe = observe
-    disconnect = vi.fn()
-  })
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe = observe
+      disconnect = vi.fn()
+    },
+  )
 })
 
 afterEach(() => {
@@ -40,7 +43,14 @@ function expectTerminalFrame(label: string, height: string) {
   expect(open).toHaveBeenCalledWith(host)
   expect(host.className).toBe('h-full min-w-0')
   const frame = host.parentElement!
-  for (const name of ['border', 'border-secondary', 'p-3', 'overflow-hidden', 'setup-log', height]) {
+  for (const name of [
+    'border',
+    'border-secondary',
+    'p-3',
+    'overflow-hidden',
+    'setup-log',
+    height,
+  ]) {
     expect(frame.classList.contains(name)).toBe(true)
   }
   expect(observe).toHaveBeenCalledWith(host)
@@ -58,10 +68,6 @@ it('stream_log_view_terminal_host_has_no_frame_padding', () => {
 
 it('removes terminal commands and controls without damaging Unicode log text', () => {
   expect(plainLog('\x1b[31mError\x1b[0m: โมเดล\r\n')).toBe('Error: โมเดล\n')
-  expect(plainLog('\x1b]0;malicious title\x07package installed\x00')).toBe(
-    'package installed',
-  )
-  expect(
-    plainLog('\x1b]8;;https://untrusted.example\x1b\\click\x1b]8;;\x1b\\'),
-  ).toBe('click')
+  expect(plainLog('\x1b]0;malicious title\x07package installed\x00')).toBe('package installed')
+  expect(plainLog('\x1b]8;;https://untrusted.example\x1b\\click\x1b]8;;\x1b\\')).toBe('click')
 })

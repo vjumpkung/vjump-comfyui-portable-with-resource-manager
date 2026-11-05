@@ -1,17 +1,12 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import {
-  gateway,
-  type CredentialKindDto,
-  type UpdateSettingsDto,
-} from '@/shared/ipc/gateway'
+import { gateway, type CredentialKindDto, type UpdateSettingsDto } from '@/shared/ipc/gateway'
 
 import { settingsKey, useSettingsQuery } from '@/shared/lib/settings-queries'
 
 export { settingsKey } from '@/shared/lib/settings-queries'
 const settingsUpdateKey = ['settings', 'update'] as const
-export const credentialStatusKey = (kind: CredentialKindDto) =>
-  ['credential-status', kind] as const
+export const credentialStatusKey = (kind: CredentialKindDto) => ['credential-status', kind] as const
 
 export function useSettings() {
   return useSettingsQuery()

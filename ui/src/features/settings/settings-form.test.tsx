@@ -25,18 +25,23 @@ const settings: SettingsDto = {
 
 function mount() {
   return render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}
+    >
       <SettingsForm />
     </QueryClientProvider>,
   )
 }
 
 beforeEach(() => {
-  vi.stubGlobal('ResizeObserver', class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  })
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  )
   vi.resetAllMocks()
   vi.mocked(gateway.settingsGet).mockResolvedValue(settings)
   vi.mocked(gateway.settingsSet).mockImplementation((input) => Promise.resolve(input))
@@ -60,21 +65,31 @@ it('bandwidth_empty_means_unlimited_and_zero_is_invalid', async () => {
   }
   fireEvent.change(cap, { target: { value: '' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
-  await waitFor(() => expect(gateway.settingsSet).toHaveBeenCalledWith({
-    ...settings, bandwidthCapKibS: null,
-  }))
+  await waitFor(() =>
+    expect(gateway.settingsSet).toHaveBeenCalledWith({
+      ...settings,
+      bandwidthCapKibS: null,
+    }),
+  )
   const updated = await screen.findByLabelText('Bandwidth cap (KiB/s)')
   fireEvent.change(updated, { target: { value: '64' } })
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Save settings' })).toHaveProperty('disabled', false))
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Save settings' })).toHaveProperty('disabled', false),
+  )
   fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
-  await waitFor(() => expect(gateway.settingsSet).toHaveBeenLastCalledWith({
-    ...settings, bandwidthCapKibS: 64,
-  }))
+  await waitFor(() =>
+    expect(gateway.settingsSet).toHaveBeenLastCalledWith({
+      ...settings,
+      bandwidthCapKibS: 64,
+    }),
+  )
 })
 
 it('language_is_a_draft_until_save_succeeds_and_is_included_in_the_payload', async () => {
   let save: (saved: SettingsDto) => void = () => undefined
-  const pending = new Promise<SettingsDto>((resolve) => { save = resolve })
+  const pending = new Promise<SettingsDto>((resolve) => {
+    save = resolve
+  })
   vi.mocked(gateway.settingsSet).mockReturnValue(pending)
   mount()
   const language = await screen.findByLabelText('Language')
@@ -84,7 +99,9 @@ it('language_is_a_draft_until_save_succeeds_and_is_included_in_the_payload', asy
   expect(getLanguage()).toBe('en')
   expect(gateway.settingsSet).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
-  await waitFor(() => expect(gateway.settingsSet).toHaveBeenCalledWith({ ...settings, language: 'th' }))
+  await waitFor(() =>
+    expect(gateway.settingsSet).toHaveBeenCalledWith({ ...settings, language: 'th' }),
+  )
   expect(getLanguage()).toBe('en')
   await act(async () => {
     save({ ...settings, language: 'th' })
@@ -110,19 +127,28 @@ it('failed_save_keeps_the_active_language_and_the_draft', async () => {
   fireEvent.change(await screen.findByLabelText('Language'), { target: { value: 'th' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
   await waitFor(() => expect(gateway.settingsSet).toHaveBeenCalledTimes(1))
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Save settings' })).toHaveProperty('disabled', false))
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Save settings' })).toHaveProperty('disabled', false),
+  )
   expect(getLanguage()).toBe('en')
   expect(screen.getByLabelText('Language')).toHaveProperty('value', 'th')
 })
 
 it('dangerous security preference defaults off and is saved explicitly', async () => {
   mount()
-  const checkbox = await screen.findByRole('checkbox', { name: 'Dangerously skip security confirmations' })
+  const checkbox = await screen.findByRole('checkbox', {
+    name: 'Dangerously skip security confirmations',
+  })
   expect(checkbox.getAttribute('aria-checked')).toBe('false')
   expect(screen.getByText('Danger zone')).toBeTruthy()
   expect(screen.getByText(/Protected-package changes and source builds stay blocked/)).toBeTruthy()
   fireEvent.click(checkbox)
   expect(gateway.settingsSet).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
-  await waitFor(() => expect(gateway.settingsSet).toHaveBeenCalledWith({ ...settings, skipSecurityConfirmations: true }))
+  await waitFor(() =>
+    expect(gateway.settingsSet).toHaveBeenCalledWith({
+      ...settings,
+      skipSecurityConfirmations: true,
+    }),
+  )
 })

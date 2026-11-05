@@ -29,16 +29,11 @@ export function keyOf(location: ModelLocationDto): string {
   return `${location.rootId}:${location.path}`
 }
 
-export function filterModels(
-  models: readonly ModelEntryDto[],
-  filters: Filters,
-): ModelEntryDto[] {
+export function filterModels(models: readonly ModelEntryDto[], filters: Filters): ModelEntryDto[] {
   const needle = filters.search.trim().toLowerCase()
   const rows = models.filter((model) => {
-    if (filters.category !== 'all' && model.category !== filters.category)
-      return false
-    if (filters.root !== 'all' && model.location.rootId !== filters.root)
-      return false
+    if (filters.category !== 'all' && model.category !== filters.category) return false
+    if (filters.root !== 'all' && model.location.rootId !== filters.root) return false
     if (needle === '') return true
     return (
       model.name.toLowerCase().includes(needle) ||
@@ -50,9 +45,7 @@ export function filterModels(
   const compare = (a: ModelEntryDto, b: ModelEntryDto): number => {
     switch (filters.sort) {
       case 'category':
-        return (
-          a.category.localeCompare(b.category) || a.name.localeCompare(b.name)
-        )
+        return a.category.localeCompare(b.category) || a.name.localeCompare(b.name)
       case 'size':
         return (a.size ?? 0) - (b.size ?? 0)
       case 'modified':
@@ -65,9 +58,7 @@ export function filterModels(
 }
 
 export function categoriesOf(models: readonly ModelEntryDto[]): string[] {
-  return [...new Set(models.map((model) => model.category))].sort((a, b) =>
-    a.localeCompare(b),
-  )
+  return [...new Set(models.map((model) => model.category))].sort((a, b) => a.localeCompare(b))
 }
 
 const UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB'] as const
@@ -84,8 +75,7 @@ export function formatBytes(value: number | null): string {
 }
 
 export function sourceLabel(model: ModelEntryDto): string {
-  if (model.civitaiVersionId !== null)
-    return `CivitAI v${model.civitaiVersionId}`
+  if (model.civitaiVersionId !== null) return `CivitAI v${model.civitaiVersionId}`
   if (model.sourceJobId !== null) return t('library.source.downloaded')
   return t('library.source.local')
 }

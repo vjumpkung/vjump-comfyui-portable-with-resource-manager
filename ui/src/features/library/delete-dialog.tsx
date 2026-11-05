@@ -49,7 +49,10 @@ const OUTCOME_KEYS = {
   missing: 'library.delete.outcome.missing',
   busy: 'library.delete.outcome.busy',
   failed: 'common.failed',
-} as const satisfies Record<DeleteOutcomeDto['kind'], keyof typeof import('@/shared/i18n/translations.json').en>
+} as const satisfies Record<
+  DeleteOutcomeDto['kind'],
+  keyof typeof import('@/shared/i18n/translations.json').en
+>
 
 function nameOf(plan: DeletePlanDto): Map<string, string> {
   return new Map(plan.items.map((item) => [keyOf(item.location), item.name]))
@@ -138,21 +141,22 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
         {stage.kind === 'confirm' ? (
           <>
             <DialogHeader>
-              <DialogTitle>{t('library.delete.confirm', { count: stage.plan.items.length })}</DialogTitle>
-              <DialogDescription>
-                {t('library.delete.disclosure', { trash })}
-              </DialogDescription>
+              <DialogTitle>
+                {t('library.delete.confirm', { count: stage.plan.items.length })}
+              </DialogTitle>
+              <DialogDescription>{t('library.delete.disclosure', { trash })}</DialogDescription>
             </DialogHeader>
             <FileList plan={stage.plan} />
             <DialogFooter>
               <Button variant="outline" onClick={onClose}>
                 {t('common.cancel')}
               </Button>
-              <Button
-                variant="destructive"
-                onClick={() => void execute(stage.plan)}
-              >
-                {t('library.delete.move', { count: stage.plan.items.length, size: formatBytes(stage.plan.totalBytes), trash })}
+              <Button variant="destructive" onClick={() => void execute(stage.plan)}>
+                {t('library.delete.move', {
+                  count: stage.plan.items.length,
+                  size: formatBytes(stage.plan.totalBytes),
+                  trash,
+                })}
               </Button>
             </DialogFooter>
           </>
@@ -162,7 +166,9 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
           <>
             <DialogHeader>
               <DialogTitle>
-                {stage.permanent ? t('library.delete.permanently') : t('library.delete.moving', { trash })}
+                {stage.permanent
+                  ? t('library.delete.permanently')
+                  : t('library.delete.moving', { trash })}
               </DialogTitle>
               <DialogDescription>{t('library.delete.largeFiles')}</DialogDescription>
             </DialogHeader>
@@ -191,7 +197,10 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
                 {t('library.delete.confirmPermanent', { count: stage.plan.items.length })}
               </DialogTitle>
               <DialogDescription>
-                {t('library.delete.permanentHint', { trash, size: formatBytes(stage.plan.totalBytes) })}
+                {t('library.delete.permanentHint', {
+                  trash,
+                  size: formatBytes(stage.plan.totalBytes),
+                })}
               </DialogDescription>
             </DialogHeader>
             <FileList plan={stage.plan} />
@@ -201,9 +210,7 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
                 checked={acknowledged}
                 onCheckedChange={(checked) => setAcknowledged(checked === true)}
               />
-              <Label htmlFor="permanent-ack">
-                {t('library.delete.acknowledge')}
-              </Label>
+              <Label htmlFor="permanent-ack">{t('library.delete.acknowledge')}</Label>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={onClose}>
@@ -242,7 +249,10 @@ function FileList({ plan }: { plan: DeletePlanDto }) {
   const { t } = useTranslation()
   const shown = plan.items.slice(0, 8)
   return (
-    <ul className="flex max-h-48 flex-col gap-1 overflow-auto text-sm" aria-label={t('library.delete.files')}>
+    <ul
+      className="flex max-h-48 flex-col gap-1 overflow-auto text-sm"
+      aria-label={t('library.delete.files')}
+    >
       {shown.map((item) => (
         <li key={keyOf(item.location)} className="flex justify-between gap-3">
           <span className="min-w-0 truncate" title={item.name}>
@@ -287,11 +297,12 @@ function Report({
         <DialogTitle>
           {t('library.delete.summary', { deleted, count: report.results.length })}
         </DialogTitle>
-        <DialogDescription>
-          {t('library.delete.reportHint')}
-        </DialogDescription>
+        <DialogDescription>{t('library.delete.reportHint')}</DialogDescription>
       </DialogHeader>
-      <ul className="flex max-h-56 flex-col gap-1.5 overflow-auto text-sm" aria-label={t('library.delete.results')}>
+      <ul
+        className="flex max-h-56 flex-col gap-1.5 overflow-auto text-sm"
+        aria-label={t('library.delete.results')}
+      >
         {report.results.map((result) => {
           const ok = result.outcome.kind === 'deleted'
           return (
@@ -299,15 +310,13 @@ function Report({
               {ok ? (
                 <Check className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
               ) : (
-                <CircleX
-                  className="mt-0.5 size-4 shrink-0 text-destructive"
-                  aria-hidden="true"
-                />
+                <CircleX className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
               )}
-              <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">
+              <span className="min-w-0 flex-1 [overflow-wrap:anywhere] break-words">
                 {names.get(keyOf(result.location)) ?? result.location.path}
                 <span className="block text-xs text-muted-foreground">
-                  {result.outcome.kind === 'failed' && result.outcome.error.code === 'model_repository_file'
+                  {result.outcome.kind === 'failed' &&
+                  result.outcome.error.code === 'model_repository_file'
                     ? t('common.repositoryFile')
                     : t(OUTCOME_KEYS[result.outcome.kind])}
                 </span>
@@ -322,9 +331,7 @@ function Report({
           <AlertTitle>
             {t('library.delete.trashFailed', { count: report.permanentPlan.items.length, trash })}
           </AlertTitle>
-          <AlertDescription>
-            {t('library.delete.retryHint')}
-          </AlertDescription>
+          <AlertDescription>{t('library.delete.retryHint')}</AlertDescription>
         </Alert>
       ) : null}
       <DialogFooter>

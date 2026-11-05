@@ -35,7 +35,12 @@ describe('consent rules', () => {
 
   it('decision_masks_hidden_script_trust', () => {
     const everything: Consent = {
-      execute: true, hook: true, warnings: true, pins: true, remember: true, rememberHook: true,
+      execute: true,
+      hook: true,
+      warnings: true,
+      pins: true,
+      remember: true,
+      rememberHook: true,
     }
     const noHook = decision(plan({ hasInstallPy: false }), everything)
     expect(noHook.runInstallPy).toBe(false)
@@ -45,25 +50,39 @@ describe('consent rules', () => {
 
     const withHook = plan({ hasInstallPy: true })
     expect(decision(withHook, everything)).toMatchObject({
-      runInstallPy: true, rememberSource: true, rememberInstallPy: true,
+      runInstallPy: true,
+      rememberSource: true,
+      rememberInstallPy: true,
     })
     // Unchecking the script or the source trust clears the remembered script permission.
     expect(normalizeConsent(withHook, { ...everything, hook: false }).rememberHook).toBe(false)
     expect(normalizeConsent(withHook, { ...everything, remember: false }).rememberHook).toBe(false)
     expect(decision(withHook, { ...everything, remember: false })).toMatchObject({
-      rememberSource: false, rememberInstallPy: false,
+      rememberSource: false,
+      rememberInstallPy: false,
     })
   })
 
   it('registry_trust_requires_publisher_and_repository', () => {
     const registry = (publisher: string | null, repository: string | null) => ({
-      kind: 'registry' as const, id: 'pack', publisher, version: '1.0.0', repository,
+      kind: 'registry' as const,
+      id: 'pack',
+      publisher,
+      version: '1.0.0',
+      repository,
     })
     expect(hasTrustNamespace(registry('example', 'https://github.com/example/pack'))).toBe(true)
     expect(hasTrustNamespace(registry(null, 'https://github.com/example/pack'))).toBe(false)
     expect(hasTrustNamespace(registry('example', null))).toBe(false)
     expect(hasTrustNamespace(registry('', 'https://github.com/example/pack'))).toBe(false)
-    expect(hasTrustNamespace({ kind: 'git', repository: 'https://github.com/a/b', commit: 'a', branch: null })).toBe(true)
+    expect(
+      hasTrustNamespace({
+        kind: 'git',
+        repository: 'https://github.com/a/b',
+        commit: 'a',
+        branch: null,
+      }),
+    ).toBe(true)
     expect(hasTrustNamespace({ kind: 'manual' })).toBe(false)
 
     const untrusted = plan({ source: registry(null, null) })
@@ -72,20 +91,30 @@ describe('consent rules', () => {
 
   it('decision_echoes_exact_binding_and_pin_changes', () => {
     const changes = [{ name: 'torch', from: '2.14.1', to: '2.15.0' }]
-    const reviewed = plan({ id: 'p', binding: 'binding-2', protectedChanges: changes, warnings: ['Flagged'] })
+    const reviewed = plan({
+      id: 'p',
+      binding: 'binding-2',
+      protectedChanges: changes,
+      warnings: ['Flagged'],
+    })
     expect(reviewKey(reviewed)).not.toBe(reviewKey({ ...reviewed, binding: 'binding-3' }))
     expect(canCommit(reviewed, accepted)).toBe(false)
     expect(canCommit(reviewed, { ...accepted, warnings: true })).toBe(false)
     const consent = { ...accepted, warnings: true, pins: true }
     expect(canCommit(reviewed, consent)).toBe(true)
     expect(decision(reviewed, consent)).toMatchObject({
-      planId: 'p', binding: 'binding-2', acknowledgeWarnings: true, confirmedChanges: changes,
+      planId: 'p',
+      binding: 'binding-2',
+      acknowledgeWarnings: true,
+      confirmedChanges: changes,
     })
     expect(decision(reviewed, { ...consent, pins: false }).confirmedChanges).toEqual([])
   })
 
   it('retry_includes_not_run_directory_nodes', () => {
-    expect(canRetryDependencies(node({ dependencies: 'not_run', source: { kind: 'manual' } }))).toBe(true)
+    expect(
+      canRetryDependencies(node({ dependencies: 'not_run', source: { kind: 'manual' } })),
+    ).toBe(true)
     expect(canRetryDependencies(node({ dependencies: 'failed' }))).toBe(true)
     expect(canRetryDependencies(node({ dependencies: 'ok' }))).toBe(false)
     expect(canRetryDependencies(node({ dependencies: 'failed', singleFile: true }))).toBe(false)
@@ -106,15 +135,23 @@ describe('eligibility and lists', () => {
 
   it('refuses dirty, unfinished and diverged repositories and asks for a target when detached', () => {
     const status = {
-      commit: 'a'.repeat(40), branch: 'main', dirty: false, unfinishedOperation: false,
-      ahead: 0, behind: 1, hasUpstream: true, status: '',
+      commit: 'a'.repeat(40),
+      branch: 'main',
+      dirty: false,
+      unfinishedOperation: false,
+      ahead: 0,
+      behind: 1,
+      hasUpstream: true,
+      status: '',
     }
     expect(checkGitStatus(status)).toEqual({ refusals: [], needsReference: false })
     expect(checkGitStatus({ ...status, dirty: true }).refusals).toHaveLength(1)
     expect(checkGitStatus({ ...status, unfinishedOperation: true }).refusals).toHaveLength(1)
     expect(checkGitStatus({ ...status, ahead: 1, behind: 1 }).refusals).toHaveLength(1)
     expect(checkGitStatus({ ...status, branch: null }).needsReference).toBe(true)
-    expect(checkGitStatus({ ...status, hasUpstream: false, ahead: null, behind: null }).needsReference).toBe(true)
+    expect(
+      checkGitStatus({ ...status, hasUpstream: false, ahead: null, behind: null }).needsReference,
+    ).toBe(true)
   })
 
   it('filters by text, source and state and includes disabled nodes by default', () => {
@@ -124,9 +161,15 @@ describe('eligibility and lists', () => {
       registryInstalled({ id: 'c', name: 'Gamma' }),
     ]
     expect(filterNodes(nodes, DEFAULT_NODE_FILTERS).map((n) => n.id)).toEqual(['a', 'b', 'c'])
-    expect(filterNodes(nodes, { ...DEFAULT_NODE_FILTERS, enabled: 'disabled' }).map((n) => n.id)).toEqual(['b'])
-    expect(filterNodes(nodes, { ...DEFAULT_NODE_FILTERS, source: 'registry' }).map((n) => n.id)).toEqual(['c'])
-    expect(filterNodes(nodes, { ...DEFAULT_NODE_FILTERS, text: 'ALP' }).map((n) => n.id)).toEqual(['a'])
+    expect(
+      filterNodes(nodes, { ...DEFAULT_NODE_FILTERS, enabled: 'disabled' }).map((n) => n.id),
+    ).toEqual(['b'])
+    expect(
+      filterNodes(nodes, { ...DEFAULT_NODE_FILTERS, source: 'registry' }).map((n) => n.id),
+    ).toEqual(['c'])
+    expect(filterNodes(nodes, { ...DEFAULT_NODE_FILTERS, text: 'ALP' }).map((n) => n.id)).toEqual([
+      'a',
+    ])
   })
 
   it('keeps the active identity or falls back to the first row', () => {

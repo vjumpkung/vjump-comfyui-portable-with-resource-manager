@@ -1,13 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { gateway } from '@/shared/ipc/gateway'
@@ -82,9 +75,7 @@ it('shows selected env metadata and limits packages to 100 rows with search', as
 
 it('keeps RepairRequired honest even when environment detail cache is older', async () => {
   const { onSetup } = mount(true)
-  await screen.findByText(
-    'RepairRequired — selected environment is not runnable',
-  )
+  await screen.findByText('RepairRequired — selected environment is not runnable')
   fireEvent.click(screen.getByRole('button', { name: 'Repair environment' }))
   expect(onSetup).toHaveBeenCalledWith('repair')
 })
@@ -97,9 +88,27 @@ it('environment_page_shows_stored_accelerator_results', async () => {
     components: {
       manager: null,
       accelerators: [
-        { id: 'installed-option', selected: true, status: 'installed', importable: true, message: 'Import check passed.' },
-        { id: 'failed-option', selected: true, status: 'failed', importable: false, message: 'Missing dependency.' },
-        { id: 'skipped-option', selected: false, status: 'skipped', importable: null, message: 'Not selected.' },
+        {
+          id: 'installed-option',
+          selected: true,
+          status: 'installed',
+          importable: true,
+          message: 'Import check passed.',
+        },
+        {
+          id: 'failed-option',
+          selected: true,
+          status: 'failed',
+          importable: false,
+          message: 'Missing dependency.',
+        },
+        {
+          id: 'skipped-option',
+          selected: false,
+          status: 'skipped',
+          importable: null,
+          message: 'Not selected.',
+        },
       ],
     },
   })
@@ -131,25 +140,20 @@ it('blocks selected-env deletion and requires exact ID confirmation for inactive
   await screen.findByText('package-0')
   const input = screen.getByLabelText('Inactive app-owned environment ID')
   fireEvent.change(input, { target: { value: environment.id } })
-  expect(
-    screen.getByRole('button', { name: 'Review environment deletion' }),
-  ).toHaveProperty('disabled', true)
-  fireEvent.change(input, { target: { value: 'env-old' } })
-  fireEvent.click(
-    screen.getByRole('button', { name: 'Review environment deletion' }),
+  expect(screen.getByRole('button', { name: 'Review environment deletion' })).toHaveProperty(
+    'disabled',
+    true,
   )
-  expect(
-    screen.getByRole('button', { name: 'Delete environment' }),
-  ).toHaveProperty('disabled', true)
+  fireEvent.change(input, { target: { value: 'env-old' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Review environment deletion' }))
+  expect(screen.getByRole('button', { name: 'Delete environment' })).toHaveProperty(
+    'disabled',
+    true,
+  )
   fireEvent.change(screen.getByLabelText('Confirm environment ID'), {
     target: { value: 'env-old' },
   })
   fireEvent.click(screen.getByRole('button', { name: 'Delete environment' }))
-  await waitFor(() =>
-    expect(gateway.envDelete).toHaveBeenCalledWith(
-      'env-old',
-      expect.anything(),
-    ),
-  )
+  await waitFor(() => expect(gateway.envDelete).toHaveBeenCalledWith('env-old', expect.anything()))
   await screen.findByText('Inactive app-owned environment deleted.')
 })

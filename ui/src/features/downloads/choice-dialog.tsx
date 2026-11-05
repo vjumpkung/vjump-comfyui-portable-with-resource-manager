@@ -46,13 +46,11 @@ export function ChoiceDialog<T extends string>({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription className="break-words [overflow-wrap:anywhere]">
+          <DialogDescription className="[overflow-wrap:anywhere] break-words">
             {description}
           </DialogDescription>
         </DialogHeader>
-        {note ? (
-          <p className="text-xs text-muted-foreground">{note}</p>
-        ) : null}
+        {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
         <DialogFooter>
           {choices.map((choice) => (
             <Button

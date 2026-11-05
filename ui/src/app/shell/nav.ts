@@ -22,7 +22,10 @@ export type NavId =
 
 export interface NavItem {
   id: NavId
-  labelKey: Exclude<keyof typeof import('@/shared/i18n/translations.json').en, `${string}_one` | `${string}_other`>
+  labelKey: Exclude<
+    keyof typeof import('@/shared/i18n/translations.json').en,
+    `${string}_one` | `${string}_other`
+  >
   icon: LucideIcon
 }
 

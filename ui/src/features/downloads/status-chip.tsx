@@ -16,11 +16,13 @@ import type { DownloadStateDto } from '@/shared/ipc/gateway'
 import { cn } from '@/shared/lib/utils'
 import { Badge } from '@/shared/ui/badge'
 
-const CHIP =
-  'font-mono text-[9px] uppercase tracking-widest [&>svg]:size-3 text-[#2a313a]'
+const CHIP = 'font-mono text-[9px] uppercase tracking-widest [&>svg]:size-3 text-[#2a313a]'
 
 interface ChipStyle {
-  labelKey: Exclude<keyof typeof import('@/shared/i18n/translations.json').en, `${string}_one` | `${string}_other`>
+  labelKey: Exclude<
+    keyof typeof import('@/shared/i18n/translations.json').en,
+    `${string}_one` | `${string}_other`
+  >
   icon: LucideIcon
   className: string
   spin?: boolean
@@ -70,10 +72,7 @@ export function StatusChip({ state }: { state: DownloadStateDto }) {
   const Icon = style.icon
   return (
     <Badge variant="outline" className={cn(CHIP, style.className)}>
-      <Icon
-        aria-hidden="true"
-        className={cn(style.spin && 'motion-safe:animate-spin')}
-      />
+      <Icon aria-hidden="true" className={cn(style.spin && 'motion-safe:animate-spin')} />
       {t(style.labelKey)}
     </Badge>
   )

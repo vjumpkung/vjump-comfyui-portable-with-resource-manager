@@ -1,12 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import {
@@ -20,9 +14,7 @@ import { ComfyPage } from './comfy-page'
 import { CloseRequestDialog } from './close-request-dialog'
 
 vi.mock('@/shared/ui/log-view', () => ({
-  StreamLogView: ({ text }: { text: string }) => (
-    <pre aria-label="ComfyUI log">{text}</pre>
-  ),
+  StreamLogView: ({ text }: { text: string }) => <pre aria-label="ComfyUI log">{text}</pre>,
 }))
 vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/shared/ipc/gateway')>()),
@@ -93,11 +85,7 @@ beforeEach(() => {
 afterEach(cleanup)
 
 function mount(children: React.ReactNode) {
-  return render(
-    <QueryClientProvider client={new QueryClient()}>
-      {children}
-    </QueryClientProvider>,
-  )
+  return render(<QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>)
 }
 
 async function snapshot(status = stopped) {
@@ -116,9 +104,7 @@ it('offers the suggested port after a conflict and starts only after acceptance'
       kind: 'started',
       status: { ...stopped, lifecycle: 'running' },
     })
-  vi.mocked(gateway.comfySetLaunchOptions).mockImplementation((next) =>
-    Promise.resolve(next),
-  )
+  vi.mocked(gateway.comfySetLaunchOptions).mockImplementation((next) => Promise.resolve(next))
   mount(<ComfyPage />)
   await snapshot()
   fireEvent.click(await screen.findByRole('button', { name: /^Start$/ }))
@@ -158,9 +144,7 @@ it('marks Start busy while a launch is pending, including the port retry', async
       finishRetry = resolve
     }),
   )
-  vi.mocked(gateway.comfySetLaunchOptions).mockImplementation((next) =>
-    Promise.resolve(next),
-  )
+  vi.mocked(gateway.comfySetLaunchOptions).mockImplementation((next) => Promise.resolve(next))
   fireEvent.click(await screen.findByRole('button', { name: 'Use port 8189' }))
   await waitFor(() => expect(start.getAttribute('aria-busy')).toBe('true'))
   finishRetry({ kind: 'started', status: { ...stopped, lifecycle: 'running' } })
@@ -205,14 +189,10 @@ it('shows the crash reason and live log text', async () => {
 })
 
 it('refuses to enable network exposure without acknowledgement', async () => {
-  vi.mocked(gateway.comfySetLaunchOptions).mockImplementation((next) =>
-    Promise.resolve(next),
-  )
+  vi.mocked(gateway.comfySetLaunchOptions).mockImplementation((next) => Promise.resolve(next))
   mount(<ComfyPage />)
   await snapshot()
-  fireEvent.click(
-    await screen.findByLabelText(/Listen on the local network/),
-  )
+  fireEvent.click(await screen.findByLabelText(/Listen on the local network/))
   const save = screen.getByRole('button', { name: 'Save launch options' })
   expect((save as HTMLButtonElement).disabled).toBe(true)
   fireEvent.click(screen.getByLabelText('I understand the risk'))
@@ -227,13 +207,9 @@ it('shows the git status when an update is refused and nothing changed', async (
   })
   mount(<ComfyPage />)
   await snapshot()
-  fireEvent.click(
-    await screen.findByRole('button', { name: 'Update to latest release' }),
-  )
+  fireEvent.click(await screen.findByRole('button', { name: 'Update to latest release' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Update' }))
-  expect(
-    await screen.findByText(/Update refused: the working tree has local changes/),
-  ).toBeTruthy()
+  expect(await screen.findByText(/Update refused: the working tree has local changes/)).toBeTruthy()
   expect(screen.getByText('M main.py')).toBeTruthy()
 })
 
@@ -250,30 +226,26 @@ it('offers_latest_commit_and_tag_updates', async () => {
   })
   mount(<ComfyPage />)
   await snapshot()
+  expect(await screen.findByRole('button', { name: 'Update to latest release' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: /Fast-forward/ })).toBeNull()
   expect(
-    await screen.findByRole('button', { name: 'Update to latest release' }),
+    screen.getByText(
+      'Switches to origin’s default branch, normally master. Development code may be less stable than a release.',
+    ),
   ).toBeTruthy()
-  expect(
-    screen.queryByRole('button', { name: /Fast-forward/ }),
-  ).toBeNull()
-  expect(
-    screen.getByText('Switches to origin’s default branch, normally master. Development code may be less stable than a release.'),
-  ).toBeTruthy()
-  fireEvent.click(
-    screen.getByRole('button', { name: 'Update to latest commit (git pull)' }),
-  )
+  fireEvent.click(screen.getByRole('button', { name: 'Update to latest commit (git pull)' }))
   expect(gateway.comfyUpdate).not.toHaveBeenCalled()
   expect(
     await screen.findByText(/Move ComfyUI to the latest commit on origin’s default branch/),
   ).toBeTruthy()
   expect(
-    screen.getByText(/requirements are reinstalled under the protected package pins and the environment is verified again/),
+    screen.getByText(
+      /requirements are reinstalled under the protected package pins and the environment is verified again/,
+    ),
   ).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
   expect(gateway.comfyUpdate).not.toHaveBeenCalled()
-  fireEvent.click(
-    screen.getByRole('button', { name: 'Update to latest commit (git pull)' }),
-  )
+  fireEvent.click(screen.getByRole('button', { name: 'Update to latest commit (git pull)' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Update' }))
   await waitFor(() =>
     expect(gateway.comfyUpdate).toHaveBeenNthCalledWith(1, {
@@ -288,9 +260,7 @@ it('offers_latest_commit_and_tag_updates', async () => {
   })
   fireEvent.click(screen.getByRole('button', { name: 'Switch to v0.40.0' }))
   expect(gateway.comfyUpdate).toHaveBeenCalledTimes(1)
-  expect(
-    await screen.findByText(/Move ComfyUI to release v0.40.0/),
-  ).toBeTruthy()
+  expect(await screen.findByText(/Move ComfyUI to release v0.40.0/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Update' }))
   await waitFor(() =>
     expect(gateway.comfyUpdate).toHaveBeenNthCalledWith(2, {
@@ -315,9 +285,7 @@ it('copies the redacted app report and falls back to selectable text', async () 
 
   await waitFor(() => expect((copy as HTMLButtonElement).disabled).toBe(false))
   fireEvent.click(copy)
-  const report = await screen.findByLabelText<HTMLTextAreaElement>(
-    'Diagnostics report',
-  )
+  const report = await screen.findByLabelText<HTMLTextAreaElement>('Diagnostics report')
   expect(report.readOnly).toBe(true)
   expect(report.value).toBe('REPORT')
 })
@@ -330,13 +298,8 @@ it('asks before closing and sends the chosen answer', async () => {
     lifecycle: 'running',
     pendingCloseRequest: 'close-1',
   })
-  fireEvent.click(
-    await screen.findByRole('button', { name: 'Keep running in background' }),
-  )
+  fireEvent.click(await screen.findByRole('button', { name: 'Keep running in background' }))
   await waitFor(() =>
-    expect(gateway.appCloseDecide).toHaveBeenCalledWith(
-      'close-1',
-      'keep_running',
-    ),
+    expect(gateway.appCloseDecide).toHaveBeenCalledWith('close-1', 'keep_running'),
   )
 })

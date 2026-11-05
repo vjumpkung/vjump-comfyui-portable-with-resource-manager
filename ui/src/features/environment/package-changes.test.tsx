@@ -1,12 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { gateway, type PipPlanDto } from '@/shared/ipc/gateway'
@@ -37,9 +31,7 @@ async function preview() {
   fireEvent.change(screen.getByLabelText('Package requirement'), {
     target: { value: 'torch==2.14.2' },
   })
-  fireEvent.click(
-    screen.getByRole('button', { name: 'Preview package change' }),
-  )
+  fireEvent.click(screen.getByRole('button', { name: 'Preview package change' }))
   await screen.findByRole('dialog')
 }
 beforeEach(() => {
@@ -55,9 +47,7 @@ it('requires exact protected-change approval and sends only that plan’s change
   })
   mount()
   await preview()
-  expect(
-    screen.getByRole('button', { name: 'Apply this plan' }),
-  ).toHaveProperty('disabled', true)
+  expect(screen.getByRole('button', { name: 'Apply this plan' })).toHaveProperty('disabled', true)
   expect(screen.getByText('torch: 2.14.1 → 2.14.2')).toBeTruthy()
   fireEvent.click(screen.getByRole('checkbox'))
   fireEvent.click(screen.getByRole('button', { name: 'Apply this plan' }))
@@ -67,25 +57,17 @@ it('requires exact protected-change approval and sends only that plan’s change
       confirmedChanges: plan.protectedChanges,
     }),
   )
-  await screen.findByText(
-    'Packages and protected pins were rechecked successfully.',
-  )
+  await screen.findByText('Packages and protected pins were rechecked successfully.')
 })
 
 it('requires a fresh preview after an apply failure and hides raw transport errors', async () => {
-  vi.mocked(gateway.envPipApply).mockRejectedValue(
-    new Error('SECRET raw subprocess detail'),
-  )
+  vi.mocked(gateway.envPipApply).mockRejectedValue(new Error('SECRET raw subprocess detail'))
   mount()
   await preview()
   fireEvent.click(screen.getByRole('checkbox'))
   fireEvent.click(screen.getByRole('button', { name: 'Apply this plan' }))
-  await screen.findByText(
-    'Request a fresh preview before another apply attempt.',
-  )
-  expect(
-    screen.getByRole('button', { name: 'Apply this plan' }),
-  ).toHaveProperty('disabled', true)
+  await screen.findByText('Request a fresh preview before another apply attempt.')
+  expect(screen.getByRole('button', { name: 'Apply this plan' })).toHaveProperty('disabled', true)
   expect(screen.queryByText(/SECRET/)).toBeNull()
 })
 
@@ -101,11 +83,7 @@ it('reports RepairRequired rather than success after a core-package removal', as
   await screen.findByText(
     'The environment remains selected but requires repair. It is not ready to launch.',
   )
-  expect(
-    screen.queryByText(
-      'Packages and protected pins were rechecked successfully.',
-    ),
-  ).toBeNull()
+  expect(screen.queryByText('Packages and protected pins were rechecked successfully.')).toBeNull()
 })
 
 it('invalidates consent when a new preview is requested', async () => {
@@ -117,11 +95,7 @@ it('invalidates consent when a new preview is requested', async () => {
     ...plan,
     planId: 'plan-2',
   })
-  fireEvent.click(
-    screen.getByRole('button', { name: 'Preview package change' }),
-  )
+  fireEvent.click(screen.getByRole('button', { name: 'Preview package change' }))
   await screen.findByRole('dialog')
-  expect(
-    screen.getByRole('button', { name: 'Apply this plan' }),
-  ).toHaveProperty('disabled', true)
+  expect(screen.getByRole('button', { name: 'Apply this plan' })).toHaveProperty('disabled', true)
 })

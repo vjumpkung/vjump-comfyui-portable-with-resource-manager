@@ -14,12 +14,7 @@ import {
 } from '@/shared/ui/dialog'
 
 import { baseName, entryRefs, formatBytes, keyOf } from './format'
-import {
-  galleryErrorMessage,
-  isBusy,
-  useDeleteEntries,
-  useRefreshGallery,
-} from './use-gallery'
+import { galleryErrorMessage, isBusy, useDeleteEntries, useRefreshGallery } from './use-gallery'
 
 type Stage =
   | { kind: 'planning' }
@@ -93,7 +88,9 @@ export function DeleteDialog({ entries, onClose }: Props) {
         {stage.kind === 'confirm' ? (
           <>
             <DialogHeader>
-              <DialogTitle>{t('gallery.delete.title', { count: stage.plan.items.length })}</DialogTitle>
+              <DialogTitle>
+                {t('gallery.delete.title', { count: stage.plan.items.length })}
+              </DialogTitle>
               <DialogDescription>
                 {t('gallery.delete.hint', { size: formatBytes(stage.plan.totalBytes) })}
               </DialogDescription>

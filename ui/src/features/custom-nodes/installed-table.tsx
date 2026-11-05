@@ -14,7 +14,14 @@ import { Chip, DependencyChip, EnabledChip, HealthChip } from './status-chips'
 export const ROW_HEIGHT = 56
 const COLUMNS =
   'grid grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_6.5rem_7.5rem_5.5rem_minmax(7rem,1fr)] [&:lang(th)]:grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_6.5rem_11rem_5.5rem_minmax(11rem,1fr)]'
-const KIND_LABEL = { registry: 'customNodes.source.registry', git: 'customNodes.source.git', manual: 'customNodes.source.manual' } as const satisfies Record<InstalledNodeDto['source']['kind'], keyof typeof import('@/shared/i18n/translations.json').en>
+const KIND_LABEL = {
+  registry: 'customNodes.source.registry',
+  git: 'customNodes.source.git',
+  manual: 'customNodes.source.manual',
+} as const satisfies Record<
+  InstalledNodeDto['source']['kind'],
+  keyof typeof import('@/shared/i18n/translations.json').en
+>
 
 interface Props {
   nodes: readonly InstalledNodeDto[]
@@ -158,8 +165,13 @@ export function InstalledTable({
           />
         </div>
         <div role="gridcell" className="min-w-0">
-          <p className="truncate font-medium" title={node.name}>{node.name}</p>
-          <p className="truncate font-mono text-xs text-muted-foreground" title={sourceLabel(node.source)}>
+          <p className="truncate font-medium" title={node.name}>
+            {node.name}
+          </p>
+          <p
+            className="truncate font-mono text-xs text-muted-foreground"
+            title={sourceLabel(node.source)}
+          >
             {sourceLabel(node.source)}
           </p>
         </div>
@@ -172,14 +184,22 @@ export function InstalledTable({
         <div role="gridcell" className="truncate font-mono text-xs" title={nodeBranch(node)}>
           {nodeBranch(node)}
         </div>
-        <div role="gridcell"><EnabledChip enabled={node.enabled} /></div>
-        <div role="gridcell"><DependencyChip state={node.dependencies} /></div>
+        <div role="gridcell">
+          <EnabledChip enabled={node.enabled} />
+        </div>
+        <div role="gridcell">
+          <DependencyChip state={node.dependencies} />
+        </div>
         <div role="gridcell" className="text-xs text-muted-foreground">
           {node.origin === 'app' ? t('customNodes.origin.app') : t('customNodes.origin.observed')}
         </div>
         <div role="gridcell" className="flex flex-wrap gap-1">
           <HealthChip health={gitHealth(node)} />
-          {node.conflict && <Chip icon={TriangleAlert} className="bg-brand-pink">{t('customNodes.conflict')}</Chip>}
+          {node.conflict && (
+            <Chip icon={TriangleAlert} className="bg-brand-pink">
+              {t('customNodes.conflict')}
+            </Chip>
+          )}
         </div>
       </div>
     )
@@ -202,7 +222,11 @@ export function InstalledTable({
         )}
       >
         <div role="columnheader">
-          <Checkbox checked={allSelected} onCheckedChange={onToggleAll} aria-label={t('customNodes.selectAll')} />
+          <Checkbox
+            checked={allSelected}
+            onCheckedChange={onToggleAll}
+            aria-label={t('customNodes.selectAll')}
+          />
         </div>
         <div role="columnheader">{t('customNodes.node')}</div>
         <div role="columnheader">{t('common.source')}</div>

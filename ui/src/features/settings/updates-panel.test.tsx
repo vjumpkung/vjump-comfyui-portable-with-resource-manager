@@ -1,19 +1,9 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import {
-  gateway,
-  IpcClientError,
-  type UpdateProgressDto,
-} from '@/shared/ipc/gateway'
+import { gateway, IpcClientError, type UpdateProgressDto } from '@/shared/ipc/gateway'
 
 import { UpdatesPanel } from './updates-panel'
 
@@ -72,10 +62,7 @@ it('update_install_echoes_reviewed_update_id', async () => {
 
   fireEvent.click(screen.getByRole('button', { name: /install and restart/i }))
   await waitFor(() => expect(gateway.appUpdateInstall).toHaveBeenCalledTimes(1))
-  expect(gateway.appUpdateInstall).toHaveBeenCalledWith(
-    'update-7',
-    expect.any(Function),
-  )
+  expect(gateway.appUpdateInstall).toHaveBeenCalledWith('update-7', expect.any(Function))
   expect(gateway.appUpdateCheck).toHaveBeenCalledTimes(1)
 
   report({ kind: 'downloading', downloadedBytes: 5 * 1024 * 1024, totalBytes: 10 * 1024 * 1024 })
@@ -114,9 +101,7 @@ it('a_failed_install_shows_its_message_and_requires_a_new_check', async () => {
   fireEvent.click(screen.getByRole('button', { name: /install and restart/i }))
 
   expect(await screen.findByRole('alert')).toBeTruthy()
-  expect(
-    screen.getByText(/failed signature verification and was not installed/i),
-  ).toBeTruthy()
+  expect(screen.getByText(/failed signature verification and was not installed/i)).toBeTruthy()
   await waitFor(() =>
     expect(screen.queryByRole('button', { name: /install and restart/i })).toBeNull(),
   )

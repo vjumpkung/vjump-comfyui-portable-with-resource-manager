@@ -79,10 +79,20 @@ export function useNodes() {
         return
       }
       const sameEpoch = cursor !== null && cursor.epoch === event.epoch
-      if (sameEpoch && cursor !== null && cursor.sequence !== null &&
-        event.sequence !== null && event.sequence <= cursor.sequence) return
-      const continuous = sameEpoch && cursor !== null && cursor.sequence !== null &&
-        event.sequence !== null && event.sequence === cursor.sequence + 1
+      if (
+        sameEpoch &&
+        cursor !== null &&
+        cursor.sequence !== null &&
+        event.sequence !== null &&
+        event.sequence <= cursor.sequence
+      )
+        return
+      const continuous =
+        sameEpoch &&
+        cursor !== null &&
+        cursor.sequence !== null &&
+        event.sequence !== null &&
+        event.sequence === cursor.sequence + 1
       cursor = { epoch: event.epoch, sequence: event.sequence }
       // A finished background scan can retry recovery, which changes environment health too.
       if (event.kind === 'changed') refreshNodeState(client)
@@ -102,21 +112,24 @@ export function useNodes() {
     function connect() {
       generation += 1
       const attempt = generation
-      gateway.nodeSubscribe((event) => onEvent(attempt, event)).then((id) => {
-        if (!alive || attempt !== generation) {
-          void gateway.nodeUnsubscribe(id).catch(() => undefined)
-          return
-        }
-        subscription = id
-        if (reconnecting) {
-          reconnecting = false
-          refreshAll()
-        }
-      }).catch(() => {
-        if (!alive || attempt !== generation) return
-        reconnecting = true
-        retry = setTimeout(connect, RETRY_MS)
-      })
+      gateway
+        .nodeSubscribe((event) => onEvent(attempt, event))
+        .then((id) => {
+          if (!alive || attempt !== generation) {
+            void gateway.nodeUnsubscribe(id).catch(() => undefined)
+            return
+          }
+          subscription = id
+          if (reconnecting) {
+            reconnecting = false
+            refreshAll()
+          }
+        })
+        .catch(() => {
+          if (!alive || attempt !== generation) return
+          reconnecting = true
+          retry = setTimeout(connect, RETRY_MS)
+        })
     }
     connect()
     return () => {

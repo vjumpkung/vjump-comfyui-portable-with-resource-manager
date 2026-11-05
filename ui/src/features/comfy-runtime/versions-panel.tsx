@@ -14,13 +14,7 @@ import { errorMessage } from '@/shared/lib/display'
 import { environmentKeys } from '@/shared/lib/environment-queries'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/shared/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -46,13 +40,26 @@ export function describeRevision(revision: RevisionDto): string {
 function describeTarget(input: UpdateInput, stopRunning: boolean): string {
   switch (input.target.kind) {
     case 'latest_release':
-      return translate(stopRunning ? 'runtime.versions.confirm.latestReleaseStop' : 'runtime.versions.confirm.latestRelease')
+      return translate(
+        stopRunning
+          ? 'runtime.versions.confirm.latestReleaseStop'
+          : 'runtime.versions.confirm.latestRelease',
+      )
     case 'latest_commit':
-      return translate(stopRunning ? 'runtime.versions.confirm.latestCommitStop' : 'runtime.versions.confirm.latestCommit')
+      return translate(
+        stopRunning
+          ? 'runtime.versions.confirm.latestCommitStop'
+          : 'runtime.versions.confirm.latestCommit',
+      )
     case 'tag':
-      return translate(stopRunning ? 'runtime.versions.confirm.tagStop' : 'runtime.versions.confirm.tag', { name: input.target.name })
+      return translate(
+        stopRunning ? 'runtime.versions.confirm.tagStop' : 'runtime.versions.confirm.tag',
+        { name: input.target.name },
+      )
     case 'branch_ff_only':
-      return translate(stopRunning ? 'runtime.versions.confirm.upstreamStop' : 'runtime.versions.confirm.upstream')
+      return translate(
+        stopRunning ? 'runtime.versions.confirm.upstreamStop' : 'runtime.versions.confirm.upstream',
+      )
   }
 }
 
@@ -96,8 +103,7 @@ export function VersionsPanel() {
     },
   })
   const running =
-    runtime.status?.lifecycle === 'running' ||
-    runtime.status?.lifecycle === 'starting'
+    runtime.status?.lifecycle === 'running' || runtime.status?.lifecycle === 'starting'
   const data = versions.data
   const tag = selectedTag || data?.tags[0] || ''
   const ask = (target: UpdateInput['target']) => {
@@ -108,12 +114,8 @@ export function VersionsPanel() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg font-bold tracking-tight">
-          {t('common.version')}
-        </CardTitle>
-        <CardDescription>
-          {t('runtime.versions.hint')}
-        </CardDescription>
+        <CardTitle className="text-lg font-bold tracking-tight">{t('common.version')}</CardTitle>
+        <CardDescription>{t('runtime.versions.hint')}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {data ? (
@@ -127,7 +129,12 @@ export function VersionsPanel() {
                 <AlertTitle>{t('runtime.versions.interrupted')}</AlertTitle>
                 <AlertDescription>
                   <p>
-                    {t('runtime.versions.interruptedHint', { target: data.pendingUpdate.targetTag ?? data.pendingUpdate.targetCommit.slice(0, 8), phase: data.pendingUpdate.phase, failure: data.pendingUpdate.failure ? `: ${data.pendingUpdate.failure}` : '' })}
+                    {t('runtime.versions.interruptedHint', {
+                      target:
+                        data.pendingUpdate.targetTag ?? data.pendingUpdate.targetCommit.slice(0, 8),
+                      phase: data.pendingUpdate.phase,
+                      failure: data.pendingUpdate.failure ? `: ${data.pendingUpdate.failure}` : '',
+                    })}
                   </p>
                   <Button
                     variant="outline"
@@ -166,16 +173,11 @@ export function VersionsPanel() {
               >
                 {t('runtime.versions.updateCommit')}
               </Button>
-              <Button
-                disabled={update.isPending}
-                onClick={() => ask({ kind: 'latest_release' })}
-              >
+              <Button disabled={update.isPending} onClick={() => ask({ kind: 'latest_release' })}>
                 {t('runtime.versions.updateRelease')}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">
-              {t('runtime.versions.branchHint')}
-            </p>
+            <p className="text-xs text-muted-foreground">{t('runtime.versions.branchHint')}</p>
             {data.tags.length > 0 ? (
               <div className="flex flex-wrap items-end gap-3">
                 <div className="flex min-w-48 flex-col gap-1.5">
@@ -199,15 +201,10 @@ export function VersionsPanel() {
                 </Button>
               </div>
             ) : null}
-            <p className="text-xs text-muted-foreground">
-              {t('runtime.versions.olderHint')}
-            </p>
+            <p className="text-xs text-muted-foreground">{t('runtime.versions.olderHint')}</p>
           </>
         ) : versions.isError ? (
-          <ErrorNotice
-            error={versions.error}
-            retry={() => void versions.refetch()}
-          />
+          <ErrorNotice error={versions.error} retry={() => void versions.refetch()} />
         ) : (
           <Skeleton className="h-24" />
         )}
@@ -226,11 +223,7 @@ export function VersionsPanel() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button
-              variant="outline"
-              disabled={update.isPending}
-              onClick={() => setRequest(null)}
-            >
+            <Button variant="outline" disabled={update.isPending} onClick={() => setRequest(null)}>
               {t('common.cancel')}
             </Button>
             <Button

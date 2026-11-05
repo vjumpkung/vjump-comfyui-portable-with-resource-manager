@@ -21,8 +21,7 @@ export function CloseRequestDialog() {
   const { t } = useTranslation()
   const { closeRequest } = useRuntime()
   const decide = useMutation({
-    mutationFn: (choice: CloseChoiceDto) =>
-      gateway.appCloseDecide(closeRequest ?? '', choice),
+    mutationFn: (choice: CloseChoiceDto) => gateway.appCloseDecide(closeRequest ?? '', choice),
     onError: (error) => toast.error(errorMessage(error)),
   })
   const open = closeRequest !== null
@@ -36,9 +35,7 @@ export function CloseRequestDialog() {
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{t('runtime.close.title')}</DialogTitle>
-          <DialogDescription>
-            {t('runtime.close.hint')}
-          </DialogDescription>
+          <DialogDescription>{t('runtime.close.hint')}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button
@@ -55,10 +52,7 @@ export function CloseRequestDialog() {
           >
             {t('runtime.close.background')}
           </Button>
-          <Button
-            disabled={decide.isPending}
-            onClick={() => decide.mutate('stop_and_exit')}
-          >
+          <Button disabled={decide.isPending} onClick={() => decide.mutate('stop_and_exit')}>
             {t('runtime.close.exit')}
           </Button>
         </DialogFooter>

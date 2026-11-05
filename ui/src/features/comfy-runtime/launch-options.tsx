@@ -16,13 +16,7 @@ import { errorMessage } from '@/shared/lib/display'
 import { useSkipSecurityConfirmations } from '@/shared/lib/settings-queries'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/shared/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
 import { Checkbox } from '@/shared/ui/checkbox'
 import { ErrorNotice } from '@/shared/ui/feedback'
 import { Input } from '@/shared/ui/input'
@@ -37,7 +31,10 @@ const VRAM = [
   { value: 'low', labelKey: 'runtime.launch.lowVram' },
   { value: 'high', labelKey: 'runtime.launch.highVram' },
   { value: 'no_vram', labelKey: 'runtime.launch.noVram' },
-] as const satisfies readonly { value: VramModeDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
+] as const satisfies readonly {
+  value: VramModeDto
+  labelKey: keyof typeof import('@/shared/i18n/translations.json').en
+}[]
 
 const ATTENTION = [
   { value: 'default', labelKey: 'runtime.launch.default' },
@@ -46,14 +43,20 @@ const ATTENTION = [
   { value: 'pytorch', labelKey: 'runtime.launch.pytorch' },
   { value: 'split', labelKey: 'runtime.launch.split' },
   { value: 'quad', labelKey: 'runtime.launch.quad' },
-] as const satisfies readonly { value: AttentionDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
+] as const satisfies readonly {
+  value: AttentionDto
+  labelKey: keyof typeof import('@/shared/i18n/translations.json').en
+}[]
 
 const PREVIEW = [
   { value: 'auto', labelKey: 'runtime.launch.automatic' },
   { value: 'latent2_rgb', labelKey: 'runtime.launch.latent' },
   { value: 'taesd', labelKey: 'runtime.launch.taesd' },
   { value: 'none', labelKey: 'common.none' },
-] as const satisfies readonly { value: PreviewMethodDto; labelKey: keyof typeof import('@/shared/i18n/translations.json').en }[]
+] as const satisfies readonly {
+  value: PreviewMethodDto
+  labelKey: keyof typeof import('@/shared/i18n/translations.json').en
+}[]
 
 interface Draft {
   port: string
@@ -107,13 +110,7 @@ function Row({
   )
 }
 
-function Form({
-  options,
-  active,
-}: {
-  options: LaunchOptionsDto
-  active: SessionDto | null
-}) {
+function Form({ options, active }: { options: LaunchOptionsDto; active: SessionDto | null }) {
   const { t } = useTranslation()
   const client = useQueryClient()
   const [draft, setDraft] = useState<Draft>(() => toDraft(options))
@@ -132,8 +129,7 @@ function Form({
   function patch<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft((current) => ({ ...current, [key]: value }))
   }
-  const lanBlocked =
-    draft.listenLan && !options.listenLan && !lanAcknowledged
+  const lanBlocked = draft.listenLan && !options.listenLan && !lanAcknowledged
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -159,7 +155,10 @@ function Form({
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       {active ? (
         <p className="text-xs text-muted-foreground">
-          {t(active.options.listenLan ? 'runtime.launch.activeAll' : 'runtime.launch.activeLoopback', { port: active.options.port })}
+          {t(
+            active.options.listenLan ? 'runtime.launch.activeAll' : 'runtime.launch.activeLoopback',
+            { port: active.options.port },
+          )}
         </p>
       ) : null}
       <div className="grid gap-4 sm:grid-cols-2">
@@ -208,13 +207,9 @@ function Form({
         <Checkbox
           id="launch-manager"
           checked={draft.enableManager}
-          onCheckedChange={(checked) =>
-            patch('enableManager', checked === true)
-          }
+          onCheckedChange={(checked) => patch('enableManager', checked === true)}
         />
-        <Label htmlFor="launch-manager">
-          {t('runtime.launch.manager')}
-        </Label>
+        <Label htmlFor="launch-manager">{t('runtime.launch.manager')}</Label>
       </div>
       <div className="flex items-center gap-2">
         <Checkbox
@@ -225,26 +220,20 @@ function Form({
             if (checked !== true) patch('lanAcknowledged', undefined)
           }}
         />
-        <Label htmlFor="launch-lan">
-          {t('runtime.launch.lan')}
-        </Label>
+        <Label htmlFor="launch-lan">{t('runtime.launch.lan')}</Label>
       </div>
       {draft.listenLan ? (
         <Alert variant="destructive">
           <TriangleAlert />
           <AlertTitle>{t('runtime.launch.exposure')}</AlertTitle>
           <AlertDescription>
-            <p>
-              {t('runtime.launch.exposureHint')}
-            </p>
+            <p>{t('runtime.launch.exposureHint')}</p>
             {!options.listenLan ? (
               <div className="flex items-center gap-2">
                 <Checkbox
                   id="launch-lan-ack"
                   checked={lanAcknowledged}
-                  onCheckedChange={(checked) =>
-                    patch('lanAcknowledged', checked === true)
-                  }
+                  onCheckedChange={(checked) => patch('lanAcknowledged', checked === true)}
                 />
                 <Label htmlFor="launch-lan-ack">{t('runtime.launch.riskAck')}</Label>
               </div>
@@ -252,11 +241,7 @@ function Form({
           </AlertDescription>
         </Alert>
       ) : null}
-      <Row
-        id="launch-extra"
-        label={t('runtime.launch.extra')}
-        hint={t('runtime.launch.extraHint')}
-      >
+      <Row id="launch-extra" label={t('runtime.launch.extra')} hint={t('runtime.launch.extraHint')}>
         <textarea
           id="launch-extra"
           rows={3}
@@ -287,9 +272,7 @@ export function LaunchOptionsCard({ active }: { active: SessionDto | null }) {
         <CardTitle className="text-lg font-bold tracking-tight">
           {t('runtime.launch.title')}
         </CardTitle>
-        <CardDescription>
-          {t('runtime.launch.hint')}
-        </CardDescription>
+        <CardDescription>{t('runtime.launch.hint')}</CardDescription>
       </CardHeader>
       <CardContent>
         {options.data ? (

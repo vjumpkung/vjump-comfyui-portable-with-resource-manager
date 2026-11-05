@@ -17,7 +17,14 @@ afterEach(cleanup)
 
 it('preview_title_truncates_without_clipping_tall_glyphs', () => {
   const entry = file('cat.png')
-  render(<PreviewDialog entry={entry} files={[entry]} onNavigate={() => undefined} onClose={() => undefined} />)
+  render(
+    <PreviewDialog
+      entry={entry}
+      files={[entry]}
+      onNavigate={() => undefined}
+      onClose={() => undefined}
+    />,
+  )
   const title = screen.getByRole('heading', { name: 'cat.png' })
   // `truncate` clips overflow, so the dialog's `leading-none` would cut Thai tone marks and descenders.
   expect(title.classList.contains('truncate')).toBe(true)

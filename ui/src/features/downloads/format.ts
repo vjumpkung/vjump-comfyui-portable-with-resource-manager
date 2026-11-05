@@ -46,16 +46,11 @@ export function isActive(job: DownloadJobDto): boolean {
 }
 
 /** `bytes / total · speed · ETA`, with an estimate marker for engines that cannot measure. */
-export function progressText(
-  job: DownloadJobDto,
-  progress: ProgressDto | undefined,
-): string {
+export function progressText(job: DownloadJobDto, progress: ProgressDto | undefined): string {
   const done = progress?.bytes ?? job.bytesDone ?? 0
   const total = progress?.total ?? job.size
   const parts = [
-    total.bytes === null
-      ? formatBytes(done)
-      : `${formatBytes(done)} / ${formatSize(total)}`,
+    total.bytes === null ? formatBytes(done) : `${formatBytes(done)} / ${formatSize(total)}`,
   ]
   if (progress && job.state === 'downloading') {
     parts.push(formatSpeed(progress.bytesPerSecond))

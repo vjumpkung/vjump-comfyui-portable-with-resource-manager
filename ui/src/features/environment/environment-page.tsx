@@ -3,22 +3,12 @@ import { useState } from 'react'
 import { Info, RefreshCw } from 'lucide-react'
 
 import { useTranslation } from '@/shared/i18n'
-import {
-  gateway,
-  type SetupModeDto,
-  type SetupStatusDto,
-} from '@/shared/ipc/gateway'
+import { gateway, type SetupModeDto, type SetupStatusDto } from '@/shared/ipc/gateway'
 import { label } from '@/shared/lib/display'
 import { environmentKeys } from '@/shared/lib/environment-queries'
 import { Alert, AlertTitle, AlertDescription } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/shared/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -29,23 +19,11 @@ import {
 } from '@/shared/ui/dialog'
 import { ErrorNotice } from '@/shared/ui/feedback'
 import { EmptyState } from '@/shared/ui/empty-state'
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from '@/shared/ui/field'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/shared/ui/field'
 import { Input } from '@/shared/ui/input'
 import { Skeleton } from '@/shared/ui/skeleton'
 import { StatusBadge } from '@/shared/ui/status-badge'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/shared/ui/table'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 import { PackageChanges } from './package-changes'
 
 const modes = [
@@ -69,7 +47,11 @@ const modes = [
     title: 'environment.mode.venv',
     description: 'environment.mode.venvHint',
   },
-] as const satisfies readonly { mode: SetupModeDto; title: keyof typeof import('@/shared/i18n/translations.json').en; description: keyof typeof import('@/shared/i18n/translations.json').en }[]
+] as const satisfies readonly {
+  mode: SetupModeDto
+  title: keyof typeof import('@/shared/i18n/translations.json').en
+  description: keyof typeof import('@/shared/i18n/translations.json').en
+}[]
 
 const SOURCE_KEYS = {
   managed: 'environment.source.managed',
@@ -119,8 +101,7 @@ export function EnvironmentPage({
   const busy = status.phase === 'run_in_progress'
   const env = info.data?.env ?? status.activeEnv
   const needsRepair =
-    env?.state === 'repair_required' ||
-    status.activeEnv?.state === 'repair_required'
+    env?.state === 'repair_required' || status.activeEnv?.state === 'repair_required'
   const filtered = (packages.data ?? []).filter((pkg) =>
     `${pkg.name} ${pkg.version}`.toLowerCase().includes(search.toLowerCase()),
   )
@@ -137,15 +118,11 @@ export function EnvironmentPage({
         <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
           {t('environment.title')}
         </h1>
-        <p className="text-sm text-muted-foreground">
-          {t('environment.description')}
-        </p>
+        <p className="text-sm text-muted-foreground">{t('environment.description')}</p>
       </header>
       {needsRepair && (
         <Alert variant="destructive">
-          <AlertTitle>
-            {t('environment.repair.title')}
-          </AlertTitle>
+          <AlertTitle>{t('environment.repair.title')}</AlertTitle>
           <AlertDescription>
             {t('environment.repair.hint')}
             <Button onClick={() => onSetup('repair')} disabled={busy}>
@@ -179,16 +156,15 @@ export function EnvironmentPage({
           <CardHeader>
             <CardTitle>
               {t('environment.selected')}{' '}
-              <StatusBadge
-                status={needsRepair ? 'repair_required' : env.state}
-              />
+              <StatusBadge status={needsRepair ? 'repair_required' : env.state} />
             </CardTitle>
             <CardDescription>
               {env.id} ·{' '}
-              {env.ownership === 'app_owned'
-                ? t('environment.appOwned')
-                : t('environment.adopted')}{' '}
-              · {Object.hasOwn(SOURCE_KEYS, env.source) ? t(SOURCE_KEYS[env.source]) : label(env.source)}
+              {env.ownership === 'app_owned' ? t('environment.appOwned') : t('environment.adopted')}{' '}
+              ·{' '}
+              {Object.hasOwn(SOURCE_KEYS, env.source)
+                ? t(SOURCE_KEYS[env.source])
+                : label(env.source)}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -199,12 +175,15 @@ export function EnvironmentPage({
               </div>
               <div>
                 <dt>{t('environment.path')}</dt>
-                <dd className="break-all font-mono">{env.path}</dd>
+                <dd className="font-mono break-all">{env.path}</dd>
               </div>
               <div>
                 <dt>{t('environment.profile')}</dt>
                 <dd>
-                  {t('environment.profileRevision', { profile: info.data?.profileLabel ?? env.profileId, revision: env.profileRevision })}
+                  {t('environment.profileRevision', {
+                    profile: info.data?.profileLabel ?? env.profileId,
+                    revision: env.profileRevision,
+                  })}
                 </dd>
               </div>
               <div>
@@ -230,13 +209,13 @@ export function EnvironmentPage({
               </div>
               <div>
                 <dt>{t('environment.comfyReference')}</dt>
-                <dd className="break-all font-mono">
+                <dd className="font-mono break-all">
                   {info.data?.comfyuiReference ?? t('common.unknownValue')}
                 </dd>
               </div>
               <div>
                 <dt>{t('environment.comfyCommit')}</dt>
-                <dd className="break-all font-mono">
+                <dd className="font-mono break-all">
                   {info.data?.comfyuiCommit ?? t('common.unknownValue')}
                 </dd>
               </div>
@@ -250,7 +229,7 @@ export function EnvironmentPage({
                   </li>
                 ))}
               </ul>
-              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">
+              <pre className="max-h-64 overflow-auto font-mono text-xs break-all whitespace-pre-wrap">
                 {env.verification ?? t('environment.noVerification')}
               </pre>
             </details>
@@ -271,9 +250,7 @@ export function EnvironmentPage({
         <Card>
           <CardHeader>
             <CardTitle>{t('environment.accelerators.title')}</CardTitle>
-            <CardDescription>
-              {t('environment.accelerators.hint')}
-            </CardDescription>
+            <CardDescription>{t('environment.accelerators.hint')}</CardDescription>
           </CardHeader>
           <CardContent>
             {info.data.components.accelerators.length === 0 ? (
@@ -285,7 +262,7 @@ export function EnvironmentPage({
               <ul className="flex flex-col gap-4">
                 {info.data.components.accelerators.map((result) => (
                   <li key={result.id} className="flex flex-col gap-2 text-sm">
-                    <p className="break-all font-mono">{result.id}</p>
+                    <p className="font-mono break-all">{result.id}</p>
                     <dl className="grid gap-2 sm:grid-cols-3">
                       <div>
                         <dt>{t('common.selected')}</dt>
@@ -293,14 +270,20 @@ export function EnvironmentPage({
                       </div>
                       <div>
                         <dt>{t('environment.accelerators.installStatus')}</dt>
-                        <dd>{Object.hasOwn(INSTALL_STATUS_KEYS, result.status) ? t(INSTALL_STATUS_KEYS[result.status]) : label(result.status)}</dd>
+                        <dd>
+                          {Object.hasOwn(INSTALL_STATUS_KEYS, result.status)
+                            ? t(INSTALL_STATUS_KEYS[result.status])
+                            : label(result.status)}
+                        </dd>
                       </div>
                       <div>
                         <dt>{t('environment.accelerators.importResult')}</dt>
                         <dd>
                           {result.importable === null
                             ? t('environment.accelerators.untested')
-                            : result.importable ? t('common.passed') : t('common.failed')}
+                            : result.importable
+                              ? t('common.passed')
+                              : t('common.failed')}
                         </dd>
                       </div>
                     </dl>
@@ -315,9 +298,7 @@ export function EnvironmentPage({
       <Card>
         <CardHeader>
           <CardTitle>{t('environment.packages.title')}</CardTitle>
-          <CardDescription>
-            {t('environment.packages.hint')}
-          </CardDescription>
+          <CardDescription>{t('environment.packages.hint')}</CardDescription>
         </CardHeader>
         <CardContent>
           <FieldGroup>
@@ -354,9 +335,7 @@ export function EnvironmentPage({
                 <TableBody>
                   {visible.map((pkg) => (
                     <TableRow key={pkg.name}>
-                      <TableCell className="break-all font-mono">
-                        {pkg.name}
-                      </TableCell>
+                      <TableCell className="font-mono break-all">{pkg.name}</TableCell>
                       <TableCell className="font-mono">{pkg.version}</TableCell>
                     </TableRow>
                   ))}
@@ -373,7 +352,11 @@ export function EnvironmentPage({
                   {t('common.previous')}
                 </Button>
                 <span className="font-mono text-xs">
-                  {t('environment.packages.pagination', { count: filtered.length, page: currentPage + 1, pages: pageCount })}
+                  {t('environment.packages.pagination', {
+                    count: filtered.length,
+                    page: currentPage + 1,
+                    pages: pageCount,
+                  })}
                 </span>
                 <Button
                   variant="outline"
@@ -388,30 +371,20 @@ export function EnvironmentPage({
           )}
         </CardContent>
       </Card>
-      {env && (
-        <PackageChanges key={env.id} envId={env.id} maintenanceBusy={busy} />
-      )}
+      {env && <PackageChanges key={env.id} envId={env.id} maintenanceBusy={busy} />}
       <Card>
         <CardHeader>
           <CardTitle>{t('environment.reSetup')}</CardTitle>
-          <CardDescription>
-            {t('environment.reSetupHint')}
-          </CardDescription>
+          <CardDescription>{t('environment.reSetupHint')}</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 sm:grid-cols-2">
             {modes.map((item) => (
               <div key={item.mode} className="flex flex-col items-start gap-2">
-                <Button
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => onSetup(item.mode)}
-                >
+                <Button variant="outline" disabled={busy} onClick={() => onSetup(item.mode)}>
                   {t(item.title)}
                 </Button>
-                <p className="text-sm text-muted-foreground">
-                  {t(item.description)}
-                </p>
+                <p className="text-sm text-muted-foreground">{t(item.description)}</p>
               </div>
             ))}
           </div>
@@ -420,23 +393,17 @@ export function EnvironmentPage({
       <Card>
         <CardHeader>
           <CardTitle>{t('environment.delete.title')}</CardTitle>
-          <CardDescription>
-            {t('environment.delete.hint')}
-          </CardDescription>
+          <CardDescription>{t('environment.delete.hint')}</CardDescription>
         </CardHeader>
         <CardContent>
           <Alert>
             <Info />
             <AlertTitle>{t('environment.delete.byId')}</AlertTitle>
-            <AlertDescription>
-              {t('environment.delete.idHint')}
-            </AlertDescription>
+            <AlertDescription>{t('environment.delete.idHint')}</AlertDescription>
           </Alert>
           <FieldGroup>
             <Field>
-              <FieldLabel htmlFor="delete-env-id">
-                {t('environment.delete.id')}
-              </FieldLabel>
+              <FieldLabel htmlFor="delete-env-id">{t('environment.delete.id')}</FieldLabel>
               <Input
                 id="delete-env-id"
                 className="font-mono"
@@ -464,9 +431,7 @@ export function EnvironmentPage({
             {t('environment.delete.review')}
           </Button>
           {deletion.isError && <ErrorNotice error={deletion.error} />}
-          {deletion.isSuccess && (
-            <p role="status">{t('environment.delete.success')}</p>
-          )}
+          {deletion.isSuccess && <p role="status">{t('environment.delete.success')}</p>}
         </CardContent>
       </Card>
       <Dialog
@@ -477,10 +442,10 @@ export function EnvironmentPage({
       >
         <DialogContent showCloseButton={!deletion.isPending}>
           <DialogHeader>
-            <DialogTitle>{t('environment.delete.confirmTitle', { id: deleteId.trim() })}</DialogTitle>
-            <DialogDescription>
-              {t('environment.delete.confirmHint')}
-            </DialogDescription>
+            <DialogTitle>
+              {t('environment.delete.confirmTitle', { id: deleteId.trim() })}
+            </DialogTitle>
+            <DialogDescription>{t('environment.delete.confirmHint')}</DialogDescription>
           </DialogHeader>
           <FieldGroup>
             <Field>
@@ -507,14 +472,12 @@ export function EnvironmentPage({
             </Button>
             <Button
               variant="destructive"
-              disabled={
-                !canDelete ||
-                confirmedId !== deleteId.trim() ||
-                deletion.isPending
-              }
+              disabled={!canDelete || confirmedId !== deleteId.trim() || deletion.isPending}
               onClick={() => deletion.mutate(deleteId.trim())}
             >
-              {deletion.isPending ? t('environment.delete.deleting') : t('environment.delete.action')}
+              {deletion.isPending
+                ? t('environment.delete.deleting')
+                : t('environment.delete.action')}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -6,13 +6,7 @@ import { toast } from 'sonner'
 import { t as translate, useTranslation } from '@/shared/i18n'
 import { gateway } from '@/shared/ipc/gateway'
 import { Button } from '@/shared/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/shared/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
 
 import { errorMessage } from './error-message'
 
@@ -38,17 +32,11 @@ export function DiagnosticsPanel() {
     <Card>
       <CardHeader>
         <CardTitle>{t('settings.diagnostics.title')}</CardTitle>
-        <CardDescription>
-          {t('settings.diagnostics.hint')}
-        </CardDescription>
+        <CardDescription>{t('settings.diagnostics.hint')}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div>
-          <Button
-            variant="outline"
-            disabled={copy.isPending}
-            onClick={() => copy.mutate()}
-          >
+          <Button variant="outline" disabled={copy.isPending} onClick={() => copy.mutate()}>
             <ClipboardCopy aria-hidden="true" />
             {t('settings.diagnostics.copy')}
           </Button>

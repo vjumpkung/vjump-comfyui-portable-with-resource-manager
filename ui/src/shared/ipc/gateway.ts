@@ -73,9 +73,7 @@ export class IpcClientError extends Error {
   }
 }
 
-type IpcResult<T> =
-  | { status: 'ok'; data: T }
-  | { status: 'error'; error: IpcError }
+type IpcResult<T> = { status: 'ok'; data: T } | { status: 'error'; error: IpcError }
 
 async function unwrap<T>(call: () => Promise<IpcResult<T>>): Promise<T> {
   let result: IpcResult<T>
@@ -83,10 +81,7 @@ async function unwrap<T>(call: () => Promise<IpcResult<T>>): Promise<T> {
     result = await call()
   } catch {
     // Transport failures can carry arbitrary text, so none of it is surfaced.
-    throw new IpcClientError(
-      'transport',
-      'Could not reach the application backend.',
-    )
+    throw new IpcClientError('transport', 'Could not reach the application backend.')
   }
   if (result.status === 'error') {
     throw new IpcClientError(result.error.code, result.error.message)
@@ -95,7 +90,8 @@ async function unwrap<T>(call: () => Promise<IpcResult<T>>): Promise<T> {
 }
 
 export const gateway = {
-  appReady: (): Promise<boolean> => unwrap(async () => ({ status: 'ok', data: await commands.appReady() })),
+  appReady: (): Promise<boolean> =>
+    unwrap(async () => ({ status: 'ok', data: await commands.appReady() })),
   appInfo: (): Promise<AppInfoDto> => unwrap(() => commands.appInfo()),
   settingsGet: (): Promise<SettingsDto> => unwrap(() => commands.settingsGet()),
   settingsSet: (input: UpdateSettingsDto): Promise<SettingsDto> =>
@@ -103,31 +99,23 @@ export const gateway = {
   /** Takes the secret straight from the caller. It is never cached, logged or stored. */
   secretSet: (kind: CredentialKindDto, value: string): Promise<null> =>
     unwrap(() => commands.secretSet({ kind, value })),
-  secretClear: (kind: CredentialKindDto): Promise<null> =>
-    unwrap(() => commands.secretClear(kind)),
+  secretClear: (kind: CredentialKindDto): Promise<null> => unwrap(() => commands.secretClear(kind)),
   secretStatus: (kind: CredentialKindDto): Promise<CredentialStatusDto> =>
     unwrap(() => commands.secretStatus(kind)),
   /** Tests the saved token against its provider; the result carries no profile data. */
-  secretTest: (kind: CredentialKindDto) =>
-    unwrap(() => commands.secretTest(kind)),
+  secretTest: (kind: CredentialKindDto) => unwrap(() => commands.secretTest(kind)),
   setupStatus: () => unwrap(() => commands.setupStatus()),
-  setupDetectHardware: (
-    root: string | null = null,
-    envPath: string | null = null,
-  ) => unwrap(() => commands.setupDetectHardware(root, envPath)),
-  setupListProfiles: (
-    root: string | null = null,
-    envPath: string | null = null,
-  ) => unwrap(() => commands.setupListProfiles(root, envPath)),
+  setupDetectHardware: (root: string | null = null, envPath: string | null = null) =>
+    unwrap(() => commands.setupDetectHardware(root, envPath)),
+  setupListProfiles: (root: string | null = null, envPath: string | null = null) =>
+    unwrap(() => commands.setupListProfiles(root, envPath)),
   setupListCuratedNodes: () => unwrap(() => commands.setupListCuratedNodes()),
   setupValidatePython: (source: PythonSourceDto) =>
     unwrap(() => commands.setupValidatePython(source)),
   setupSelectRoot: (path: string, draft: string | null) =>
     unwrap(() => commands.setupSelectRoot(path, draft)),
-  setupOpenInstall: (path: string) =>
-    unwrap(() => commands.setupOpenInstall(path)),
-  setupNewInstall: (path: string) =>
-    unwrap(() => commands.setupNewInstall(path)),
+  setupOpenInstall: (path: string) => unwrap(() => commands.setupOpenInstall(path)),
+  setupNewInstall: (path: string) => unwrap(() => commands.setupNewInstall(path)),
   setupRestart: () => unwrap(() => commands.setupRestart()),
   setupRun: (action: SetupActionDto, onEvent: (event: SetupEventDto) => void) =>
     unwrap(() => {
@@ -138,20 +126,15 @@ export const gateway = {
   setupCancel: (runId: string) => unwrap(() => commands.setupCancel(runId)),
   envInfo: () => unwrap(() => commands.envInfo()),
   envPackages: () => unwrap(() => commands.envPackages()),
-  envPipPreview: (operation: PipOperationDto) =>
-    unwrap(() => commands.envPipPreview(operation)),
-  envPipApply: (input: PipApplyInput) =>
-    unwrap(() => commands.envPipApply(input)),
+  envPipPreview: (operation: PipOperationDto) => unwrap(() => commands.envPipPreview(operation)),
+  envPipApply: (input: PipApplyInput) => unwrap(() => commands.envPipApply(input)),
   envDelete: (envId: string) => unwrap(() => commands.envDelete(envId)),
   comfyStatus: () => unwrap(() => commands.comfyStatus()),
   comfyStart: () => unwrap(() => commands.comfyStart()),
   comfyStop: () => unwrap(() => commands.comfyStop()),
   comfyRestart: () => unwrap(() => commands.comfyRestart()),
   /** Resolves to the subscription id. The first event is an authoritative snapshot. */
-  comfySubscribe: (
-    afterCursor: number | null,
-    onEvent: (event: ComfyEventDto) => void,
-  ) =>
+  comfySubscribe: (afterCursor: number | null, onEvent: (event: ComfyEventDto) => void) =>
     unwrap(() => {
       const channel = new Channel<ComfyEventDto>()
       channel.onmessage = onEvent
@@ -163,25 +146,22 @@ export const gateway = {
   comfySetLaunchOptions: (options: LaunchOptionsDto) =>
     unwrap(() => commands.comfySetLaunchOptions(options)),
   comfyListVersions: () => unwrap(() => commands.comfyListVersions()),
-  comfyUpdate: (input: UpdateInput) =>
-    unwrap(() => commands.comfyUpdate(input)),
+  comfyUpdate: (input: UpdateInput) => unwrap(() => commands.comfyUpdate(input)),
   comfyOpenWindow: () => unwrap(() => commands.comfyOpenWindow()),
   comfyOpenBrowser: () => unwrap(() => commands.comfyOpenBrowser()),
-  comfyReadExtraModelPaths: () =>
-    unwrap(() => commands.comfyReadExtraModelPaths()),
+  comfyReadExtraModelPaths: () => unwrap(() => commands.comfyReadExtraModelPaths()),
   comfyGenerateExtraModelPaths: (basePath: string) =>
     unwrap(() => commands.comfyGenerateExtraModelPaths(basePath)),
-  comfyRemoveExtraModelPaths: () =>
-    unwrap(() => commands.comfyRemoveExtraModelPaths()),
+  comfyRemoveExtraModelPaths: () => unwrap(() => commands.comfyRemoveExtraModelPaths()),
   appCloseDecide: (requestId: string, choice: CloseChoiceDto) =>
     unwrap(() => commands.appCloseDecide(requestId, choice)),
   dlResolve: (input: ResolveInput) => unwrap(() => commands.dlResolve(input)),
-  dlEnqueue: (items: EnqueueItemInput[]) =>
-    unwrap(() => commands.dlEnqueue(items)),
+  dlEnqueue: (items: EnqueueItemInput[]) => unwrap(() => commands.dlEnqueue(items)),
   dlPause: (jobId: string) => unwrap(() => commands.dlPause(jobId)),
   dlCancel: (jobId: string) => unwrap(() => commands.dlCancel(jobId)),
   dlRetry: (jobId: string) => unwrap(() => commands.dlRetry(jobId)),
-  dlRemove: (id: string, generation: number | null) => unwrap(() => commands.dlRemove(id, generation)),
+  dlRemove: (id: string, generation: number | null) =>
+    unwrap(() => commands.dlRemove(id, generation)),
   dlResume: (
     jobId: string,
     decision: { decisionId: string; choice: ConflictChoiceDto } | null = null,
@@ -196,30 +176,24 @@ export const gateway = {
       channel.onmessage = onEvent
       return commands.dlSubscribe(afterCursor, channel)
     }),
-  dlUnsubscribe: (subscriptionId: number) =>
-    unwrap(() => commands.dlUnsubscribe(subscriptionId)),
-  dlImportPack: (input: ImportPackInput) =>
-    unwrap(() => commands.dlImportPack(input)),
+  dlUnsubscribe: (subscriptionId: number) => unwrap(() => commands.dlUnsubscribe(subscriptionId)),
+  dlImportPack: (input: ImportPackInput) => unwrap(() => commands.dlImportPack(input)),
   dlExport: (input: ExportInput) => unwrap(() => commands.dlExport(input)),
   modelList: () => unwrap(() => commands.modelList()),
   /** Finishes interrupted operations, scans every root and resolves with the new list. */
   modelRescan: () => unwrap(() => commands.modelRescan()),
-  modelDetails: (location: ModelLocationDto) =>
-    unwrap(() => commands.modelDetails(location)),
-  modelRename: (input: RenameInput) =>
-    unwrap(() => commands.modelRename(input)),
+  modelDetails: (location: ModelLocationDto) => unwrap(() => commands.modelDetails(location)),
+  modelRename: (input: RenameInput) => unwrap(() => commands.modelRename(input)),
   modelMove: (input: MoveInput) => unwrap(() => commands.modelMove(input)),
   modelDeletePlan: (locations: ModelLocationDto[]) =>
     unwrap(() => commands.modelDeletePlan(locations)),
   modelDelete: (planId: string) => unwrap(() => commands.modelDelete(planId)),
   /** Only runs a permanent-delete plan produced after a trash failure. */
-  modelDeletePermanently: (planId: string) =>
-    unwrap(() => commands.modelDeletePermanently(planId)),
+  modelDeletePermanently: (planId: string) => unwrap(() => commands.modelDeletePermanently(planId)),
   /** Shows the model in the system file manager, or the models folder when `null`. */
   modelReveal: (location: ModelLocationDto | null): Promise<null> =>
     unwrap(() => commands.modelReveal(location)),
-  modelIdentify: (input: IdentifyInput) =>
-    unwrap(() => commands.modelIdentify(input)),
+  modelIdentify: (input: IdentifyInput) => unwrap(() => commands.modelIdentify(input)),
   modelOperationStatus: () => unwrap(() => commands.modelOperationStatus()),
   /** Resolves to the subscription id. The first event is the current status. */
   modelSubscribe: (onEvent: (event: ModelEventDto) => void) =>
@@ -236,27 +210,22 @@ export const gateway = {
   nodeOpenRepository: (repository: string): Promise<null> =>
     unwrap(() => commands.nodeOpenRepository(repository)),
   /** Shows the node's folder in the system file manager, or the custom nodes folder when `null`. */
-  nodeReveal: (id: string | null): Promise<null> =>
-    unwrap(() => commands.nodeReveal(id)),
+  nodeReveal: (id: string | null): Promise<null> => unwrap(() => commands.nodeReveal(id)),
   nodeGitStatus: (nodeId: string): Promise<NodeGitStatusDto> =>
     unwrap(() => commands.nodeGitStatus({ nodeId })),
   nodeRescan: () => unwrap(() => commands.nodeRescan()),
-  nodeResolveOperation: (operationId: string) => unwrap(() => commands.nodeResolveOperation(operationId)),
+  nodeResolveOperation: (operationId: string) =>
+    unwrap(() => commands.nodeResolveOperation(operationId)),
   nodePrepareRegistry: (input: PrepareRegistryInput) =>
     unwrap(() => commands.nodePrepareRegistry(input)),
-  nodePrepareGit: (input: PrepareGitInput) =>
-    unwrap(() => commands.nodePrepareGit(input)),
-  nodePrepareUpdate: (input: PrepareUpdateInput) =>
-    unwrap(() => commands.nodePrepareUpdate(input)),
+  nodePrepareGit: (input: PrepareGitInput) => unwrap(() => commands.nodePrepareGit(input)),
+  nodePrepareUpdate: (input: PrepareUpdateInput) => unwrap(() => commands.nodePrepareUpdate(input)),
   nodePrepareRetryDeps: (input: PrepareRetryInput) =>
     unwrap(() => commands.nodePrepareRetryDeps(input)),
   nodeCommit: (input: CommitInput) => unwrap(() => commands.nodeCommit(input)),
-  nodeSetEnabled: (input: SetEnabledInput) =>
-    unwrap(() => commands.nodeSetEnabled(input)),
-  nodeUninstall: (nodeId: string) =>
-    unwrap(() => commands.nodeUninstall({ nodeId })),
-  nodeUpdateAll: (items: CommitInput[]) =>
-    unwrap(() => commands.nodeUpdateAll({ items })),
+  nodeSetEnabled: (input: SetEnabledInput) => unwrap(() => commands.nodeSetEnabled(input)),
+  nodeUninstall: (nodeId: string) => unwrap(() => commands.nodeUninstall({ nodeId })),
+  nodeUpdateAll: (items: CommitInput[]) => unwrap(() => commands.nodeUpdateAll({ items })),
   nodeCancel: (key: string) => unwrap(() => commands.nodeCancel(key)),
   nodeOperationStatus: (operationId: string) =>
     unwrap(() => commands.nodeOperationStatus(operationId)),
@@ -272,10 +241,7 @@ export const gateway = {
   /** Resolves to the newer release for the user to review, or null. */
   appUpdateCheck: () => unwrap(() => commands.appUpdateCheck()),
   /** Installs exactly the reviewed release named by its `updateId`; the app then restarts. */
-  appUpdateInstall: (
-    updateId: string,
-    onEvent: (event: UpdateProgressDto) => void,
-  ) =>
+  appUpdateInstall: (updateId: string, onEvent: (event: UpdateProgressDto) => void) =>
     unwrap(() => {
       const channel = new Channel<UpdateProgressDto>()
       channel.onmessage = onEvent
@@ -283,18 +249,13 @@ export const gateway = {
     }),
   /** Copies the redacted report; `copied` is false when the clipboard was unavailable. */
   appCopyDiagnostics: () => unwrap(() => commands.appCopyDiagnostics()),
-  galleryList: (directory: GalleryLocationDto) =>
-    unwrap(() => commands.galleryList(directory)),
-  galleryRename: (input: GalleryRenameInput) =>
-    unwrap(() => commands.galleryRename(input)),
-  galleryMove: (input: GalleryTransferInput) =>
-    unwrap(() => commands.galleryMove(input)),
-  galleryCopy: (input: GalleryTransferInput) =>
-    unwrap(() => commands.galleryCopy(input)),
+  galleryList: (directory: GalleryLocationDto) => unwrap(() => commands.galleryList(directory)),
+  galleryRename: (input: GalleryRenameInput) => unwrap(() => commands.galleryRename(input)),
+  galleryMove: (input: GalleryTransferInput) => unwrap(() => commands.galleryMove(input)),
+  galleryCopy: (input: GalleryTransferInput) => unwrap(() => commands.galleryCopy(input)),
   galleryDeletePlan: (items: GalleryEntryRefDto[]) =>
     unwrap(() => commands.galleryDeletePlan(items)),
-  galleryDelete: (planId: string) =>
-    unwrap(() => commands.galleryDelete(planId)),
+  galleryDelete: (planId: string) => unwrap(() => commands.galleryDelete(planId)),
   galleryReveal: (location: GalleryLocationDto): Promise<null> =>
     unwrap(() => commands.galleryReveal(location)),
   /** `<base>` of the `gallery` protocol, e.g. for validating loader URLs. */

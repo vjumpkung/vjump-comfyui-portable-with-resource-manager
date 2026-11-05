@@ -96,9 +96,7 @@ export function LockedDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t('library.locked.title')}</DialogTitle>
-          <DialogDescription>
-            {t('library.locked.hint')}
-          </DialogDescription>
+          <DialogDescription>{t('library.locked.hint')}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" disabled={busy} onClick={onCancel}>

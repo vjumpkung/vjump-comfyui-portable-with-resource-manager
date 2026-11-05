@@ -51,17 +51,27 @@ function mount() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
-  return { client, ...render(
-    <QueryClientProvider client={client}>
-      <ThemeProvider>
-        <TooltipProvider>
-          <ThemeToggle />
-          <BootGate><SetupWizardPreferences status={setupStatus} mode="first_run"
-            onClose={vi.fn()} refresh={vi.fn()} renderCuratedReview={() => null} /></BootGate>
-        </TooltipProvider>
-      </ThemeProvider>
-    </QueryClientProvider>,
-  ) }
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>
+        <ThemeProvider>
+          <TooltipProvider>
+            <ThemeToggle />
+            <BootGate>
+              <SetupWizardPreferences
+                status={setupStatus}
+                mode="first_run"
+                onClose={vi.fn()}
+                refresh={vi.fn()}
+                renderCuratedReview={() => null}
+              />
+            </BootGate>
+          </TooltipProvider>
+        </ThemeProvider>
+      </QueryClientProvider>,
+    ),
+  }
 }
 
 beforeEach(() => {
@@ -85,7 +95,11 @@ it('renders_the_endonym_selector_at_the_top_of_stage_zero', async () => {
   const root = screen.getByLabelText('Install root')
   const body = root.closest('[data-slot="card-content"]')!
   expect(body.contains(language)).toBe(true)
-  expect(within(body as HTMLElement).getAllByRole('group')[0].contains(language)).toBe(true)
+  expect(
+    within(body as HTMLElement)
+      .getAllByRole('group')[0]
+      .contains(language),
+  ).toBe(true)
   expect(language.compareDocumentPosition(root) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   expect(screen.getByRole('option', { name: 'English' })).toHaveProperty('value', 'en')
   expect(screen.getByRole('option', { name: 'ไทย' })).toHaveProperty('value', 'th')
@@ -102,13 +116,20 @@ it('switches_to_thai_immediately_saves_full_settings_and_blocks_root_and_theme_u
   expect(screen.getByLabelText('ภาษา')).toHaveProperty('value', 'th')
   expect(screen.getByLabelText('โฟลเดอร์ติดตั้ง')).toBeTruthy()
   expect(screen.getByText('1. โฟลเดอร์ติดตั้ง')).toBeTruthy()
-  await waitFor(() => expect(gateway.settingsSet).toHaveBeenCalledWith({ ...settings, language: 'th' }))
-  await waitFor(() => expect(screen.getByRole('button', { name: 'ถัดไป' })).toHaveProperty('disabled', true))
+  await waitFor(() =>
+    expect(gateway.settingsSet).toHaveBeenCalledWith({ ...settings, language: 'th' }),
+  )
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'ถัดไป' })).toHaveProperty('disabled', true),
+  )
   expect(language).toHaveProperty('disabled', true)
   expect(screen.getByRole('button', { name: 'เปลี่ยนเป็นธีมมืด' })).toHaveProperty('disabled', true)
   fireEvent.click(screen.getByRole('button', { name: 'ถัดไป' }))
   fireEvent.change(screen.getByLabelText('โฟลเดอร์ติดตั้ง'), { target: { value: 'E:/Comfy' } })
-  expect(screen.getByRole('button', { name: 'บันทึกโฟลเดอร์ติดตั้ง' })).toHaveProperty('disabled', true)
+  expect(screen.getByRole('button', { name: 'บันทึกโฟลเดอร์ติดตั้ง' })).toHaveProperty(
+    'disabled',
+    true,
+  )
   fireEvent.click(screen.getByRole('button', { name: 'บันทึกโฟลเดอร์ติดตั้ง' }))
   expect(gateway.setupSelectRoot).not.toHaveBeenCalled()
   await act(async () => {
@@ -116,8 +137,14 @@ it('switches_to_thai_immediately_saves_full_settings_and_blocks_root_and_theme_u
     await save.promise
   })
   await waitFor(() => expect(language).toHaveProperty('disabled', false))
-  expect(screen.getByRole('button', { name: 'บันทึกโฟลเดอร์ติดตั้ง' })).toHaveProperty('disabled', false)
-  expect(screen.getByRole('button', { name: 'เปลี่ยนเป็นธีมมืด' })).toHaveProperty('disabled', false)
+  expect(screen.getByRole('button', { name: 'บันทึกโฟลเดอร์ติดตั้ง' })).toHaveProperty(
+    'disabled',
+    false,
+  )
+  expect(screen.getByRole('button', { name: 'เปลี่ยนเป็นธีมมืด' })).toHaveProperty(
+    'disabled',
+    false,
+  )
   expect(client.getQueryData(['settings'])).toEqual({ ...settings, language: 'th' })
   expect(getLanguage()).toBe('th')
 })
@@ -180,7 +207,9 @@ it('a_pending_theme_save_disables_the_wizard_preference_controls_and_continue', 
   const theme = screen.getByRole('button', { name: 'Switch to dark theme' })
   await waitFor(() => expect(theme).toHaveProperty('disabled', false))
   fireEvent.click(theme)
-  await waitFor(() => expect(gateway.settingsSet).toHaveBeenCalledWith({ ...settings, theme: 'dark' }))
+  await waitFor(() =>
+    expect(gateway.settingsSet).toHaveBeenCalledWith({ ...settings, theme: 'dark' }),
+  )
   expect(language).toHaveProperty('disabled', true)
   expect(theme).toHaveProperty('disabled', true)
   expect(screen.getByRole('button', { name: 'Continue' })).toHaveProperty('disabled', true)

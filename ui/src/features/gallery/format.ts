@@ -1,9 +1,5 @@
 import { t } from '@/shared/i18n'
-import type {
-  GalleryEntryDto,
-  GalleryEntryRefDto,
-  GalleryLocationDto,
-} from '@/shared/ipc/gateway'
+import type { GalleryEntryDto, GalleryEntryRefDto, GalleryLocationDto } from '@/shared/ipc/gateway'
 
 const UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB'] as const
 

@@ -26,7 +26,9 @@ export function ThemeToggle() {
       {
         onError: (error) => {
           setSetting(previous)
-          toast.error(error instanceof IpcClientError ? error.message : translate('shell.themeSaveError'))
+          toast.error(
+            error instanceof IpcClientError ? error.message : translate('shell.themeSaveError'),
+          )
         },
       },
     )

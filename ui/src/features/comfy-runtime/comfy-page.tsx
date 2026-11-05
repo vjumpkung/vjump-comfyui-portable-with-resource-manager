@@ -1,12 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import {
-  ExternalLink,
-  LoaderCircle,
-  Play,
-  RotateCw,
-  Square,
-  TriangleAlert,
-} from 'lucide-react'
+import { ExternalLink, LoaderCircle, Play, RotateCw, Square, TriangleAlert } from 'lucide-react'
 import { lazy, Suspense, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 
@@ -20,13 +13,7 @@ import {
 import { errorMessage } from '@/shared/lib/display'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/shared/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -59,17 +46,18 @@ const FAILURE_TITLE_KEYS = {
   termination: 'runtime.failure.termination',
   cancelled: 'runtime.failure.cancelled',
   persistence: 'runtime.failure.persistence',
-} as const satisfies Record<RuntimeFailureDto['kind'], keyof typeof import('@/shared/i18n/translations.json').en>
+} as const satisfies Record<
+  RuntimeFailureDto['kind'],
+  keyof typeof import('@/shared/i18n/translations.json').en
+>
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-4">
-      <dt className="w-32 shrink-0 font-mono text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      <dt className="w-32 shrink-0 font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">
         {label}
       </dt>
-      <dd className="font-mono text-xs break-words [overflow-wrap:anywhere]">
-        {children}
-      </dd>
+      <dd className="font-mono text-xs [overflow-wrap:anywhere] break-words">{children}</dd>
     </div>
   )
 }
@@ -83,11 +71,11 @@ function FailureNotice({ failure }: { failure: RuntimeFailureDto }) {
       <AlertDescription>
         <p>
           {failure.message}
-          {failure.exitCode !== null ? t('runtime.failure.exitCode', { code: failure.exitCode }) : ''}
+          {failure.exitCode !== null
+            ? t('runtime.failure.exitCode', { code: failure.exitCode })
+            : ''}
         </p>
-        <p>
-          {t('runtime.failure.hint')}
-        </p>
+        <p>{t('runtime.failure.hint')}</p>
       </AlertDescription>
     </Alert>
   )
@@ -101,13 +89,13 @@ function StatusDetails({ status }: { status: ComfyStatusDto }) {
       <Row label={t('runtime.address')}>
         {status.origin ??
           (session
-            ? t(session.options.listenLan ? 'runtime.portAll' : 'runtime.port', { port: session.options.port })
+            ? t(session.options.listenLan ? 'runtime.portAll' : 'runtime.port', {
+                port: session.options.port,
+              })
             : '-')}
       </Row>
       <Row label={t('runtime.process')}>{session?.pid ?? '-'}</Row>
-      <Row label={t('common.version')}>
-        {session ? describeRevision(session.revision) : '-'}
-      </Row>
+      <Row label={t('common.version')}>{session ? describeRevision(session.revision) : '-'}</Row>
       <Row label={t('runtime.started')}>{session?.startedAt ?? '-'}</Row>
     </dl>
   )
@@ -126,8 +114,7 @@ export function ComfyPage() {
   const lifecycle = status?.lifecycle
   const active = lifecycle === 'starting' || lifecycle === 'running'
   const transitioning = lifecycle === 'stopping'
-  const busy =
-    start.isPending || restart.isPending || stop.isPending || transitioning
+  const busy = start.isPending || restart.isPending || stop.isPending || transitioning
 
   const handleStart = (result: StartResultDto) => {
     if (result.kind === 'port_conflict') {
@@ -166,9 +153,7 @@ export function ComfyPage() {
     onError,
   })
   // The report to select by hand when the clipboard could not be written.
-  const [diagnosticsFallback, setDiagnosticsFallback] = useState<string | null>(
-    null,
-  )
+  const [diagnosticsFallback, setDiagnosticsFallback] = useState<string | null>(null)
   const copyDiagnostics = useMutation({
     mutationFn: () => gateway.appCopyDiagnostics(),
     onSuccess: (result) => {
@@ -186,10 +171,8 @@ export function ComfyPage() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-          ComfyUI
-        </h1>
-        <p className="text-sm font-medium leading-relaxed text-muted-foreground">
+        <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">ComfyUI</h1>
+        <p className="text-sm leading-relaxed font-medium text-muted-foreground">
           {t('runtime.description')}
         </p>
       </header>
@@ -199,10 +182,7 @@ export function ComfyPage() {
           <CardTitle className="flex items-center gap-3 text-lg font-bold tracking-tight">
             {t('common.status')} <LifecycleBadge lifecycle={lifecycle} />
           </CardTitle>
-          <CardDescription>
-            {status?.pendingOperation ??
-              t('runtime.statusHint')}
-          </CardDescription>
+          <CardDescription>{status?.pendingOperation ?? t('runtime.statusHint')}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {status?.failure && lifecycle === 'crashed' ? (
@@ -230,9 +210,7 @@ export function ComfyPage() {
               <Button
                 disabled={busy || !status}
                 aria-busy={starting}
-                onClick={() =>
-                  start.mutate(undefined, { onSuccess: handleStart, onError })
-                }
+                onClick={() => start.mutate(undefined, { onSuccess: handleStart, onError })}
               >
                 {starting ? (
                   <LoaderCircle className="animate-spin" aria-hidden="true" />
@@ -246,9 +224,7 @@ export function ComfyPage() {
               variant="outline"
               disabled={busy || !status || lifecycle === 'starting'}
               aria-busy={restarting}
-              onClick={() =>
-                restart.mutate(undefined, { onSuccess: handleStart, onError })
-              }
+              onClick={() => restart.mutate(undefined, { onSuccess: handleStart, onError })}
             >
               {restarting ? (
                 <LoaderCircle className="animate-spin" aria-hidden="true" />
@@ -279,23 +255,15 @@ export function ComfyPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg font-bold tracking-tight">
-            {t('runtime.log')}
-          </CardTitle>
-          <CardDescription>
-            {t('runtime.logHint')}
-          </CardDescription>
+          <CardTitle className="text-lg font-bold tracking-tight">{t('runtime.log')}</CardTitle>
+          <CardDescription>{t('runtime.logHint')}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <Suspense fallback={<Skeleton className="h-80" />}>
             <StreamLogView text={runtime.log} label={t('runtime.comfyLog')} />
           </Suspense>
           <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => runtimeStore.clearLog()}
-            >
+            <Button variant="outline" size="sm" onClick={() => runtimeStore.clearLog()}>
               {t('runtime.clearView')}
             </Button>
             <Button
@@ -336,7 +304,10 @@ export function ComfyPage() {
             <DialogTitle>{t('runtime.portInUse', { port: conflict?.requested ?? '' })}</DialogTitle>
             <DialogDescription>
               {conflict?.suggested
-                ? t('runtime.portSuggestion', { requested: conflict.requested, suggested: conflict.suggested })
+                ? t('runtime.portSuggestion', {
+                    requested: conflict.requested,
+                    suggested: conflict.suggested,
+                  })
                 : t('runtime.noFreePort', { port: conflict?.requested ?? '' })}
             </DialogDescription>
           </DialogHeader>

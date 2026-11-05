@@ -29,9 +29,7 @@ export function node(overrides: Partial<InstalledNodeDto> = {}): InstalledNodeDt
   }
 }
 
-export function registryInstalled(
-  overrides: Partial<InstalledNodeDto> = {},
-): InstalledNodeDto {
+export function registryInstalled(overrides: Partial<InstalledNodeDto> = {}): InstalledNodeDto {
   return node({
     source: {
       kind: 'registry',

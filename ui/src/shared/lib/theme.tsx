@@ -86,10 +86,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setSettingState(next)
   }, [])
 
-  const value = useMemo(
-    () => ({ setting, resolved, setSetting }),
-    [setting, resolved, setSetting],
-  )
+  const value = useMemo(() => ({ setting, resolved, setSetting }), [setting, resolved, setSetting])
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }

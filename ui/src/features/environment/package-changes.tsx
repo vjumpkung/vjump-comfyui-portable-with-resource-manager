@@ -2,21 +2,11 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useTranslation } from '@/shared/i18n'
-import {
-  gateway,
-  type PipOperationKindDto,
-  type PipPlanDto,
-} from '@/shared/ipc/gateway'
+import { gateway, type PipOperationKindDto, type PipPlanDto } from '@/shared/ipc/gateway'
 import { environmentKeys } from '@/shared/lib/environment-queries'
 import { Alert, AlertTitle, AlertDescription } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/shared/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
 import { Checkbox } from '@/shared/ui/checkbox'
 import {
   Dialog,
@@ -27,12 +17,7 @@ import {
   DialogTitle,
 } from '@/shared/ui/dialog'
 import { ErrorNotice } from '@/shared/ui/feedback'
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from '@/shared/ui/field'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/shared/ui/field'
 import { Input } from '@/shared/ui/input'
 import { StatusBadge } from '@/shared/ui/status-badge'
 import { ToggleGroup, ToggleGroupItem } from '@/shared/ui/toggle-group'
@@ -74,9 +59,7 @@ export function PackageChanges({
     mutationFn: (plan: PipPlanDto) =>
       gateway.envPipApply({
         planId: plan.planId,
-        confirmedChanges: plan.requiresConfirmation
-          ? plan.protectedChanges
-          : [],
+        confirmedChanges: plan.requiresConfirmation ? plan.protectedChanges : [],
       }),
     onMutate: (plan) => setAttemptedPlan(plan.planId),
     onSuccess: () => setOpen(false),
@@ -99,9 +82,7 @@ export function PackageChanges({
       <Card>
         <CardHeader>
           <CardTitle>{t('environment.changes.title')}</CardTitle>
-          <CardDescription>
-            {t('environment.changes.hint')}
-          </CardDescription>
+          <CardDescription>{t('environment.changes.hint')}</CardDescription>
         </CardHeader>
         <CardContent>
           <FieldGroup>
@@ -113,18 +94,16 @@ export function PackageChanges({
                 value={kind}
                 disabled={pending || maintenanceBusy}
                 onValueChange={(value) => {
-                  if (
-                    value === 'install' ||
-                    value === 'upgrade' ||
-                    value === 'uninstall'
-                  ) {
+                  if (value === 'install' || value === 'upgrade' || value === 'uninstall') {
                     setKind(value)
                     resetPreview()
                   }
                 }}
               >
                 <ToggleGroupItem value="install">{t('common.install')}</ToggleGroupItem>
-                <ToggleGroupItem value="upgrade">{t('environment.changes.upgrade')}</ToggleGroupItem>
+                <ToggleGroupItem value="upgrade">
+                  {t('environment.changes.upgrade')}
+                </ToggleGroupItem>
                 <ToggleGroupItem value="uninstall">{t('common.uninstall')}</ToggleGroupItem>
               </ToggleGroup>
             </Field>
@@ -138,17 +117,13 @@ export function PackageChanges({
                 id="package-spec"
                 value={spec}
                 disabled={pending || maintenanceBusy}
-                placeholder={
-                  kind === 'uninstall' ? 'package-name' : 'package-name==1.2.3'
-                }
+                placeholder={kind === 'uninstall' ? 'package-name' : 'package-name==1.2.3'}
                 onChange={(event) => {
                   setSpec(event.target.value)
                   resetPreview()
                 }}
               />
-              <FieldDescription>
-                {t('environment.changes.requirementHint')}
-              </FieldDescription>
+              <FieldDescription>{t('environment.changes.requirementHint')}</FieldDescription>
             </Field>
           </FieldGroup>
           <Button
@@ -165,14 +140,9 @@ export function PackageChanges({
           {preview.isError && <ErrorNotice error={preview.error} />}
           {apply.isError && <ErrorNotice error={apply.error} />}
           {apply.isSuccess && (
-            <Alert
-              variant={
-                apply.data.envState === 'verified' ? 'default' : 'destructive'
-              }
-            >
+            <Alert variant={apply.data.envState === 'verified' ? 'default' : 'destructive'}>
               <AlertTitle>
-                {t('environment.changes.finished')}{' '}
-                <StatusBadge status={apply.data.envState} />
+                {t('environment.changes.finished')} <StatusBadge status={apply.data.envState} />
               </AlertTitle>
               <AlertDescription>
                 {apply.data.envState === 'verified'
@@ -195,21 +165,23 @@ export function PackageChanges({
         >
           <DialogHeader>
             <DialogTitle>{t('environment.changes.review')}</DialogTitle>
-            <DialogDescription>
-              {t('environment.changes.planHint')}
-            </DialogDescription>
+            <DialogDescription>{t('environment.changes.planHint')}</DialogDescription>
           </DialogHeader>
           {plan && (
             <>
-              <p className="break-all font-mono text-xs">
+              <p className="font-mono text-xs break-all">
                 {t('environment.changes.planIdentity', { envId: plan.envId, planId: plan.planId })}
                 <br />
-                {t('environment.changes.planOperation', { operation: t(OPERATION_KEYS[plan.operation.kind]), specs: plan.operation.specs.join(', '), resolution: t(RESOLUTION_KEYS[plan.resolution]) })}
+                {t('environment.changes.planOperation', {
+                  operation: t(OPERATION_KEYS[plan.operation.kind]),
+                  specs: plan.operation.specs.join(', '),
+                  resolution: t(RESOLUTION_KEYS[plan.resolution]),
+                })}
               </p>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <h3 className="font-semibold">{t('environment.changes.installs')}</h3>
-                  <ul className="break-all font-mono text-xs">
+                  <ul className="font-mono text-xs break-all">
                     {plan.installs.map((pkg) => (
                       <li key={pkg.name}>
                         {pkg.name} {pkg.version}
@@ -220,7 +192,7 @@ export function PackageChanges({
                 </div>
                 <div>
                   <h3 className="font-semibold">{t('environment.changes.removals')}</h3>
-                  <ul className="break-all font-mono text-xs">
+                  <ul className="font-mono text-xs break-all">
                     {plan.removals.map((pkg) => (
                       <li key={pkg.name}>
                         {pkg.name} {pkg.version}
@@ -234,10 +206,8 @@ export function PackageChanges({
                 <Alert variant="destructive">
                   <AlertTitle>{t('environment.changes.protectedTitle')}</AlertTitle>
                   <AlertDescription>
-                    <p>
-                      {t('environment.changes.protectedHint')}
-                    </p>
-                    <ul className="break-all font-mono text-xs">
+                    <p>{t('environment.changes.protectedHint')}</p>
+                    <ul className="font-mono text-xs break-all">
                       {plan.protectedChanges.map((change) => (
                         <li key={change.name}>
                           {change.name}: {change.from ?? t('environment.changes.absent')} →{' '}
@@ -261,29 +231,17 @@ export function PackageChanges({
                   </AlertDescription>
                 </Alert>
               )}
-              {plan.envId !== envId && (
-                <p role="alert">
-                  {t('environment.changes.envChanged')}
-                </p>
-              )}
+              {plan.envId !== envId && <p role="alert">{t('environment.changes.envChanged')}</p>}
               {apply.isError && <ErrorNotice error={apply.error} />}
               {attemptedPlan === plan.planId && !apply.isPending && (
                 <p>{t('environment.changes.freshPreview')}</p>
               )}
               <DialogFooter>
-                <Button
-                  variant="outline"
-                  disabled={apply.isPending}
-                  onClick={() => setOpen(false)}
-                >
+                <Button variant="outline" disabled={apply.isPending} onClick={() => setOpen(false)}>
                   {t('environment.changes.close')}
                 </Button>
                 <Button
-                  variant={
-                    plan.operation.kind === 'uninstall'
-                      ? 'destructive'
-                      : 'default'
-                  }
+                  variant={plan.operation.kind === 'uninstall' ? 'destructive' : 'default'}
                   disabled={
                     !approved ||
                     plan.envId !== envId ||

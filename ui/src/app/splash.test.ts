@@ -10,6 +10,6 @@ test('the static splash uses an external stylesheet', () => {
   // runtime styles injected by Sonner and Radix scroll lock in release builds.
   expect(html).not.toMatch(/<style\b/i)
   expect(html).not.toMatch(/\sstyle\s*=/i)
-  expect(html).toContain('<link rel="stylesheet" href="/splash.css">')
+  expect(html).toContain('<link rel="stylesheet" href="/splash.css" />')
   expect(existsSync(fileURLToPath(new URL('../../public/splash.css', import.meta.url)))).toBe(true)
 })

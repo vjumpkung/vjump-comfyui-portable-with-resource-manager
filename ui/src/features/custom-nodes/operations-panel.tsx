@@ -22,7 +22,10 @@ export const KIND_LABEL = {
   enable: 'common.enable',
   disable: 'common.disable',
   uninstall: 'common.uninstall',
-} as const satisfies Record<OperationDto['kind'], keyof typeof import('@/shared/i18n/translations.json').en>
+} as const satisfies Record<
+  OperationDto['kind'],
+  keyof typeof import('@/shared/i18n/translations.json').en
+>
 
 /** An authoritative `logTail` replaces the live buffer: the two overlap and are never merged. */
 export function operationLines(
@@ -42,7 +45,10 @@ function phaseNote(operation: OperationDto): string | null {
   return null
 }
 
-function OperationDetail({ operationId, logs }: {
+function OperationDetail({
+  operationId,
+  logs,
+}: {
   operationId: string
   logs: readonly NodeLogEntry[]
 }) {
@@ -51,10 +57,19 @@ function OperationDetail({ operationId, logs }: {
   const lines = operationLines(status.data, logs, operationId)
   const operation = status.data
   return (
-    <div className="flex flex-col gap-3 rounded-lg border p-4" aria-label={t('customNodes.operation.selected')}>
-      {status.isPending && <p role="status" className="text-sm text-muted-foreground">{t('customNodes.operation.loading')}</p>}
+    <div
+      className="flex flex-col gap-3 rounded-lg border p-4"
+      aria-label={t('customNodes.operation.selected')}
+    >
+      {status.isPending && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {t('customNodes.operation.loading')}
+        </p>
+      )}
       {status.isError && (
-        <p role="alert" className="text-sm text-destructive">{errorMessage(status.error)}</p>
+        <p role="alert" className="text-sm text-destructive">
+          {errorMessage(status.error)}
+        </p>
       )}
       {operation && (
         <div className="flex flex-wrap items-center gap-2">
@@ -64,22 +79,32 @@ function OperationDetail({ operationId, logs }: {
         </div>
       )}
       {operation?.failure && (
-        <p className="text-sm break-words text-destructive [overflow-wrap:anywhere]">{operation.failure}</p>
+        <p className="text-sm [overflow-wrap:anywhere] break-words text-destructive">
+          {operation.failure}
+        </p>
       )}
       {lines.length > 0 ? (
-        <Suspense fallback={<p className="text-sm text-muted-foreground">{t('customNodes.operation.loadingLog')}</p>}>
+        <Suspense
+          fallback={
+            <p className="text-sm text-muted-foreground">{t('customNodes.operation.loadingLog')}</p>
+          }
+        >
           <LogView lines={lines} />
         </Suspense>
       ) : (
-        <p className="text-sm text-muted-foreground">
-          {t('customNodes.operation.noLogs')}
-        </p>
+        <p className="text-sm text-muted-foreground">{t('customNodes.operation.noLogs')}</p>
       )}
     </div>
   )
 }
 
-function OperationRow({ operation, selected, onSelect, onKeepFiles, disabled }: {
+function OperationRow({
+  operation,
+  selected,
+  onSelect,
+  onKeepFiles,
+  disabled,
+}: {
   operation: OperationDto
   selected: boolean
   onSelect: () => void
@@ -91,10 +116,16 @@ function OperationRow({ operation, selected, onSelect, onKeepFiles, disabled }: 
   return (
     <li className="flex flex-col gap-1 rounded-lg border p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="min-w-0 font-medium break-words [overflow-wrap:anywhere]">{operation.nodeName}</span>
+        <span className="min-w-0 font-medium [overflow-wrap:anywhere] break-words">
+          {operation.nodeName}
+        </span>
         <span className="text-xs text-muted-foreground">{t(KIND_LABEL[operation.kind])}</span>
         <PhaseChip phase={operation.phase} />
-        {operation.blocksStart && <Chip icon={TriangleAlert} className="bg-brand-pink">{t('customNodes.operation.blocksStart')}</Chip>}
+        {operation.blocksStart && (
+          <Chip icon={TriangleAlert} className="bg-brand-pink">
+            {t('customNodes.operation.blocksStart')}
+          </Chip>
+        )}
         {operation.blocksStart && onKeepFiles && (
           <Button
             variant="outline"
@@ -111,14 +142,21 @@ function OperationRow({ operation, selected, onSelect, onKeepFiles, disabled }: 
           size="sm"
           className="ml-auto"
           aria-pressed={selected}
-          aria-label={t(selected ? 'customNodes.operation.hideDetailsOf' : 'customNodes.operation.showDetailsOf', { action: t(KIND_LABEL[operation.kind]).toLowerCase(), name: operation.nodeName })}
+          aria-label={t(
+            selected
+              ? 'customNodes.operation.hideDetailsOf'
+              : 'customNodes.operation.showDetailsOf',
+            { action: t(KIND_LABEL[operation.kind]).toLowerCase(), name: operation.nodeName },
+          )}
           onClick={onSelect}
         >
           {selected ? t('customNodes.operation.hideDetails') : t('customNodes.operation.details')}
         </Button>
       </div>
       {operation.failure && (
-        <p className="text-sm break-words text-destructive [overflow-wrap:anywhere]">{operation.failure}</p>
+        <p className="text-sm [overflow-wrap:anywhere] break-words text-destructive">
+          {operation.failure}
+        </p>
       )}
       {note && <p className="text-xs text-muted-foreground">{note}</p>}
     </li>
@@ -158,9 +196,11 @@ export function OperationsPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-bold tracking-tight">{t('customNodes.operation.title')}</h2>
         <Button variant="outline" disabled={rescanning || resolving} onClick={onRescan}>
-          {rescanning
-            ? <LoaderCircle className="animate-spin" aria-hidden="true" />
-            : <RefreshCw aria-hidden="true" />}
+          {rescanning ? (
+            <LoaderCircle className="animate-spin" aria-hidden="true" />
+          ) : (
+            <RefreshCw aria-hidden="true" />
+          )}
           {t('customNodes.operation.rescanRecovery')}
         </Button>
       </div>
@@ -169,7 +209,9 @@ export function OperationsPanel({
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{t('customNodes.operation.blockedTitle')}</AlertTitle>
           <AlertDescription>
-            {t('customNodes.operation.recoveryHint', { names: blocking.map((operation) => operation.nodeName).join(', ') })}
+            {t('customNodes.operation.recoveryHint', {
+              names: blocking.map((operation) => operation.nodeName).join(', '),
+            })}
           </AlertDescription>
         </Alert>
       )}
@@ -189,24 +231,38 @@ export function OperationsPanel({
       )}
       {unresolved.length > 0 && (
         <div className="flex flex-col gap-2">
-          <h3 className="font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">{t('customNodes.operation.unfinished')}</h3>
+          <h3 className="font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+            {t('customNodes.operation.unfinished')}
+          </h3>
           <ul className="flex flex-col gap-2">
             {unresolved.map((operation) => (
-              <OperationRow key={operation.id} operation={operation}
-                onKeepFiles={() => onKeepFiles(operation)} disabled={resolving || rescanning}
-                selected={selectedId === operation.id} onSelect={() => toggle(operation.id)} />
+              <OperationRow
+                key={operation.id}
+                operation={operation}
+                onKeepFiles={() => onKeepFiles(operation)}
+                disabled={resolving || rescanning}
+                selected={selectedId === operation.id}
+                onSelect={() => toggle(operation.id)}
+              />
             ))}
           </ul>
         </div>
       )}
       {recent.length > 0 ? (
         <div className="flex flex-col gap-2">
-          <h3 className="font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">{t('customNodes.operation.recent')}</h3>
+          <h3 className="font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+            {t('customNodes.operation.recent')}
+          </h3>
           <ul className="flex flex-col gap-2">
             {recent.map((operation) => (
-              <OperationRow key={operation.id} operation={operation}
-                onKeepFiles={() => onKeepFiles(operation)} disabled={resolving || rescanning}
-                selected={selectedId === operation.id} onSelect={() => toggle(operation.id)} />
+              <OperationRow
+                key={operation.id}
+                operation={operation}
+                onKeepFiles={() => onKeepFiles(operation)}
+                disabled={resolving || rescanning}
+                selected={selectedId === operation.id}
+                onSelect={() => toggle(operation.id)}
+              />
             ))}
           </ul>
         </div>

@@ -4,7 +4,12 @@ import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'rea
 import { useSettings } from '@/features/settings/queries'
 import type { CuratedReviewProps } from '@/features/setup/model'
 import { setLanguage, useTranslation } from '@/shared/i18n'
-import { gateway, IpcClientError, type SetupModeDto, type SetupStatusDto } from '@/shared/ipc/gateway'
+import {
+  gateway,
+  IpcClientError,
+  type SetupModeDto,
+  type SetupStatusDto,
+} from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
 import { useSetupStatus } from '@/shared/lib/environment-queries'
 import { queryClient } from '@/shared/lib/query'
@@ -19,29 +24,54 @@ import { Skeleton } from '@/shared/ui/skeleton'
 import { AppShell } from './shell/app-shell'
 import { ThemeToggle } from './shell/theme-toggle'
 
-const SetupWizardPreferences = lazy(() => import('./setup-wizard-preferences').then((m) => ({ default: m.SetupWizardPreferences })))
-const RebuildSetup = lazy(() => import('@/features/setup/rebuild-setup').then((m) => ({ default: m.RebuildSetup })))
-const ReviewDialog = lazy(() => import('@/features/custom-nodes/review-dialog').then((m) => ({ default: m.ReviewDialog })))
+const SetupWizardPreferences = lazy(() =>
+  import('./setup-wizard-preferences').then((m) => ({ default: m.SetupWizardPreferences })),
+)
+const RebuildSetup = lazy(() =>
+  import('@/features/setup/rebuild-setup').then((m) => ({ default: m.RebuildSetup })),
+)
+const ReviewDialog = lazy(() =>
+  import('@/features/custom-nodes/review-dialog').then((m) => ({ default: m.ReviewDialog })),
+)
 
 function CuratedReview(props: CuratedReviewProps) {
   const { t } = useTranslation()
-  return <ReviewDialog {...props} title={t('app.reviewCuratedNodes')}
-    commitLabel={t('app.approveRetry')} closeLabel={t('app.backToSetup')} allowRememberSource={false} />
+  return (
+    <ReviewDialog
+      {...props}
+      title={t('app.reviewCuratedNodes')}
+      commitLabel={t('app.approveRetry')}
+      closeLabel={t('app.backToSetup')}
+      allowRememberSource={false}
+    />
+  )
 }
 
 function renderCuratedReview(props: CuratedReviewProps) {
-  return <Suspense fallback={<Skeleton className="h-64" />}><CuratedReview {...props} /></Suspense>
+  return (
+    <Suspense fallback={<Skeleton className="h-64" />}>
+      <CuratedReview {...props} />
+    </Suspense>
+  )
 }
 
-function SetupFrame({ children, showThemeToggle = false }: { children: ReactNode; showThemeToggle?: boolean }) {
+function SetupFrame({
+  children,
+  showThemeToggle = false,
+}: {
+  children: ReactNode
+  showThemeToggle?: boolean
+}) {
   const { t } = useTranslation()
-  return <div className="flex min-h-screen flex-col bg-background text-foreground">
-    <header className="flex h-14 shrink-0 items-center justify-between border-b px-6">
-      <span className="font-mono text-xs">{t('app.setupTitle')}</span>
-      {showThemeToggle && <ThemeToggle />}
-    </header>
-    <main className="flex flex-col gap-6 p-6">{children}</main>
-  </div>
+  return (
+    <div className="flex min-h-screen flex-col bg-background text-foreground">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b px-6">
+        <span className="font-mono text-xs">{t('app.setupTitle')}</span>
+        {showThemeToggle && <ThemeToggle />}
+      </header>
+      <main className="flex flex-col gap-6 p-6">{children}</main>
+    </div>
+  )
 }
 
 const rootErrors = {
@@ -60,7 +90,9 @@ function RootRecovery({ status, refresh }: { status: SetupStatusDto; refresh: ()
   const locked = useRef(false)
   const selection = useMutation({
     mutationFn: async (kind: 'existing' | 'new') => {
-      const path = await gateway.pickFolder(kind === 'existing' ? t('app.locateInstall') : t('app.chooseNewFolder'))
+      const path = await gateway.pickFolder(
+        kind === 'existing' ? t('app.locateInstall') : t('app.chooseNewFolder'),
+      )
       if (!path) return null
       return kind === 'existing' ? gateway.setupOpenInstall(path) : gateway.setupNewInstall(path)
     },
@@ -76,30 +108,47 @@ function RootRecovery({ status, refresh }: { status: SetupStatusDto; refresh: ()
     selection.mutate(kind)
   }
   const code = selection.error instanceof IpcClientError ? selection.error.code : null
-  return <Alert variant="destructive">
-    <AlertTitle>{t('app.recoveryRequired')}</AlertTitle>
-    <AlertDescription>
-      <p>{status.recovery?.message}</p>
-      <p className="break-words font-mono text-xs [overflow-wrap:anywhere]">
-        {status.recovery?.code} · {t('app.recordedRoot', { root: status.installRoot })}
-      </p>
-      {status.recovery?.code === 'root_inaccessible' && <p>
-        {t('app.rootAccessHint')}
-      </p>}
-      <p>{t('app.selectInstallHint')}</p>
-      <p>{t('app.recheckHint')}</p>
-      {restarting && <p role="status">{t('app.restartingRoot')}</p>}
-      {selection.isError && <div role="alert">
-        <p>{t(code && Object.hasOwn(rootErrors, code) ? rootErrors[code as keyof typeof rootErrors] : 'app.selectionError')}</p>
-        <p className="break-words [overflow-wrap:anywhere]">{code && `${code}: `}{errorMessage(selection.error)}</p>
-      </div>}
-      <div className="flex flex-wrap gap-2">
-        <Button disabled={busy} onClick={() => choose('existing')}>{t('app.locateInstall')}</Button>
-        <Button disabled={busy} onClick={() => choose('new')}>{t('app.createInstall')}</Button>
-        <Button variant="outline" disabled={busy} onClick={refresh}>{t('app.recheckInstall')}</Button>
-      </div>
-    </AlertDescription>
-  </Alert>
+  return (
+    <Alert variant="destructive">
+      <AlertTitle>{t('app.recoveryRequired')}</AlertTitle>
+      <AlertDescription>
+        <p>{status.recovery?.message}</p>
+        <p className="font-mono text-xs [overflow-wrap:anywhere] break-words">
+          {status.recovery?.code} · {t('app.recordedRoot', { root: status.installRoot })}
+        </p>
+        {status.recovery?.code === 'root_inaccessible' && <p>{t('app.rootAccessHint')}</p>}
+        <p>{t('app.selectInstallHint')}</p>
+        <p>{t('app.recheckHint')}</p>
+        {restarting && <p role="status">{t('app.restartingRoot')}</p>}
+        {selection.isError && (
+          <div role="alert">
+            <p>
+              {t(
+                code && Object.hasOwn(rootErrors, code)
+                  ? rootErrors[code as keyof typeof rootErrors]
+                  : 'app.selectionError',
+              )}
+            </p>
+            <p className="[overflow-wrap:anywhere] break-words">
+              {code && `${code}: `}
+              {errorMessage(selection.error)}
+            </p>
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2">
+          <Button disabled={busy} onClick={() => choose('existing')}>
+            {t('app.locateInstall')}
+          </Button>
+          <Button disabled={busy} onClick={() => choose('new')}>
+            {t('app.createInstall')}
+          </Button>
+          <Button variant="outline" disabled={busy} onClick={refresh}>
+            {t('app.recheckInstall')}
+          </Button>
+        </div>
+      </AlertDescription>
+    </Alert>
+  )
 }
 
 function Workspace() {
@@ -114,53 +163,88 @@ function Workspace() {
     void status.refetch()
   }
   const data = status.data
-  const rebuildEntry = data?.phase === 'rebuild_required' ||
-    (data?.run?.mode === 'rebuild' && ['registered', 'running', 'failed', 'interrupted', 'cancelled'].includes(data.run.status))
+  const rebuildEntry =
+    data?.phase === 'rebuild_required' ||
+    (data?.run?.mode === 'rebuild' &&
+      ['registered', 'running', 'failed', 'interrupted', 'cancelled'].includes(data.run.status))
   // Once entered, retain this route through the ready poll before the native restart.
   if (rebuildEntry && !rebuildMounted) setRebuildMounted(true)
   const gated = !data?.activeEnv || data.phase === 'run_in_progress'
   const resume =
-    !!data?.run &&
-    ['registered', 'running', 'failed', 'interrupted'].includes(data.run.status)
+    !!data?.run && ['registered', 'running', 'failed', 'interrupted'].includes(data.run.status)
   const showWizard = data && (gated || wizard)
-  if (status.isPending) return <SetupFrame><Skeleton className="h-64" /></SetupFrame>
-  if (status.isError && !data) return <SetupFrame><ErrorNotice error={status.error} retry={refresh} /></SetupFrame>
+  if (status.isPending)
+    return (
+      <SetupFrame>
+        <Skeleton className="h-64" />
+      </SetupFrame>
+    )
+  if (status.isError && !data)
+    return (
+      <SetupFrame>
+        <ErrorNotice error={status.error} retry={refresh} />
+      </SetupFrame>
+    )
   if (!data) return null
   if (data.phase === 'recovery_required') {
-    const rootless = data.recovery?.code === 'root_missing' || data.recovery?.code === 'root_inaccessible'
-    return <SetupFrame>{rootless ? <RootRecovery status={data} refresh={refresh} /> :
-      <Alert variant="destructive">
-        <AlertTitle>{t('app.recoveryRequired')}</AlertTitle>
-        <AlertDescription>
-          <p>{data.recovery?.message ?? t('app.manifestAttention')}</p>
-          <p className="break-words font-mono text-xs [overflow-wrap:anywhere]">{data.recovery?.code} · {data.installRoot}</p>
-          <p>{t('app.setupBlocked')}</p>
-          <Button variant="outline" onClick={refresh}>{t('app.recheckInstall')}</Button>
-        </AlertDescription>
-      </Alert>}
-    </SetupFrame>
+    const rootless =
+      data.recovery?.code === 'root_missing' || data.recovery?.code === 'root_inaccessible'
+    return (
+      <SetupFrame>
+        {rootless ? (
+          <RootRecovery status={data} refresh={refresh} />
+        ) : (
+          <Alert variant="destructive">
+            <AlertTitle>{t('app.recoveryRequired')}</AlertTitle>
+            <AlertDescription>
+              <p>{data.recovery?.message ?? t('app.manifestAttention')}</p>
+              <p className="font-mono text-xs [overflow-wrap:anywhere] break-words">
+                {data.recovery?.code} · {data.installRoot}
+              </p>
+              <p>{t('app.setupBlocked')}</p>
+              <Button variant="outline" onClick={refresh}>
+                {t('app.recheckInstall')}
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+      </SetupFrame>
+    )
   }
-  if (rebuildEntry || rebuildMounted) return <SetupFrame>
-    <RebuildSetup status={data} refresh={refresh} renderCuratedReview={renderCuratedReview} />
-    {status.isError && <ErrorNotice error={status.error} retry={refresh} />}
-  </SetupFrame>
-  if (showWizard) return <SetupFrame showThemeToggle>
-    <ThemeSync />
-    <LanguageSync />
-    <SetupWizardPreferences key={wizard ? 'requested' : 'automatic'} status={data}
-      mode={wizard?.mode ?? (resume ? data.run!.mode : 'first_run')}
-      resume={wizard?.resume ?? resume} onClose={() => setWizard(null)} refresh={refresh}
-      renderCuratedReview={renderCuratedReview} />
-  </SetupFrame>
+  if (rebuildEntry || rebuildMounted)
+    return (
+      <SetupFrame>
+        <RebuildSetup status={data} refresh={refresh} renderCuratedReview={renderCuratedReview} />
+        {status.isError && <ErrorNotice error={status.error} retry={refresh} />}
+      </SetupFrame>
+    )
+  if (showWizard)
+    return (
+      <SetupFrame showThemeToggle>
+        <ThemeSync />
+        <LanguageSync />
+        <SetupWizardPreferences
+          key={wizard ? 'requested' : 'automatic'}
+          status={data}
+          mode={wizard?.mode ?? (resume ? data.run!.mode : 'first_run')}
+          resume={wizard?.resume ?? resume}
+          onClose={() => setWizard(null)}
+          refresh={refresh}
+          renderCuratedReview={renderCuratedReview}
+        />
+      </SetupFrame>
+    )
   return (
-    <><ThemeSync /><LanguageSync />
-    <AppShell
-      status={data}
-      onSetup={(mode) => setWizard({ mode, resume: false })}
-      onResume={() => {
-        if (data.run) setWizard({ mode: data.run.mode, resume: true })
-      }}
-    />
+    <>
+      <ThemeSync />
+      <LanguageSync />
+      <AppShell
+        status={data}
+        onSetup={(mode) => setWizard({ mode, resume: false })}
+        onResume={() => {
+          if (data.run) setWizard({ mode: data.run.mode, resume: true })
+        }}
+      />
     </>
   )
 }
@@ -195,7 +279,13 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <TooltipProvider>
-          <Suspense fallback={<SetupFrame><Skeleton className="h-64" /></SetupFrame>}>
+          <Suspense
+            fallback={
+              <SetupFrame>
+                <Skeleton className="h-64" />
+              </SetupFrame>
+            }
+          >
             <Workspace />
           </Suspense>
           <Toaster />

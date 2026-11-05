@@ -4,20 +4,10 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 
 import { t as translate, useTranslation } from '@/shared/i18n'
-import {
-  gateway,
-  type UpdateOfferDto,
-  type UpdateProgressDto,
-} from '@/shared/ipc/gateway'
+import { gateway, type UpdateOfferDto, type UpdateProgressDto } from '@/shared/ipc/gateway'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/shared/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
 import { Progress } from '@/shared/ui/progress'
 
 import { errorMessage } from './error-message'
@@ -30,7 +20,10 @@ function describeProgress(progress: UpdateProgressDto, t: typeof translate): str
   switch (progress.kind) {
     case 'downloading':
       return progress.totalBytes
-        ? t('settings.updates.downloadingTotal', { downloaded: mib(progress.downloadedBytes), total: mib(progress.totalBytes) })
+        ? t('settings.updates.downloadingTotal', {
+            downloaded: mib(progress.downloadedBytes),
+            total: mib(progress.totalBytes),
+          })
         : t('settings.updates.downloading', { downloaded: mib(progress.downloadedBytes) })
     case 'installing':
       return t('settings.updates.installing')
@@ -65,9 +58,13 @@ function Offer({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
-        <p className="text-sm font-semibold">{t('settings.updates.available', { version: offer.version })}</p>
+        <p className="text-sm font-semibold">
+          {t('settings.updates.available', { version: offer.version })}
+        </p>
         {offer.date && (
-          <p className="text-xs text-muted-foreground">{t('settings.updates.released', { date: offer.date })}</p>
+          <p className="text-xs text-muted-foreground">
+            {t('settings.updates.released', { date: offer.date })}
+          </p>
         )}
       </div>
       {offer.notes && (
@@ -75,9 +72,7 @@ function Offer({
           {offer.notes}
         </pre>
       )}
-      <p className="text-xs text-muted-foreground">
-        {t('settings.updates.installHint')}
-      </p>
+      <p className="text-xs text-muted-foreground">{t('settings.updates.installHint')}</p>
       {progress && (
         <div className="flex flex-col gap-2" aria-live="polite">
           <p className="text-sm">{describeProgress(progress, t)}</p>
@@ -113,8 +108,7 @@ export function UpdatesPanel({
   })
   const install = useMutation({
     // The id echoed back is the one of the offer the user reviewed.
-    mutationFn: (offer: UpdateOfferDto) =>
-      gateway.appUpdateInstall(offer.updateId, setProgress),
+    mutationFn: (offer: UpdateOfferDto) => gateway.appUpdateInstall(offer.updateId, setProgress),
     onError: () => {
       setProgress(null)
       // The installer consumed the reviewed offer; a new check starts a new review.
@@ -136,9 +130,7 @@ export function UpdatesPanel({
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {status.data && !configured && (
-          <p className="text-sm text-muted-foreground">
-            {t('settings.updates.unconfigured')}
-          </p>
+          <p className="text-sm text-muted-foreground">{t('settings.updates.unconfigured')}</p>
         )}
         {configured && (
           <>
@@ -153,9 +145,7 @@ export function UpdatesPanel({
               </Button>
             </div>
             {check.isSuccess && offer === null && (
-              <p className="text-sm text-muted-foreground">
-                {t('settings.updates.upToDate')}
-              </p>
+              <p className="text-sm text-muted-foreground">{t('settings.updates.upToDate')}</p>
             )}
             {offer && (
               <Offer

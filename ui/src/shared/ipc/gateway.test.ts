@@ -55,15 +55,22 @@ describe('gateway', () => {
     expect(commands.appReady).toHaveBeenCalledWith()
     commands.appReady.mockRejectedValueOnce(new Error('private transport details'))
     await expect(gateway.appReady()).rejects.toMatchObject({
-      name: 'IpcClientError', code: 'transport', message: 'Could not reach the application backend.',
+      name: 'IpcClientError',
+      code: 'transport',
+      message: 'Could not reach the application backend.',
     })
   })
 
   it('setup_curated_catalog_takes_no_arguments', async () => {
-    const catalog = [{
-      id: 'curated', name: 'Curated node', repository: 'https://example.com/node',
-      provenance: 'Latest default-branch commit', unavailable: null,
-    }]
+    const catalog = [
+      {
+        id: 'curated',
+        name: 'Curated node',
+        repository: 'https://example.com/node',
+        provenance: 'Latest default-branch commit',
+        unavailable: null,
+      },
+    ]
     commands.setupListCuratedNodes.mockResolvedValue({ status: 'ok', data: catalog })
     await expect(gateway.setupListCuratedNodes()).resolves.toBe(catalog)
     expect(commands.setupListCuratedNodes).toHaveBeenCalledWith()
@@ -79,10 +86,13 @@ describe('gateway', () => {
     expect(commands.setupNewInstall).toHaveBeenCalledWith('E:/New install')
 
     commands.setupOpenInstall.mockResolvedValue({
-      status: 'error', error: { code: 'root_invalid', message: 'Choose a valid installation.' },
+      status: 'error',
+      error: { code: 'root_invalid', message: 'Choose a valid installation.' },
     })
     await expect(gateway.setupOpenInstall('D:/Invalid')).rejects.toMatchObject({
-      name: 'IpcClientError', code: 'root_invalid', message: 'Choose a valid installation.',
+      name: 'IpcClientError',
+      code: 'root_invalid',
+      message: 'Choose a valid installation.',
     })
   })
 
@@ -92,24 +102,39 @@ describe('gateway', () => {
     const request = {
       mode: 'first_run' as const,
       pythonSource: { kind: 'managed' as const },
-      profileId: 'profile-1', comfyuiRef: { kind: 'latest' as const },
-      installManager: false, accelerators: ['sage', 'flash'], curatedNodes: ['curated'],
-      cleanCache: false, confirmAdoptedChanges: false, allowSourceBuilds: false,
+      profileId: 'profile-1',
+      comfyuiRef: { kind: 'latest' as const },
+      installManager: false,
+      accelerators: ['sage', 'flash'],
+      curatedNodes: ['curated'],
+      cleanCache: false,
+      confirmAdoptedChanges: false,
+      allowSourceBuilds: false,
       thirdPartyConsent: false,
     }
     await expect(gateway.setupRun({ kind: 'new', request }, vi.fn())).resolves.toBe(started)
     expect(commands.setupRun).toHaveBeenLastCalledWith({ kind: 'new', request }, expect.anything())
     const empty = { ...request, accelerators: [], curatedNodes: [] }
     await gateway.setupRun({ kind: 'new', request: empty }, vi.fn())
-    expect(commands.setupRun).toHaveBeenLastCalledWith({ kind: 'new', request: empty }, expect.anything())
+    expect(commands.setupRun).toHaveBeenLastCalledWith(
+      { kind: 'new', request: empty },
+      expect.anything(),
+    )
 
     const decision: CommitInput = {
-      planId: 'plan-1', binding: 'exact-binding', executeNodeCode: true,
-      runInstallPy: false, acknowledgeWarnings: true, rememberSource: false,
-      rememberInstallPy: false, confirmedChanges: [],
+      planId: 'plan-1',
+      binding: 'exact-binding',
+      executeNodeCode: true,
+      runInstallPy: false,
+      acknowledgeWarnings: true,
+      rememberSource: false,
+      rememberInstallPy: false,
+      confirmedChanges: [],
     }
     const retry = {
-      kind: 'retry', runId: 'run-1', managerConsent: 'exact-manager-commit',
+      kind: 'retry',
+      runId: 'run-1',
+      managerConsent: 'exact-manager-commit',
       curatedDecisions: [decision],
     } satisfies SetupActionDto
     await gateway.setupRun(retry, vi.fn())
@@ -121,7 +146,9 @@ describe('gateway', () => {
     const receive = vi.fn()
     await expect(gateway.nodeSubscribe(receive)).resolves.toBe(42)
     expect(commands.nodeSubscribe).toHaveBeenCalledTimes(1)
-    const [channel] = commands.nodeSubscribe.mock.calls[0] as [{ onmessage: (event: unknown) => void }]
+    const [channel] = commands.nodeSubscribe.mock.calls[0] as [
+      { onmessage: (event: unknown) => void },
+    ]
     expect(channel).not.toBe(receive)
     const event = { kind: 'snapshot', operations: [] }
     channel.onmessage(event)
@@ -130,17 +157,20 @@ describe('gateway', () => {
 
   it('node_repository_open_uses_generated_command', async () => {
     commands.nodeOpenRepository.mockResolvedValue({ status: 'ok', data: null })
-    await expect(gateway.nodeOpenRepository('https://github.com/example/node'))
-      .resolves.toBeNull()
-    expect(commands.nodeOpenRepository)
-      .toHaveBeenCalledWith('https://github.com/example/node')
+    await expect(gateway.nodeOpenRepository('https://github.com/example/node')).resolves.toBeNull()
+    expect(commands.nodeOpenRepository).toHaveBeenCalledWith('https://github.com/example/node')
   })
 
   it('node_git_status_wraps_node_id', async () => {
     const status = {
-      commit: 'a'.repeat(40), branch: 'main', dirty: true,
-      unfinishedOperation: false, ahead: 0, behind: 1,
-      hasUpstream: true, status: ' M requirements.txt\n',
+      commit: 'a'.repeat(40),
+      branch: 'main',
+      dirty: true,
+      unfinishedOperation: false,
+      ahead: 0,
+      behind: 1,
+      hasUpstream: true,
+      status: ' M requirements.txt\n',
     }
     commands.nodeGitStatus.mockResolvedValue({ status: 'ok', data: status })
     await expect(gateway.nodeGitStatus('node-1')).resolves.toEqual(status)
@@ -170,7 +200,10 @@ describe('gateway', () => {
     commands.galleryRename.mockResolvedValue({ status: 'ok', data: entry.location })
     commands.galleryMove.mockResolvedValue({ status: 'ok', data: report })
     commands.galleryCopy.mockResolvedValue({ status: 'ok', data: report })
-    commands.galleryDeletePlan.mockResolvedValue({ status: 'ok', data: { planId: 'p', items: [], totalBytes: 0 } })
+    commands.galleryDeletePlan.mockResolvedValue({
+      status: 'ok',
+      data: { planId: 'p', items: [], totalBytes: 0 },
+    })
     commands.galleryDelete.mockResolvedValue({ status: 'ok', data: report })
     commands.galleryReveal.mockResolvedValue({ status: 'ok', data: null })
 
@@ -195,7 +228,9 @@ describe('gateway', () => {
       error: { code: 'gallery_not_installed', message: 'Install ComfyUI first.' },
     })
     await expect(gateway.galleryList(directory)).rejects.toMatchObject({
-      name: 'IpcClientError', code: 'gallery_not_installed', message: 'Install ComfyUI first.',
+      name: 'IpcClientError',
+      code: 'gallery_not_installed',
+      message: 'Install ComfyUI first.',
     })
   })
 
@@ -247,9 +282,7 @@ describe('gateway', () => {
 
     commands.appUpdateInstall.mockResolvedValue({ status: 'ok', data: null })
     const receive = vi.fn()
-    await expect(
-      gateway.appUpdateInstall('update-1', receive),
-    ).resolves.toBeNull()
+    await expect(gateway.appUpdateInstall('update-1', receive)).resolves.toBeNull()
     expect(commands.appUpdateInstall).toHaveBeenCalledTimes(1)
     const [updateId, channel] = commands.appUpdateInstall.mock.calls[0] as [
       string,
@@ -323,9 +356,7 @@ describe('gateway', () => {
   })
 
   it('hides transport failure details behind a fixed message', async () => {
-    commands.appInfo.mockRejectedValue(
-      new Error('C:\\Users\\someone\\secret path failure'),
-    )
+    commands.appInfo.mockRejectedValue(new Error('C:\\Users\\someone\\secret path failure'))
     const failure = await gateway.appInfo().catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(IpcClientError)
     expect(failure).toMatchObject({ code: 'transport' })

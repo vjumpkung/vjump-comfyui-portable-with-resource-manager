@@ -21,6 +21,7 @@ Run from the repository root. Use the Rust toolchain in `rust-toolchain.toml` an
 - `pnpm -C ui tauri dev`: launch desktop development; `pnpm -C ui dev`: frontend only.
 - `pnpm -C ui build`: build frontend assets; `pnpm -C ui tauri build`: bundle desktop.
 - `pnpm -C ui lint` / `pnpm -C ui typecheck`: check lint and types.
+- `pnpm -C ui format` / `pnpm -C ui format:check`: apply or verify Prettier formatting.
 - `pnpm -C ui test`: run Vitest.
 - `cargo test --workspace --locked`: run Rust tests, including binding drift and ACL checks.
 - `cargo fmt --all -- --check`: check formatting.
@@ -43,7 +44,9 @@ CI also runs the check job on Ubuntu; if you cannot run Linux locally, say so an
 
 ## Coding Style & Naming Conventions
 
-Use rustfmt, four-space Rust indentation, and `snake_case` modules/functions. Match TypeScript's two-space indentation, single quotes, and omitted semicolons. Use PascalCase components/types and kebab-case feature filenames. ESLint enforces frontend boundaries. Regenerate IPC bindings through the export test; never edit generated files manually.
+Use rustfmt, four-space Rust indentation, and `snake_case` modules/functions. Prettier (`ui/.prettierrc`) owns formatting under `ui/`: two-space indentation, single quotes, omitted semicolons, and Tailwind class order (`prettier-plugin-tailwindcss`, including `cn()` and `cva()` arguments). Use PascalCase components/types and kebab-case feature filenames. ESLint enforces frontend boundaries. Regenerate IPC bindings through the export test; never edit generated files manually.
+
+**Always run `pnpm -C ui format` after editing anything under `ui/`**, before running checks or committing. Do this even if an editor or agent hook formats on save, because shell edits and generators such as `shadcn add` bypass those hooks. `ui/.prettierignore` already excludes the generated `bindings.ts`.
 
 ## Testing Guidelines
 

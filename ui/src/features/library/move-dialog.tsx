@@ -61,9 +61,7 @@ export function MoveDialog({ model, roots, categories, onClose, onSubmit }: Prop
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t('library.move.title')}</DialogTitle>
-          <DialogDescription>
-            {t('library.move.hint', { name: model.name })}
-          </DialogDescription>
+          <DialogDescription>{t('library.move.hint', { name: model.name })}</DialogDescription>
         </DialogHeader>
         <form
           className="flex flex-col gap-4"

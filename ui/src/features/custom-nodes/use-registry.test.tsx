@@ -1,6 +1,15 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, configure, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
+import {
+  act,
+  cleanup,
+  configure,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -56,14 +65,20 @@ it('search_resets_page_after_debounce', async () => {
   act(() => result.current.setPage(4))
   expect(result.current.query.page).toBe(4)
   act(() => result.current.setDraft('  sdxl '))
-  await act(async () => { await vi.advanceTimersByTimeAsync(299) })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(299)
+  })
   expect(result.current.query).toEqual({ search: '', page: 4, limit: 50 })
-  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1)
+  })
   expect(result.current.query).toEqual({ search: 'sdxl', page: 1, limit: 50 })
   // The same committed text keeps the page; a new limit resets it.
   act(() => result.current.setPage(3))
   act(() => result.current.setDraft('sdxl'))
-  await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300)
+  })
   expect(result.current.query.page).toBe(3)
   act(() => result.current.setLimit(200))
   expect(result.current.query).toEqual({ search: 'sdxl', page: 1, limit: 200 })
@@ -76,25 +91,36 @@ it('manual_refresh_is_one_shot', async () => {
   )
   await waitFor(() => expect(result.current.data).toBeDefined())
   expect(gateway.nodeRegistrySearch).toHaveBeenLastCalledWith({
-    search: '', page: 1, limit: 50, refresh: false,
+    search: '',
+    page: 1,
+    limit: 50,
+    refresh: false,
   })
   act(() => result.current.refresh())
   await waitFor(() => expect(gateway.nodeRegistrySearch).toHaveBeenCalledTimes(2))
   expect(gateway.nodeRegistrySearch).toHaveBeenLastCalledWith({
-    search: '', page: 1, limit: 50, refresh: true,
+    search: '',
+    page: 1,
+    limit: 50,
+    refresh: true,
   })
   await waitFor(() => expect(result.current.refreshing).toBe(false))
   rerender({ page: 2 })
   await waitFor(() => expect(gateway.nodeRegistrySearch).toHaveBeenCalledTimes(3))
   expect(gateway.nodeRegistrySearch).toHaveBeenLastCalledWith({
-    search: '', page: 2, limit: 50, refresh: false,
+    search: '',
+    page: 2,
+    limit: 50,
+    refresh: false,
   })
 })
 
 it('separates a failed refresh from a backend-confirmed stale cache', async () => {
   vi.mocked(gateway.nodeRegistrySearch)
     .mockResolvedValueOnce(registryPage([registryNode()], { stale: true }))
-    .mockRejectedValueOnce(new IpcClientError('registry_refused', 'The registry answered with HTTP 403.'))
+    .mockRejectedValueOnce(
+      new IpcClientError('registry_refused', 'The registry answered with HTTP 403.'),
+    )
   const { result } = renderHook(() => useRegistry({ search: '', page: 1, limit: 50 }), {
     wrapper: wrapper(),
   })
@@ -110,7 +136,9 @@ it('previous_query_results_cannot_be_installed', async () => {
   let release: (page: RegistryPageDto) => void = () => undefined
   vi.mocked(gateway.nodeRegistrySearch).mockImplementation((input) =>
     input.search === 'next'
-      ? new Promise<RegistryPageDto>((resolve) => { release = resolve })
+      ? new Promise<RegistryPageDto>((resolve) => {
+          release = resolve
+        })
       : Promise.resolve(registryPage([registryNode({ name: 'Old Result' })])),
   )
   const onInstall = vi.fn()
@@ -119,15 +147,22 @@ it('previous_query_results_cannot_be_installed', async () => {
       <RegistryBrowser installDisabledReason={null} onInstall={onInstall} />
     </QueryClientProvider>,
   )
-  const install = await screen.findByRole<HTMLButtonElement>('button', { name: 'Install Old Result' })
+  const install = await screen.findByRole<HTMLButtonElement>('button', {
+    name: 'Install Old Result',
+  })
   expect(install.disabled).toBe(false)
-  fireEvent.change(screen.getByLabelText('Search the Comfy Registry'), { target: { value: 'next' } })
+  fireEvent.change(screen.getByLabelText('Search the Comfy Registry'), {
+    target: { value: 'next' },
+  })
   await waitFor(() => expect(gateway.nodeRegistrySearch).toHaveBeenCalledTimes(2))
   const stale = screen.getByRole<HTMLButtonElement>('button', { name: 'Install Old Result' })
   expect(stale.disabled).toBe(true)
   fireEvent.click(stale)
   expect(onInstall).not.toHaveBeenCalled()
-  await act(async () => { release(registryPage([registryNode({ name: 'New Result' })])); await Promise.resolve() })
+  await act(async () => {
+    release(registryPage([registryNode({ name: 'New Result' })]))
+    await Promise.resolve()
+  })
   const fresh = await screen.findByRole<HTMLButtonElement>('button', { name: 'Install New Result' })
   expect(fresh.disabled).toBe(false)
 })
@@ -137,21 +172,25 @@ it('null_metadata_remains_unknown_and_zero_remains_zero', async () => {
   expect(formatCount(null)).toBe('—')
   expect(unknownText(null)).toBe('Unknown')
   expect(formatList(null)).toBe('Unknown')
-  vi.mocked(gateway.nodeRegistrySearch).mockResolvedValue(registryPage([registryNode({
-    name: 'Sparse',
-    downloads: 0,
-    githubStars: null,
-    latestVersion: null,
-    publisher: null,
-    description: null,
-    supportedOs: null,
-    supportedAccelerators: null,
-    supportedComfyuiVersion: null,
-    status: null,
-    os: 'unknown',
-    accelerator: 'unknown',
-    comfyui: 'unknown',
-  })]))
+  vi.mocked(gateway.nodeRegistrySearch).mockResolvedValue(
+    registryPage([
+      registryNode({
+        name: 'Sparse',
+        downloads: 0,
+        githubStars: null,
+        latestVersion: null,
+        publisher: null,
+        description: null,
+        supportedOs: null,
+        supportedAccelerators: null,
+        supportedComfyuiVersion: null,
+        status: null,
+        os: 'unknown',
+        accelerator: 'unknown',
+        comfyui: 'unknown',
+      }),
+    ]),
+  )
   render(
     <QueryClientProvider client={new QueryClient()}>
       <RegistryBrowser installDisabledReason={null} onInstall={vi.fn()} />
@@ -159,8 +198,9 @@ it('null_metadata_remains_unknown_and_zero_remains_zero', async () => {
   )
   await screen.findByText('Sparse')
   const row = screen.getByText('Sparse').closest('li') as HTMLElement
-  const field = (name: string) => [...row.querySelectorAll('dt')]
-    .find((dt) => dt.textContent === name)?.nextElementSibling?.textContent
+  const field = (name: string) =>
+    [...row.querySelectorAll('dt')].find((dt) => dt.textContent === name)?.nextElementSibling
+      ?.textContent
   expect(field('Downloads')).toBe('0')
   expect(field('GitHub stars')).toBe('—')
   expect(field('Latest version')).toBe('Unknown')

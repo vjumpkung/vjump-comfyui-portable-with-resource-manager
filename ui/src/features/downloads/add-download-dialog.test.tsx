@@ -13,38 +13,72 @@ vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
   gateway: { settingsGet: vi.fn(), dlResolve: vi.fn() },
 }))
 beforeEach(() => {
-  vi.stubGlobal('ResizeObserver', class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  })
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  )
 })
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 const settings: SettingsDto = {
-  downloadConcurrency: 3, hfEngine: 'hf_cli', closeBehavior: 'ask', theme: 'system',
-  language: 'en', registryCacheTtl: 6, bandwidthCapKibS: null, skipSecurityConfirmations: true,
+  downloadConcurrency: 3,
+  hfEngine: 'hf_cli',
+  closeBehavior: 'ask',
+  theme: 'system',
+  language: 'en',
+  registryCacheTtl: 6,
+  bandwidthCapKibS: null,
+  skipSecurityConfirmations: true,
 }
 
 it('late preference pre-ticks HTTP consent, sends it, and deliberate uncheck persists', async () => {
   let resolveSettings!: (value: SettingsDto) => void
-  vi.mocked(gateway.settingsGet).mockReturnValue(new Promise((resolve) => { resolveSettings = resolve }))
+  vi.mocked(gateway.settingsGet).mockReturnValue(
+    new Promise((resolve) => {
+      resolveSettings = resolve
+    }),
+  )
   vi.mocked(gateway.dlResolve).mockResolvedValue({ id: 1, files: [], selectionRequired: false })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={client}>
-    <AddDownloadDialog onClose={vi.fn()} onSubmit={vi.fn()} onOpenSettings={vi.fn()} />
-  </QueryClientProvider>)
-  fireEvent.change(screen.getByLabelText('Link'), { target: { value: 'http://example.com/model.bin' } })
+  render(
+    <QueryClientProvider client={client}>
+      <AddDownloadDialog onClose={vi.fn()} onSubmit={vi.fn()} onOpenSettings={vi.fn()} />
+    </QueryClientProvider>,
+  )
+  fireEvent.change(screen.getByLabelText('Link'), {
+    target: { value: 'http://example.com/model.bin' },
+  })
   const checkbox = screen.getByRole('checkbox')
   const lookup = screen.getByRole('button', { name: 'Look up' })
   expect(checkbox.getAttribute('aria-checked')).toBe('false')
   expect(lookup).toHaveProperty('disabled', true)
-  await act(async () => { resolveSettings(settings); await Promise.resolve() })
+  await act(async () => {
+    resolveSettings(settings)
+    await Promise.resolve()
+  })
   await waitFor(() => expect(checkbox.getAttribute('aria-checked')).toBe('true'))
   fireEvent.click(lookup)
-  await waitFor(() => expect(gateway.dlResolve).toHaveBeenCalledWith({ url: 'http://example.com/model.bin', httpConfirmed: true }))
+  await waitFor(() =>
+    expect(gateway.dlResolve).toHaveBeenCalledWith({
+      url: 'http://example.com/model.bin',
+      httpConfirmed: true,
+    }),
+  )
   fireEvent.click(checkbox)
-  await act(async () => { client.setQueryData(settingsKey, { ...settings, skipSecurityConfirmations: false }); await Promise.resolve() })
-  await act(async () => { client.setQueryData(settingsKey, settings); await Promise.resolve() })
+  await act(async () => {
+    client.setQueryData(settingsKey, { ...settings, skipSecurityConfirmations: false })
+    await Promise.resolve()
+  })
+  await act(async () => {
+    client.setQueryData(settingsKey, settings)
+    await Promise.resolve()
+  })
   expect(checkbox.getAttribute('aria-checked')).toBe('false')
   expect(lookup).toHaveProperty('disabled', true)
 })

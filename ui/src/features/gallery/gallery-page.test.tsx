@@ -93,7 +93,9 @@ afterEach(() => {
 
 function mount() {
   return render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
       <GalleryPage />
     </QueryClientProvider>,
   )
@@ -130,7 +132,9 @@ it('opens a folder with a double-click and returns through the breadcrumb', asyn
   expect(await findTile('deep.png')).toBeTruthy()
   expect(gateway.galleryList).toHaveBeenCalledWith({ area: 'input', path: 'renders' })
   const crumbs = screen.getByRole('navigation', { name: 'Folder path' })
-  expect(within(crumbs).getByRole('button', { name: 'renders' }).getAttribute('aria-current')).toBe('page')
+  expect(within(crumbs).getByRole('button', { name: 'renders' }).getAttribute('aria-current')).toBe(
+    'page',
+  )
   fireEvent.click(within(crumbs).getByRole('button', { name: 'Input' }))
   expect(await findTile('cat.png')).toBeTruthy()
   expect(screen.queryByRole('button', { name: /deep\.png/ })).toBeNull()
@@ -170,14 +174,18 @@ it('shows the selected entry in the system file manager and reports a failure', 
   await select('cat.png')
   fireEvent.click(screen.getByRole('button', { name: 'Show in Explorer' }))
   expect(gateway.galleryReveal).toHaveBeenCalledWith(file('cat.png').location)
-  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('The file manager could not be opened.'))
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith('The file manager could not be opened.'),
+  )
 })
 
 it('limits rename and show-in-explorer to exactly one selected entry', async () => {
   mount()
   await select('cat.png', 'clip.mp4')
   expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Rename' }).disabled).toBe(true)
-  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Show in Explorer' }).disabled).toBe(true)
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Show in Explorer' }).disabled).toBe(
+    true,
+  )
   expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Move to...' }).disabled).toBe(false)
 })
 
@@ -197,7 +205,10 @@ it('renames the selected entry with its revision and refetches', async () => {
   const before = vi.mocked(gateway.galleryList).mock.calls.length
   fireEvent.click(submit)
   await waitFor(() =>
-    expect(gateway.galleryRename).toHaveBeenCalledWith({ entry: refOf(file('cat.png')), newName: 'dog.png' }),
+    expect(gateway.galleryRename).toHaveBeenCalledWith({
+      entry: refOf(file('cat.png')),
+      newName: 'dog.png',
+    }),
   )
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   expect(vi.mocked(gateway.galleryList).mock.calls.length).toBeGreaterThan(before)
@@ -260,7 +271,9 @@ it('asks to refresh when the folder changed under a delete plan', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
   const dialog = await screen.findByRole('dialog')
   expect(await within(dialog).findByText('Could not delete')).toBeTruthy()
-  expect(within(dialog).getByText('The folder changed since it was listed. Refresh and try again.')).toBeTruthy()
+  expect(
+    within(dialog).getByText('The folder changed since it was listed. Refresh and try again.'),
+  ).toBeTruthy()
   expect(gateway.galleryDelete).not.toHaveBeenCalled()
 })
 
@@ -309,7 +322,9 @@ it('copies into another area and enters folders with the enter key', async () =>
     expect(gateway.galleryList).toHaveBeenCalledWith({ area: 'output', path: 'batch' }),
   )
   await waitFor(() =>
-    expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Copy here' }).disabled).toBe(false),
+    expect(
+      within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Copy here' }).disabled,
+    ).toBe(false),
   )
   fireEvent.click(within(dialog).getByRole('button', { name: 'Copy here' }))
   await waitFor(() =>
@@ -327,7 +342,10 @@ it('names every item a move could not finish, including a retained source', asyn
   const clip = file('clip.mp4', 'video')
   vi.mocked(gateway.galleryMove).mockResolvedValue(
     report(
-      result(cat, { outcome: 'source_retained', error: { code: 'io', message: 'The original is locked.' } }),
+      result(cat, {
+        outcome: 'source_retained',
+        error: { code: 'io', message: 'The original is locked.' },
+      }),
       result(clip, { outcome: 'failed', error: null }),
     ),
   )
@@ -336,12 +354,15 @@ it('names every item a move could not finish, including a retained source', asyn
   fireEvent.click(screen.getByRole('button', { name: 'Move to...' }))
   const dialog = await screen.findByRole('dialog')
   await waitFor(() =>
-    expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Move here' }).disabled).toBe(false),
+    expect(
+      within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Move here' }).disabled,
+    ).toBe(false),
   )
   fireEvent.click(within(dialog).getByRole('button', { name: 'Move here' }))
   await waitFor(() =>
     expect(toast.error).toHaveBeenCalledWith('2 items were not fully processed', {
-      description: 'cat.png: The original is locked.; clip.mp4: The operation could not be completed.',
+      description:
+        'cat.png: The original is locked.; clip.mp4: The operation could not be completed.',
     }),
   )
   expect(toast.success).not.toHaveBeenCalled()
@@ -356,7 +377,9 @@ it('toasts a busy backend and leaves the move dialog open to retry', async () =>
   fireEvent.click(screen.getByRole('button', { name: 'Move to...' }))
   const dialog = await screen.findByRole('dialog')
   await waitFor(() =>
-    expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Move here' }).disabled).toBe(false),
+    expect(
+      within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Move here' }).disabled,
+    ).toBe(false),
   )
   fireEvent.click(within(dialog).getByRole('button', { name: 'Move here' }))
   await waitFor(() =>
@@ -375,7 +398,9 @@ it('previews an image at its gallery URL and steps through files, skipping folde
   expect(within(dialog).getByRole('img', { name: 'cat.png' }).getAttribute('src')).toBe(
     'http://gallery.localhost/input/cat.png?v=rev-cat.png',
   )
-  expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Previous' }).disabled).toBe(true)
+  expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Previous' }).disabled).toBe(
+    true,
+  )
 
   fireEvent.keyDown(dialog, { key: 'ArrowRight' })
   expect(within(dialog).getByText('clip.mp4')).toBeTruthy()
@@ -389,7 +414,9 @@ it('previews an image at its gallery URL and steps through files, skipping folde
 
   fireEvent.keyDown(dialog, { key: 'ArrowRight' })
   expect(within(dialog).getByText('No preview for this file type')).toBeTruthy()
-  expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Next' }).disabled).toBe(true)
+  expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Next' }).disabled).toBe(
+    true,
+  )
   fireEvent.keyDown(dialog, { key: 'ArrowRight' })
   expect(within(dialog).getByText('notes.txt')).toBeTruthy()
 
@@ -415,9 +442,7 @@ it('previews audio with labeled controls and metadata preload', async () => {
   expect(audio.tagName).toBe('AUDIO')
   expect(audio.controls).toBe(true)
   expect(audio.preload).toBe('metadata')
-  expect(audio.getAttribute('src')).toBe(
-    'http://gallery.localhost/input/track.mp3?v=rev-track.mp3',
-  )
+  expect(audio.getAttribute('src')).toBe('http://gallery.localhost/input/track.mp3?v=rev-track.mp3')
   expect(audio.autoplay).toBe(false)
 })
 
@@ -432,21 +457,24 @@ it('shows the existing preview failure fallback when audio cannot be decoded', a
   expect(within(dialog).getByRole('button', { name: 'Show in Explorer' })).toBeTruthy()
 })
 
-it.each(['audio', 'video'] as const)('leaves arrow keys on %s controls for seeking', async (media) => {
-  const name = media === 'audio' ? 'track.mp3' : 'clip.mp4'
-  tree.set('input:', [file('cat.png'), file(name, media), file('notes.txt', 'other')])
-  mount()
-  fireEvent.doubleClick(await findTile(name))
-  const dialog = await screen.findByRole('dialog')
-  const controls = dialog.querySelector(media) as HTMLMediaElement
-  for (const key of ['ArrowLeft', 'ArrowRight']) {
-    expect(fireEvent.keyDown(controls, { key })).toBe(true)
-    expect(within(dialog).getByRole('heading', { name })).toBeTruthy()
-    expect(dialog.querySelector(media)).toBe(controls)
-  }
-  fireEvent.keyDown(dialog, { key: 'ArrowRight' })
-  expect(within(dialog).getByRole('heading', { name: 'notes.txt' })).toBeTruthy()
-})
+it.each(['audio', 'video'] as const)(
+  'leaves arrow keys on %s controls for seeking',
+  async (media) => {
+    const name = media === 'audio' ? 'track.mp3' : 'clip.mp4'
+    tree.set('input:', [file('cat.png'), file(name, media), file('notes.txt', 'other')])
+    mount()
+    fireEvent.doubleClick(await findTile(name))
+    const dialog = await screen.findByRole('dialog')
+    const controls = dialog.querySelector(media) as HTMLMediaElement
+    for (const key of ['ArrowLeft', 'ArrowRight']) {
+      expect(fireEvent.keyDown(controls, { key })).toBe(true)
+      expect(within(dialog).getByRole('heading', { name })).toBeTruthy()
+      expect(dialog.querySelector(media)).toBe(controls)
+    }
+    fireEvent.keyDown(dialog, { key: 'ArrowRight' })
+    expect(within(dialog).getByRole('heading', { name: 'notes.txt' })).toBeTruthy()
+  },
+)
 
 it('falls back with a message when an image, video or 3D file cannot be previewed', async () => {
   viewer.fail = true
@@ -473,7 +501,9 @@ it('tells the user to install ComfyUI when the gallery has no install', async ()
   expect(await screen.findByText('ComfyUI is not installed yet')).toBeTruthy()
   expect(screen.getByText(/Install ComfyUI first/)).toBeTruthy()
   expect(screen.queryByText('Unable to complete the request')).toBeNull()
-  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Open in Explorer' }).disabled).toBe(true)
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Open in Explorer' }).disabled).toBe(
+    true,
+  )
 })
 
 it('shows other failures inline and retries', async () => {
@@ -505,5 +535,7 @@ it('refreshes the listing on demand', async () => {
   await findTile('cat.png')
   const before = vi.mocked(gateway.galleryList).mock.calls.length
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
-  await waitFor(() => expect(vi.mocked(gateway.galleryList).mock.calls.length).toBeGreaterThan(before))
+  await waitFor(() =>
+    expect(vi.mocked(gateway.galleryList).mock.calls.length).toBeGreaterThan(before),
+  )
 })

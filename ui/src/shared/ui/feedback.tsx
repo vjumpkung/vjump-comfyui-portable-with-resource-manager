@@ -5,13 +5,7 @@ import { errorMessage } from '@/shared/lib/display'
 import { Alert, AlertDescription, AlertTitle } from './alert'
 import { Button } from './button'
 
-export function ErrorNotice({
-  error,
-  retry,
-}: {
-  error: unknown
-  retry?: () => void
-}) {
+export function ErrorNotice({ error, retry }: { error: unknown; retry?: () => void }) {
   const { t } = useTranslation()
   return (
     <Alert variant="destructive">

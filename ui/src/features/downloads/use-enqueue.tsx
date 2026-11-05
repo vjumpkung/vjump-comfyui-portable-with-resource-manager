@@ -87,9 +87,7 @@ export function useEnqueue(onOpenSettings: () => void): EnqueueFlow {
         }
       })
       if (queued > 0) {
-        toast.success(
-          translate('downloads.queued', { count: queued }),
-        )
+        toast.success(translate('downloads.queued', { count: queued }))
       }
       if (next.length > 0) setQueue((current) => [...current, ...next])
       return queued
@@ -142,11 +140,7 @@ export function useEnqueue(onOpenSettings: () => void): EnqueueFlow {
         title={t('downloads.nameExists')}
         description={t('downloads.pathExists', { path: prompt.destination.relativePath })}
         busy={busy}
-        note={
-          prompt.current
-            ? t('downloads.overwriteDisclosure')
-            : t('downloads.nameInUse')
-        }
+        note={prompt.current ? t('downloads.overwriteDisclosure') : t('downloads.nameInUse')}
         choices={[
           { id: 'skip', label: t('common.skip') },
           { id: 'keep_both', label: t('downloads.keepBoth') },

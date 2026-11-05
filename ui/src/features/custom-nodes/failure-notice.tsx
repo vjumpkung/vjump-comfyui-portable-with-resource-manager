@@ -13,10 +13,18 @@ function GitRefusalDetails({ nodeId }: { nodeId: string }) {
   const { t } = useTranslation()
   const status = useGitStatus(nodeId)
   if (status.isPending) {
-    return <p role="status" className="text-xs">{t('customNodes.readingGit')}</p>
+    return (
+      <p role="status" className="text-xs">
+        {t('customNodes.readingGit')}
+      </p>
+    )
   }
   if (status.isError) {
-    return <p className="text-xs">{t('customNodes.gitReadError', { error: errorMessage(status.error) })}</p>
+    return (
+      <p className="text-xs">
+        {t('customNodes.gitReadError', { error: errorMessage(status.error) })}
+      </p>
+    )
   }
   return (
     <div className="mt-2 flex flex-col gap-1">
@@ -47,17 +55,20 @@ export function FailureNotice({
   onDismiss: () => void
 }) {
   const { t } = useTranslation()
-  const informational = failure.kind === 'up_to_date' || failure.kind === 'busy' || failure.kind === 'cancelled'
+  const informational =
+    failure.kind === 'up_to_date' || failure.kind === 'busy' || failure.kind === 'cancelled'
   const guidanceKey = FAILURE_GUIDANCE[failure.kind]
   const prepare = failure.prepare
   return (
     <Alert variant={informational ? 'default' : 'destructive'}>
       <TriangleAlert aria-hidden="true" />
       <AlertTitle>
-        {failure.kind === 'up_to_date' ? t('customNodes.upToDate') : t('customNodes.didNotComplete', { context: actionContextLabel(failure.context) })}
+        {failure.kind === 'up_to_date'
+          ? t('customNodes.upToDate')
+          : t('customNodes.didNotComplete', { context: actionContextLabel(failure.context) })}
       </AlertTitle>
       <AlertDescription>
-        <p className="break-words [overflow-wrap:anywhere]">{nodeText(failure.message)}</p>
+        <p className="[overflow-wrap:anywhere] break-words">{nodeText(failure.message)}</p>
         {guidanceKey !== null && <p>{t(guidanceKey)}</p>}
         {failure.kind === 'git_refused' && failure.nodeId !== null && (
           <GitRefusalDetails nodeId={failure.nodeId} />
@@ -69,7 +80,9 @@ export function FailureNotice({
             </Button>
           )}
           {failure.kind === 'busy' && failure.retry !== null && (
-            <Button variant="outline" size="sm" onClick={onRetry}>{t('common.tryAgain')}</Button>
+            <Button variant="outline" size="sm" onClick={onRetry}>
+              {t('common.tryAgain')}
+            </Button>
           )}
           {failure.kind === 'stale' && prepare !== null && (
             <Button size="sm" onClick={() => onPrepareAgain(prepare)}>
@@ -80,12 +93,18 @@ export function FailureNotice({
             <p className="text-xs">{t('customNodes.freshPlanHint')}</p>
           )}
           {(failure.kind === 'dependencies' || failure.kind === 'cancelled') && (
-            <Button variant="outline" size="sm" onClick={onRepair}>{t('customNodes.goRepair')}</Button>
+            <Button variant="outline" size="sm" onClick={onRepair}>
+              {t('customNodes.goRepair')}
+            </Button>
           )}
           {failure.kind === 'recovery' && (
-            <Button variant="outline" size="sm" onClick={onRescan}>{t('customNodes.rescan')}</Button>
+            <Button variant="outline" size="sm" onClick={onRescan}>
+              {t('customNodes.rescan')}
+            </Button>
           )}
-          <Button variant="ghost" size="sm" onClick={onDismiss}>{t('common.dismiss')}</Button>
+          <Button variant="ghost" size="sm" onClick={onDismiss}>
+            {t('common.dismiss')}
+          </Button>
         </div>
       </AlertDescription>
     </Alert>

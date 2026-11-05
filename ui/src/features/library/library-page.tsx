@@ -4,11 +4,7 @@ import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 
 import { t as translate, useTranslation } from '@/shared/i18n'
-import {
-  gateway,
-  type ModelEntryDto,
-  type ModelLocationDto,
-} from '@/shared/ipc/gateway'
+import { gateway, type ModelEntryDto, type ModelLocationDto } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
@@ -85,8 +81,7 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
     (operation) => operation.phase === 'recovery_required',
   )
 
-  const patch = (change: Partial<Filters>) =>
-    setFilters((current) => ({ ...current, ...change }))
+  const patch = (change: Partial<Filters>) => setFilters((current) => ({ ...current, ...change }))
 
   function toggle(key: string) {
     setSelected((current) => {
@@ -97,9 +92,7 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
   }
   function toggleAll() {
     const keys = visible.map((m) => keyOf(m.location))
-    setSelected((current) =>
-      keys.every((key) => current.has(key)) ? new Set() : new Set(keys),
-    )
+    setSelected((current) => (keys.every((key) => current.has(key)) ? new Set() : new Set(keys)))
   }
 
   async function rescan() {
@@ -120,10 +113,8 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
   }
 
   function askDelete() {
-    const targets =
-      selectedVisible.length > 0 ? selectedVisible : active ? [active] : []
-    if (targets.length > 0)
-      setDialog({ kind: 'delete', locations: targets.map((m) => m.location) })
+    const targets = selectedVisible.length > 0 ? selectedVisible : active ? [active] : []
+    if (targets.length > 0) setDialog({ kind: 'delete', locations: targets.map((m) => m.location) })
   }
 
   async function identify(model: ModelEntryDto, replaceExisting: boolean) {
@@ -139,7 +130,10 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
         toast.info(translate('library.notIdentified'))
       } else {
         toast.success(
-          translate(outcome.preview === 'written' ? 'library.identified' : 'library.identifiedNoPreview', { name: outcome.version.modelName }),
+          translate(
+            outcome.preview === 'written' ? 'library.identified' : 'library.identifiedNoPreview',
+            { name: outcome.version.modelName },
+          ),
         )
       }
       void store.refresh()
@@ -162,8 +156,15 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
             {all.length === 0
               ? t('library.summaryEmpty', { count: all.length })
               : selectedVisible.length > 0
-                ? t('library.summarySelected', { count: all.length, size: formatBytes(all.reduce((sum, m) => sum + (m.size ?? 0), 0)), selected: selectedVisible.length })
-                : t('library.summary', { count: all.length, size: formatBytes(all.reduce((sum, m) => sum + (m.size ?? 0), 0)) })}
+                ? t('library.summarySelected', {
+                    count: all.length,
+                    size: formatBytes(all.reduce((sum, m) => sum + (m.size ?? 0), 0)),
+                    selected: selectedVisible.length,
+                  })
+                : t('library.summary', {
+                    count: all.length,
+                    size: formatBytes(all.reduce((sum, m) => sum + (m.size ?? 0), 0)),
+                  })}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -192,7 +193,9 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{t('library.watcher.title')}</AlertTitle>
           <AlertDescription>
-            {t(status.watcher === 'polling' ? 'library.watcher.polling' : 'library.watcher.disabled')}
+            {t(
+              status.watcher === 'polling' ? 'library.watcher.polling' : 'library.watcher.disabled',
+            )}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -200,9 +203,7 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
         <Alert variant="destructive">
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{t('library.recovery.title')}</AlertTitle>
-          <AlertDescription>
-            {t('library.recovery.hint')}
-          </AlertDescription>
+          <AlertDescription>{t('library.recovery.hint')}</AlertDescription>
         </Alert>
       ) : null}
       {unavailableRoots.length > 0 ? (
@@ -210,7 +211,9 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{t('library.unavailable.title')}</AlertTitle>
           <AlertDescription>
-            {t('library.unavailable.hint', { folders: unavailableRoots.map((root) => root.label).join(', ') })}
+            {t('library.unavailable.hint', {
+              folders: unavailableRoots.map((root) => root.label).join(', '),
+            })}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -331,9 +334,7 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
               onRename={() => setDialog({ kind: 'rename', model: active })}
               onMove={() => setDialog({ kind: 'move', model: active })}
               onReveal={() => void reveal(active.location)}
-              onDelete={() =>
-                setDialog({ kind: 'delete', locations: [active.location] })
-              }
+              onDelete={() => setDialog({ kind: 'delete', locations: [active.location] })}
             />
           ) : null}
         </div>

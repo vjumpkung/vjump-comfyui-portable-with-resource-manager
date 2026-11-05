@@ -20,9 +20,7 @@ export function RuntimeControls() {
     start.mutate(undefined, {
       onSuccess: (result) => {
         if (result.kind === 'port_conflict') {
-          toast.error(
-            translate('runtime.controls.portConflict', { port: result.requested }),
-          )
+          toast.error(translate('runtime.controls.portConflict', { port: result.requested }))
         }
       },
       onError: (error) => toast.error(errorMessage(error)),
@@ -49,9 +47,7 @@ export function RuntimeControls() {
       ) : (
         <Button
           size="sm"
-          disabled={
-            start.isPending || !runtime.status || lifecycle === 'stopping'
-          }
+          disabled={start.isPending || !runtime.status || lifecycle === 'stopping'}
           aria-busy={start.isPending}
           onClick={onStart}
         >

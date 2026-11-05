@@ -1,9 +1,4 @@
-import {
-  keepPreviousData,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
 import { gateway, type RegistrySearchInput } from '@/shared/ipc/gateway'
@@ -31,8 +26,7 @@ export function useRegistryControls() {
   useEffect(() => {
     const timer = setTimeout(() => {
       const search = draft.trim()
-      setQuery((current) =>
-        current.search === search ? current : { ...current, search, page: 1 })
+      setQuery((current) => (current.search === search ? current : { ...current, search, page: 1 }))
     }, SEARCH_DEBOUNCE_MS)
     return () => clearTimeout(timer)
   }, [draft])
@@ -40,11 +34,9 @@ export function useRegistryControls() {
     draft,
     setDraft,
     query,
-    setPage: (page: number) =>
-      setQuery((current) => ({ ...current, page: Math.max(1, page) })),
+    setPage: (page: number) => setQuery((current) => ({ ...current, page: Math.max(1, page) })),
     setLimit: (limit: number) =>
-      setQuery((current) =>
-        current.limit === limit ? current : { ...current, limit, page: 1 }),
+      setQuery((current) => (current.limit === limit ? current : { ...current, limit, page: 1 })),
   }
 }
 
@@ -65,10 +57,7 @@ export function useRegistry(input: RegistryQuery) {
     mutationFn: (request: RegistryQuery) =>
       gateway.nodeRegistrySearch({ ...request, refresh: true }),
     onSuccess: (data, request) => {
-      client.setQueryData(
-        [...REGISTRY_KEY, request.search, request.page, request.limit],
-        data,
-      )
+      client.setQueryData([...REGISTRY_KEY, request.search, request.page, request.limit], data)
     },
   })
   const refreshed = refresh.variables !== undefined && sameQuery(refresh.variables, input)

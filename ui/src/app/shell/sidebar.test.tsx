@@ -13,7 +13,12 @@ afterEach(() => {
 })
 
 it('updates_mounted_navigation_and_status_when_language_changes', () => {
-  render(<><Sidebar active="overview" onSelect={vi.fn()} /><StatusBadge status="running" /></>)
+  render(
+    <>
+      <Sidebar active="overview" onSelect={vi.fn()} />
+      <StatusBadge status="running" />
+    </>,
+  )
   const navigation = screen.getByRole('navigation', { name: 'Main' })
   const overview = screen.getByRole('button', { name: 'Overview' })
   expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy()

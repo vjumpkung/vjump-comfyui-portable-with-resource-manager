@@ -1,13 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -95,10 +88,7 @@ const row = (name: string) =>
 
 it('lists models and filters them by search text and category', async () => {
   mount(
-    snapshot([
-      model({ name: 'alpha.safetensors' }),
-      model({ name: 'beta.pt', category: 'loras' }),
-    ]),
+    snapshot([model({ name: 'alpha.safetensors' }), model({ name: 'beta.pt', category: 'loras' })]),
   )
   expect(await screen.findByText('alpha.safetensors')).toBeTruthy()
   expect(screen.getByText('beta.pt')).toBeTruthy()
@@ -134,14 +124,8 @@ it('does not show a banner while native watching works', async () => {
 
 it('renders only a window of a long list and keeps the full row count', async () => {
   const sizes = {
-    offsetHeight: Object.getOwnPropertyDescriptor(
-      HTMLElement.prototype,
-      'offsetHeight',
-    ),
-    offsetWidth: Object.getOwnPropertyDescriptor(
-      HTMLElement.prototype,
-      'offsetWidth',
-    ),
+    offsetHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight'),
+    offsetWidth: Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth'),
   }
   Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
     configurable: true,
@@ -155,15 +139,11 @@ it('renders only a window of a long list and keeps the full row count', async ()
     mount(snapshot(many(1000)))
     await screen.findByRole('grid', { name: 'Models' })
     await waitFor(() => {
-      const rendered = screen
-        .getAllByRole('row')
-        .filter((r) => r.hasAttribute('data-key')).length
+      const rendered = screen.getAllByRole('row').filter((r) => r.hasAttribute('data-key')).length
       expect(rendered).toBeGreaterThan(0)
       expect(rendered).toBeLessThan(60)
     })
-    expect(screen.getByRole('grid', { name: 'Models' }).getAttribute('aria-rowcount')).toBe(
-      '1001',
-    )
+    expect(screen.getByRole('grid', { name: 'Models' }).getAttribute('aria-rowcount')).toBe('1001')
   } finally {
     for (const [name, descriptor] of Object.entries(sizes)) {
       if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor)
@@ -176,9 +156,7 @@ it('moves focus with the arrow keys and opens delete with the Delete key', async
     id: 'plan-1',
     permanent: false,
     totalBytes: 100,
-    items: [
-      { location: model({ name: 'b.pt' }).location, name: 'b.pt', size: 100 },
-    ],
+    items: [{ location: model({ name: 'b.pt' }).location, name: 'b.pt', size: 100 }],
   })
   mount(snapshot([model({ name: 'a.pt' }), model({ name: 'b.pt' })]))
   const first = await screen.findByRole('row', { name: /a\.pt/ })
@@ -240,9 +218,7 @@ it('shows CivitAI details and preview of the selected model and identifies it', 
   expect(await screen.findByText('Cool Model')).toBeTruthy()
   expect(screen.getByText('SDXL 1.0')).toBeTruthy()
   expect(screen.getByText('zzz style')).toBeTruthy()
-  expect(screen.getByRole('img').getAttribute('src')).toBe(
-    'data:image/png;base64,AAAA',
-  )
+  expect(screen.getByRole('img').getAttribute('src')).toBe('data:image/png;base64,AAAA')
   fireEvent.click(screen.getByRole('button', { name: /Identify on CivitAI/ }))
   expect(await screen.findByText('Replace existing metadata?')).toBeTruthy()
   expect(gateway.modelIdentify).toHaveBeenLastCalledWith(
@@ -257,9 +233,7 @@ it('shows CivitAI details and preview of the selected model and identifies it', 
 })
 
 it('warns when a rename changes the extension and requires acknowledgement', async () => {
-  vi.mocked(gateway.modelRename).mockResolvedValue(
-    model({ name: 'new.ckpt' }).location,
-  )
+  vi.mocked(gateway.modelRename).mockResolvedValue(model({ name: 'new.ckpt' }).location)
   mount()
   fireEvent.click(await screen.findByRole('row', { name: /model\.safetensors/ }))
   fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
@@ -344,9 +318,7 @@ it('confirms with the total size, reports every file and separates permanent del
   }
   vi.mocked(gateway.modelDelete).mockResolvedValue(report)
   vi.mocked(gateway.modelDeletePermanently).mockResolvedValue({
-    results: [
-      { location: model({ name: 'b.pt' }).location, outcome: { kind: 'deleted' } },
-    ],
+    results: [{ location: model({ name: 'b.pt' }).location, outcome: { kind: 'deleted' } }],
     permanentPlan: null,
   })
   mount(snapshot([model({ name: 'a.pt' }), model({ name: 'b.pt' })]))
@@ -369,9 +341,7 @@ it('confirms with the total size, reports every file and separates permanent del
   fireEvent.click(screen.getByLabelText('I understand this cannot be undone'))
   await waitFor(() => expect((permanent as HTMLButtonElement).disabled).toBe(false))
   fireEvent.click(permanent)
-  await waitFor(() =>
-    expect(gateway.modelDeletePermanently).toHaveBeenCalledWith('perm-plan'),
-  )
+  await waitFor(() => expect(gateway.modelDeletePermanently).toHaveBeenCalledWith('perm-plan'))
 })
 
 it('retries locked files after stopping ComfyUI with a fresh plan', async () => {
@@ -380,15 +350,11 @@ it('retries locked files after stopping ComfyUI with a fresh plan', async () => 
     .mockResolvedValueOnce({ ...plan(['a.pt']), id: 'plan-2' })
   vi.mocked(gateway.modelDelete)
     .mockResolvedValueOnce({
-      results: [
-        { location: model({ name: 'a.pt' }).location, outcome: { kind: 'locked' } },
-      ],
+      results: [{ location: model({ name: 'a.pt' }).location, outcome: { kind: 'locked' } }],
       permanentPlan: null,
     })
     .mockResolvedValueOnce({
-      results: [
-        { location: model({ name: 'a.pt' }).location, outcome: { kind: 'deleted' } },
-      ],
+      results: [{ location: model({ name: 'a.pt' }).location, outcome: { kind: 'deleted' } }],
       permanentPlan: null,
     })
   mount(snapshot([model({ name: 'a.pt' })]))

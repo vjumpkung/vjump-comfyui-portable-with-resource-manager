@@ -5,9 +5,13 @@ import { allowedUrl, BLOCKED_URL } from './model-viewer'
 const prefix = 'http://gallery.localhost/output/'
 
 it('lets a model load its own embedded data and files of its own area', () => {
-  expect(allowedUrl('blob:http://tauri.localhost/1b2c', prefix)).toBe('blob:http://tauri.localhost/1b2c')
+  expect(allowedUrl('blob:http://tauri.localhost/1b2c', prefix)).toBe(
+    'blob:http://tauri.localhost/1b2c',
+  )
   expect(allowedUrl('data:image/png;base64,AAAA', prefix)).toBe('data:image/png;base64,AAAA')
-  expect(allowedUrl(`${prefix}models/robot.gltf?v=r1`, prefix)).toBe(`${prefix}models/robot.gltf?v=r1`)
+  expect(allowedUrl(`${prefix}models/robot.gltf?v=r1`, prefix)).toBe(
+    `${prefix}models/robot.gltf?v=r1`,
+  )
   expect(allowedUrl(`${prefix}models/my tex.png`, prefix)).toBe(`${prefix}models/my%20tex.png`)
 })
 
@@ -31,7 +35,9 @@ it('replaces everything else with a URL that cannot be decoded', () => {
 
 it('guards the non-Windows protocol form too', () => {
   const unix = 'gallery://localhost/input/'
-  expect(allowedUrl('gallery://localhost/input/a.glb?v=1', unix)).toBe('gallery://localhost/input/a.glb?v=1')
+  expect(allowedUrl('gallery://localhost/input/a.glb?v=1', unix)).toBe(
+    'gallery://localhost/input/a.glb?v=1',
+  )
   expect(allowedUrl('gallery://localhost/output/a.glb', unix)).toBe(BLOCKED_URL)
   expect(allowedUrl('gallery://localhost/input/../output/a.glb', unix)).toBe(BLOCKED_URL)
 })

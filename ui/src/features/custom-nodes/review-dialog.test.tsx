@@ -81,7 +81,9 @@ it('remembered_hook_starts_unchecked', () => {
   expect(checked(/execute third-party code/)).toBe(false)
   expect(checked(/install\.py script/)).toBe(false)
   expect(screen.getByText(/starts with script execution unchecked/)).toBeTruthy()
-  expect(screen.queryByRole('checkbox', { name: /remember permission to run install\.py/ })).toBeNull()
+  expect(
+    screen.queryByRole('checkbox', { name: /remember permission to run install\.py/ }),
+  ).toBeNull()
   expect((apply() as HTMLButtonElement).disabled).toBe(true)
 })
 
@@ -96,17 +98,28 @@ it('approved_hook_discloses_install_py_before_requirements', () => {
   fireEvent.click(box(/execute third-party code/))
   fireEvent.click(hook)
   fireEvent.click(apply())
-  expect(onCommit).toHaveBeenCalledWith([expect.objectContaining({
-    executeNodeCode: true,
-    runInstallPy: true,
-    rememberSource: false,
-    rememberInstallPy: false,
-  })])
+  expect(onCommit).toHaveBeenCalledWith([
+    expect.objectContaining({
+      executeNodeCode: true,
+      runInstallPy: true,
+      rememberSource: false,
+      rememberInstallPy: false,
+    }),
+  ])
 })
 
 it('warnings_and_pin_changes_require_explicit_confirmation', () => {
   const changes = [{ name: 'torch', from: '2.14.1', to: '2.15.0' }]
-  render(ui([plan({ id: 'p1', binding: 'b9', warnings: ['Flagged by the registry'], protectedChanges: changes })]))
+  render(
+    ui([
+      plan({
+        id: 'p1',
+        binding: 'b9',
+        warnings: ['Flagged by the registry'],
+        protectedChanges: changes,
+      }),
+    ]),
+  )
   expect(screen.getByText('Flagged by the registry')).toBeTruthy()
   expect(screen.getByText(/torch: 2\.14\.1/)).toBeTruthy()
   fireEvent.click(box(/execute third-party code/))
@@ -129,7 +142,9 @@ it('warnings_and_pin_changes_require_explicit_confirmation', () => {
 
 it('busy_review_cannot_be_discarded', () => {
   render(ui([plan()], true))
-  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Discard plans' }).disabled).toBe(true)
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Discard plans' }).disabled).toBe(
+    true,
+  )
   fireEvent.keyDown(document, { key: 'Escape' })
   expect(onClose).not.toHaveBeenCalled()
   expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
@@ -147,12 +162,16 @@ it('offers no cancellation request without a valid key and discards an idle revi
 })
 
 it('shows the exact source, tree identity and the requirements scope', () => {
-  render(ui([plan({
-    kind: 'update',
-    priorSource: { kind: 'manual' },
-    hookDigest: 'd'.repeat(64),
-    hasInstallPy: true,
-  })]))
+  render(
+    ui([
+      plan({
+        kind: 'update',
+        priorSource: { kind: 'manual' },
+        hookDigest: 'd'.repeat(64),
+        hasInstallPy: true,
+      }),
+    ]),
+  )
   expect(screen.getByText('Tree identity')).toBeTruthy()
   expect(screen.queryByText(/Tree SHA-256/)).toBeNull()
   expect(screen.getByText('example-pack@1.2.3')).toBeTruthy()
@@ -162,9 +181,13 @@ it('shows the exact source, tree identity and the requirements scope', () => {
 })
 
 it('offers trust only when the source has a namespace', () => {
-  render(ui([plan({
-    source: { kind: 'registry', id: 'p', publisher: null, version: '1', repository: null },
-  })]))
+  render(
+    ui([
+      plan({
+        source: { kind: 'registry', id: 'p', publisher: null, version: '1', repository: null },
+      }),
+    ]),
+  )
   expect(screen.queryByRole('checkbox', { name: /Remember this source as trusted/ })).toBeNull()
   cleanup()
   render(ui([plan({ hasInstallPy: true })]))
@@ -172,14 +195,25 @@ it('offers trust only when the source has a namespace', () => {
   fireEvent.click(box(/Remember this source as trusted/))
   expect(box(/remember permission to run install\.py/)).toBeTruthy()
   fireEvent.click(box(/install\.py script/))
-  expect(screen.queryByRole('checkbox', { name: /remember permission to run install\.py/ })).toBeNull()
+  expect(
+    screen.queryByRole('checkbox', { name: /remember permission to run install\.py/ }),
+  ).toBeNull()
 })
 
 it('setup_review_hides_trust_memory_and_keeps_decisions_unremembered', () => {
-  render(<ReviewDialog plans={[plan({ warnings: ['Pinned checkout is detached'] })]}
-    busy={false} onCommit={onCommit} onClose={onClose} onCancel={null}
-    title="Review curated setup nodes" commitLabel="Approve and retry setup"
-    closeLabel="Back to setup" allowRememberSource={false} />)
+  render(
+    <ReviewDialog
+      plans={[plan({ warnings: ['Pinned checkout is detached'] })]}
+      busy={false}
+      onCommit={onCommit}
+      onClose={onClose}
+      onCancel={null}
+      title="Review curated setup nodes"
+      commitLabel="Approve and retry setup"
+      closeLabel="Back to setup"
+      allowRememberSource={false}
+    />,
+  )
   expect(screen.getByRole('heading', { name: 'Review curated setup nodes' })).toBeTruthy()
   expect(screen.queryByRole('checkbox', { name: /Remember/ })).toBeNull()
   expect(checked(/execute third-party code/)).toBe(false)
@@ -189,16 +223,25 @@ it('setup_review_hides_trust_memory_and_keeps_decisions_unremembered', () => {
   expect(approve.disabled).toBe(true)
   fireEvent.click(box(/acknowledge all displayed warnings/))
   fireEvent.click(approve)
-  expect(onCommit).toHaveBeenCalledWith([expect.objectContaining({
-    executeNodeCode: true, acknowledgeWarnings: true,
-    rememberSource: false, rememberInstallPy: false, runInstallPy: false,
-  })])
+  expect(onCommit).toHaveBeenCalledWith([
+    expect.objectContaining({
+      executeNodeCode: true,
+      acknowledgeWarnings: true,
+      rememberSource: false,
+      rememberInstallPy: false,
+      runInstallPy: false,
+    }),
+  ])
   fireEvent.click(screen.getByRole('button', { name: 'Back to setup' }))
   expect(onClose).toHaveBeenCalledTimes(1)
 })
 
 it('late security preference pre-ticks valid plan-bound consent without trust or pins', () => {
-  const reviewed = plan({ hasInstallPy: true, warnings: ['Reviewed warning'], protectedChanges: [] })
+  const reviewed = plan({
+    hasInstallPy: true,
+    warnings: ['Reviewed warning'],
+    protectedChanges: [],
+  })
   const view = render(ui([reviewed]))
   expect(checked(/execute third-party code/)).toBe(false)
   skipSecurity = true
@@ -208,11 +251,18 @@ it('late security preference pre-ticks valid plan-bound consent without trust or
   expect(checked(/acknowledge.*warnings/i)).toBe(true)
   expect(screen.getByText(/Security confirmations are pre-ticked because/)).toBeTruthy()
   fireEvent.click(apply())
-  expect(onCommit).toHaveBeenCalledWith([{
-    planId: reviewed.id, binding: reviewed.binding, executeNodeCode: true,
-    runInstallPy: true, acknowledgeWarnings: true, confirmedChanges: [],
-    rememberSource: false, rememberInstallPy: false,
-  }])
+  expect(onCommit).toHaveBeenCalledWith([
+    {
+      planId: reviewed.id,
+      binding: reviewed.binding,
+      executeNodeCode: true,
+      runInstallPy: true,
+      acknowledgeWarnings: true,
+      confirmedChanges: [],
+      rememberSource: false,
+      rememberInstallPy: false,
+    },
+  ])
   fireEvent.click(box(/execute third-party code/))
   view.rerender(ui([reviewed]))
   expect(checked(/execute third-party code/)).toBe(false)
