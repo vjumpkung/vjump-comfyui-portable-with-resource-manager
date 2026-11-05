@@ -2,7 +2,7 @@
 //! Installs and updates are two-step: a prepare command returns a reviewable plan with an opaque
 //! ID, and a commit command consumes it with the user's consent. The UI never supplies resolved
 //! metadata, paths or transfer URLs. Closing a window or dropping a subscription never cancels
-//! backend work; only `node_cancel` does.
+//! node mutations; only `node_cancel` does.
 
 use application::custom_nodes::{
     CommitDecision, NodeAppError, OperationPhase, PrepareRequest, RegistryQuery,
@@ -67,6 +67,8 @@ pub(super) fn decision(input: CommitInput) -> Result<(String, CommitDecision), I
 }
 
 async fn list(nodes: &NodeServices) -> Result<NodeListDto, IpcError> {
+    // Read first: a scan that finishes while the rows are read must not leave a stale "done".
+    let scanning = nodes.scanning();
     let installed = nodes.service.list().await?;
     let unresolved = nodes
         .service
@@ -94,6 +96,8 @@ async fn list(nodes: &NodeServices) -> Result<NodeListDto, IpcError> {
             .map(|op| OperationDto::new(op, nodes.stack.hub.tail(op.id.as_str())))
             .collect(),
         repair_required: nodes.service.repair_required().await?,
+        scanning,
+        scan_incomplete: nodes.service.scans().incomplete(),
     })
 }
 
@@ -207,7 +211,10 @@ pub async fn node_resolve_operation(
     let nodes = &state.services()?.nodes;
     let result = nodes.service.resolve_operation(&operation_id).await;
     nodes.changed();
-    result?;
+    match result {
+        Ok(_) | Err(NodeAppError::Cancelled) => {}
+        Err(error) => return Err(error.into()),
+    }
     list(nodes).await
 }
 

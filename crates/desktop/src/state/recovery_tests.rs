@@ -743,6 +743,164 @@ async fn activated_root_without_comfyui_still_creates_models() {
     assert!(root.join("ComfyUI").join("models").is_dir());
 }
 
+async fn compose_without_services(root: &Path) -> AppState {
+    AppState::compose(
+        &ResolvedRoot {
+            root: root.to_owned(),
+            source: RootSource::Bootstrap,
+        },
+        Arc::new(NoPicker),
+    )
+    .await
+    .unwrap()
+}
+
+/// A root that already holds ComfyUI with one hand-made custom node.
+fn root_with_manual_node(directory: &tempfile::TempDir) -> PathBuf {
+    let root = directory.path().join("existing install");
+    let pack = root
+        .join("ComfyUI")
+        .join("custom_nodes")
+        .join("manual-pack");
+    fs::create_dir_all(&pack).unwrap();
+    fs::write(pack.join("__init__.py"), "# manual pack\n").unwrap();
+    root
+}
+
+const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[tokio::test]
+async fn existing_root_composes_before_the_node_scan_and_scans_after_start_services() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = root_with_manual_node(&directory);
+
+    let state = compose_without_services(&root).await;
+
+    let nodes = &state.services().unwrap().nodes;
+    // Composition returned: readiness does not wait for the scan, which is only scheduled.
+    assert!(nodes.scanning());
+    assert!(nodes.service.list().await.unwrap().is_empty());
+    state.start_services();
+    tokio::time::timeout(WAIT, nodes.wait_for_scan())
+        .await
+        .unwrap();
+    assert!(!nodes.scanning());
+    let listed = nodes.service.list().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name.as_str(), "manual-pack");
+}
+
+#[tokio::test]
+async fn fresh_root_schedules_no_node_scan() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("fresh install");
+    fs::create_dir_all(&root).unwrap();
+
+    let state = compose_without_services(&root).await;
+
+    let nodes = &state.services().unwrap().nodes;
+    assert!(!nodes.scanning());
+    // Nothing is armed, so starting does nothing and never consumes the one-shot guard.
+    nodes.start_scan();
+    state.start_services();
+    assert!(!nodes.scan_started.load(Ordering::SeqCst));
+    tokio::time::timeout(WAIT, nodes.wait_for_scan())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_node_scan_waits_for_maintenance_and_never_runs_twice() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = root_with_manual_node(&directory);
+    let state = compose_without_services(&root).await;
+    let services = state.services().unwrap();
+    let nodes = &services.nodes;
+    let mut events = nodes.stack.hub.subscribe();
+    // Maintenance that got the gate first.
+    let lease = services.gate.acquire().await.unwrap();
+
+    nodes.start_scan();
+    nodes.start_scan();
+
+    assert!(nodes.scan_started.load(Ordering::SeqCst));
+    let mut waiter = Box::pin(nodes.wait_for_scan());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), &mut waiter)
+            .await
+            .is_err(),
+        "the waiter must block while the scan waits for the gate"
+    );
+    assert!(nodes.scanning());
+    assert!(nodes.service.list().await.unwrap().is_empty());
+
+    drop(lease);
+    tokio::time::timeout(WAIT, waiter).await.unwrap();
+    assert!(!nodes.scanning());
+    assert_eq!(nodes.service.list().await.unwrap().len(), 1);
+    // Exactly one worker finished: one completion event, then silence.
+    let (_, event) = tokio::time::timeout(WAIT, events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(event, NodeEvent::Changed);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), events.recv())
+            .await
+            .is_err()
+    );
+    // A later start finds nothing armed.
+    nodes.start_scan();
+    assert!(!nodes.scanning());
+}
+
+#[tokio::test]
+async fn the_scan_flag_is_kept_without_subscribers_and_wakes_a_waiter() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = root_with_manual_node(&directory);
+    let state = compose_without_services(&root).await;
+    let nodes = &state.services().unwrap().nodes;
+    // Armed by composition although nothing ever subscribed.
+    assert!(nodes.scanning());
+    let mut waiter = Box::pin(nodes.wait_for_scan());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut waiter)
+            .await
+            .is_err()
+    );
+    nodes.scan.send_replace(false);
+    tokio::time::timeout(WAIT, waiter).await.unwrap();
+    // A waiter that starts after the end returns at once.
+    tokio::time::timeout(std::time::Duration::from_secs(1), nodes.wait_for_scan())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_startup_scan_skipped_while_closing_keeps_rows_and_clears_the_scan_flag() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = root_with_manual_node(&directory);
+    let state = compose_without_services(&root).await;
+    let nodes = &state.services().unwrap().nodes;
+    let pause = nodes.service.scans().pause();
+
+    nodes.start_scan();
+    tokio::time::timeout(WAIT, nodes.wait_for_scan())
+        .await
+        .unwrap();
+
+    assert!(!nodes.scanning());
+    assert!(nodes.service.scans().incomplete());
+    assert!(nodes.service.list().await.unwrap().is_empty());
+    drop(pause);
+    assert!(!nodes.service.scans().closing());
+    nodes.service.rescan().await.unwrap();
+    assert!(!nodes.service.scans().incomplete());
+    let listed = nodes.service.list().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name.as_str(), "manual-pack");
+}
+
 #[test]
 fn e3_startup_logging_is_withheld_from_a_missing_bootstrap_root() {
     let directory = tempfile::tempdir().unwrap();

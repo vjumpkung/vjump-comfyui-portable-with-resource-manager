@@ -84,7 +84,9 @@ export function useNodes() {
       const continuous = sameEpoch && cursor !== null && cursor.sequence !== null &&
         event.sequence !== null && event.sequence === cursor.sequence + 1
       cursor = { epoch: event.epoch, sequence: event.sequence }
-      if (event.kind === 'changed' || !continuous) refreshAll()
+      // A finished background scan can retry recovery, which changes environment health too.
+      if (event.kind === 'changed') refreshNodeState(client)
+      else if (!continuous) refreshAll()
       if (event.kind === 'log') {
         const entry: NodeLogEntry = {
           epoch: event.epoch,

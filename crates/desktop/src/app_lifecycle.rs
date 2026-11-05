@@ -19,6 +19,7 @@ use application::{
         CloseAction, InventoryState, RuntimeError, RuntimeEvent, RuntimeStatus, RuntimeSupervisor,
         close_action,
     },
+    custom_nodes::ScanControl,
     shared::{ExplorerTarget, MaintenanceGate, MaintenanceLease},
 };
 use domain::comfy_runtime::{FailureKind, Lifecycle};
@@ -28,6 +29,9 @@ use tauri_plugin_opener::OpenerExt;
 use tokio::sync::watch;
 
 use crate::{MANAGER_WINDOW, comfy_window::COMFYUI_WINDOW, ipc::error::IpcError, state::AppState};
+
+// Allow cooperative observation to leave the maintenance gate before refusing close.
+const SCAN_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Window and browser actions behind a runtime-independent interface, so the commands stay
 /// non-generic. Installed once the application handle exists.
@@ -166,10 +170,32 @@ impl CloseCoordinator {
     async fn guard_exit(
         &self,
         gate: &dyn MaintenanceGate,
+        scans: &Arc<ScanControl>,
         supervisor: &dyn RuntimeSupervisor,
         root: &Path,
     ) -> Result<CloseAction, RuntimeError> {
-        let lease = gate.try_acquire().await.map_err(|_| RuntimeError::Busy)?;
+        let pause = scans.pause();
+        let lease = if pause.stopped_scan() {
+            tokio::time::timeout(SCAN_STOP_WAIT, gate.acquire())
+                .await
+                .map_err(|_| RuntimeError::Busy)
+                .and_then(|result| result.map_err(|_| RuntimeError::Busy))
+        } else {
+            gate.try_acquire().await.map_err(|_| RuntimeError::Busy)
+        };
+        let lease = match lease {
+            Ok(lease) => lease,
+            Err(RuntimeError::Busy)
+                if self
+                    .exit_lease
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_some() =>
+            {
+                return Ok(CloseAction::Exit);
+            }
+            Err(error) => return Err(error),
+        };
         let inventory = supervisor.inventory(root).await?;
         let status = supervisor.status().await;
         if matches!(
@@ -186,6 +212,7 @@ impl CloseCoordinator {
             tracing::warn!(%reason, "exiting while a process this app does not own uses the installation");
         }
         *self.exit_lease.lock().unwrap_or_else(|p| p.into_inner()) = Some(lease);
+        pause.keep();
         Ok(CloseAction::Exit)
     }
 
@@ -193,6 +220,7 @@ impl CloseCoordinator {
         &self,
         action: CloseAction,
         gate: &dyn MaintenanceGate,
+        scans: &Arc<ScanControl>,
         supervisor: &dyn RuntimeSupervisor,
         root: &Path,
         stop: impl Future<Output = Result<RuntimeStatus, RuntimeError>>,
@@ -209,10 +237,11 @@ impl CloseCoordinator {
             supervisor.status().await.lifecycle,
             Lifecycle::Stopped | Lifecycle::Crashed
         ) {
-            return self.guard_exit(gate, supervisor, root).await;
+            return self.guard_exit(gate, scans, supervisor, root).await;
         }
         match action {
             CloseAction::StopThenExit => {
+                let _pause = scans.pause();
                 match stop.await {
                     Ok(_) => {}
                     Err(RuntimeError::NodeRescanFailed) => {
@@ -222,7 +251,7 @@ impl CloseCoordinator {
                     }
                     Err(error) => return Err(error),
                 }
-                self.guard_exit(gate, supervisor, root).await
+                self.guard_exit(gate, scans, supervisor, root).await
             }
             CloseAction::KeepRunningHeadless => {
                 if matches!(
@@ -235,10 +264,10 @@ impl CloseCoordinator {
                     Ok(action)
                 } else {
                     // A stale keep-running response must use the same guarded stop check.
-                    self.guard_exit(gate, supervisor, root).await
+                    self.guard_exit(gate, scans, supervisor, root).await
                 }
             }
-            CloseAction::Exit => self.guard_exit(gate, supervisor, root).await,
+            CloseAction::Exit => self.guard_exit(gate, scans, supervisor, root).await,
             CloseAction::Ask => Ok(action),
         }
     }
@@ -361,6 +390,7 @@ pub async fn perform<R: Runtime>(app: AppHandle<R>, action: CloseAction) {
             .prepare(
                 action,
                 services.gate.as_ref(),
+                services.nodes.service.scans(),
                 services.comfy.supervisor.as_ref(),
                 &services.root.root,
                 services.comfy.stop.execute(),
@@ -629,6 +659,7 @@ mod tests {
                 .prepare(
                     CloseAction::StopThenExit,
                     &gate,
+                    &Arc::new(ScanControl::default()),
                     &supervisor,
                     Path::new("root"),
                     supervisor.stopped(result),
@@ -661,6 +692,7 @@ mod tests {
                     .prepare(
                         CloseAction::StopThenExit,
                         &gate,
+                        &Arc::new(ScanControl::default()),
                         &supervisor,
                         Path::new("root"),
                         supervisor.stopped(Err(RuntimeError::NodeRescanFailed))
@@ -683,6 +715,7 @@ mod tests {
                     .prepare(
                         CloseAction::Exit,
                         &gate,
+                        &Arc::new(ScanControl::default()),
                         &supervisor,
                         Path::new("root"),
                         async { unreachable!() }
@@ -712,6 +745,7 @@ mod tests {
                         .prepare(
                             CloseAction::Exit,
                             &gate,
+                            &Arc::new(ScanControl::default()),
                             &supervisor,
                             Path::new("root"),
                             async { unreachable!() }
@@ -731,6 +765,7 @@ mod tests {
                 .prepare(
                     CloseAction::StopThenExit,
                     &gate,
+                    &Arc::new(ScanControl::default()),
                     &supervisor,
                     Path::new("root"),
                     async { Ok(RuntimeStatus::default()) }
@@ -745,6 +780,7 @@ mod tests {
             .prepare(
                 CloseAction::StopThenExit,
                 &gate,
+                &Arc::new(ScanControl::default()),
                 &supervisor,
                 Path::new("root"),
                 async {
@@ -784,6 +820,7 @@ mod tests {
                 .prepare(
                     CloseAction::Exit,
                     &gate,
+                    &Arc::new(ScanControl::default()),
                     &supervisor,
                     Path::new("root"),
                     async { panic!("close must not stop/cancel {work}") },
@@ -811,6 +848,278 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn close_stops_an_active_scan_and_keeps_the_exit_lease_and_pause() {
+        let gate = TokioMaintenanceGate::new();
+        let scans = Arc::new(ScanControl::default());
+        let lease = gate.acquire().await.unwrap();
+        let activity = scans.begin(lease.as_ref()).unwrap();
+        let token = activity.token().clone();
+        let close = CloseCoordinator::default();
+        let supervisor = Supervisor::new(&gate, Lifecycle::Stopped);
+
+        let (action, scan) = tokio::join!(
+            close.prepare(
+                CloseAction::Exit,
+                &gate,
+                &scans,
+                &supervisor,
+                Path::new("root"),
+                async { unreachable!() },
+            ),
+            async {
+                while !token.is_cancelled() {
+                    tokio::task::yield_now().await;
+                }
+                let result =
+                    activity.finish::<()>(Err(application::custom_nodes::NodeAppError::Cancelled));
+                drop(lease);
+                result
+            }
+        );
+
+        assert_eq!(action, Ok(CloseAction::Exit));
+        assert!(matches!(
+            scan,
+            Err(application::custom_nodes::NodeAppError::Cancelled)
+        ));
+        assert!(token.is_cancelled());
+        assert!(scans.closing());
+        assert!(close.exit_lease.lock().unwrap().is_some());
+        assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
+    }
+
+    #[tokio::test]
+    async fn maintenance_with_a_queued_scan_refuses_close_without_waiting() {
+        let gate = TokioMaintenanceGate::new();
+        let scans = Arc::new(ScanControl::default());
+        let maintenance = gate.acquire().await.unwrap();
+        let (queued, waiting) = tokio::sync::oneshot::channel();
+        let scan = {
+            let gate = gate.clone();
+            let scans = Arc::clone(&scans);
+            tokio::spawn(async move {
+                queued.send(()).unwrap();
+                let lease = gate.acquire().await.unwrap();
+                let activity = scans.begin(lease.as_ref()).unwrap();
+                assert!(!activity.token().is_cancelled());
+                activity.finish(Ok(())).unwrap();
+            })
+        };
+        waiting.await.unwrap();
+        let close = CloseCoordinator::default();
+        let supervisor = Supervisor::new(&gate, Lifecycle::Stopped);
+        let began = std::time::Instant::now();
+
+        let action = close
+            .prepare(
+                CloseAction::Exit,
+                &gate,
+                &scans,
+                &supervisor,
+                Path::new("root"),
+                async { unreachable!() },
+            )
+            .await;
+
+        assert_eq!(action, Err(RuntimeError::Busy));
+        assert!(began.elapsed() < SCAN_STOP_WAIT / 2);
+        assert!(!scans.closing());
+        assert!(!scan.is_finished());
+        assert!(close.exit_lease.lock().unwrap().is_none());
+        drop(maintenance);
+        scan.await.unwrap();
+        assert!(gate.try_acquire().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_scan_that_cannot_finish_in_time_refuses_close_and_resumes_scans() {
+        let gate = TokioMaintenanceGate::new();
+        let scans = Arc::new(ScanControl::default());
+        let lease = gate.acquire().await.unwrap();
+        let activity = scans.begin(lease.as_ref()).unwrap();
+        let token = activity.token().clone();
+        let close = CloseCoordinator::default();
+        let supervisor = Supervisor::new(&gate, Lifecycle::Stopped);
+        let began = std::time::Instant::now();
+
+        let action = close
+            .prepare(
+                CloseAction::Exit,
+                &gate,
+                &scans,
+                &supervisor,
+                Path::new("root"),
+                async { unreachable!() },
+            )
+            .await;
+
+        assert_eq!(action, Err(RuntimeError::Busy));
+        assert!(began.elapsed() >= SCAN_STOP_WAIT);
+        assert!(token.is_cancelled());
+        assert!(!scans.closing());
+        assert!(close.exit_lease.lock().unwrap().is_none());
+        assert_eq!(supervisor.inspections.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            activity.finish::<()>(Err(application::custom_nodes::NodeAppError::Cancelled)),
+            Err(application::custom_nodes::NodeAppError::Cancelled)
+        ));
+        drop(lease);
+        let lease = gate.acquire().await.unwrap();
+        let next = scans.begin(lease.as_ref()).unwrap();
+        assert!(!next.token().is_cancelled());
+        assert!(token.is_cancelled());
+        next.finish(Ok(())).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_runtime_refusal_leaves_later_scans_working() {
+        let gate = TokioMaintenanceGate::new();
+        let scans = Arc::new(ScanControl::default());
+        let supervisor = Supervisor::new(&gate, Lifecycle::Stopped);
+        *supervisor.inventory.lock().unwrap() = Ok(InventoryState::OwnedRunning);
+        let close = CloseCoordinator::default();
+
+        assert_eq!(
+            close
+                .prepare(
+                    CloseAction::Exit,
+                    &gate,
+                    &scans,
+                    &supervisor,
+                    Path::new("root"),
+                    async { unreachable!() },
+                )
+                .await,
+            Err(RuntimeError::NeedsStop)
+        );
+
+        assert!(!scans.closing());
+        let lease = gate.acquire().await.unwrap();
+        let activity = scans.begin(lease.as_ref()).unwrap();
+        assert!(!activity.token().is_cancelled());
+        activity.finish(Ok(())).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_concurrent_close_returns_exit_when_the_other_close_reserved_it() {
+        struct DelayedGate {
+            gate: TokioMaintenanceGate,
+            entered: tokio::sync::Notify,
+            resume: tokio::sync::Notify,
+        }
+
+        #[async_trait::async_trait]
+        impl MaintenanceGate for DelayedGate {
+            async fn acquire(&self) -> Result<Box<dyn MaintenanceLease>, GateError> {
+                self.gate.acquire().await
+            }
+
+            async fn try_acquire(&self) -> Result<Box<dyn MaintenanceLease>, GateError> {
+                self.entered.notify_one();
+                self.resume.notified().await;
+                self.gate.try_acquire().await
+            }
+        }
+
+        let gate = TokioMaintenanceGate::new();
+        let delayed = DelayedGate {
+            gate: gate.clone(),
+            entered: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        };
+        let scans = Arc::new(ScanControl::default());
+        let supervisor = Supervisor::new(&gate, Lifecycle::Stopped);
+        let close = CloseCoordinator::default();
+        let (first, second) = tokio::join!(
+            async {
+                delayed.entered.notified().await;
+                let result = close
+                    .prepare(
+                        CloseAction::Exit,
+                        &gate,
+                        &scans,
+                        &supervisor,
+                        Path::new("root"),
+                        async { unreachable!() },
+                    )
+                    .await;
+                delayed.resume.notify_one();
+                result
+            },
+            close.prepare(
+                CloseAction::Exit,
+                &delayed,
+                &scans,
+                &supervisor,
+                Path::new("root"),
+                async { unreachable!() },
+            )
+        );
+
+        assert_eq!(first, Ok(CloseAction::Exit));
+        assert_eq!(second, Ok(CloseAction::Exit));
+        assert!(scans.closing());
+        assert!(close.exit_lease.lock().unwrap().is_some());
+        assert_eq!(supervisor.inspections.load(Ordering::SeqCst), 1);
+        assert_eq!(gate.try_acquire().await.err(), Some(GateError::Busy));
+    }
+
+    #[tokio::test]
+    async fn stop_then_exit_pauses_scans_before_stopping_without_holding_the_gate() {
+        let gate = TokioMaintenanceGate::new();
+        let scans = Arc::new(ScanControl::default());
+        let supervisor = Supervisor::new(&gate, Lifecycle::Running);
+        let close = CloseCoordinator::default();
+
+        let action = close
+            .prepare(
+                CloseAction::StopThenExit,
+                &gate,
+                &scans,
+                &supervisor,
+                Path::new("root"),
+                async {
+                    assert!(scans.closing());
+                    let lease = gate.acquire().await.unwrap();
+                    assert!(scans.begin(lease.as_ref()).is_none());
+                    drop(lease);
+                    supervisor.stopped(Ok(())).await
+                },
+            )
+            .await;
+
+        assert_eq!(action, Ok(CloseAction::Exit));
+        assert!(scans.closing());
+        assert!(close.exit_lease.lock().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn asking_and_keeping_the_runtime_headless_leave_scans_unpaused() {
+        for action in [CloseAction::Ask, CloseAction::KeepRunningHeadless] {
+            let gate = TokioMaintenanceGate::new();
+            let scans = Arc::new(ScanControl::default());
+            let supervisor = Supervisor::new(&gate, Lifecycle::Running);
+            *supervisor.inventory.lock().unwrap() = Ok(InventoryState::OwnedRunning);
+            supervisor.require_gate.store(false, Ordering::SeqCst);
+
+            assert_eq!(
+                CloseCoordinator::default()
+                    .prepare(
+                        action,
+                        &gate,
+                        &scans,
+                        &supervisor,
+                        Path::new("root"),
+                        async { unreachable!() },
+                    )
+                    .await,
+                Ok(action)
+            );
+            assert!(!scans.closing());
+        }
+    }
+
+    #[tokio::test]
     async fn exit_lease_prevents_new_maintenance_before_process_exit() {
         let gate = TokioMaintenanceGate::new();
         let supervisor = Supervisor::new(&gate, Lifecycle::Stopped);
@@ -820,6 +1129,7 @@ mod tests {
                 .prepare(
                     CloseAction::Exit,
                     &gate,
+                    &Arc::new(ScanControl::default()),
                     &supervisor,
                     Path::new("root"),
                     async { unreachable!() }
@@ -840,6 +1150,7 @@ mod tests {
                 .prepare(
                     CloseAction::Exit,
                     &gate,
+                    &Arc::new(ScanControl::default()),
                     &supervisor,
                     Path::new("root"),
                     async { unreachable!() }
@@ -866,9 +1177,14 @@ mod tests {
             assert!(close.resolve(&request));
             assert!(matches!(
                 close
-                    .prepare(action, &gate, &supervisor, Path::new("root"), async {
-                        panic!("stale response must not stop maintenance")
-                    })
+                    .prepare(
+                        action,
+                        &gate,
+                        &Arc::new(ScanControl::default()),
+                        &supervisor,
+                        Path::new("root"),
+                        async { panic!("stale response must not stop maintenance") }
+                    )
                     .await,
                 Err(RuntimeError::Busy)
             ));
@@ -887,6 +1203,7 @@ mod tests {
                 .prepare(
                     CloseAction::Exit,
                     &gate,
+                    &Arc::new(ScanControl::default()),
                     &supervisor,
                     Path::new("root"),
                     async { unreachable!() }
@@ -908,6 +1225,7 @@ mod tests {
                 .prepare(
                     CloseAction::KeepRunningHeadless,
                     &gate,
+                    &Arc::new(ScanControl::default()),
                     &supervisor,
                     Path::new("root"),
                     async { unreachable!() }

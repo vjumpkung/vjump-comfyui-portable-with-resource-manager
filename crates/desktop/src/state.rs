@@ -16,7 +16,9 @@ use application::{
         ReadExtraModelPaths, RestartComfy, RuntimeDeps, RuntimeError, RuntimeEvents, RuntimeStore,
         RuntimeSupervisor, SetLaunchOptions, StartComfy, StopComfy, UpdateComfy,
     },
-    custom_nodes::{LocateNode, NodeContext, NodeRequirements, NodeService, PrepareRequest},
+    custom_nodes::{
+        LocateNode, NodeAppError, NodeContext, NodeRequirements, NodeService, PrepareRequest,
+    },
     environment::{
         ActiveRuns, ApplyPackageChange, CancelSetup, CuratedNodeCatalog, DeleteEnvironment,
         DetectHardware, EnvironmentDeps, ExecuteSetup, ExistingInstallOpener, GetEnvironmentInfo,
@@ -522,6 +524,24 @@ pub struct NodeServices {
     active: Mutex<HashMap<String, CancelToken>>,
     pub(crate) subscriptions: Mutex<HashMap<u32, tauri::async_runtime::JoinHandle<()>>>,
     next_subscription: AtomicU32,
+    /// True from the moment the startup inventory scan is scheduled until it has ended,
+    /// including the time it waits for the maintenance gate.
+    scan: tokio::sync::watch::Sender<bool>,
+    scan_started: AtomicBool,
+}
+
+/// Ends the startup scan however its task ends (completion, error, panic or cancellation):
+/// clears the flag first, then tells subscribers to refetch.
+struct ScanCompletion {
+    scan: tokio::sync::watch::Sender<bool>,
+    hub: Arc<NodeHub>,
+}
+
+impl Drop for ScanCompletion {
+    fn drop(&mut self) {
+        self.scan.send_replace(false);
+        self.hub.publish(NodeEvent::Changed);
+    }
 }
 
 struct NotifyingNodeLifecycle {
@@ -551,11 +571,57 @@ impl NodeServices {
             active: Mutex::default(),
             subscriptions: Mutex::default(),
             next_subscription: AtomicU32::new(1),
+            scan: tokio::sync::watch::Sender::new(false),
+            scan_started: AtomicBool::new(false),
         }
     }
 
     pub(crate) fn next_subscription(&self) -> u32 {
         self.next_subscription.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Schedules the startup inventory scan; `start_scan` runs it once the state is published.
+    fn arm_scan(&self) {
+        self.scan.send_replace(true);
+    }
+
+    /// Whether the startup inventory scan is scheduled or running.
+    pub(crate) fn scanning(&self) -> bool {
+        *self.scan.borrow()
+    }
+
+    /// Runs the armed startup scan in the background. Does nothing when no scan is armed, and
+    /// never starts a second one.
+    pub(crate) fn start_scan(&self) {
+        if !self.scanning() || self.scan_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let completion = ScanCompletion {
+            scan: self.scan.clone(),
+            hub: self.stack.hub.clone(),
+        };
+        let service = self.service.clone();
+        tauri::async_runtime::spawn(async move {
+            let _completion = completion;
+            match service.rescan_when_free().await {
+                Ok(_) => tracing::info!("custom node scan finished"),
+                Err(NodeAppError::Cancelled) => {
+                    tracing::info!("custom node scan stopped because the app is closing")
+                }
+                Err(NodeAppError::RuntimeRunning) => tracing::info!(
+                    "custom node scan skipped because ComfyUI or another program uses the folder"
+                ),
+                Err(error) => tracing::error!(%error, "custom node scan needs attention"),
+            }
+        });
+    }
+
+    /// Waits until no startup scan is scheduled or running. Only for callers that hold no
+    /// maintenance lease: the scan waits for the gate.
+    pub(crate) async fn wait_for_scan(&self) {
+        let mut scanning = self.scan.subscribe();
+        // The returned guard is dropped at once; it must not live across another await.
+        let _ = scanning.wait_for(|running| !*running).await;
     }
 
     /// Tells subscribers to refetch the installed nodes and operations.
@@ -630,14 +696,18 @@ impl NodeServices {
         Ok(NodeOutcomeDto::from(&result?))
     }
 
-    /// Reconcile and scan before normal services are exposed at startup. A failure is logged
-    /// and never blocks the app: a launch still re-checks the journal under its own lease.
+    /// Settles interrupted node work before normal services are exposed at startup, without
+    /// scanning. A refusal or failure is logged and never blocks the app: a launch still
+    /// re-checks the journal under its own lease.
     pub async fn reconcile(&self) {
-        let result = self.service.rescan().await;
+        let result = self.service.reconcile().await;
         self.changed();
         match result {
-            Ok(_) => tracing::info!("custom node recovery and scan finished"),
-            Err(error) => tracing::error!(%error, "custom node recovery or scan needs attention"),
+            Ok(()) => tracing::info!("custom node recovery finished"),
+            Err(NodeAppError::RuntimeRunning) => tracing::info!(
+                "custom node recovery deferred because ComfyUI or another program uses the folder"
+            ),
+            Err(error) => tracing::error!(%error, "custom node recovery needs attention"),
         }
     }
 }
@@ -1101,12 +1171,14 @@ impl AppState {
         );
         // Interrupted renames and moves are finished before any download may publish.
         services.library.reconcile().await;
-        // Reconcile interrupted node work and observe Manager/manual changes before commands.
-        // Setup reconciles under its own lease once ComfyUI exists.
+        // Interrupted node work is settled before commands. The inventory scan that observes
+        // Manager/manual changes runs in the background once the state is published
+        // (`start_services`). Setup reconciles under its own lease once ComfyUI exists.
         if defer_models {
             tracing::info!("custom node scan deferred until ComfyUI is installed");
         } else {
             services.nodes.reconcile().await;
+            services.nodes.arm_scan();
         }
         let mut state = Self::new(Ok(services), credentials, ingress, picker, paths.data_dir);
         state.configure_opener(Some(services_root(resolved)), None)?;
@@ -1118,6 +1190,7 @@ impl AppState {
         if let Ok(services) = self.services() {
             services.library.start();
             services.downloads.start();
+            services.nodes.start_scan();
         }
     }
 
@@ -1203,6 +1276,75 @@ mod tests {
             assert_eq!(lifecycle.after_stop(&mut *lease).await, result);
             assert_eq!(receiver.try_recv().unwrap().1, NodeEvent::Changed);
         }
+    }
+
+    /// The flag, the hub and an observer that reads the flag at the moment `Changed` arrives.
+    fn completion_fixture() -> (
+        ScanCompletion,
+        tokio::sync::watch::Sender<bool>,
+        tokio::task::JoinHandle<(NodeEvent, bool)>,
+    ) {
+        let hub = NodeHub::new("test".into());
+        let mut events = hub.subscribe();
+        let scan = tokio::sync::watch::Sender::new(true);
+        let flag = scan.subscribe();
+        let observer = tokio::spawn(async move {
+            let (_, event) = events.recv().await.unwrap();
+            (event, *flag.borrow())
+        });
+        (
+            ScanCompletion {
+                scan: scan.clone(),
+                hub,
+            },
+            scan,
+            observer,
+        )
+    }
+
+    #[tokio::test]
+    async fn scan_completion_clears_the_flag_before_publishing_changed() {
+        let (completion, scan, observer) = completion_fixture();
+        assert!(*scan.borrow());
+        drop(completion);
+        assert_eq!(observer.await.unwrap(), (NodeEvent::Changed, false));
+        assert!(!*scan.borrow());
+    }
+
+    #[tokio::test]
+    async fn scan_completion_runs_when_the_scan_task_panics() {
+        let (completion, scan, observer) = completion_fixture();
+        let task = tokio::spawn(async move {
+            let _completion = completion;
+            panic!("the scan panicked");
+        });
+        assert!(task.await.unwrap_err().is_panic());
+        assert_eq!(observer.await.unwrap(), (NodeEvent::Changed, false));
+        assert!(!*scan.borrow());
+    }
+
+    #[tokio::test]
+    async fn scan_completion_runs_when_the_scan_task_is_cancelled() {
+        let (completion, scan, observer) = completion_fixture();
+        let task = tokio::spawn(async move {
+            let _completion = completion;
+            std::future::pending::<()>().await;
+        });
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(observer.await.unwrap(), (NodeEvent::Changed, false));
+        assert!(!*scan.borrow());
+    }
+
+    #[tokio::test]
+    async fn scan_completion_runs_when_the_scan_future_is_dropped_unpolled() {
+        let (completion, scan, observer) = completion_fixture();
+        let future = async move {
+            let _completion = completion;
+        };
+        drop(future);
+        assert_eq!(observer.await.unwrap(), (NodeEvent::Changed, false));
+        assert!(!*scan.borrow());
     }
 }
 

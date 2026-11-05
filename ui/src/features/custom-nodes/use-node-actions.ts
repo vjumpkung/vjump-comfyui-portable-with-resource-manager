@@ -257,7 +257,7 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
       const list = await gateway.nodeRescan()
       client.setQueryData(NODE_KEY, list)
     } catch (error) {
-      setRescanError(error)
+      if (failureKind(toError(error).code) !== 'cancelled') setRescanError(error)
     } finally {
       setRescanning(false)
       settle()

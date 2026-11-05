@@ -34,6 +34,7 @@ struct Machine {
     mutation_saw_repair: AtomicBool,
     node_journal_failure: AtomicBool,
     node_rescan_failure: AtomicBool,
+    node_rescan_cancelled: AtomicBool,
     stop_held: Mutex<Vec<bool>>,
     hold_start: AtomicBool,
     start_lease: Mutex<Option<Box<dyn MaintenanceLease>>>,
@@ -76,6 +77,7 @@ impl Machine {
             mutation_saw_repair: AtomicBool::new(false),
             node_journal_failure: AtomicBool::new(false),
             node_rescan_failure: AtomicBool::new(false),
+            node_rescan_cancelled: AtomicBool::new(false),
             stop_held: Mutex::default(),
             hold_start: AtomicBool::new(false),
             start_lease: Mutex::default(),
@@ -119,6 +121,8 @@ impl NodeLifecycle for Machine {
         self.env.call("nodes_after_stop");
         if self.node_rescan_failure.load(Ordering::SeqCst) {
             Err(RuntimeError::NodeRescanFailed)
+        } else if self.node_rescan_cancelled.load(Ordering::SeqCst) {
+            Err(RuntimeError::Cancelled)
         } else {
             Ok(())
         }
@@ -370,6 +374,71 @@ fn stop_rechecks_termination_after_acquiring_the_gate() {
     assert_eq!(m.env.count("nodes_after_stop"), 1);
     assert_eq!(m.env.gate.acquires.load(Ordering::SeqCst), 1);
     assert_eq!(m.env.gate.try_acquires.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn stop_succeeds_when_the_post_stop_scan_is_cancelled() {
+    let m = Machine::new();
+    m.status.lock().unwrap().lifecycle = Lifecycle::Running;
+    m.node_rescan_cancelled.store(true, Ordering::SeqCst);
+
+    let status = block_on(StopComfy::new(m.deps()).execute()).unwrap();
+
+    assert_eq!(status.lifecycle, Lifecycle::Stopped);
+    assert_eq!(m.status.lock().unwrap().lifecycle, Lifecycle::Stopped);
+    assert_eq!(m.env.count("runtime_stop"), 2);
+    assert_eq!(m.env.count("nodes_after_stop"), 1);
+    assert_eq!(m.env.count("nodes_before_start"), 0);
+    assert_eq!(m.env.count("runtime_start"), 0);
+    assert!(!m.env.gate.busy.load(Ordering::SeqCst));
+}
+
+#[test]
+fn restart_does_not_start_when_the_post_stop_scan_is_cancelled() {
+    let m = Machine::new();
+    m.status.lock().unwrap().lifecycle = Lifecycle::Running;
+    m.node_rescan_cancelled.store(true, Ordering::SeqCst);
+
+    assert_eq!(
+        block_on(RestartComfy::new(m.deps()).execute()),
+        Err(RuntimeError::Cancelled)
+    );
+
+    assert_eq!(m.status.lock().unwrap().lifecycle, Lifecycle::Stopped);
+    assert_eq!(m.env.count("runtime_stop"), 1);
+    assert_eq!(m.env.count("nodes_after_stop"), 1);
+    assert_eq!(m.env.count("nodes_before_start"), 0);
+    assert_eq!(m.env.count("runtime_start"), 0);
+    assert!(!m.env.gate.busy.load(Ordering::SeqCst));
+}
+
+#[test]
+fn stop_and_restart_finish_real_cancelled_node_scans_without_starting() {
+    for late in [false, true] {
+        for operation in ["stop", "restart"] {
+            let m = Machine::new();
+            m.status.lock().unwrap().lifecycle = Lifecycle::Running;
+            let service = crate::custom_nodes::tests::lifecycle_scan_service(m.env.deps(), late);
+            let mut deps = m.deps();
+            deps.nodes = Arc::new(service.clone());
+
+            if operation == "stop" {
+                let status = block_on(StopComfy::new(deps).execute()).unwrap();
+                assert_eq!(status.lifecycle, Lifecycle::Stopped);
+            } else {
+                assert_eq!(
+                    block_on(RestartComfy::new(deps).execute()),
+                    Err(RuntimeError::Cancelled)
+                );
+            }
+
+            assert_eq!(m.status.lock().unwrap().lifecycle, Lifecycle::Stopped);
+            assert_eq!(m.env.count("runtime_start"), 0);
+            assert_eq!(block_on(service.list()).unwrap().len(), usize::from(late));
+            assert_eq!(service.scans().incomplete(), !late);
+            assert!(!m.env.gate.busy.load(Ordering::SeqCst));
+        }
+    }
 }
 
 #[test]

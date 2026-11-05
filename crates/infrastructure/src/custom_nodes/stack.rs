@@ -10,7 +10,7 @@ use super::{
 };
 use crate::shared::{download::Downloader, sqlite::Db};
 use application::{
-    custom_nodes::{NodeDeps, NodePlans},
+    custom_nodes::{NodeDeps, NodePlans, ScanControl},
     environment::{EnvironmentDeps, SetupEvent, SetupProgressSink},
 };
 use std::{
@@ -185,6 +185,7 @@ impl NodeAdapters {
             files: files.clone(),
             hook: Arc::new(PythonHook),
             plans: Arc::<NodePlans>::default(),
+            scans: Arc::<ScanControl>::default(),
         };
         NodeStack {
             deps,

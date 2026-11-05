@@ -270,7 +270,7 @@ The page and the top bar have Start, Stop and Restart. ComfyUI runs as a child p
 
 Start first checks: custom-node recovery state, a leftover ComfyUI process, a pending update, the selected environment and the port. Start, Restart and Stop run their checks and the custom-node rescan under one maintenance lease, and start, stop, update and package operations are serialised, so only one runs at a time.
 
-Start is refused with `node_recovery_required` ("interrupted custom-node work must be resolved before launch.") while an interrupted custom-node operation needs resolving. Stop reports `node_rescan_failed` ("ComfyUI stopped, but custom nodes could not be rescanned; retry Rescan.") if the node folders could not be re-scanned after ComfyUI stopped. While that post-stop rescan runs, it holds the maintenance lease, so closing the application right after Stop can be refused for a moment (see [Troubleshooting](#closing-is-refused-with-maintenance-is-in-progress)).
+Start is refused with `node_recovery_required` ("interrupted custom-node work must be resolved before launch.") while an interrupted custom-node operation needs resolving. Stop reports `node_rescan_failed` ("ComfyUI stopped, but custom nodes could not be rescanned; retry Rescan.") if the node folders could not be re-scanned after ComfyUI stopped. Closing abandons the routine post-stop scan (see [Troubleshooting](#closing-is-refused-with-maintenance-is-in-progress)).
 
 **Port conflicts.** If the port is in use, a dialog tells you which port is taken and offers a free port. If you accept, the new port is saved as your launch port.
 
@@ -510,7 +510,7 @@ Known limitation: ComfyUI-Manager installed by first-run setup is listed with or
 
 ### Recovery after interruptions
 
-Node operations are journaled. If the application or system stops mid-operation, the next scan reconciles it: unpublished staging is removed, and copies that cannot be proven safe are **preserved** rather than deleted. Use **Rescan / finish recovery** on the page to run reconciliation. Rescan also works while another program, such as a terminal opened in `ComfyUI/custom_nodes`, uses the ComfyUI folder: it then only reads the folders, unless an operation is waiting for recovery. Recovery moves folders, so it still needs ComfyUI stopped and the folder free. The operations panel shows unresolved operations, recent results and per-operation logs.
+Node operations are journaled. If the application or system stops mid-operation, the interrupted work is reconciled at the next startup before any command runs (best effort: recovery is refused while ComfyUI is running or its state cannot be assessed) and again on later scans: unpublished staging is removed, and copies that cannot be proven safe are **preserved** rather than deleted. Use **Rescan / finish recovery** on the page to run reconciliation. Rescan also works while another program, such as a terminal opened in `ComfyUI/custom_nodes`, uses the ComfyUI folder: it then only reads the folders, unless an operation is waiting for recovery. Recovery moves folders, so it still needs ComfyUI stopped and the folder free. The operations panel shows unresolved operations, recent results and per-operation logs.
 
 Recovery is identity-based: a copy is matched by its source, commit and content digest, and a node's final content digest must equal the reviewed one unless an approved `install.py` ran (then the new digest is recorded). Ambiguous recovery states (for example a changed or foreign copy) block ComfyUI from starting until resolved, while ordinary cleanup that failed only because the trash was unavailable does not. The operations panel marks such operations with a **Blocks start** chip, and Restart is unavailable while one exists.
 
@@ -630,7 +630,7 @@ The install folder was moved or copied, or the venv's interpreter no longer work
 
 Another program using the installation, such as a terminal opened in the ComfyUI folder, no longer prevents closing. Closing is refused with a message while this app's ComfyUI is still running or its termination is unverified: "ComfyUI from this installation is still running. Stop it, then close again."
 
-The dialog "Maintenance is in progress. Wait for it to finish or cancel it before closing." appears while setup, a node operation, an update or a post-stop custom-node rescan holds the maintenance lease. Right after **Stop**, the rescan can hold it for a moment; close again once it finishes (seen natively, N17).
+The dialog "Maintenance is in progress. Wait for it to finish or cancel it before closing." appears while setup, a node operation or an update holds the maintenance lease. Closing abandons a routine custom-node scan, which writes nothing unless it finished, so the list keeps its last completed contents and the next start scans again. The dialog can still appear if recovery of an interrupted node operation is running or the scan cannot stop within about 2 seconds, for example on a slow or network disk.
 
 ### ComfyUI fails to start on the Python 3.12 profile with a `pwd` error
 
@@ -915,7 +915,7 @@ Notes:
 
 ## 17. IPC and generated bindings
 
-`app_ready()` is available before `AppState` exists and returns the startup gate's readiness (false if the gate is absent). Recovery mode counts as ready. The manager polls it while showing the startup loading screen; state-dependent queries wait for readiness. It takes no state parameter and is allowed only by `allow-app-ready` in the manager capability. Startup composition runs on the named `startup` thread, publishes state under the startup gate, then starts the runtime watch and library/download services. An early close/exit prevents late publication; fatal factory errors request exit code 1. Shutdown joins that worker before flushing the logging guard.
+`app_ready()` is available before `AppState` exists and returns the startup gate's readiness (false if the gate is absent). Recovery mode counts as ready. The manager polls it while showing the startup loading screen; state-dependent queries wait for readiness. It takes no state parameter and is allowed only by `allow-app-ready` in the manager capability. Startup composition runs on the named `startup` thread, publishes state under the startup gate, then starts the runtime watch, the library/download services and the background custom-node scan. Recovery of interrupted node work stays before publication; the routine scan does not delay readiness. Closing stops the background scan; Start and Restart still wait for it to finish. An early close/exit prevents late publication; fatal factory errors request exit code 1. Shutdown joins that worker before flushing the logging guard.
 
 IPC uses **tauri-specta** `2.0.0-rc.25` (a pinned prerelease, a deliberate exception to "stable only"). The command list is defined once, in `crates/desktop/src/ipc/bindings.rs` (`collect_commands!`), and is shared by `run()`, the binding export test and the ACL tests. The TypeScript output is `ui/src/shared/ipc/bindings.ts`, which is checked in.
 

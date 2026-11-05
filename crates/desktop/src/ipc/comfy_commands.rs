@@ -52,6 +52,13 @@ pub async fn comfy_status(state: State<'_, AppState>) -> Result<ComfyStatusDto, 
 #[specta::specta]
 pub async fn comfy_start(state: State<'_, AppState>) -> Result<StartResultDto, IpcError> {
     let services = state.services()?;
+    // The startup node scan holds the maintenance gate, and a launch refuses while it does.
+    // Nothing here holds a lease, so waiting cannot deadlock.
+    services.nodes.wait_for_scan().await;
+    // Closing may have stopped the scan while this launch waited for it.
+    if services.nodes.service.scans().closing() {
+        return Err(RuntimeError::Busy.into());
+    }
     let result = services.comfy.start.execute().await;
     start_result(result, state.close.pending())
 }
@@ -68,6 +75,12 @@ pub async fn comfy_stop(state: State<'_, AppState>) -> Result<ComfyStatusDto, Ip
 #[specta::specta]
 pub async fn comfy_restart(state: State<'_, AppState>) -> Result<StartResultDto, IpcError> {
     let services = state.services()?;
+    // See `comfy_start`: wait for the startup node scan instead of failing as busy.
+    services.nodes.wait_for_scan().await;
+    // Closing may have stopped the scan while this restart waited for it.
+    if services.nodes.service.scans().closing() {
+        return Err(RuntimeError::Busy.into());
+    }
     let result = services.comfy.restart.execute().await;
     start_result(result, state.close.pending())
 }

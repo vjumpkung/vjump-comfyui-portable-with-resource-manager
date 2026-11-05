@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { act, cleanup, configure, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { gateway, IpcClientError, type NodeEventDto } from '@/shared/ipc/gateway'
+import { environmentKeys } from '@/shared/lib/environment-queries'
 
 import { nodeList, operation } from './fixtures'
 import { useNodeOperation, useNodes } from './use-nodes'
@@ -95,6 +96,25 @@ it('equal_sequence_gap_refetches_list_and_status', async () => {
   // A snapshot marker with the same sequence recovers as well.
   act(() => handlers[0](snapshot(5)))
   await waitFor(() => expect(calls()).toBe(lists + 2))
+})
+
+it('changed_refreshes_node_state_including_environment_health', async () => {
+  const health = vi.fn().mockResolvedValue({})
+  vi.mocked(gateway.nodeOperationStatus).mockResolvedValue(operation({ phase: 'completed' }))
+  renderHook(() => ({
+    nodes: useNodes(),
+    op: useNodeOperation('op-1'),
+    health: useQuery({ queryKey: environmentKeys.status, queryFn: health }),
+  }), { wrapper: wrapper() })
+  await waitFor(() => expect(handlers).toHaveLength(1))
+  await waitFor(() => expect(health).toHaveBeenCalledTimes(1))
+  act(() => handlers[0](snapshot(5)))
+  await waitFor(() => expect(calls()).toBe(2))
+  const statuses = vi.mocked(gateway.nodeOperationStatus).mock.calls.length
+  act(() => handlers[0](changed(6)))
+  await waitFor(() => expect(calls()).toBe(3))
+  await waitFor(() => expect(health).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(vi.mocked(gateway.nodeOperationStatus).mock.calls.length).toBe(statuses + 1))
 })
 
 it('retired_subscription_callbacks_are_ignored', async () => {

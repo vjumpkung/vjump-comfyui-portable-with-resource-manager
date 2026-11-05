@@ -150,7 +150,10 @@ impl StopComfy {
             .map_err(|_| RuntimeError::Busy)?;
         // Another Start may have won the interval before we acquired the gate.
         let status = self.deps.supervisor.stop().await?;
-        self.deps.nodes.after_stop(&mut *lease).await?;
+        match self.deps.nodes.after_stop(&mut *lease).await {
+            Ok(()) | Err(RuntimeError::Cancelled) => {}
+            Err(error) => return Err(error),
+        }
         Ok(status)
     }
 }

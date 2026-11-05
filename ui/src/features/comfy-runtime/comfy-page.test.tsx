@@ -13,6 +13,7 @@ import {
   gateway,
   type ComfyEventDto,
   type ComfyStatusDto,
+  type StartResultDto,
 } from '@/shared/ipc/gateway'
 
 import { ComfyPage } from './comfy-page'
@@ -129,6 +130,58 @@ it('offers the suggested port after a conflict and starts only after acceptance'
     }),
   )
   await waitFor(() => expect(gateway.comfyStart).toHaveBeenCalledTimes(2))
+})
+
+it('marks Start busy while a launch is pending, including the port retry', async () => {
+  let finishStart: (result: StartResultDto) => void = () => undefined
+  vi.mocked(gateway.comfyStart).mockReturnValueOnce(
+    new Promise<StartResultDto>((resolve) => {
+      finishStart = resolve
+    }),
+  )
+  mount(<ComfyPage />)
+  await snapshot()
+  const start = await screen.findByRole('button', { name: /^Start$/ })
+  expect(start.getAttribute('aria-busy')).not.toBe('true')
+  fireEvent.click(start)
+  await waitFor(() => expect(start.getAttribute('aria-busy')).toBe('true'))
+  finishStart({
+    kind: 'port_conflict',
+    requested: 8188,
+    suggested: 8189,
+  })
+  await waitFor(() => expect(start.getAttribute('aria-busy')).not.toBe('true'))
+
+  let finishRetry: (result: StartResultDto) => void = () => undefined
+  vi.mocked(gateway.comfyStart).mockReturnValueOnce(
+    new Promise<StartResultDto>((resolve) => {
+      finishRetry = resolve
+    }),
+  )
+  vi.mocked(gateway.comfySetLaunchOptions).mockImplementation((next) =>
+    Promise.resolve(next),
+  )
+  fireEvent.click(await screen.findByRole('button', { name: 'Use port 8189' }))
+  await waitFor(() => expect(start.getAttribute('aria-busy')).toBe('true'))
+  finishRetry({ kind: 'started', status: { ...stopped, lifecycle: 'running' } })
+  await waitFor(() => expect(start.getAttribute('aria-busy')).not.toBe('true'))
+})
+
+it('marks Restart busy while a restart is pending', async () => {
+  let finishRestart: (result: StartResultDto) => void = () => undefined
+  vi.mocked(gateway.comfyRestart).mockReturnValueOnce(
+    new Promise<StartResultDto>((resolve) => {
+      finishRestart = resolve
+    }),
+  )
+  mount(<ComfyPage />)
+  await snapshot()
+  const restart = await screen.findByRole('button', { name: /^Restart$/ })
+  expect(restart.getAttribute('aria-busy')).not.toBe('true')
+  fireEvent.click(restart)
+  await waitFor(() => expect(restart.getAttribute('aria-busy')).toBe('true'))
+  finishRestart({ kind: 'started', status: { ...stopped, lifecycle: 'running' } })
+  await waitFor(() => expect(restart.getAttribute('aria-busy')).not.toBe('true'))
 })
 
 it('shows the crash reason and live log text', async () => {

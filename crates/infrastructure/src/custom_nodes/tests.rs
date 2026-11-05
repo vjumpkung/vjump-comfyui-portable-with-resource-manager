@@ -1395,7 +1395,7 @@ async fn a_registry_release_is_staged_published_and_recorded_with_provenance() {
     assert!(!staging.exists() && fixture.owned().is_empty());
     let scanned = fixture
         .files
-        .scan(&fixture.root, Default::default())
+        .scan(&fixture.root, Default::default(), &CancelToken::new())
         .await
         .unwrap();
     assert_eq!(scanned.len(), 1);
@@ -2201,7 +2201,7 @@ async fn linked_node_folders_are_never_moved_or_backed_up() {
     assert!(
         fixture
             .files
-            .scan(&fixture.root, Default::default())
+            .scan(&fixture.root, Default::default(), &CancelToken::new())
             .await
             .unwrap()
             .iter()
@@ -2819,7 +2819,7 @@ async fn startup_scan_never_treats_owned_staging_as_installed() {
     fs::write(fixture.disabled().join(".vjump-staging-node-s.zip"), "zip").unwrap();
     let nodes = fixture
         .files
-        .scan(&fixture.root, Default::default())
+        .scan(&fixture.root, Default::default(), &CancelToken::new())
         .await
         .unwrap();
     assert_eq!(nodes.len(), 1);
@@ -2847,6 +2847,231 @@ async fn startup_scan_never_treats_owned_staging_as_installed() {
 // ---------------------------------------------------------------------------------------
 // SQLite persistence
 // ---------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn apply_scan_rolls_back_a_late_upsert_failure() {
+    let fixture = Fixture::new().await;
+    let original = node("same", NodeSource::Manual, true);
+    fixture.store.save_node(&original).await.unwrap();
+    fixture.store.db.connection.lock().unwrap().execute_batch(
+        "CREATE TRIGGER fail_scan_insert BEFORE INSERT ON nodes WHEN NEW.name = 'late' BEGIN SELECT RAISE(ABORT, 'late upsert'); END;"
+    ).unwrap();
+    let mut replacement = original.clone();
+    replacement.id = node_id("replacement");
+    assert_eq!(
+        fixture
+            .store
+            .apply_scan(&[replacement, node("late", NodeSource::Manual, true)], &[])
+            .await,
+        Err(NodeAppError::Storage)
+    );
+    assert_eq!(fixture.store.nodes().await.unwrap(), [original]);
+}
+
+#[tokio::test]
+async fn apply_scan_rolls_back_upserts_and_earlier_removals_on_a_late_removal_failure() {
+    let fixture = Fixture::new().await;
+    let first = node("first", NodeSource::Manual, true);
+    let last = node("last", NodeSource::Manual, true);
+    fixture.store.save_node(&first).await.unwrap();
+    fixture.store.save_node(&last).await.unwrap();
+    fixture.store.db.connection.lock().unwrap().execute_batch(&format!(
+        "CREATE TRIGGER fail_scan_remove BEFORE DELETE ON nodes WHEN OLD.id = '{}' BEGIN SELECT RAISE(ABORT, 'late removal'); END;", last.id.as_str()
+    )).unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .apply_scan(
+                &[node("new", NodeSource::Manual, true)],
+                &[first.id.clone(), last.id.clone()]
+            )
+            .await,
+        Err(NodeAppError::Storage)
+    );
+    assert_eq!(fixture.store.nodes().await.unwrap(), [first, last]);
+}
+
+#[tokio::test]
+async fn apply_scan_replaces_same_name_in_order_and_removes_absent_rows() {
+    let fixture = Fixture::new().await;
+    let original = node("same", NodeSource::Manual, true);
+    let absent = node("absent", NodeSource::Manual, true);
+    fixture.store.save_node(&original).await.unwrap();
+    fixture.store.save_node(&absent).await.unwrap();
+    let mut replacement = original.clone();
+    replacement.id = node_id("replacement");
+    replacement.tree_digest = "finished".into();
+    fixture
+        .store
+        .apply_scan(&[original, replacement.clone()], &[absent.id])
+        .await
+        .unwrap();
+    assert_eq!(fixture.store.nodes().await.unwrap(), [replacement]);
+}
+
+#[tokio::test]
+async fn observe_digest_matches_snapshot_and_pin_location_without_writing() {
+    let fixture = Fixture::new().await;
+    let mut single = node("single.py", NodeSource::Manual, true);
+    single.single_file = true;
+    fs::write(fixture.cn().join("single.py"), "single bytes").unwrap();
+    let snapshot = fixture
+        .files
+        .snapshot(&fixture.root, &single, None, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .files
+            .observe_digest(
+                &fixture.root,
+                &single,
+                Default::default(),
+                &CancelToken::new()
+            )
+            .await
+            .unwrap(),
+        snapshot.digest
+    );
+    assert_eq!(
+        snapshot.digest,
+        format!(
+            "file:{}",
+            crate::shared::download::sha256_hex(b"single bytes")
+        )
+    );
+    let directory = node("directory", NodeSource::Manual, true);
+    fs::create_dir(fixture.cn().join("directory")).unwrap();
+    fs::write(fixture.cn().join("directory/node.py"), "node bytes").unwrap();
+    fs::write(fixture.cn().join("directory/requirements.txt"), "numpy\n").unwrap();
+    fs::write(fixture.cn().join("directory/install.py"), "hook bytes").unwrap();
+    let guard = fixture
+        .files
+        .pin_location(&fixture.root, &directory, None)
+        .await
+        .unwrap();
+    let snapshot = fixture
+        .files
+        .snapshot(&fixture.root, &directory, None, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(snapshot.digest, guard.snapshot().digest);
+    let before = fs::read_dir(fixture.cn().join("directory"))
+        .unwrap()
+        .count();
+    assert_eq!(
+        fixture
+            .files
+            .observe_digest(
+                &fixture.root,
+                &directory,
+                Default::default(),
+                &CancelToken::new()
+            )
+            .await
+            .unwrap(),
+        guard.snapshot().digest
+    );
+    assert_eq!(
+        fs::read_dir(fixture.cn().join("directory"))
+            .unwrap()
+            .count(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn observe_digest_keeps_requirements_and_script_refusals() {
+    let fixture = Fixture::new().await;
+    super::paths::NodePaths::open(&fixture.root, true).unwrap();
+    for (name, input, bytes) in [
+        (
+            "requirements-too-large",
+            "requirements.txt",
+            vec![b'#'; REQUIREMENTS_LIMIT as usize + 1],
+        ),
+        ("requirements-non-utf8", "requirements.txt", vec![0xff]),
+        ("script-too-large", "install.py", vec![b'x'; (16 << 20) + 1]),
+    ] {
+        let observed = node(name, NodeSource::Manual, true);
+        let directory = fixture.cn().join(name);
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join(input), bytes).unwrap();
+        assert_eq!(
+            fixture
+                .files
+                .pin_location(&fixture.root, &observed, None)
+                .await
+                .err(),
+            Some(NodeAppError::UnsafeSource)
+        );
+        assert_eq!(
+            fixture
+                .files
+                .observe_digest(
+                    &fixture.root,
+                    &observed,
+                    Default::default(),
+                    &CancelToken::new()
+                )
+                .await,
+            Err(NodeAppError::UnsafeSource)
+        );
+    }
+}
+
+#[tokio::test]
+async fn dirty_observation_disables_optional_locks_and_uses_cancellation() {
+    let program = require_git!();
+    let fixture = Fixture::with(Some(program.clone()), node_limits()).await;
+    let repository = Repo::new(&fixture.cn(), &program, "status-node");
+    repository.commit("node.py", "x = 1\n", "initial");
+    let paths = Arc::new(super::paths::NodePaths::open(&fixture.root, true).unwrap());
+    let directory = pin_absolute(&repository.dir).unwrap();
+    let git = fixture
+        .files
+        .git
+        .bound(paths.clone(), vec![directory.clone()], Default::default())
+        .unwrap();
+    let cancel = CancelToken::new();
+    super::git::TEST_SPECS.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+    assert_eq!(
+        git.is_dirty(
+            &paths.root.anchored_path(),
+            &paths.hooks(),
+            &directory.anchored_path(),
+            &cancel
+        )
+        .await,
+        Some(false)
+    );
+    let specs = super::git::TEST_SPECS.with(|slot| slot.borrow_mut().take().unwrap());
+    let status = specs
+        .iter()
+        .find(|spec| spec.args.iter().any(|arg| arg == "status"))
+        .unwrap();
+    let args = status
+        .args
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>();
+    let status_index = args.iter().position(|arg| arg == "status").unwrap();
+    assert_eq!(args[status_index - 1], "--no-optional-locks");
+    cancel.cancel();
+    let before = std::time::Instant::now();
+    assert_eq!(
+        git.is_dirty(
+            &paths.root.anchored_path(),
+            &paths.hooks(),
+            &directory.anchored_path(),
+            &cancel
+        )
+        .await,
+        None
+    );
+    assert!(before.elapsed() < std::time::Duration::from_secs(2));
+    assert!(!repository.dir.join(".git/index.lock").exists());
+}
 
 #[tokio::test]
 async fn nodes_operations_dependencies_and_trust_round_trip() {
@@ -3544,7 +3769,7 @@ async fn existing_node_with_root_native_image_still_scans_and_reports_status() {
     let nodes = g
         .fixture
         .files
-        .scan(&g.fixture.root, Default::default())
+        .scan(&g.fixture.root, Default::default(), &CancelToken::new())
         .await
         .unwrap();
     assert_eq!(nodes.len(), 1);
@@ -4102,7 +4327,7 @@ fn live_digest(live: &Path) -> String {
 async fn scanned_dirty(g: &GitFixture, node: &InstalledNode) -> Option<bool> {
     g.fixture
         .files
-        .scan(&g.fixture.root, Default::default())
+        .scan(&g.fixture.root, Default::default(), &CancelToken::new())
         .await
         .unwrap()
         .into_iter()
@@ -4699,7 +4924,7 @@ async fn dirty_git_nodes_can_still_be_disabled_and_uninstalled() {
             let nodes = g
                 .fixture
                 .files
-                .scan(&g.fixture.root, Default::default())
+                .scan(&g.fixture.root, Default::default(), &CancelToken::new())
                 .await
                 .unwrap();
             assert!(
@@ -5673,7 +5898,7 @@ async fn registry_git_conflict_never_invokes_git() {
     super::git::TEST_SPECS.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
     let nodes = fixture
         .files
-        .scan(&fixture.root, Default::default())
+        .scan(&fixture.root, Default::default(), &CancelToken::new())
         .await
         .unwrap();
     let calls = super::git::TEST_SPECS.with(|slot| slot.borrow_mut().take().unwrap());
@@ -5685,7 +5910,7 @@ async fn registry_git_conflict_never_invokes_git() {
     super::provenance::write_marker(&repo.dir, "registry", &NodeSource::Manual, None).unwrap();
     let nodes = fixture
         .files
-        .scan(&fixture.root, Default::default())
+        .scan(&fixture.root, Default::default(), &CancelToken::new())
         .await
         .unwrap();
     assert_eq!(nodes[0].source, NodeSource::Manual);
@@ -5709,7 +5934,7 @@ async fn manual_and_disabled_git_nodes_receive_safe_status() {
         fs::write(repo.dir.join("node.py"), "x = 2\n").unwrap();
         let nodes = fixture
             .files
-            .scan(&fixture.root, Default::default())
+            .scan(&fixture.root, Default::default(), &CancelToken::new())
             .await
             .unwrap();
         let node = nodes.iter().find(|node| node.enabled == enabled).unwrap();
@@ -5780,7 +6005,7 @@ async fn git_scan_never_executes_repository_filters() {
             fs::write(repo.dir.join("node.py"), "x = 2\n").unwrap();
             let nodes = fixture
                 .files
-                .scan(&fixture.root, Default::default())
+                .scan(&fixture.root, Default::default(), &CancelToken::new())
                 .await
                 .unwrap();
             assert_eq!(nodes[0].dirty, None, "{kind}/{driver}");

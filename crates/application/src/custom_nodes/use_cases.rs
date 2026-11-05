@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     comfy_runtime::RuntimeBlock,
-    shared::{ExplorerTarget, MaintenanceLease},
+    shared::{CancelToken, ExplorerTarget, MaintenanceLease},
 };
 use domain::{custom_nodes::*, environment::EnvState};
 
@@ -13,6 +13,9 @@ pub struct NodeService {
 impl NodeService {
     pub fn new(deps: NodeDeps) -> Self {
         Self { deps }
+    }
+    pub fn scans(&self) -> &std::sync::Arc<ScanControl> {
+        &self.deps.scans
     }
     pub async fn search(
         &self,
@@ -159,7 +162,12 @@ impl NodeService {
         op.phase = OperationPhase::Failed;
         op.failure = Some("Closed by the user. The files were kept as they are; any preserved copies stay in custom_nodes/.disabled.".into());
         self.deps.store.save_operation(&op).await?;
-        self.scan_held(&mut *lease).await.map(|_| ())
+        let Some(activity) = self.deps.scans.begin(&*lease) else {
+            self.deps.scans.mark_incomplete();
+            return Err(NodeAppError::Cancelled);
+        };
+        let result = self.commit_observation(&mut *lease, activity.token()).await;
+        activity.finish(result).map(|_| ())
     }
     /// True when the selected environment needs repair; node operations are limited until then.
     pub async fn repair_required(&self) -> Result<bool, NodeAppError> {
@@ -371,58 +379,101 @@ impl NodeService {
             .try_acquire()
             .await
             .map_err(|_| NodeAppError::Busy)?;
-        let root = self.deps.environment.root.current().root;
-        match self.deps.environment.runtime.ensure_stopped(&root).await {
-            Ok(()) => self.reconcile_stopped(&root, &mut *lease).await?,
-            Err(RuntimeBlock::Running) => return Err(NodeAppError::RuntimeRunning),
-            Err(RuntimeBlock::CannotAssess) => {
-                for op in self.deps.store.operations().await? {
-                    if op.blocks_start() || self.should_settle(&op)? {
-                        return Err(NodeAppError::RuntimeRunning);
+        self.rescan_held(&mut *lease).await
+    }
+    /// Same as [`Self::rescan`] for the startup scan: it queues behind maintenance that got the
+    /// gate first instead of being dropped.
+    pub async fn rescan_when_free(&self) -> Result<Vec<InstalledNode>, NodeAppError> {
+        let mut lease = self
+            .deps
+            .environment
+            .gate
+            .acquire()
+            .await
+            .map_err(|_| NodeAppError::Busy)?;
+        self.rescan_held(&mut *lease).await
+    }
+    async fn rescan_held(
+        &self,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<Vec<InstalledNode>, NodeAppError> {
+        let Some(activity) = self.deps.scans.begin(lease) else {
+            self.deps.scans.mark_incomplete();
+            return Err(NodeAppError::Cancelled);
+        };
+        let result = async {
+            let root = self.deps.environment.root.current().root;
+            match self.deps.environment.runtime.ensure_stopped(&root).await {
+                Ok(()) => self.reconcile_stopped(&root, lease).await?,
+                Err(RuntimeBlock::Running) => return Err(NodeAppError::RuntimeRunning),
+                Err(RuntimeBlock::CannotAssess) => {
+                    for op in self.deps.store.operations().await? {
+                        if op.blocks_start() || self.should_settle(&op)? {
+                            return Err(NodeAppError::RuntimeRunning);
+                        }
                     }
                 }
             }
+            self.commit_observation(lease, activity.token()).await
         }
-        self.scan_held(&mut *lease).await
+        .await;
+        activity.finish(result)
     }
     pub async fn scan_held(
         &self,
         lease: &mut dyn MaintenanceLease,
     ) -> Result<Vec<InstalledNode>, NodeAppError> {
+        let (nodes, removed) = self.observe_held(lease, &CancelToken::new()).await?;
+        self.deps.store.apply_scan(&nodes, &removed).await?;
+        Ok(nodes)
+    }
+    pub(super) async fn commit_observation(
+        &self,
+        lease: &mut dyn MaintenanceLease,
+        cancel: &CancelToken,
+    ) -> Result<Vec<InstalledNode>, NodeAppError> {
+        let (nodes, removed) = self.observe_held(lease, cancel).await?;
+        if cancel.is_cancelled() {
+            return Err(NodeAppError::Cancelled);
+        }
+        self.deps.store.apply_scan(&nodes, &removed).await?;
+        Ok(nodes)
+    }
+    async fn observe_held(
+        &self,
+        lease: &mut dyn MaintenanceLease,
+        cancel: &CancelToken,
+    ) -> Result<(Vec<InstalledNode>, Vec<NodeId>), NodeAppError> {
         let root = self.deps.environment.root.current().root;
-        let observed = self.deps.files.scan(&root, lease.retained()).await?;
+        let observed = self
+            .deps
+            .files
+            .scan(&root, lease.retained(), cancel)
+            .await?;
         let old = self.deps.store.nodes().await?;
         let mut result = Vec::new();
         for mut node in observed {
+            if cancel.is_cancelled() {
+                return Err(NodeAppError::Cancelled);
+            }
             super::requirements::merge_observed(&mut node, &old);
             if !node.conflict {
-                node.tree_digest = if node.single_file {
-                    self.deps
-                        .files
-                        .snapshot(&root, &node, None, lease.retained())
-                        .await?
-                        .digest
-                } else {
-                    self.deps
-                        .files
-                        .pin_location(&root, &node, None)
-                        .await?
-                        .snapshot()
-                        .digest
-                        .clone()
-                };
+                node.tree_digest = self
+                    .deps
+                    .files
+                    .observe_digest(&root, &node, lease.retained(), cancel)
+                    .await?;
             }
             self.project_dependencies(std::slice::from_mut(&mut node))
                 .await?;
-            self.deps.store.save_node(&node).await?;
             result.push(node);
         }
-        for stored in old {
-            if !result.iter().any(|n| n.id == stored.id) {
-                self.deps.store.remove_node(&stored.id).await?;
-            }
-        }
-        Ok(result)
+        let removed = old
+            .into_iter()
+            .filter(|stored| !result.iter().any(|node| node.id == stored.id))
+            .map(|stored| stored.id)
+            .collect();
+        Ok((result, removed))
     }
     pub async fn reconcile(&self) -> Result<(), NodeAppError> {
         let mut lease = self

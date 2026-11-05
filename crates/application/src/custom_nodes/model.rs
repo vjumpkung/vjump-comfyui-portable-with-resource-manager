@@ -364,6 +364,7 @@ pub struct NodeDeps {
     pub files: Arc<dyn NodeFiles>,
     pub hook: Arc<dyn NodeHook>,
     pub plans: Arc<NodePlans>,
+    pub scans: Arc<super::ScanControl>,
 }
 impl NodeDeps {
     pub(crate) fn take_plan(&self, id: &str) -> Result<PreparedPlan, NodeAppError> {

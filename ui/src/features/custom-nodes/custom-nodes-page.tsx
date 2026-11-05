@@ -99,6 +99,10 @@ export function CustomNodesPage({
   const selectedNodes = all.filter((node) => selected.has(node.id))
 
   const repairRequired = list?.repairRequired ?? false
+  // The startup scan is still filling the list, so rows and counts cannot be trusted yet.
+  const scanning = list?.scanning ?? false
+  const scanIncomplete = list?.scanIncomplete && !scanning
+  const loading = nodes.isPending || scanning
   const pendingReviews = list?.pendingReviews ?? []
   const unresolved = list?.unresolved ?? []
   const blocksStart = unresolved.some((operation) => operation.blocksStart)
@@ -111,11 +115,13 @@ export function CustomNodesPage({
       ? t('customNodes.repairInstallReason')
       : actions.working
         ? t('customNodes.anotherRequest')
-        : null
+        : scanning
+          ? t('customNodes.loading')
+          : null
 
   const updateScope = selectedNodes.length > 0 ? selectedNodes : all.filter(isUpdateCandidate)
   const updateCount = updateScope.filter(isUpdateCandidate).length
-  const updateAllBlocked = repairRequired || paused || pendingReviews.length > 0 ||
+  const updateAllBlocked = repairRequired || paused || scanning || pendingReviews.length > 0 ||
     actions.review !== null || updateCount === 0
   const canRestart = list !== undefined && !repairRequired && !blocksStart &&
     !maintenanceBusy && !runtimeBusy && !actions.working
@@ -191,9 +197,11 @@ export function CustomNodesPage({
         <div>
           <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">{t('nav.customNodes')}</h1>
           <p className="font-mono text-xs text-muted-foreground">
-            {selectedNodes.length > 0
-              ? t('customNodes.summarySelected', { count: selectedNodes.length, installed: all.length, disabled: all.filter((node) => !node.enabled).length })
-              : t('customNodes.summary', { count: all.length, installed: all.length, disabled: all.filter((node) => !node.enabled).length })}
+            {loading
+              ? null
+              : selectedNodes.length > 0
+                ? t('customNodes.summarySelected', { count: selectedNodes.length, installed: all.length, disabled: all.filter((node) => !node.enabled).length })
+                : t('customNodes.summary', { count: all.length, installed: all.length, disabled: all.filter((node) => !node.enabled).length })}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -347,6 +355,11 @@ export function CustomNodesPage({
       )}
 
       <section aria-label={t('customNodes.installed')} className="flex flex-col gap-4">
+        {scanIncomplete && (
+          <Alert role="status">
+            <AlertDescription>{t('customNodes.scanIncomplete')}</AlertDescription>
+          </Alert>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-56 flex-1">
             <Search
@@ -383,11 +396,11 @@ export function CustomNodesPage({
             <option value="disabled">{t('customNodes.disabledOnly')}</option>
           </select>
         </div>
-        {nodes.isPending ? (
-          <p role="status" className="text-sm text-muted-foreground">{t('customNodes.loading')}</p>
-        ) : nodes.isError && !list ? (
+        {nodes.isError && (!list || scanning) ? (
           <ErrorNotice error={nodes.error} retry={() => void nodes.refetch()} />
-        ) : all.length === 0 ? (
+        ) : loading ? (
+          <p role="status" className="text-sm text-muted-foreground">{t('customNodes.loading')}</p>
+        ) : all.length === 0 && scanIncomplete ? null : all.length === 0 ? (
           <EmptyState
             icon={<Puzzle className="size-8" aria-hidden="true" />}
             title={t('customNodes.emptyTitle')}
@@ -430,7 +443,7 @@ export function CustomNodesPage({
         logs={nodes.logs}
         selectedId={operationId}
         onSelect={setOperationId}
-        rescanning={actions.rescanning}
+        rescanning={actions.rescanning || scanning}
         rescanError={actions.rescanError}
         onRescan={() => void actions.rescan()}
         onKeepFiles={setKeepFiles}

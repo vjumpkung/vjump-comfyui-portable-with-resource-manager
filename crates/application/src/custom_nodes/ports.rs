@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     environment::{Retained, StepContext},
-    shared::ExplorerTarget,
+    shared::{CancelToken, ExplorerTarget},
 };
 use async_trait::async_trait;
 use domain::{custom_nodes::*, environment::PythonEnvironment};
@@ -27,6 +27,12 @@ pub trait RegistryClient: Send + Sync {
 pub trait NodeRepository: Send + Sync {
     async fn nodes(&self) -> Result<Vec<InstalledNode>, NodeAppError>;
     async fn save_node(&self, node: &InstalledNode) -> Result<(), NodeAppError>;
+    /// Applies the complete scan inventory and removals atomically: all changes or none.
+    async fn apply_scan(
+        &self,
+        nodes: &[InstalledNode],
+        removed: &[NodeId],
+    ) -> Result<(), NodeAppError>;
     async fn remove_node(&self, id: &NodeId) -> Result<(), NodeAppError>;
     async fn save_operation(&self, operation: &NodeOperation) -> Result<(), NodeAppError>;
     /// Oldest creation first; equal timestamps retain insertion order.
@@ -85,6 +91,14 @@ pub trait NodeFiles: Send + Sync {
         staged: Option<&NodeId>,
         retained: Retained,
     ) -> Result<TreeSnapshot, NodeAppError>;
+    /// Reads only, with the same digest and refusals as `snapshot` or `pin_location`.
+    async fn observe_digest(
+        &self,
+        root: &Path,
+        node: &InstalledNode,
+        retained: Retained,
+        cancel: &CancelToken,
+    ) -> Result<String, NodeAppError>;
     /// Returns a derived, informational path only. It is never authority for execution.
     fn path(&self, root: &Path, node: &InstalledNode, staged: Option<&NodeId>) -> PathBuf;
     /// Pins the node directory (live, or staged for `staged`) with its full parent chain and
@@ -125,6 +139,7 @@ pub trait NodeFiles: Send + Sync {
         &self,
         root: &Path,
         retained: Retained,
+        cancel: &CancelToken,
     ) -> Result<Vec<InstalledNode>, NodeAppError>;
     /// Where the system file manager should open: `ComfyUI/custom_nodes` for `None`, a node
     /// folder (live or disabled) is opened, and a single-file node is revealed. The location is

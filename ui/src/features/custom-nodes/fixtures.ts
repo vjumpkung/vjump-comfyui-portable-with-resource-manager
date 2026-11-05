@@ -103,6 +103,8 @@ export function nodeList(overrides: Partial<NodeListDto> = {}): NodeListDto {
     pendingReviews: [],
     recent: [],
     repairRequired: false,
+    scanning: false,
+    scanIncomplete: false,
     ...overrides,
   }
 }

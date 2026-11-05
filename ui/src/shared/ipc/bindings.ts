@@ -753,6 +753,10 @@ export type NodeListDto = {
 	recent: OperationDto[],
 	/**  The selected environment needs repair; most node operations are limited until then. */
 	repairRequired: boolean,
+	/**  The routine inventory scan is scheduled or running, so `nodes` may not be complete yet. */
+	scanning: boolean,
+	/**  The last scan did not finish, so the stored inventory may be out of date. */
+	scanIncomplete: boolean,
 };
 
 export type NodeOutcomeDto = {

@@ -191,6 +191,10 @@ pub struct NodeListDto {
     pub recent: Vec<OperationDto>,
     /// The selected environment needs repair; most node operations are limited until then.
     pub repair_required: bool,
+    /// The routine inventory scan is scheduled or running, so `nodes` may not be complete yet.
+    pub scanning: bool,
+    /// The last scan did not finish, so the stored inventory may be out of date.
+    pub scan_incomplete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]

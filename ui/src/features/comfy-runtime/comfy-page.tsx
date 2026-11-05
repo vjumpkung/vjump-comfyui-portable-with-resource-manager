@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ExternalLink,
+  LoaderCircle,
   Play,
   RotateCw,
   Square,
@@ -152,6 +153,9 @@ export function ComfyPage() {
     },
     onSettled: () => void runtimeStore.refresh().catch(() => undefined),
   })
+  // A launch can wait for the startup node scan, so its button must show that it is working.
+  const starting = start.isPending || acceptPort.isPending
+  const restarting = restart.isPending || acceptPort.isPending
 
   const open = useMutation({
     mutationFn: () => gateway.comfyOpenWindow(),
@@ -225,22 +229,32 @@ export function ComfyPage() {
             ) : (
               <Button
                 disabled={busy || !status}
+                aria-busy={starting}
                 onClick={() =>
                   start.mutate(undefined, { onSuccess: handleStart, onError })
                 }
               >
-                <Play aria-hidden="true" />
+                {starting ? (
+                  <LoaderCircle className="animate-spin" aria-hidden="true" />
+                ) : (
+                  <Play aria-hidden="true" />
+                )}
                 {lifecycle === 'crashed' ? t('runtime.retryStart') : t('common.start')}
               </Button>
             )}
             <Button
               variant="outline"
               disabled={busy || !status || lifecycle === 'starting'}
+              aria-busy={restarting}
               onClick={() =>
                 restart.mutate(undefined, { onSuccess: handleStart, onError })
               }
             >
-              <RotateCw aria-hidden="true" />
+              {restarting ? (
+                <LoaderCircle className="animate-spin" aria-hidden="true" />
+              ) : (
+                <RotateCw aria-hidden="true" />
+              )}
               {t('common.restart')}
             </Button>
             <Button

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -25,6 +25,7 @@ import {
   registryInstalled,
   registryPage,
 } from './fixtures'
+import { NODE_KEY } from './use-nodes'
 
 // Rendering many rows in jsdom is slow when the whole suite runs in parallel.
 vi.setConfig({ testTimeout: 30_000 })
@@ -603,4 +604,182 @@ it('shows_the_active_node_in_the_system_file_manager_and_toasts_a_failure', asyn
   fireEvent.click(button('Show in Explorer'))
   expect(gateway.nodeReveal).toHaveBeenCalledWith('node-1')
   await waitFor(() => expect(toast.error).toHaveBeenCalledWith('The file manager could not be opened.'))
+})
+
+const LOADING = 'Loading custom nodes…'
+const INCOMPLETE = 'The last custom node scan did not finish, so this list may be out of date. Rescan to check again.'
+const rowOf = (name = 'ComfyUI-Example') => screen.queryByText(name, { selector: 'p.truncate' })
+const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+function mountWith(client: QueryClient) {
+  return render(
+    <QueryClientProvider client={client}>
+      <CustomNodesPage {...props} />
+    </QueryClientProvider>,
+  )
+}
+
+/** The list is cached before the page mounts, so the first render already has its data. */
+function mountList(list: NodeListDto) {
+  const client = newClient()
+  client.setQueryData(NODE_KEY, list)
+  vi.mocked(gateway.nodeList).mockResolvedValue(list)
+  return mountWith(client)
+}
+
+it('shows_an_incomplete_scan_notice_with_the_last_completed_rows', async () => {
+  mountList(nodeList({ scanIncomplete: true }))
+  const notice = screen.getByText(INCOMPLETE).closest('[role="status"]')
+  expect(notice).toBeTruthy()
+  expect(notice?.className).not.toContain('text-destructive')
+  expect(screen.getAllByText(INCOMPLETE)).toHaveLength(1)
+  expect(rowOf()).toBeTruthy()
+  expect(button('Rescan / finish recovery').disabled).toBe(false)
+  await waitFor(() => expect(gateway.nodeList).toHaveBeenCalled())
+})
+
+it('shows_the_incomplete_scan_notice_instead_of_the_empty_state', async () => {
+  mountList(nodeList({ nodes: [], scanIncomplete: true }))
+  expect(screen.getByText(INCOMPLETE)).toBeTruthy()
+  expect(screen.queryByText('No custom nodes installed')).toBeNull()
+  expect(screen.queryByRole('table')).toBeNull()
+  expect(button('Rescan / finish recovery').disabled).toBe(false)
+  await waitFor(() => expect(gateway.nodeList).toHaveBeenCalled())
+})
+
+it('hides_the_incomplete_scan_notice_while_scanning', async () => {
+  mountList(nodeList({ scanIncomplete: true, scanning: true }))
+  expect(screen.getByText(LOADING)).toBeTruthy()
+  expect(screen.queryByText(INCOMPLETE)).toBeNull()
+  await waitFor(() => expect(gateway.nodeList).toHaveBeenCalled())
+})
+
+it('a_cancelled_manual_rescan_shows_the_notice_without_a_destructive_alert', async () => {
+  mount()
+  await loaded()
+  vi.mocked(gateway.nodeRescan).mockImplementation(() => {
+    vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({ scanIncomplete: true }))
+    return Promise.reject(new IpcClientError('cancelled', 'The operation was cancelled.'))
+  })
+  fireEvent.click(button('Rescan / finish recovery'))
+  expect(await screen.findByText(INCOMPLETE)).toBeTruthy()
+  expect(gateway.nodeRescan).toHaveBeenCalledTimes(1)
+  expect(screen.queryByText('The rescan failed')).toBeNull()
+  expect(screen.queryByRole('alert')).toBeNull()
+})
+
+it('a_real_manual_rescan_error_still_shows_a_destructive_alert', async () => {
+  vi.mocked(gateway.nodeRescan).mockRejectedValue(new IpcClientError('node_storage', 'The journal is unavailable.'))
+  mount()
+  await loaded()
+  fireEvent.click(button('Rescan / finish recovery'))
+  const alert = (await screen.findByText('The rescan failed')).closest('[role="alert"]')
+  expect(alert?.className).toContain('text-destructive')
+  expect(alert?.textContent).toContain('The journal is unavailable.')
+})
+
+it('scanning_with_an_empty_database_shows_loading_instead_of_the_empty_state', async () => {
+  mountList(nodeList({ nodes: [], scanning: true }))
+  expect(screen.getByText(LOADING)).toBeTruthy()
+  expect(screen.queryByText('No custom nodes installed')).toBeNull()
+  expect(screen.queryByRole('table')).toBeNull()
+  await waitFor(() => expect(gateway.nodeList).toHaveBeenCalled())
+})
+
+it('scanning_hides_rows_and_count_but_keeps_recovery_panels_and_blocks_rescan', async () => {
+  mountList(nodeList({
+    scanning: true,
+    pendingReviews: [plan()],
+    unresolved: [operation({ id: 'op-interrupted', phase: 'published', blocksStart: true })],
+  }))
+  expect(screen.getByText(LOADING)).toBeTruthy()
+  expect(rowOf()).toBeNull()
+  expect(screen.queryByText(/ installed · /)).toBeNull()
+  expect(screen.getByText('A prepared plan is waiting for review')).toBeTruthy()
+  expect(screen.getByRole('heading', { name: 'Unfinished' })).toBeTruthy()
+  expect(screen.getByText(/blocks ComfyUI from starting/)).toBeTruthy()
+  expect(button('Rescan / finish recovery').disabled).toBe(true)
+  await waitFor(() => expect(gateway.nodeList).toHaveBeenCalled())
+})
+
+it('scanning_blocks_update_all_and_every_install_entry_point', async () => {
+  mountList(nodeList({ scanning: true }))
+  expect(screen.getByText(LOADING)).toBeTruthy()
+  expect(button('Update all (1)').disabled).toBe(true)
+  const git = button('Install from Git')
+  expect(git.disabled).toBe(true)
+  expect(git.getAttribute('title')).toBe(LOADING)
+  fireEvent.click(button('Browse Registry'))
+  const install = await screen.findByRole<HTMLButtonElement>('button', { name: 'Install Example Pack' })
+  expect(install.disabled).toBe(true)
+})
+
+it('rows_and_actions_return_when_the_scan_ends_through_the_poll_after_a_missed_event', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+  try {
+    mountList(nodeList({ scanning: true }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText(LOADING)).toBeTruthy()
+    expect(rowOf()).toBeNull()
+    vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({ scanning: false }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    expect(rowOf()).toBeTruthy()
+    expect(screen.queryByText(LOADING)).toBeNull()
+    expect(button('Update all (1)').disabled).toBe(false)
+    expect(button('Install from Git').disabled).toBe(false)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('a_cached_scanning_list_shows_loading_on_remount_and_clears_after_the_refetch', async () => {
+  const client = newClient()
+  client.setQueryData(NODE_KEY, nodeList({ scanning: true }))
+  const refetch = deferred<NodeListDto>()
+  vi.mocked(gateway.nodeList).mockReturnValue(refetch.promise)
+  mountWith(client)
+  expect(screen.getByText(LOADING)).toBeTruthy()
+  expect(rowOf()).toBeNull()
+  refetch.resolve(nodeList({ scanning: false }))
+  await loaded()
+  expect(screen.queryByText(LOADING)).toBeNull()
+})
+
+it('renders_a_mutation_response_that_reports_scanning', async () => {
+  mount()
+  await loaded()
+  const refetch = deferred<NodeListDto>()
+  vi.mocked(gateway.nodeRescan).mockResolvedValue(nodeList({ scanning: true }))
+  vi.mocked(gateway.nodeList).mockReturnValue(refetch.promise)
+  fireEvent.click(button('Rescan / finish recovery'))
+  expect(await screen.findByText(LOADING)).toBeTruthy()
+  expect(rowOf()).toBeNull()
+  refetch.resolve(nodeList({ scanning: false }))
+  await loaded()
+})
+
+it('a_failed_refresh_while_scanning_shows_the_error_with_a_retry', async () => {
+  const client = newClient()
+  client.setQueryData(NODE_KEY, nodeList({ scanning: true }))
+  vi.mocked(gateway.nodeList)
+    .mockRejectedValueOnce(new IpcClientError('node_storage', 'The journal is unavailable.'))
+    .mockResolvedValue(nodeList({ scanning: false }))
+  mountWith(client)
+  expect(await screen.findByText('The journal is unavailable.')).toBeTruthy()
+  expect(screen.queryByText(LOADING)).toBeNull()
+  fireEvent.click(button('Try again'))
+  await loaded()
+  expect(screen.queryByText('The journal is unavailable.')).toBeNull()
+})
+
+it('a_failed_refresh_keeps_a_cached_finished_list_visible', async () => {
+  const client = newClient()
+  client.setQueryData(NODE_KEY, nodeList({ scanning: false }))
+  vi.mocked(gateway.nodeList).mockRejectedValue(new IpcClientError('node_storage', 'The journal is unavailable.'))
+  mountWith(client)
+  await loaded()
+  await waitFor(() => expect(gateway.nodeList).toHaveBeenCalled())
+  expect(screen.queryByText('The journal is unavailable.')).toBeNull()
+  expect(rowOf()).toBeTruthy()
 })

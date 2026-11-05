@@ -2,7 +2,7 @@
 //! reads. Nothing is executed or imported. Provenance read here is an observation.
 use super::{
     git::is_object_id,
-    paths::safe_name,
+    paths::{filesystem, safe_name},
     provenance::{observed_identity, read_manager_registry, read_marker},
     tree::{is_link, read_text},
 };
@@ -10,8 +10,9 @@ use crate::{
     environment::source::valid_ref_name,
     shared::{download::sha256_hex, model_paths::PinnedDirectory},
 };
+use application::{custom_nodes::NodeAppError, shared::CancelToken};
 use domain::{custom_nodes::*, shared::model_values::SafeFileName};
-use std::{fs, sync::Arc};
+use std::{fs, io, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitMeta {
@@ -158,18 +159,28 @@ fn classify(dir: &Arc<PinnedDirectory>) -> (NodeSource, bool) {
 
 /// Lists directory nodes and top-level `.py` nodes in both locations. App staging, backups and
 /// every other dot-prefixed name are never nodes.
-pub fn scan(custom_nodes: &Arc<PinnedDirectory>) -> Vec<InstalledNode> {
+pub fn scan(
+    custom_nodes: &Arc<PinnedDirectory>,
+    cancel: &CancelToken,
+) -> Result<Vec<InstalledNode>, NodeAppError> {
     let mut nodes = Vec::new();
-    for (location, enabled) in std::iter::once((custom_nodes.clone(), true)).chain(
-        custom_nodes
-            .child(&safe_name(".disabled"), false)
-            .ok()
-            .map(|dir| (dir, false)),
-    ) {
-        let Ok(entries) = fs::read_dir(location.anchored_path()) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+    if cancel.is_cancelled() {
+        return Err(NodeAppError::Cancelled);
+    }
+    let disabled = match custom_nodes.child(&safe_name(".disabled"), false) {
+        Ok(directory) => Some(directory),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(filesystem(error)),
+    };
+    for (location, enabled) in std::iter::once((custom_nodes.clone(), true))
+        .chain(disabled.map(|directory| (directory, false)))
+    {
+        let entries = fs::read_dir(location.anchored_path()).map_err(filesystem)?;
+        for entry in entries {
+            if cancel.is_cancelled() {
+                return Err(NodeAppError::Cancelled);
+            }
+            let entry = entry.map_err(filesystem)?;
             let file_name = entry.file_name();
             let Some(name) = file_name.to_str() else {
                 continue;
@@ -181,16 +192,22 @@ pub fn scan(custom_nodes: &Arc<PinnedDirectory>) -> Vec<InstalledNode> {
                 continue;
             };
             let path = entry.path();
-            let Ok(meta) = path.symlink_metadata() else {
-                continue;
+            #[cfg(test)]
+            entry_boundary();
+            let meta = match path.symlink_metadata() {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(filesystem(error)),
             };
             let linked = is_link(&meta);
             let (single_file, source, conflict) = if meta.is_dir() || (linked && path.is_dir()) {
                 if linked {
                     (false, NodeSource::Manual, false)
                 } else {
-                    let Ok(directory) = location.child(&safe, false) else {
-                        continue;
+                    let directory = match location.child(&safe, false) {
+                        Ok(directory) => directory,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(filesystem(error)),
                     };
                     let (source, conflict) = classify(&directory);
                     (false, source, conflict)
@@ -220,7 +237,21 @@ pub fn scan(custom_nodes: &Arc<PinnedDirectory>) -> Vec<InstalledNode> {
             .to_lowercase()
             .cmp(&b.name.as_str().to_lowercase())
     });
-    nodes
+    Ok(nodes)
+}
+
+#[cfg(test)]
+thread_local! {
+    static ENTRY_BOUNDARY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn entry_boundary() {
+    ENTRY_BOUNDARY.with(|slot| {
+        if let Some(boundary) = slot.borrow_mut().take() {
+            boundary();
+        }
+    });
 }
 
 #[cfg(test)]
@@ -270,7 +301,7 @@ mod tests {
         write(&cn.join("__pycache__/x.pyc"), "x");
         write(&cn.join("readme.txt"), "x");
 
-        let nodes = scan(&pin_absolute(cn).unwrap());
+        let nodes = scan(&pin_absolute(cn).unwrap(), &CancelToken::new()).unwrap();
         let by_name = |n: &str| nodes.iter().find(|node| node.name.as_str() == n).unwrap();
         assert_eq!(nodes.len(), 5, "{nodes:?}");
         assert!(by_name("solo.py").single_file);
@@ -321,7 +352,11 @@ mod tests {
             None,
         )
         .unwrap();
-        let nodes = scan(&pin_absolute(directory.path()).unwrap());
+        let nodes = scan(
+            &pin_absolute(directory.path()).unwrap(),
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert!(nodes[0].conflict);
         assert_eq!(
             nodes[0].source,
@@ -332,6 +367,61 @@ mod tests {
             }
         );
         assert!(node.join(MARKER).exists());
+    }
+
+    #[test]
+    fn cancelled_scan_returns_cancelled() {
+        let directory = tempfile::tempdir().unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        assert_eq!(
+            scan(&pin_absolute(directory.path()).unwrap(), &cancel),
+            Err(NodeAppError::Cancelled)
+        );
+    }
+
+    #[test]
+    fn an_entry_that_vanishes_during_enumeration_is_skipped() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("vanished.py");
+        write(&path, "x");
+        ENTRY_BOUNDARY.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || fs::remove_file(path).unwrap()))
+        });
+        assert!(
+            scan(
+                &pin_absolute(directory.path()).unwrap(),
+                &CancelToken::new()
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn location_read_dir_failure_is_propagated() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut pinned = pin_absolute(directory.path()).unwrap();
+        // Windows enumeration uses the pinned directory's retained native path.
+        Arc::get_mut(&mut pinned).unwrap().path = directory.path().join("missing");
+        assert_eq!(
+            scan(&pinned, &CancelToken::new()),
+            Err(NodeAppError::Filesystem)
+        );
+    }
+
+    #[test]
+    fn an_unreadable_disabled_location_is_not_silently_omitted() {
+        let directory = tempfile::tempdir().unwrap();
+        write(&directory.path().join(".disabled"), "not a directory");
+        assert_eq!(
+            scan(
+                &pin_absolute(directory.path()).unwrap(),
+                &CancelToken::new()
+            ),
+            Err(NodeAppError::UnsafeSource)
+        );
     }
 
     #[test]

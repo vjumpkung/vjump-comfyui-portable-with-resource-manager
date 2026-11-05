@@ -12,7 +12,7 @@ use super::{
     },
     registry::RegistryHttp,
     scan,
-    tree::{self, is_link, read_text, sha256_file, validate_tree},
+    tree::{self, is_link, read_text, validate_tree},
 };
 use crate::{
     custom_nodes::compat::evaluate,
@@ -25,15 +25,16 @@ use crate::{
 use application::{
     custom_nodes::*,
     environment::{Retained, StepContext},
-    shared::ExplorerTarget,
+    shared::{CancelToken, ExplorerTarget},
 };
 use async_trait::async_trait;
 use domain::{
     custom_nodes::*, models::acquisition::FileIdentity, shared::model_values::SafeFileName,
 };
+use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -211,16 +212,24 @@ fn review_warnings(mut release: Compatibility, node: &RegistryNode) -> Vec<Strin
 /// The tree digest covers every file, tracked or not, except the app's own files, the top-level
 /// `.git` and `__pycache__`; a Git node's exact commit is carried by its source instead.
 fn read_tree(dir: &Arc<PinnedDirectory>, git_node: bool) -> Result<TreeSnapshot, NodeAppError> {
-    let digest = if git_node {
-        tree::tree_digest(dir)?
-    } else {
-        tree::digest_tree(dir, false)?
-    };
+    read_tree_cancellable(dir, git_node, &CancelToken::new())
+}
+
+fn read_tree_cancellable(
+    dir: &Arc<PinnedDirectory>,
+    git_node: bool,
+    cancel: &CancelToken,
+) -> Result<TreeSnapshot, NodeAppError> {
+    let digest = tree::digest_tree_cancellable(dir, git_node, cancel)?;
     let requirements = read_input(dir, &safe_name("requirements.txt"), REQUIREMENTS_LIMIT)?
         .and_then(|(bytes, _)| bytes)
         .and_then(|bytes| String::from_utf8(bytes).ok());
-    let hook = match sha256_file(dir, &safe_name("install.py")) {
+    if cancel.is_cancelled() {
+        return Err(NodeAppError::Cancelled);
+    }
+    let hook = match tree::sha256_file_inner(dir, &safe_name("install.py"), cancel) {
         Ok(hash) => Some(hash),
+        Err(_) if cancel.is_cancelled() => return Err(NodeAppError::Cancelled),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(filesystem(e)),
     };
@@ -328,6 +337,78 @@ fn recycle_backup(paths: &NodePaths, op: &NodeId, recycler: &Recycler) -> Result
 }
 
 impl LocalNodeFiles {
+    async fn pin_location_cancellable(
+        &self,
+        paths: Arc<NodePaths>,
+        node: &InstalledNode,
+        staged: Option<&NodeId>,
+        cancel: &CancelToken,
+    ) -> Result<Box<dyn NodeLocationGuard>, NodeAppError> {
+        if node.single_file {
+            return Err(NodeAppError::InvalidRequest);
+        }
+        let node = node.clone();
+        let entry = match staged {
+            Some(op) => paths.staging(op),
+            None => paths.location(&node),
+        };
+        let cancel = cancel.clone();
+        blocking(move || {
+            if cancel.is_cancelled() {
+                return Err(NodeAppError::Cancelled);
+            }
+            let directory = entry.0.child(&entry.1, false).map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    NodeAppError::NotFound
+                } else {
+                    filesystem(error)
+                }
+            })?;
+            let mut inputs = Vec::new();
+            let requirements = match read_input(
+                &directory,
+                &safe_name("requirements.txt"),
+                REQUIREMENTS_LIMIT,
+            )? {
+                None => None,
+                Some((None, _)) => return Err(NodeAppError::UnsafeSource),
+                Some((Some(bytes), file)) => {
+                    std::str::from_utf8(&bytes).map_err(|_| NodeAppError::UnsafeSource)?;
+                    inputs.push(file);
+                    Some(bytes)
+                }
+            };
+            let script = match read_input(&directory, &safe_name("install.py"), SCRIPT_LIMIT)? {
+                Some((Some(bytes), file)) => {
+                    inputs.push(file);
+                    Some(bytes)
+                }
+                Some(_) => return Err(NodeAppError::UnsafeSource),
+                None => None,
+            };
+            let mut snapshot = read_tree_cancellable(&directory, is_git(&node), &cancel)?;
+            // Execution consumes the bytes just read, so the plan is bound to exactly those.
+            let text = requirements
+                .as_deref()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+            snapshot.requirements_digest = text.as_ref().map(|t| sha256_hex(t.as_bytes()));
+            snapshot.requirement_lines = text
+                .as_deref()
+                .map(parse_requirement_lines)
+                .unwrap_or_default();
+            snapshot.hook_digest = script.as_ref().map(|bytes| sha256_hex(bytes));
+            Ok(Box::new(PinnedLocation::new(
+                paths,
+                directory,
+                inputs,
+                requirements,
+                script,
+                snapshot,
+            )) as Box<dyn NodeLocationGuard>)
+        })
+        .await
+    }
+
     async fn prepare_registry(
         &self,
         root: &Path,
@@ -737,11 +818,48 @@ impl LocalNodeFiles {
         require_clean: bool,
         retained: Retained,
     ) -> Result<TreeSnapshot, NodeAppError> {
+        self.snapshot_entry_cancellable(
+            paths,
+            entry,
+            node,
+            require_clean,
+            retained,
+            &CancelToken::new(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn snapshot_entry_cancellable(
+        &self,
+        paths: &Arc<NodePaths>,
+        entry: Entry,
+        node: &InstalledNode,
+        require_clean: bool,
+        retained: Retained,
+        cancel: &CancelToken,
+    ) -> Result<TreeSnapshot, NodeAppError> {
         let expected = node.clone();
+        let cancel = cancel.clone();
         let (snapshot, directory) = blocking(move || {
+            if cancel.is_cancelled() {
+                return Err(NodeAppError::Cancelled);
+            }
             if expected.single_file {
                 let mut file = entry.0.open(&entry.1, false, false).map_err(filesystem)?;
-                let digest = crate::shared::model_paths::digest(&mut file).map_err(filesystem)?;
+                let mut hasher = Sha256::new();
+                let mut buffer = vec![0u8; 256 * 1024];
+                loop {
+                    if cancel.is_cancelled() {
+                        return Err(NodeAppError::Cancelled);
+                    }
+                    let read = file.read(&mut buffer).map_err(filesystem)?;
+                    if read == 0 {
+                        break;
+                    }
+                    hasher.update(&buffer[..read]);
+                }
+                let digest = crate::shared::download::hex(&hasher.finalize());
                 return Ok((
                     TreeSnapshot {
                         digest: format!("file:{}", digest.as_str()),
@@ -756,7 +874,7 @@ impl LocalNodeFiles {
             if is_git(&expected) {
                 pin_git_dir(&directory)?;
             }
-            let snapshot = snapshot_directory(&directory, &expected)?;
+            let snapshot = read_tree_cancellable(&directory, is_git(&expected), &cancel)?;
             let marker = read_marker(&directory).or_else(|| read_manager_registry(&directory));
             let git_present = entry_exists(&(directory.clone(), safe_name(".git")))?;
             let matches = match &expected.source {
@@ -1012,6 +1130,30 @@ impl NodeFiles for LocalNodeFiles {
         .await
     }
 
+    async fn observe_digest(
+        &self,
+        root: &Path,
+        node: &InstalledNode,
+        retained: Retained,
+        cancel: &CancelToken,
+    ) -> Result<String, NodeAppError> {
+        let paths = Arc::new(NodePaths::open(root, false)?);
+        if node.single_file {
+            let entry = paths.location(node);
+            Ok(self
+                .snapshot_entry_cancellable(&paths, entry, node, false, retained, cancel)
+                .await?
+                .digest)
+        } else {
+            Ok(self
+                .pin_location_cancellable(paths, node, None, cancel)
+                .await?
+                .snapshot()
+                .digest
+                .clone())
+        }
+    }
+
     async fn pin_location(
         &self,
         root: &Path,
@@ -1022,62 +1164,8 @@ impl NodeFiles for LocalNodeFiles {
             return Err(NodeAppError::InvalidRequest);
         }
         let paths = Arc::new(NodePaths::open(root, true)?);
-        let node = node.clone();
-        let entry = match staged {
-            Some(op) => paths.staging(op),
-            None => paths.location(&node),
-        };
-        blocking(move || {
-            let directory = entry.0.child(&entry.1, false).map_err(|error| {
-                if error.kind() == io::ErrorKind::NotFound {
-                    NodeAppError::NotFound
-                } else {
-                    filesystem(error)
-                }
-            })?;
-            let mut inputs = Vec::new();
-            let requirements = match read_input(
-                &directory,
-                &safe_name("requirements.txt"),
-                REQUIREMENTS_LIMIT,
-            )? {
-                None => None,
-                Some((None, _)) => return Err(NodeAppError::UnsafeSource),
-                Some((Some(bytes), file)) => {
-                    std::str::from_utf8(&bytes).map_err(|_| NodeAppError::UnsafeSource)?;
-                    inputs.push(file);
-                    Some(bytes)
-                }
-            };
-            let script = match read_input(&directory, &safe_name("install.py"), SCRIPT_LIMIT)? {
-                Some((Some(bytes), file)) => {
-                    inputs.push(file);
-                    Some(bytes)
-                }
-                Some(_) => return Err(NodeAppError::UnsafeSource),
-                None => None,
-            };
-            let mut snapshot = snapshot_directory(&directory, &node)?;
-            // Execution consumes the bytes just read, so the plan is bound to exactly those.
-            let text = requirements
-                .as_deref()
-                .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
-            snapshot.requirements_digest = text.as_ref().map(|t| sha256_hex(t.as_bytes()));
-            snapshot.requirement_lines = text
-                .as_deref()
-                .map(parse_requirement_lines)
-                .unwrap_or_default();
-            snapshot.hook_digest = script.as_ref().map(|bytes| sha256_hex(bytes));
-            Ok(Box::new(PinnedLocation::new(
-                paths,
-                directory,
-                inputs,
-                requirements,
-                script,
-                snapshot,
-            )) as Box<dyn NodeLocationGuard>)
-        })
-        .await
+        self.pin_location_cancellable(paths, node, staged, &CancelToken::new())
+            .await
     }
 
     fn path(&self, root: &Path, node: &InstalledNode, staged: Option<&NodeId>) -> PathBuf {
@@ -1345,10 +1433,12 @@ impl NodeFiles for LocalNodeFiles {
         &self,
         root: &Path,
         retained: Retained,
+        cancel: &CancelToken,
     ) -> Result<Vec<InstalledNode>, NodeAppError> {
         let paths = Arc::new(NodePaths::open(root, true)?);
         let cn = paths.cn.clone();
-        let mut nodes = blocking(move || Ok(scan::scan(&cn))).await?;
+        let enumeration_cancel = cancel.clone();
+        let mut nodes = blocking(move || scan::scan(&cn, &enumeration_cancel)).await?;
         if self.git.available(&paths.root.anchored_path()) {
             let hooks = paths.hooks();
             for node in &mut nodes {
@@ -1366,8 +1456,12 @@ impl NodeFiles for LocalNodeFiles {
                             &paths.root.anchored_path(),
                             &hooks,
                             &directory.anchored_path(),
+                            cancel,
                         )
                         .await;
+                    if cancel.is_cancelled() {
+                        return Err(NodeAppError::Cancelled);
+                    }
                 }
             }
         }
@@ -1382,14 +1476,6 @@ impl NodeFiles for LocalNodeFiles {
         let (root, node) = (root.to_owned(), node.cloned());
         blocking(move || locate(&root, node.as_ref())).await
     }
-}
-
-/// The digests `NodeFiles::snapshot` reports for the pinned directory of a node.
-fn snapshot_directory(
-    directory: &Arc<PinnedDirectory>,
-    node: &InstalledNode,
-) -> Result<TreeSnapshot, NodeAppError> {
-    read_tree(directory, is_git(node))
 }
 
 /// Pins a Git node's `.git` without following links. Missing repository metadata is refused with

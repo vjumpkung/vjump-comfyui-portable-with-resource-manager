@@ -5,7 +5,10 @@ use crate::shared::{
     archive::{ExtractLimits, validate_entry_name},
     model_paths::PinnedDirectory,
 };
-use application::custom_nodes::{NodeAppError, NodePreparePolicy};
+use application::{
+    custom_nodes::{NodeAppError, NodePreparePolicy},
+    shared::CancelToken,
+};
 use domain::shared::model_values::SafeFileName;
 use sha2::{Digest, Sha256};
 use std::{
@@ -48,7 +51,16 @@ pub(crate) fn refuse_root_native(dir: &Arc<PinnedDirectory>) -> Result<(), NodeA
 fn has_root_native(dir: &Arc<PinnedDirectory>) -> Result<bool, NodeAppError> {
     if cfg!(windows) {
         let mut entries = 0;
-        for name in frame(dir.clone(), String::new(), 0, false, &mut entries)?.names {
+        for name in frame(
+            dir.clone(),
+            String::new(),
+            0,
+            false,
+            &mut entries,
+            &CancelToken::new(),
+        )?
+        .names
+        {
             if is_native_image_name(name.as_str()) {
                 return Ok(true);
             }
@@ -105,9 +117,12 @@ fn frame(
     depth: usize,
     cache: bool,
     entries: &mut usize,
+    cancel: &CancelToken,
 ) -> Result<Frame, NodeAppError> {
+    check_cancel(cancel)?;
     let mut names = Vec::new();
     for entry in fs::read_dir(directory.anchored_path()).map_err(filesystem)? {
+        check_cancel(cancel)?;
         *entries += 1;
         if *entries > MAX_ENTRIES {
             return Err(NodeAppError::UnsafeSource);
@@ -137,13 +152,30 @@ pub(crate) fn walk_files(
     reject_cache: bool,
     visit: impl FnMut(&Arc<PinnedDirectory>, &SafeFileName, &str, bool) -> Result<(), NodeAppError>,
 ) -> Result<(), NodeAppError> {
-    walk_files_inner(directory, git_node, reject_cache, visit).map(|_| ())
+    walk_files_cancellable(
+        directory,
+        git_node,
+        reject_cache,
+        &CancelToken::new(),
+        visit,
+    )
+}
+
+pub(crate) fn walk_files_cancellable(
+    directory: &Arc<PinnedDirectory>,
+    git_node: bool,
+    reject_cache: bool,
+    cancel: &CancelToken,
+    visit: impl FnMut(&Arc<PinnedDirectory>, &SafeFileName, &str, bool) -> Result<(), NodeAppError>,
+) -> Result<(), NodeAppError> {
+    walk_files_inner(directory, git_node, reject_cache, cancel, visit).map(|_| ())
 }
 
 fn walk_files_inner(
     directory: &Arc<PinnedDirectory>,
     git_node: bool,
     reject_cache: bool,
+    cancel: &CancelToken,
     mut visit: impl FnMut(&Arc<PinnedDirectory>, &SafeFileName, &str, bool) -> Result<(), NodeAppError>,
 ) -> Result<bool, NodeAppError> {
     let mut entries = 0;
@@ -155,8 +187,10 @@ fn walk_files_inner(
         0,
         false,
         &mut entries,
+        cancel,
     )?];
     while let Some(current) = stack.last_mut() {
+        check_cancel(cancel)?;
         let Some(name) = current.names.next() else {
             stack.pop();
             continue;
@@ -177,6 +211,7 @@ fn walk_files_inner(
         }
         #[cfg(test)]
         read_boundary();
+        check_cancel(cancel)?;
         let child = match current.directory.child(&name, false) {
             Ok(child) => Some(child),
             Err(e) if e.kind() == io::ErrorKind::NotADirectory => None,
@@ -204,7 +239,7 @@ fn walk_files_inner(
             continue;
         }
         if let Some(child) = child {
-            stack.push(frame(child, relative, depth, cache, &mut entries)?);
+            stack.push(frame(child, relative, depth, cache, &mut entries, cancel)?);
         } else {
             visit(
                 &current.directory,
@@ -226,7 +261,13 @@ pub(crate) fn validate_fresh_git(
     policy: NodePreparePolicy,
 ) -> Result<Vec<String>, NodeAppError> {
     let strict = policy == NodePreparePolicy::Strict;
-    let shipped_cache = walk_files_inner(directory, true, strict, |_, _, _, _| Ok(()))?;
+    let shipped_cache = walk_files_inner(
+        directory,
+        true,
+        strict,
+        &CancelToken::new(),
+        |_, _, _, _| Ok(()),
+    )?;
     let root_native = has_root_native(directory)?;
     if strict && root_native {
         return Err(NodeAppError::Failed(ROOT_NATIVE_MESSAGE.to_owned()));
@@ -241,18 +282,54 @@ pub(crate) fn validate_fresh_git(
     Ok(warnings)
 }
 
+fn check_cancel(cancel: &CancelToken) -> Result<(), NodeAppError> {
+    if cancel.is_cancelled() {
+        Err(NodeAppError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
 pub fn sha256_file(parent: &PinnedDirectory, name: &SafeFileName) -> io::Result<String> {
+    sha256_file_inner(parent, name, &CancelToken::new())
+}
+
+pub(crate) fn sha256_file_cancellable(
+    parent: &PinnedDirectory,
+    name: &SafeFileName,
+    cancel: &CancelToken,
+) -> Result<String, NodeAppError> {
+    check_cancel(cancel)?;
+    sha256_file_inner(parent, name, cancel).map_err(|error| {
+        if cancel.is_cancelled() {
+            NodeAppError::Cancelled
+        } else {
+            filesystem(error)
+        }
+    })
+}
+
+pub(crate) fn sha256_file_inner(
+    parent: &PinnedDirectory,
+    name: &SafeFileName,
+    cancel: &CancelToken,
+) -> io::Result<String> {
     #[cfg(test)]
     read_boundary();
     let mut file = parent.open_read_pin(name)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 256 * 1024];
     loop {
+        if cancel.is_cancelled() {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
         }
         hasher.update(&buffer[..read]);
+        #[cfg(test)]
+        digest_boundary();
     }
     Ok(crate::shared::download::hex(&hasher.finalize()))
 }
@@ -315,16 +392,25 @@ pub(crate) fn digest_tree(
     directory: &Arc<PinnedDirectory>,
     git_node: bool,
 ) -> Result<String, NodeAppError> {
+    digest_tree_cancellable(directory, git_node, &CancelToken::new())
+}
+
+pub(crate) fn digest_tree_cancellable(
+    directory: &Arc<PinnedDirectory>,
+    git_node: bool,
+    cancel: &CancelToken,
+) -> Result<String, NodeAppError> {
     let mut hasher = Sha256::new();
-    walk_files(
+    walk_files_cancellable(
         directory,
         git_node,
         false,
+        cancel,
         |parent, name, relative, excluded| {
             if excluded {
                 return Ok(());
             }
-            let file = sha256_file(parent, name).map_err(filesystem)?;
+            let file = sha256_file_cancellable(parent, name, cancel)?;
             hasher.update(relative.as_bytes());
             hasher.update([0]);
             hasher.update(file.as_bytes());
@@ -361,6 +447,20 @@ pub(crate) fn before_read(boundary: impl FnOnce() + 'static) {
 #[cfg(test)]
 fn read_boundary() {
     READ_BOUNDARY.with(|slot| {
+        if let Some(boundary) = slot.borrow_mut().take() {
+            boundary();
+        }
+    });
+}
+
+#[cfg(test)]
+thread_local! {
+    static DIGEST_BOUNDARY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn digest_boundary() {
+    DIGEST_BOUNDARY.with(|slot| {
         if let Some(boundary) = slot.borrow_mut().take() {
             boundary();
         }
@@ -574,6 +674,39 @@ mod tests {
         assert_eq!(first, tree_digest(&pin_absolute(&node).unwrap()).unwrap());
         fs::write(node.join("a.py"), "changed").unwrap();
         assert_ne!(first, tree_digest(&pin_absolute(&node).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn cancelling_a_large_file_digest_stops_at_the_next_chunk() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("large.py"), vec![b'x'; 1024 * 1024]).unwrap();
+        let pinned = pin_absolute(directory.path()).unwrap();
+        let cancel = CancelToken::new();
+        let stop = cancel.clone();
+        DIGEST_BOUNDARY.with(|slot| *slot.borrow_mut() = Some(Box::new(move || stop.cancel())));
+        assert_eq!(
+            sha256_file_cancellable(&pinned, &SafeFileName::new("large.py").unwrap(), &cancel),
+            Err(NodeAppError::Cancelled)
+        );
+    }
+
+    #[test]
+    fn cancelling_during_tree_walking_returns_cancelled() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("node.py"), "x").unwrap();
+        let pinned = pin_absolute(directory.path()).unwrap();
+        let cancel = CancelToken::new();
+        let stop = cancel.clone();
+        before_read(move || stop.cancel());
+        let mut visited = 0;
+        assert_eq!(
+            walk_files_cancellable(&pinned, false, false, &cancel, |_, _, _, _| {
+                visited += 1;
+                Ok(())
+            }),
+            Err(NodeAppError::Cancelled)
+        );
+        assert_eq!(visited, 0);
     }
 
     #[test]

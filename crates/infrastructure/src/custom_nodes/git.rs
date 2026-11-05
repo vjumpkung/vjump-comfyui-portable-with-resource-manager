@@ -1083,19 +1083,29 @@ impl GitNodes {
         })
     }
 
-    pub async fn is_dirty(&self, root: &Path, hooks: &Path, dir: &Path) -> Option<bool> {
+    pub async fn is_dirty(
+        &self,
+        root: &Path,
+        hooks: &Path,
+        dir: &Path,
+        cancel: &CancelToken,
+    ) -> Option<bool> {
         let out = self
-            .read(
+            .run(
                 root,
                 hooks,
-                dir,
+                Some(dir),
                 &[
+                    "--no-optional-locks",
                     "status",
                     "--porcelain=v1",
                     "-z",
                     "--untracked-files=all",
                     "--ignore-submodules=all",
                 ],
+                cancel,
+                None,
+                Duration::from_secs(120),
             )
             .await
             .ok()?;

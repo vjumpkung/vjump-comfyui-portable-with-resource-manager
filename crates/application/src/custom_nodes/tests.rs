@@ -38,6 +38,12 @@ struct FilesState {
     recycle_fails: bool,
     scan: Vec<InstalledNode>,
     scan_error: Option<NodeAppError>,
+    observe_error_on: Option<String>,
+    observe_cancel: bool,
+    observe_pending: bool,
+    observe_token: Option<CancelToken>,
+    observe_waker: Option<std::task::Waker>,
+    recover_pause: Option<Arc<ScanControl>>,
     guard_resources: Vec<std::sync::Weak<()>>,
     scan_retained: Vec<bool>,
     snapshots: std::collections::HashMap<String, String>,
@@ -255,6 +261,44 @@ impl NodeFiles for FakeFiles {
             requirement_lines: vec!["numpy".into()],
         })
     }
+    async fn observe_digest(
+        &self,
+        root: &Path,
+        node: &InstalledNode,
+        retained: crate::shared::Retained,
+        cancel: &CancelToken,
+    ) -> Result<String, NodeAppError> {
+        std::future::poll_fn(|cx| {
+            let mut state = self.state.lock().unwrap();
+            state.observe_token = Some(cancel.clone());
+            if state.observe_cancel {
+                cancel.cancel();
+            }
+            if cancel.is_cancelled() {
+                return std::task::Poll::Ready(Err(NodeAppError::Cancelled));
+            }
+            if state.observe_pending {
+                state.observe_waker = Some(cx.waker().clone());
+                return std::task::Poll::Pending;
+            }
+            if state.observe_error_on.as_deref() == Some(node.name.as_str()) {
+                return std::task::Poll::Ready(Err(NodeAppError::Filesystem));
+            }
+            std::task::Poll::Ready(Ok(()))
+        })
+        .await?;
+        // Preserve the snapshot/pin audit used by the existing recovery assertions.
+        if node.single_file {
+            Ok(self.snapshot(root, node, None, retained).await?.digest)
+        } else {
+            Ok(self
+                .pin_location(root, node, None)
+                .await?
+                .snapshot()
+                .digest
+                .clone())
+        }
+    }
     fn path(&self, _root: &Path, node: &InstalledNode, staged: Option<&NodeId>) -> PathBuf {
         let base = PathBuf::from(ROOT).join("ComfyUI/custom_nodes");
         match staged {
@@ -376,7 +420,10 @@ impl NodeFiles for FakeFiles {
         _retained: crate::shared::Retained,
     ) -> Result<RecoveryOutcome, NodeAppError> {
         self.world.call("files:recover");
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        if let Some(scans) = state.recover_pause.take() {
+            scans.pause().keep();
+        }
         Ok(RecoveryOutcome {
             action: state.recover.unwrap_or(RecoveryAction::Blocked),
             tree_digest: state.recover_digest.clone(),
@@ -386,8 +433,12 @@ impl NodeFiles for FakeFiles {
         &self,
         _root: &Path,
         retained: crate::shared::Retained,
+        cancel: &CancelToken,
     ) -> Result<Vec<InstalledNode>, NodeAppError> {
         self.world.call("files:scan");
+        if cancel.is_cancelled() {
+            return Err(NodeAppError::Cancelled);
+        }
         let mut state = self.state.lock().unwrap();
         state.scan_retained.push(!retained.is_empty());
         match &state.scan_error {
@@ -665,6 +716,8 @@ struct StoreState {
     nodes_error: Option<NodeAppError>,
     verified: Vec<NodeOperation>,
     saved_nodes: Vec<InstalledNode>,
+    applied_scans: Vec<(Vec<InstalledNode>, Vec<NodeId>)>,
+    pause_on_apply: Option<Arc<ScanControl>>,
     published: Vec<NodeOperation>,
     save_error_phase: Option<OperationPhase>,
     journal_error_after_blocked_save: bool,
@@ -689,6 +742,27 @@ impl NodeRepository for FakeStore {
         state.saved_nodes.push(node.clone());
         state.nodes.retain(|n| n.id != node.id);
         state.nodes.push(node.clone());
+        Ok(())
+    }
+    async fn apply_scan(
+        &self,
+        nodes: &[InstalledNode],
+        removed: &[NodeId],
+    ) -> Result<(), NodeAppError> {
+        let mut state = self.state.lock().unwrap();
+        state.applied_scans.push((nodes.to_vec(), removed.to_vec()));
+        if let Some(scans) = state.pause_on_apply.take() {
+            scans.pause().keep();
+        }
+        for node in nodes {
+            state.saved_nodes.push(node.clone());
+            state.nodes.retain(|prior| {
+                prior.id != node.id
+                    && (prior.name != node.name || prior.single_file != node.single_file)
+            });
+            state.nodes.push(node.clone());
+        }
+        state.nodes.retain(|node| !removed.contains(&node.id));
         Ok(())
     }
     async fn remove_node(&self, id: &NodeId) -> Result<(), NodeAppError> {
@@ -952,6 +1026,7 @@ impl Harness {
             files: files.clone(),
             hook: hook.clone(),
             plans: Arc::default(),
+            scans: Arc::default(),
         });
         Self {
             world,
@@ -2335,6 +2410,24 @@ fn startup_reconciliation_applies_the_file_outcome_to_the_records() {
 }
 
 #[test]
+fn startup_recovery_settles_interrupted_work_without_scanning() {
+    let h = Harness::new();
+    h.files.state.lock().unwrap().recover = Some(RecoveryAction::RolledForward);
+    let op = interrupted(&h, OperationPhase::Published, OperationKind::Install);
+    block_on(h.store.save_operation(&op)).unwrap();
+    h.world.calls.lock().unwrap().clear();
+    block_on(h.service.reconcile()).unwrap();
+    assert_eq!(h.world.count("files:recover"), 1);
+    assert_eq!(h.world.count("files:scan"), 0);
+    assert_eq!(
+        block_on(h.service.operation_status("node-int"))
+            .unwrap()
+            .phase,
+        OperationPhase::Failed
+    );
+}
+
+#[test]
 fn discarding_a_plan_removes_its_staging_and_a_later_commit_is_stale() {
     let h = Harness::new();
     let review = h.prepare();
@@ -2778,6 +2871,108 @@ fn rescan_refuses_while_comfyui_runs() {
     );
     assert_eq!(h.world.count("files:scan"), 0);
     assert_eq!(h.world.count("files:recover"), 0);
+}
+
+#[test]
+fn rescan_when_free_scans_under_a_waiting_acquire() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let h = Harness::new();
+    h.files.state.lock().unwrap().scan = vec![manual_node("checked-out-by-hand")];
+    let nodes = block_on(h.service.rescan_when_free()).unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(h.world.count("files:scan"), 1);
+    assert_eq!(h.world.gate.acquires.load(SeqCst), 1);
+    assert_eq!(h.world.gate.try_acquires.load(SeqCst), 0);
+    assert!(
+        !h.world.gate.busy.load(SeqCst),
+        "the lease is released afterwards"
+    );
+    // It keeps the refusals of an ordinary rescan.
+    *h.world.runtime_block.lock().unwrap() = Some(RuntimeBlock::Running);
+    h.world.calls.lock().unwrap().clear();
+    assert_eq!(
+        block_on(h.service.rescan_when_free()).unwrap_err(),
+        NodeAppError::RuntimeRunning
+    );
+    assert_eq!(h.world.count("files:scan"), 0);
+}
+
+/// Stays pending until `open` is set, like a gate that other maintenance holds.
+struct HeldGate {
+    open: Arc<std::sync::atomic::AtomicBool>,
+    inner: Arc<dyn crate::shared::MaintenanceGate>,
+}
+
+#[async_trait]
+impl crate::shared::MaintenanceGate for HeldGate {
+    async fn acquire(
+        &self,
+    ) -> Result<Box<dyn crate::shared::MaintenanceLease>, crate::shared::GateError> {
+        std::future::poll_fn(|_| {
+            if self.open.load(std::sync::atomic::Ordering::SeqCst) {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+        self.inner.acquire().await
+    }
+
+    async fn try_acquire(
+        &self,
+    ) -> Result<Box<dyn crate::shared::MaintenanceLease>, crate::shared::GateError> {
+        if self.open.load(std::sync::atomic::Ordering::SeqCst) {
+            self.inner.try_acquire().await
+        } else {
+            Err(crate::shared::GateError::Busy)
+        }
+    }
+}
+
+#[test]
+fn rescan_when_free_waits_for_the_gate_instead_of_giving_up() {
+    use std::{
+        sync::atomic::{AtomicBool, Ordering::SeqCst},
+        task::{Context, Poll, Waker},
+    };
+    let h = Harness::new();
+    let open = Arc::new(AtomicBool::new(false));
+    let mut deps = h.service.deps.clone();
+    deps.environment.gate = Arc::new(HeldGate {
+        open: open.clone(),
+        inner: deps.environment.gate.clone(),
+    });
+    let service = NodeService::new(deps);
+    // An ordinary rescan is refused while the gate is held.
+    assert_eq!(block_on(service.rescan()).unwrap_err(), NodeAppError::Busy);
+    let mut context = Context::from_waker(Waker::noop());
+    let mut waiting = Box::pin(service.rescan_when_free());
+    assert!(waiting.as_mut().poll(&mut context).is_pending());
+    assert!(waiting.as_mut().poll(&mut context).is_pending());
+    assert_eq!(h.world.count("files:scan"), 0);
+    open.store(true, SeqCst);
+    let Poll::Ready(result) = waiting.as_mut().poll(&mut context) else {
+        panic!("the scan must run once the gate is free")
+    };
+    result.unwrap();
+    assert_eq!(h.world.count("files:scan"), 1);
+}
+
+#[test]
+fn a_cloned_service_keeps_seeing_live_plans() {
+    let h = Harness::new();
+    let clone = h.service.clone();
+    // Prepared through the original, after the clone was taken.
+    let review = h.prepare();
+    h.world.calls.lock().unwrap().clear();
+    block_on(clone.rescan_when_free()).unwrap();
+    assert_eq!(h.world.count("files:scan"), 1);
+    assert_eq!(h.world.count("files:recover"), 0);
+    assert_eq!(h.world.count("files:discard"), 0);
+    assert_eq!(clone.pending_reviews().unwrap()[0].id, review.id);
+    let operations = block_on(h.store.operations()).unwrap();
+    assert_eq!(operations[0].phase, OperationPhase::Prepared);
 }
 
 #[test]
@@ -5479,4 +5674,235 @@ mod curated_setup {
             "alpha: {DETACHED} (acknowledged on the setup review page)."
         )));
     }
+}
+
+#[test]
+fn late_observation_failure_keeps_all_inventory_rows_and_never_applies() {
+    let h = Harness::new();
+    let stored = h.installed();
+    let mut gone = manual_node("gone");
+    gone.id = NodeId::new("gone").unwrap();
+    block_on(h.store.save_node(&gone)).unwrap();
+    let before = h.store.state.lock().unwrap().nodes.clone();
+    {
+        let mut files = h.files.state.lock().unwrap();
+        files.pin_attempts.clear();
+        files.scan = vec![stored.clone(), manual_node("late")];
+        files
+            .snapshots
+            .insert(stored.name.as_str().into(), "tree:new".into());
+        files.observe_error_on = Some("late".into());
+    }
+    assert_eq!(block_on(h.service.rescan()), Err(NodeAppError::Filesystem));
+    let state = h.store.state.lock().unwrap();
+    assert_eq!(state.nodes, before);
+    assert!(state.applied_scans.is_empty());
+    assert!(h.service.scans().incomplete());
+    assert!(
+        h.files
+            .state
+            .lock()
+            .unwrap()
+            .pin_attempts
+            .iter()
+            .any(|(id, _)| id == &stored.id)
+    );
+}
+
+#[test]
+fn complete_observation_applies_once_with_all_nodes_and_absent_ids() {
+    let h = Harness::new();
+    let stored = h.installed();
+    let mut gone = manual_node("gone");
+    gone.id = NodeId::new("gone").unwrap();
+    block_on(h.store.save_node(&gone)).unwrap();
+    let mut added = manual_node("added");
+    added.id = NodeId::new("added").unwrap();
+    h.files.state.lock().unwrap().scan = vec![stored, added];
+    h.service.scans().mark_incomplete();
+    let nodes = block_on(h.service.rescan()).unwrap();
+    let state = h.store.state.lock().unwrap();
+    assert_eq!(state.applied_scans, [(nodes.clone(), vec![gone.id])]);
+    assert_eq!(state.nodes, nodes);
+    assert!(!h.service.scans().incomplete());
+}
+
+#[test]
+fn rescan_cooperatively_finishes_pending_observation_after_pause_without_writes() {
+    use std::task::{Context, Poll, Waker};
+    let h = Harness::new();
+    let stored = h.installed();
+    {
+        let mut state = h.files.state.lock().unwrap();
+        state.scan = vec![stored.clone()];
+        state.observe_pending = true;
+    }
+    let mut scan = Box::pin(h.service.rescan());
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(scan.as_mut().poll(&mut context).is_pending());
+    let pause = h.service.scans().pause();
+    assert!(pause.stopped_scan());
+    assert_eq!(
+        scan.as_mut().poll(&mut context),
+        Poll::Ready(Err(NodeAppError::Cancelled))
+    );
+    assert_eq!(h.store.state.lock().unwrap().nodes, [stored]);
+    assert!(h.store.state.lock().unwrap().applied_scans.is_empty());
+    assert!(h.service.scans().incomplete());
+    drop(scan);
+    drop(pause);
+    h.files.state.lock().unwrap().observe_pending = false;
+    block_on(h.service.rescan()).unwrap();
+    assert!(!h.service.scans().incomplete());
+}
+
+#[test]
+fn rescan_while_paused_marks_incomplete_without_observation() {
+    let h = Harness::new();
+    let pause = h.service.scans().pause();
+    assert_eq!(block_on(h.service.rescan()), Err(NodeAppError::Cancelled));
+    assert!(h.service.scans().incomplete());
+    assert_eq!(h.world.count("files:scan"), 0);
+    assert!(h.store.state.lock().unwrap().applied_scans.is_empty());
+    drop(pause);
+    block_on(h.service.rescan()).unwrap();
+    assert!(!h.service.scans().incomplete());
+}
+
+#[test]
+fn reconcile_failure_inside_rescan_marks_incomplete_and_clears_activity() {
+    let h = Harness::new();
+    h.store.state.lock().unwrap().journal_error = Some(NodeAppError::Storage);
+    assert_eq!(block_on(h.service.rescan()), Err(NodeAppError::Storage));
+    assert!(h.service.scans().incomplete());
+    assert!(!h.service.scans().pause().stopped_scan());
+    assert_eq!(h.world.count("files:scan"), 0);
+}
+
+#[test]
+fn superseded_recovery_finishes_its_scan_despite_a_pause() {
+    let h = Harness::new();
+    let op = interrupted(&h, OperationPhase::OldBackedUp, OperationKind::Update);
+    block_on(h.store.save_operation(&op)).unwrap();
+    let observed = manual_node("external");
+    {
+        let mut files = h.files.state.lock().unwrap();
+        files.recover = Some(RecoveryAction::Superseded);
+        files.recover_pause = Some(h.service.scans().clone());
+        files.scan = vec![observed];
+    }
+    // Rescan's activity includes recovery; a pause cancels it during recovery.
+    assert_eq!(block_on(h.service.rescan()), Err(NodeAppError::Cancelled));
+    let state = h.store.state.lock().unwrap();
+    assert_eq!(
+        state.applied_scans.len(),
+        1,
+        "the protected recovery scan committed"
+    );
+    assert_eq!(state.nodes[0].name.as_str(), "external");
+    assert_eq!(state.operations[0].phase, OperationPhase::Failed);
+    assert_eq!(
+        h.world.count("files:scan"),
+        2,
+        "routine observation then sees cancellation"
+    );
+    assert!(h.service.scans().incomplete());
+}
+
+#[test]
+fn after_stop_reconciles_even_when_the_scan_is_skipped() {
+    let h = Harness::new();
+    let op = interrupted(&h, OperationPhase::OldBackedUp, OperationKind::Update);
+    block_on(h.store.save_operation(&op)).unwrap();
+    h.files.state.lock().unwrap().recover = Some(RecoveryAction::Discarded);
+    let pause = h.service.scans().pause();
+    let mut lease = block_on(h.world.deps().gate.try_acquire()).unwrap();
+    assert_eq!(
+        block_on(h.service.after_stop(&mut *lease)),
+        Err(RuntimeError::Cancelled)
+    );
+    assert_eq!(h.world.count("files:recover"), 1);
+    assert_eq!(h.world.count("files:scan"), 0);
+    assert_eq!(
+        h.store.state.lock().unwrap().operations[0].phase,
+        OperationPhase::Failed
+    );
+    assert!(h.service.scans().incomplete());
+    drop(pause);
+}
+
+#[test]
+fn after_stop_cancellation_during_observation_writes_no_inventory() {
+    let h = Harness::new();
+    let stored = h.installed();
+    {
+        let mut files = h.files.state.lock().unwrap();
+        files.scan = vec![stored.clone()];
+        files.observe_cancel = true;
+    }
+    let mut lease = block_on(h.world.deps().gate.try_acquire()).unwrap();
+    assert_eq!(
+        block_on(h.service.after_stop(&mut *lease)),
+        Err(RuntimeError::Cancelled)
+    );
+    let state = h.store.state.lock().unwrap();
+    assert_eq!(state.nodes, [stored]);
+    assert!(state.applied_scans.is_empty());
+    assert!(h.service.scans().incomplete());
+}
+
+#[test]
+fn after_stop_late_cancellation_keeps_the_commit_and_returns_cancelled() {
+    let h = Harness::new();
+    h.files.state.lock().unwrap().scan = vec![manual_node("committed")];
+    h.store.state.lock().unwrap().pause_on_apply = Some(h.service.scans().clone());
+    h.service.scans().mark_incomplete();
+    let mut lease = block_on(h.world.deps().gate.try_acquire()).unwrap();
+    assert_eq!(
+        block_on(h.service.after_stop(&mut *lease)),
+        Err(RuntimeError::Cancelled)
+    );
+    let state = h.store.state.lock().unwrap();
+    assert_eq!(state.applied_scans.len(), 1);
+    assert_eq!(state.nodes[0].name.as_str(), "committed");
+    assert!(!h.service.scans().incomplete());
+}
+
+#[test]
+fn resolving_keeps_the_journal_closed_when_observation_is_cancelled() {
+    let h = Harness::new();
+    let op = interrupted(&h, OperationPhase::OldBackedUp, OperationKind::Update);
+    block_on(h.store.save_operation(&op)).unwrap();
+    {
+        let mut files = h.files.state.lock().unwrap();
+        files.scan = vec![op.node.clone()];
+        files.observe_cancel = true;
+    }
+    assert_eq!(
+        block_on(h.service.resolve_operation(op.id.as_str())),
+        Err(NodeAppError::Cancelled)
+    );
+    let state = h.store.state.lock().unwrap();
+    assert_eq!(state.operations[0].phase, OperationPhase::Failed);
+    assert!(state.applied_scans.is_empty());
+    assert!(h.service.scans().incomplete());
+}
+
+/// Real node lifecycle fixture for the runtime workflow tests.
+pub(crate) fn lifecycle_scan_service(
+    environment: crate::environment::EnvironmentDeps,
+    late: bool,
+) -> NodeService {
+    let h = Harness::new();
+    {
+        let mut files = h.files.state.lock().unwrap();
+        files.scan = vec![manual_node("observed")];
+        files.observe_cancel = !late;
+    }
+    if late {
+        h.store.state.lock().unwrap().pause_on_apply = Some(h.service.scans().clone());
+    }
+    let mut deps = h.service.deps.clone();
+    deps.environment = environment;
+    NodeService::new(deps)
 }

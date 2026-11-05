@@ -1,4 +1,4 @@
-import { Play, Square } from 'lucide-react'
+import { LoaderCircle, Play, Square } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { t as translate, useTranslation } from '@/shared/i18n'
@@ -52,9 +52,14 @@ export function RuntimeControls() {
           disabled={
             start.isPending || !runtime.status || lifecycle === 'stopping'
           }
+          aria-busy={start.isPending}
           onClick={onStart}
         >
-          <Play aria-hidden="true" />
+          {start.isPending ? (
+            <LoaderCircle className="animate-spin" aria-hidden="true" />
+          ) : (
+            <Play aria-hidden="true" />
+          )}
           {t('common.start')}
         </Button>
       )}

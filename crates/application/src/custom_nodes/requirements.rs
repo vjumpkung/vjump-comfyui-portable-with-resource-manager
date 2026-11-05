@@ -53,7 +53,7 @@ impl NodeRequirementSource for NodeRequirements {
         let stored = self.store.nodes().await.map_err(provider_error)?;
         let observed = self
             .files
-            .scan(root, retained.clone())
+            .scan(root, retained.clone(), &crate::shared::CancelToken::new())
             .await
             .map_err(provider_error)?;
         let mut sets = Vec::new();

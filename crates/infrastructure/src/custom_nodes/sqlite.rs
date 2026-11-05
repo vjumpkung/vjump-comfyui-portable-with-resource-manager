@@ -227,6 +227,45 @@ fn operation_from(row: OperationRow) -> Option<NodeOperation> {
     })
 }
 
+// A different record for the same folder is replaced, never duplicated.
+fn upsert_node(
+    tx: &rusqlite::Transaction<'_>,
+    node: &InstalledNode,
+    now: &str,
+) -> Result<(), crate::shared::sqlite::DbError> {
+    tx.execute(
+        "DELETE FROM nodes WHERE name = ?1 AND single_file = ?2 AND id <> ?3",
+        params![node.name.as_str(), node.single_file, node.id.as_str()],
+    )
+    .map_err(|_| crate::shared::sqlite::DbError::Unavailable)?;
+    tx.execute(
+        "INSERT INTO nodes(id, name, single_file, enabled, source_kind, source_json, origin, \
+         tree_digest, dependencies, conflict, dirty, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, single_file = excluded.single_file, \
+         enabled = excluded.enabled, source_kind = excluded.source_kind, \
+         source_json = excluded.source_json, origin = excluded.origin, \
+         tree_digest = excluded.tree_digest, dependencies = excluded.dependencies, \
+         conflict = excluded.conflict, dirty = excluded.dirty, updated_at = excluded.updated_at",
+        params![
+            node.id.as_str(),
+            node.name.as_str(),
+            node.single_file,
+            node.enabled,
+            source_kind(&node.source),
+            source_to_json(&node.source).to_string(),
+            origin_str(node.origin),
+            node.tree_digest,
+            dependency_str(node.dependencies),
+            node.conflict,
+            node.dirty,
+            now
+        ],
+    )
+    .map_err(|_| crate::shared::sqlite::DbError::Unavailable)?;
+    Ok(())
+}
+
 #[async_trait]
 impl NodeRepository for SqliteNodes {
     async fn nodes(&self) -> Result<Vec<InstalledNode>, NodeAppError> {
@@ -268,40 +307,37 @@ impl NodeRepository for SqliteNodes {
         let now = SystemClock.now();
         self.db
             .run(move |c| {
-                // A different record for the same folder is replaced, never duplicated.
                 let tx = c
                     .transaction()
                     .map_err(|_| crate::shared::sqlite::DbError::Unavailable)?;
-                tx.execute(
-                    "DELETE FROM nodes WHERE name = ?1 AND single_file = ?2 AND id <> ?3",
-                    params![node.name.as_str(), node.single_file, node.id.as_str()],
-                )
-                .map_err(|_| crate::shared::sqlite::DbError::Unavailable)?;
-                tx.execute(
-                    "INSERT INTO nodes(id, name, single_file, enabled, source_kind, source_json, origin, \
-                     tree_digest, dependencies, conflict, dirty, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
-                     ON CONFLICT(id) DO UPDATE SET name = excluded.name, single_file = excluded.single_file, \
-                     enabled = excluded.enabled, source_kind = excluded.source_kind, \
-                     source_json = excluded.source_json, origin = excluded.origin, \
-                     tree_digest = excluded.tree_digest, dependencies = excluded.dependencies, \
-                     conflict = excluded.conflict, dirty = excluded.dirty, updated_at = excluded.updated_at",
-                    params![
-                        node.id.as_str(),
-                        node.name.as_str(),
-                        node.single_file,
-                        node.enabled,
-                        source_kind(&node.source),
-                        source_to_json(&node.source).to_string(),
-                        origin_str(node.origin),
-                        node.tree_digest,
-                        dependency_str(node.dependencies),
-                        node.conflict,
-                        node.dirty,
-                        now
-                    ],
-                )
-                .map_err(|_| crate::shared::sqlite::DbError::Unavailable)?;
+                upsert_node(&tx, &node, &now)?;
+                tx.commit()
+                    .map_err(|_| crate::shared::sqlite::DbError::Unavailable)
+            })
+            .await
+            .map_err(storage)
+    }
+
+    async fn apply_scan(
+        &self,
+        nodes: &[InstalledNode],
+        removed: &[NodeId],
+    ) -> Result<(), NodeAppError> {
+        let nodes = nodes.to_vec();
+        let removed = removed.to_vec();
+        let now = SystemClock.now();
+        self.db
+            .run(move |c| {
+                let tx = c
+                    .transaction()
+                    .map_err(|_| crate::shared::sqlite::DbError::Unavailable)?;
+                for node in &nodes {
+                    upsert_node(&tx, node, &now)?;
+                }
+                for id in &removed {
+                    tx.execute("DELETE FROM nodes WHERE id = ?1", [id.as_str()])
+                        .map_err(|_| crate::shared::sqlite::DbError::Unavailable)?;
+                }
                 tx.commit()
                     .map_err(|_| crate::shared::sqlite::DbError::Unavailable)
             })

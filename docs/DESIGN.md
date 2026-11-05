@@ -144,7 +144,7 @@ The splash stylesheet is external because Tauri injects a style nonce into inlin
 
 React replaces the splash with the shared `LoadingScreen`, using the same layout and theme tokens plus translated “Starting…” text. `BootGate` polls `app_ready` one request at a time; state-dependent queries mount only after startup state is published. The lazy app import starts immediately alongside readiness polling. Shell pages, setup/rebuild and curated review load as separate chunks, with Skeleton fallbacks while their imports finish. Both startup screens use `role="status"` and `aria-busy="true"`, hide the decorative spinner from assistive technology, and disable its animation for `prefers-reduced-motion`.
 
-Startup composition runs on the named startup worker. A locked Initializing/Ready/Exiting gate prevents publication after an early close/exit; background services start only after state publication. The existing manager can be restored and focused before readiness.
+Startup composition runs on the named startup worker. A locked Initializing/Ready/Exiting gate prevents publication after an early close/exit; background services and the custom-node inventory scan start only after state publication; until that scan finishes, the Custom Nodes page shows its loading status. The Custom Nodes page shows a notice when the last scan did not finish. The existing manager can be restored and focused before readiness.
 
 ## 6. Motion
 - Default `transition-colors`; cards use `transition-all duration-300`.
