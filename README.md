@@ -126,6 +126,7 @@ cargo clippy --workspace --all-targets --locked -j 4 -- -D warnings
 cargo test --workspace --locked -j 4 --no-fail-fast
 node --test scripts/check-arch-deps.test.mjs && node scripts/check-arch-deps.mjs
 node --test scripts/dev-reset.test.mjs
+node --test scripts/profile-swap.test.mjs  # Windows only; not run in CI
 cargo test -p desktop --test bindings --locked
 cargo build -p desktop --locked --features tauri/custom-protocol
 pnpm -C ui tauri build                   # Windows NSIS + MSI bundles (MSVC only; release build, about 12 minutes)
@@ -156,6 +157,22 @@ scripts\dev-reset.cmd /build
 
 After showing the plan and requiring a typed `YES`, the reset permanently deletes all discovered install roots, including in-root models, custom nodes, inputs, outputs and workflows, environments, tools, database, logs, caches and downloads. It also deletes `bootstrap.json`, WebView2 data and the two stored CivitAI/Hugging Face tokens. External venvs/model folders and tracked repository files are kept; an adopted venv inside a deletion target blocks the reset. `/build` also removes `target/`, `target-gnu/`, `ui/node_modules/`, `ui/dist/` and `crates/desktop/gen/`.
 
+### Tutorial recording profile
+
+Developer-only, Windows-only. To record a tutorial from a true first run without losing your own setup, close the app and any programs running from its folders, then run:
+
+```cmd
+scripts\swap-to-tutorial-profile.cmd
+scripts\restore-default-profile.cmd
+```
+
+The swap sets aside the bootstrap pointer folder, the default install root, the manager WebView2 data and the two stored CivitAI/Hugging Face tokens, so the installed app starts at first-run setup. Folders are renamed in place to `*.profile-default`; tokens are copied inside Credential Manager under the same suffix. The restore puts the tutorial state aside as `*.profile-tutorial` and brings yours back. The next swap offers Resume or Fresh. Fresh needs a typed `DELETE` and permanently deletes the saved tutorial profile. Rerun either script to finish an interrupted swap.
+
+- A custom install root chosen in `bootstrap.json` is not hidden. Do not pick or open it during the tutorial.
+- Not swapped: the folder picker's recent-folder history, uv's `HKCU\Software\Python\Astral` entries and temp files.
+- Debug builds with `VJUMPKUNG_COMFYUI_HOME` set ignore the swap.
+- This is an app-state profile, unrelated to setup profiles. `dev-reset` ignores `*.profile-*` folders.
+
 ## Repository layout
 
 ```text
@@ -169,7 +186,7 @@ ui/src/
   features/         one folder per feature (setup, environment, comfy-runtime, downloads, library, custom-nodes, settings, overview)
   shared/           shared UI components and the typed IPC gateway
 docs/               requirements, design, ADRs, status and acceptance ledgers, handoff records
-scripts/            Tauri CLI wrapper, architecture dependency check and developer reset
+scripts/            Tauri CLI wrapper, architecture dependency check, developer reset and tutorial profile swap
 ```
 
 Dependencies point inward: `domain` <- `application` <- `infrastructure` <- `desktop`. `node scripts/check-arch-deps.mjs` enforces the allowed edges.
