@@ -54,7 +54,15 @@ Keep Rust unit tests beside modules or in `tests.rs`; integration tests belong i
 
 ## Commit & Pull Request Guidelines
 
-History contains `initial commit` and `chore: ...` messages. Prefer concise conventional prefixes such as `feat:`, `fix:`, and `docs:`. PRs should explain changes, link issues or requirement IDs, report checks, and include screenshots for UI changes.
+Split every change into one commit per area. Claude Code does this with the `commit-by-area` skill (user scope: `~/.claude/skills/commit-by-area`). That also applies when committing is one step of a larger request such as commit-and-PR: make the split commits first, then only push and open the PR, never one all-in-one commit. Without the skill, follow the same rules by hand:
+
+- Order: `build` (root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`), `domain`, `application`, `infrastructure`, `desktop`, `ui`, `scripts`, `ci` (`.github/`), `docs` (`docs/` and root `*.md`), and a version bump last.
+- `ui/src/shared/ipc/bindings.ts` is generated from the desktop crate and goes with `desktop`; `ui/package.json` and `ui/pnpm-lock.yaml` go with `ui`; `Cargo.lock` goes with the last area whose `Cargo.toml` changed.
+- Files whose only change is the version (`Cargo.toml`, `Cargo.lock`, `crates/desktop/tauri.conf.json`, `ui/package.json`) form one `chore(release): bump version to X.Y.Z` commit.
+- Messages: `type(area): summary`, such as `feat(domain): …` or `fix(ui): …`; `docs:`, `ci:` and `build:` take no scope. Run the formatters above before committing.
+- Commit only. Push only when the user asks: a push runs CI, and a version change in `crates/desktop/tauri.conf.json` reaching `main` starts the release workflow.
+
+PRs should explain changes, link issues or requirement IDs, report checks, and include screenshots for UI changes.
 
 ## Security & Configuration
 
