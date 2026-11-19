@@ -13,9 +13,8 @@ use application::{
     comfy_runtime::{
         ComfyRepository, ExtraModelPaths, ExtraModelPathsWriter, GetComfyStatus, GetLaunchOptions,
         LaunchPreflight, ListComfyVersions, ManageExtraModelPaths, NodeLifecycle, PortProbe,
-        PostStopScan, ReadExtraModelPaths, RestartComfy, RuntimeDeps, RuntimeError, RuntimeEvents,
-        RuntimeStore, RuntimeSupervisor, ScanPreemption, SetLaunchOptions, StartComfy, StopComfy,
-        UpdateComfy,
+        ReadExtraModelPaths, RestartComfy, RuntimeDeps, RuntimeError, RuntimeEvents, RuntimeStore,
+        RuntimeSupervisor, SetLaunchOptions, StartComfy, StopComfy, UpdateComfy,
     },
     custom_nodes::{
         LocateNode, NodeAppError, NodeContext, NodeRequirements, NodeService, PrepareRequest,
@@ -111,6 +110,9 @@ use crate::{
     picker::FilePicker,
     updates::SignedUpdater,
 };
+
+mod scans;
+use scans::ScanScheduler;
 
 /// Why the app started without an install root. Only recovery guidance is available then.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -526,66 +528,67 @@ pub struct NodeServices {
     active: Mutex<HashMap<String, CancelToken>>,
     pub(crate) subscriptions: Mutex<HashMap<u32, tauri::async_runtime::JoinHandle<()>>>,
     next_subscription: AtomicU32,
-    /// True from the moment the startup inventory scan is scheduled until it has ended,
-    /// including the time it waits for the maintenance gate.
-    scan: tokio::sync::watch::Sender<bool>,
+    /// Runs the startup scan and the scans requested after a stop, a restart or an update.
+    scheduler: Arc<ScanScheduler>,
     scan_started: AtomicBool,
-}
-
-/// Ends the startup scan however its task ends (completion, error, panic or cancellation):
-/// clears the flag first, then tells subscribers to refetch.
-struct ScanCompletion {
-    scan: tokio::sync::watch::Sender<bool>,
-    hub: Arc<NodeHub>,
-}
-
-impl Drop for ScanCompletion {
-    fn drop(&mut self) {
-        self.scan.send_replace(false);
-        self.hub.publish(NodeEvent::Changed);
-    }
 }
 
 struct NotifyingNodeLifecycle {
     service: Arc<dyn NodeLifecycle>,
     hub: Arc<NodeHub>,
+    /// Asks the scan scheduler for a scan; returns at once.
+    request_scan: Arc<dyn Fn() + Send + Sync>,
 }
 
 #[async_trait::async_trait]
 impl NodeLifecycle for NotifyingNodeLifecycle {
     async fn before_start(&self, lease: &mut dyn MaintenanceLease) -> Result<(), RuntimeError> {
-        self.service.before_start(lease).await
-    }
-
-    async fn after_stop(
-        &self,
-        lease: &mut dyn MaintenanceLease,
-        scan: PostStopScan,
-    ) -> Result<(), RuntimeError> {
-        let result = self.service.after_stop(lease, scan).await;
+        let result = self.service.before_start(lease).await;
         self.hub.publish(NodeEvent::Changed);
         result
     }
 
-    fn preempt_scan(&self) -> Option<ScanPreemption> {
-        self.service.preempt_scan()
+    async fn reconcile_after_stop(
+        &self,
+        lease: &mut dyn MaintenanceLease,
+    ) -> Result<(), RuntimeError> {
+        let result = self.service.reconcile_after_stop(lease).await;
+        self.hub.publish(NodeEvent::Changed);
+        result
+    }
+
+    fn note_start(&self) {
+        self.service.note_start();
+    }
+
+    fn start_finished(&self) {
+        self.service.start_finished();
+    }
+
+    fn request_scan(&self) {
+        (self.request_scan)();
     }
 
     fn scans_held_off(&self) -> bool {
         self.service.scans_held_off()
     }
+
+    fn scan_settling(&self) -> bool {
+        self.service.scan_settling()
+    }
 }
 
 impl NodeServices {
     pub fn new(stack: NodeStack) -> Self {
+        let service = NodeService::new(stack.deps.clone());
         Self {
-            service: NodeService::new(stack.deps.clone()),
+            scheduler: ScanScheduler::new(service.clone(), stack.hub.clone()),
+            service,
             locate: LocateNode::new(stack.deps.clone()),
             stack,
             active: Mutex::default(),
             subscriptions: Mutex::default(),
             next_subscription: AtomicU32::new(1),
-            scan: tokio::sync::watch::Sender::new(false),
             scan_started: AtomicBool::new(false),
         }
     }
@@ -596,12 +599,17 @@ impl NodeServices {
 
     /// Schedules the startup inventory scan; `start_scan` runs it once the state is published.
     fn arm_scan(&self) {
-        self.scan.send_replace(true);
+        self.scheduler.arm_startup();
     }
 
     /// Whether the startup inventory scan is scheduled or running.
     pub(crate) fn scanning(&self) -> bool {
-        *self.scan.borrow()
+        self.scheduler.scanning()
+    }
+
+    /// Whether a background scan is queued or running.
+    pub(crate) fn refreshing(&self) -> bool {
+        self.scheduler.refreshing()
     }
 
     /// Runs the armed startup scan in the background. Does nothing when no scan is armed, and
@@ -610,35 +618,13 @@ impl NodeServices {
         if !self.scanning() || self.scan_started.swap(true, Ordering::SeqCst) {
             return;
         }
-        let completion = ScanCompletion {
-            scan: self.scan.clone(),
-            hub: self.stack.hub.clone(),
-        };
-        let service = self.service.clone();
-        tauri::async_runtime::spawn(async move {
-            let _completion = completion;
-            match service.rescan_when_free().await {
-                Ok(_) => tracing::info!("custom node scan finished"),
-                Err(NodeAppError::Cancelled) => {
-                    tracing::info!(
-                        "custom node scan stopped early (the app is closing, or ComfyUI was started or updated)"
-                    )
-                }
-                Err(NodeAppError::RuntimeRunning) => tracing::info!(
-                    "custom node scan skipped because ComfyUI is running or its state is unknown"
-                ),
-                Err(error) => tracing::error!(%error, "custom node scan needs attention"),
-            }
-        });
+        self.scheduler.request();
     }
 
-    /// Waits until no startup scan is scheduled or running. Only tests use it: Start, Restart
-    /// and Update ComfyUI cancel the scan instead of waiting for it.
+    /// Waits until no startup scan is scheduled or running. Only tests use it.
     #[cfg(test)]
     pub(crate) async fn wait_for_scan(&self) {
-        let mut scanning = self.scan.subscribe();
-        // The returned guard is dropped at once; it must not live across another await.
-        let _ = scanning.wait_for(|running| !*running).await;
+        self.scheduler.wait_for_scan().await;
     }
 
     /// Tells subscribers to refetch the installed nodes and operations.
@@ -774,9 +760,11 @@ impl Services {
         nodes: NodeStack,
     ) -> Self {
         let nodes = NodeServices::new(nodes);
+        let scheduler = nodes.scheduler.clone();
         let node_lifecycle = Arc::new(NotifyingNodeLifecycle {
             service: Arc::new(nodes.service.clone()),
             hub: nodes.stack.hub.clone(),
+            request_scan: Arc::new(move || scheduler.request()),
         });
         let diagnostics = CollectDiagnostics::new(
             RuntimeDeps {
@@ -1264,8 +1252,10 @@ fn services_root(resolved: &ResolvedRoot) -> RootInfo {
 mod tests {
     use super::*;
     use application::shared::MaintenanceGate;
+    use std::sync::atomic::AtomicUsize;
 
-    struct LifecycleResult(Result<(), RuntimeError>, Mutex<Vec<PostStopScan>>);
+    /// Answers the checks with a fixed result and records which port methods were called.
+    struct LifecycleResult(Result<(), RuntimeError>, Arc<Mutex<Vec<&'static str>>>);
 
     #[async_trait::async_trait]
     impl NodeLifecycle for LifecycleResult {
@@ -1273,133 +1263,90 @@ mod tests {
             self.0.clone()
         }
 
-        async fn after_stop(
+        async fn reconcile_after_stop(
             &self,
             _: &mut dyn MaintenanceLease,
-            scan: PostStopScan,
         ) -> Result<(), RuntimeError> {
-            self.1.lock().unwrap().push(scan);
             self.0.clone()
         }
 
-        fn preempt_scan(&self) -> Option<ScanPreemption> {
-            Some(ScanPreemption::new(()))
+        fn note_start(&self) {
+            self.1.lock().unwrap().push("note_start");
+        }
+
+        fn start_finished(&self) {
+            self.1.lock().unwrap().push("start_finished");
+        }
+
+        fn request_scan(&self) {
+            unreachable!("the wrapper schedules scans itself")
         }
 
         fn scans_held_off(&self) -> bool {
-            false
+            self.1.lock().unwrap().push("scans_held_off");
+            true
+        }
+
+        fn scan_settling(&self) -> bool {
+            self.1.lock().unwrap().push("scan_settling");
+            true
         }
     }
 
     #[tokio::test]
-    async fn node_lifecycle_publishes_changed_after_stop_even_on_failure() {
-        for result in [Ok(()), Err(RuntimeError::NodeRescanFailed)] {
+    async fn node_lifecycle_publishes_changed_after_each_check_even_on_failure() {
+        for result in [Ok(()), Err(RuntimeError::NodeRecoveryRequired)] {
             let hub = NodeHub::new("test".into());
             let mut receiver = hub.subscribe();
             let lifecycle = NotifyingNodeLifecycle {
-                service: Arc::new(LifecycleResult(result.clone(), Mutex::default())),
+                service: Arc::new(LifecycleResult(result.clone(), Arc::default())),
                 hub,
+                request_scan: Arc::new(|| unreachable!("no scan was requested")),
             };
             let gate = TokioMaintenanceGate::new();
             let mut lease = gate.acquire().await.unwrap();
             assert_eq!(lifecycle.before_start(&mut *lease).await, result);
-            assert!(receiver.try_recv().is_err());
-            assert_eq!(
-                lifecycle
-                    .after_stop(&mut *lease, PostStopScan::Finishes)
-                    .await,
-                result
-            );
             assert_eq!(receiver.try_recv().unwrap().1, NodeEvent::Changed);
+            assert_eq!(lifecycle.reconcile_after_stop(&mut *lease).await, result);
+            assert_eq!(receiver.try_recv().unwrap().1, NodeEvent::Changed);
+            assert!(receiver.try_recv().is_err());
         }
     }
 
     #[tokio::test]
-    async fn node_lifecycle_forwards_the_post_stop_kind_and_scan_preemption() {
-        let inner = Arc::new(LifecycleResult(Ok(()), Mutex::default()));
-        let lifecycle = NotifyingNodeLifecycle {
-            service: inner.clone(),
-            hub: NodeHub::new("test".into()),
-        };
-        assert!(lifecycle.preempt_scan().is_some());
-        let gate = TokioMaintenanceGate::new();
-        let mut lease = gate.acquire().await.unwrap();
-        for scan in [PostStopScan::Yields, PostStopScan::Finishes] {
-            lifecycle.after_stop(&mut *lease, scan).await.unwrap();
-        }
-        assert_eq!(
-            *inner.1.lock().unwrap(),
-            [PostStopScan::Yields, PostStopScan::Finishes]
-        );
-    }
-
-    /// The flag, the hub and an observer that reads the flag at the moment `Changed` arrives.
-    fn completion_fixture() -> (
-        ScanCompletion,
-        tokio::sync::watch::Sender<bool>,
-        tokio::task::JoinHandle<(NodeEvent, bool)>,
-    ) {
+    async fn node_lifecycle_requests_scans_through_the_scheduler_and_forwards_the_hold_off() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
         let hub = NodeHub::new("test".into());
-        let mut events = hub.subscribe();
-        let scan = tokio::sync::watch::Sender::new(true);
-        let flag = scan.subscribe();
-        let observer = tokio::spawn(async move {
-            let (_, event) = events.recv().await.unwrap();
-            (event, *flag.borrow())
-        });
-        (
-            ScanCompletion {
-                scan: scan.clone(),
-                hub,
-            },
-            scan,
-            observer,
-        )
-    }
-
-    #[tokio::test]
-    async fn scan_completion_clears_the_flag_before_publishing_changed() {
-        let (completion, scan, observer) = completion_fixture();
-        assert!(*scan.borrow());
-        drop(completion);
-        assert_eq!(observer.await.unwrap(), (NodeEvent::Changed, false));
-        assert!(!*scan.borrow());
-    }
-
-    #[tokio::test]
-    async fn scan_completion_runs_when_the_scan_task_panics() {
-        let (completion, scan, observer) = completion_fixture();
-        let task = tokio::spawn(async move {
-            let _completion = completion;
-            panic!("the scan panicked");
-        });
-        assert!(task.await.unwrap_err().is_panic());
-        assert_eq!(observer.await.unwrap(), (NodeEvent::Changed, false));
-        assert!(!*scan.borrow());
-    }
-
-    #[tokio::test]
-    async fn scan_completion_runs_when_the_scan_task_is_cancelled() {
-        let (completion, scan, observer) = completion_fixture();
-        let task = tokio::spawn(async move {
-            let _completion = completion;
-            std::future::pending::<()>().await;
-        });
-        task.abort();
-        assert!(task.await.unwrap_err().is_cancelled());
-        assert_eq!(observer.await.unwrap(), (NodeEvent::Changed, false));
-        assert!(!*scan.borrow());
-    }
-
-    #[tokio::test]
-    async fn scan_completion_runs_when_the_scan_future_is_dropped_unpolled() {
-        let (completion, scan, observer) = completion_fixture();
-        let future = async move {
-            let _completion = completion;
+        let mut receiver = hub.subscribe();
+        let calls = Arc::new(Mutex::default());
+        let lifecycle = NotifyingNodeLifecycle {
+            service: Arc::new(LifecycleResult(Ok(()), calls.clone())),
+            hub,
+            request_scan: Arc::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
         };
-        drop(future);
-        assert_eq!(observer.await.unwrap(), (NodeEvent::Changed, false));
-        assert!(!*scan.borrow());
+        lifecycle.request_scan();
+        lifecycle.request_scan();
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        // Requesting returns at once and announces nothing itself: the scheduler does.
+        assert!(receiver.try_recv().is_err());
+        assert!(lifecycle.scans_held_off());
+        lifecycle.note_start();
+        lifecycle.start_finished();
+        assert!(lifecycle.scan_settling());
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [
+                "scans_held_off",
+                "note_start",
+                "start_finished",
+                "scan_settling"
+            ]
+        );
+        // The start bookkeeping and the settle check are not node-state changes to announce.
+        assert!(receiver.try_recv().is_err());
     }
 }
 

@@ -118,8 +118,9 @@ export const commands = {
 	nodeList: () => typedError<NodeListDto, IpcError>(__TAURI_INVOKE("node_list")),
 	nodeGitStatus: (input: NodeIdInput) => typedError<NodeGitStatusDto, IpcError>(__TAURI_INVOKE("node_git_status", { input })),
 	/**
-	 *  Finishes interrupted operations, then reads the folders again. Also runs after every verified
-	 *  ComfyUI stop, because Manager or the user may have changed the folders meanwhile.
+	 *  Reads the folders again, settling interrupted operations first when ComfyUI is verified
+	 *  stopped. Also runs in the background after every ComfyUI stop, restart or update, because
+	 *  Manager or the user may have changed the folders meanwhile.
 	 */
 	nodeRescan: () => typedError<NodeListDto, IpcError>(__TAURI_INVOKE("node_rescan")),
 	/**
@@ -755,6 +756,8 @@ export type NodeListDto = {
 	repairRequired: boolean,
 	/**  The routine inventory scan is scheduled or running, so `nodes` may not be complete yet. */
 	scanning: boolean,
+	/**  A background scan is queued or running; rows stay visible. */
+	refreshing: boolean,
 	/**  The last scan did not finish, so the stored inventory may be out of date. */
 	scanIncomplete: boolean,
 };

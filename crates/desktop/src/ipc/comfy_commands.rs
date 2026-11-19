@@ -22,6 +22,20 @@ fn invalid_identifier() -> IpcError {
     IpcError::new("invalid_identifier", "The identifier is not valid.")
 }
 
+/// Logs a failed ComfyUI command (its code and sanitized message; the log writer redacts) and
+/// returns the result unchanged.
+fn logged<T>(command: &'static str, result: Result<T, IpcError>) -> Result<T, IpcError> {
+    if let Err(error) = &result {
+        tracing::warn!(
+            command,
+            code = %error.code,
+            message = %error.message,
+            "ComfyUI command failed"
+        );
+    }
+    result
+}
+
 fn start_result(
     result: Result<application::comfy_runtime::RuntimeStatus, RuntimeError>,
     pending: Option<String>,
@@ -51,25 +65,37 @@ pub async fn comfy_status(state: State<'_, AppState>) -> Result<ComfyStatusDto, 
 #[tauri::command]
 #[specta::specta]
 pub async fn comfy_start(state: State<'_, AppState>) -> Result<StartResultDto, IpcError> {
-    let services = state.services()?;
-    let result = services.comfy.start.execute().await;
-    start_result(result, state.close.pending())
+    let result = async {
+        let services = state.services()?;
+        let result = services.comfy.start.execute().await;
+        start_result(result, state.close.pending())
+    }
+    .await;
+    logged("comfy_start", result)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn comfy_stop(state: State<'_, AppState>) -> Result<ComfyStatusDto, IpcError> {
-    let services = state.services()?;
-    let status = services.comfy.stop.execute().await?;
-    Ok(ComfyStatusDto::new(&status, state.close.pending()))
+    let result = async {
+        let services = state.services()?;
+        let status = services.comfy.stop.execute().await?;
+        Ok::<_, IpcError>(ComfyStatusDto::new(&status, state.close.pending()))
+    }
+    .await;
+    logged("comfy_stop", result)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn comfy_restart(state: State<'_, AppState>) -> Result<StartResultDto, IpcError> {
-    let services = state.services()?;
-    let result = services.comfy.restart.execute().await;
-    start_result(result, state.close.pending())
+    let result = async {
+        let services = state.services()?;
+        let result = services.comfy.restart.execute().await;
+        start_result(result, state.close.pending())
+    }
+    .await;
+    logged("comfy_restart", result)
 }
 
 /// Registers a per-subscription channel. The first event is an authoritative snapshot with a
@@ -183,34 +209,38 @@ pub async fn comfy_update(
     state: State<'_, AppState>,
     input: UpdateInput,
 ) -> Result<UpdateResultDto, IpcError> {
-    let UpdateInput {
-        target,
-        stop_running,
-        retry,
-    } = input;
-    let request = UpdateRequest {
-        target: target.into_domain()?,
-        stop_running,
-        retry: retry
-            .map(SessionId::new)
-            .transpose()
-            .map_err(|_| invalid_identifier())?,
-    };
-    match state
-        .services()?
-        .comfy
-        .update
-        .execute(request, CancelToken::new())
-        .await
-    {
-        Ok(run) => Ok(UpdateResultDto::Updated { run: (&run).into() }),
-        Err(RuntimeError::NeedsStop) => Ok(UpdateResultDto::NeedsStop),
-        Err(RuntimeError::UpdateRefused { reason, status }) => Ok(UpdateResultDto::Refused {
-            reason: reason.to_string(),
-            status,
-        }),
-        Err(error) => Err(error.into()),
+    let result = async {
+        let UpdateInput {
+            target,
+            stop_running,
+            retry,
+        } = input;
+        let request = UpdateRequest {
+            target: target.into_domain()?,
+            stop_running,
+            retry: retry
+                .map(SessionId::new)
+                .transpose()
+                .map_err(|_| invalid_identifier())?,
+        };
+        match state
+            .services()?
+            .comfy
+            .update
+            .execute(request, CancelToken::new())
+            .await
+        {
+            Ok(run) => Ok(UpdateResultDto::Updated { run: (&run).into() }),
+            Err(RuntimeError::NeedsStop) => Ok(UpdateResultDto::NeedsStop),
+            Err(RuntimeError::UpdateRefused { reason, status }) => Ok(UpdateResultDto::Refused {
+                reason: reason.to_string(),
+                status,
+            }),
+            Err(error) => Err(error.into()),
+        }
     }
+    .await;
+    logged("comfy_update", result)
 }
 
 fn running_origin(state: &AppState) -> Result<Url, IpcError> {

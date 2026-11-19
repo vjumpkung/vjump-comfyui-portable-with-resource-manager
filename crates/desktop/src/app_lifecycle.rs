@@ -242,15 +242,7 @@ impl CloseCoordinator {
         match action {
             CloseAction::StopThenExit => {
                 let _pause = scans.pause();
-                match stop.await {
-                    Ok(_) => {}
-                    Err(RuntimeError::NodeRescanFailed) => {
-                        tracing::warn!(
-                            "ComfyUI stopped, but custom nodes could not be rescanned before exit"
-                        );
-                    }
-                    Err(error) => return Err(error),
-                }
+                stop.await?;
                 self.guard_exit(gate, scans, supervisor, root).await
             }
             CloseAction::KeepRunningHeadless => {
@@ -642,10 +634,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_then_exit_accepts_only_rescan_failure_after_verified_stop() {
+    async fn stop_then_exit_needs_a_verified_stop() {
         for result in [
             Ok(()),
-            Err(RuntimeError::NodeRescanFailed),
             Err(RuntimeError::Failed("termination failed".into())),
             Err(RuntimeError::RecoveryRequired("ownership unknown".into())),
             Err(RuntimeError::Storage),
@@ -654,7 +645,7 @@ mod tests {
             let gate = TokioMaintenanceGate::new();
             let supervisor = Supervisor::new(&gate, Lifecycle::Running);
             let close = CloseCoordinator::default();
-            let allowed = matches!(result, Ok(()) | Err(RuntimeError::NodeRescanFailed));
+            let allowed = result.is_ok();
             let action = close
                 .prepare(
                     CloseAction::StopThenExit,
@@ -695,7 +686,7 @@ mod tests {
                         &Arc::new(ScanControl::default()),
                         &supervisor,
                         Path::new("root"),
-                        supervisor.stopped(Err(RuntimeError::NodeRescanFailed))
+                        supervisor.stopped(Ok(()))
                     )
                     .await
                     .is_err()
@@ -773,7 +764,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        // Maintenance can win the interval between Stop/rescan and the final check.
+        // Maintenance can win the interval between Stop and the final check.
         let close = CloseCoordinator::default();
         let maintenance = Mutex::new(None);
         let action = close
@@ -786,9 +777,7 @@ mod tests {
                 async {
                     let lease = gate.acquire().await.unwrap();
                     *maintenance.lock().unwrap() = Some(lease);
-                    supervisor
-                        .stopped(Err(RuntimeError::NodeRescanFailed))
-                        .await
+                    supervisor.stopped(Ok(())).await
                 },
             )
             .await;

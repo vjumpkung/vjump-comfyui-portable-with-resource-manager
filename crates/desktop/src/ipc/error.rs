@@ -322,10 +322,6 @@ impl From<RuntimeError> for IpcError {
                 "node_recovery_required",
                 "interrupted custom-node work must be resolved before launch.",
             ),
-            RuntimeError::NodeRescanFailed => Self::new(
-                "node_rescan_failed",
-                "ComfyUI stopped, but custom nodes could not be rescanned; retry Rescan.",
-            ),
             RuntimeError::EnvironmentNotUsable => Self::new(
                 "environment_not_usable",
                 "A verified active environment is required. Repair the selected environment first.",
@@ -390,13 +386,6 @@ mod tests {
             IpcError::new(
                 "node_recovery_required",
                 "interrupted custom-node work must be resolved before launch."
-            )
-        );
-        assert_eq!(
-            IpcError::from(RuntimeError::NodeRescanFailed),
-            IpcError::new(
-                "node_rescan_failed",
-                "ComfyUI stopped, but custom nodes could not be rescanned; retry Rescan."
             )
         );
     }

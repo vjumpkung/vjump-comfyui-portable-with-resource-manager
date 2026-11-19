@@ -69,6 +69,7 @@ pub(super) fn decision(input: CommitInput) -> Result<(String, CommitDecision), I
 async fn list(nodes: &NodeServices) -> Result<NodeListDto, IpcError> {
     // Read first: a scan that finishes while the rows are read must not leave a stale "done".
     let scanning = nodes.scanning();
+    let refreshing = nodes.refreshing();
     let installed = nodes.service.list().await?;
     let unresolved = nodes
         .service
@@ -97,6 +98,7 @@ async fn list(nodes: &NodeServices) -> Result<NodeListDto, IpcError> {
             .collect(),
         repair_required: nodes.service.repair_required().await?,
         scanning,
+        refreshing,
         scan_incomplete: nodes.service.scans().incomplete(),
     })
 }
@@ -188,8 +190,9 @@ pub async fn node_git_status(
     Ok(NodeGitStatusDto::from(&status))
 }
 
-/// Finishes interrupted operations, then reads the folders again. Also runs after every verified
-/// ComfyUI stop, because Manager or the user may have changed the folders meanwhile.
+/// Reads the folders again, settling interrupted operations first when ComfyUI is verified
+/// stopped. Also runs in the background after every ComfyUI stop, restart or update, because
+/// Manager or the user may have changed the folders meanwhile.
 #[tauri::command]
 #[specta::specta]
 pub async fn node_rescan(state: State<'_, AppState>) -> Result<NodeListDto, IpcError> {

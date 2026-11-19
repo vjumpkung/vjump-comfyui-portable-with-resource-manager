@@ -743,7 +743,7 @@ async fn activated_root_without_comfyui_still_creates_models() {
     assert!(root.join("ComfyUI").join("models").is_dir());
 }
 
-async fn compose_without_services(root: &Path) -> AppState {
+pub(super) async fn compose_without_services(root: &Path) -> AppState {
     AppState::compose(
         &ResolvedRoot {
             root: root.to_owned(),
@@ -756,7 +756,7 @@ async fn compose_without_services(root: &Path) -> AppState {
 }
 
 /// A root that already holds ComfyUI with one hand-made custom node.
-fn root_with_manual_node(directory: &tempfile::TempDir) -> PathBuf {
+pub(super) fn root_with_manual_node(directory: &tempfile::TempDir) -> PathBuf {
     let root = directory.path().join("existing install");
     let pack = root
         .join("ComfyUI")
@@ -767,7 +767,7 @@ fn root_with_manual_node(directory: &tempfile::TempDir) -> PathBuf {
     root
 }
 
-const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+pub(super) const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[tokio::test]
 async fn existing_root_composes_before_the_node_scan_and_scans_after_start_services() {
@@ -810,15 +810,15 @@ async fn fresh_root_schedules_no_node_scan() {
 }
 
 #[tokio::test]
-async fn the_node_scan_waits_for_maintenance_and_never_runs_twice() {
+async fn the_node_scan_waits_for_the_node_lock_not_for_maintenance_and_never_runs_twice() {
     let directory = tempfile::tempdir().unwrap();
     let root = root_with_manual_node(&directory);
     let state = compose_without_services(&root).await;
     let services = state.services().unwrap();
     let nodes = &services.nodes;
     let mut events = nodes.stack.hub.subscribe();
-    // Maintenance that got the gate first.
-    let lease = services.gate.acquire().await.unwrap();
+    // A node operation that got the node lock first.
+    let lock = nodes.stack.deps.node_lock.acquire().await.unwrap();
 
     nodes.start_scan();
     nodes.start_scan();
@@ -829,21 +829,34 @@ async fn the_node_scan_waits_for_maintenance_and_never_runs_twice() {
         tokio::time::timeout(std::time::Duration::from_millis(300), &mut waiter)
             .await
             .is_err(),
-        "the waiter must block while the scan waits for the gate"
+        "the waiter must block while the scan waits for the node lock"
     );
     assert!(nodes.scanning());
+    assert!(nodes.refreshing());
     assert!(nodes.service.list().await.unwrap().is_empty());
+    // Maintenance is not held up by it: Start, Stop, Restart and Update only need the gate.
+    drop(
+        services
+            .gate
+            .try_acquire()
+            .await
+            .expect("the scan waits for the node lock, not for the gate"),
+    );
 
-    drop(lease);
+    drop(lock);
     tokio::time::timeout(WAIT, waiter).await.unwrap();
     assert!(!nodes.scanning());
+    assert!(!nodes.refreshing());
     assert_eq!(nodes.service.list().await.unwrap().len(), 1);
-    // Exactly one worker finished: one completion event, then silence.
-    let (_, event) = tokio::time::timeout(WAIT, events.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(event, NodeEvent::Changed);
+    // Exactly one run: the announcement when it was requested and the completion when it ended,
+    // then silence.
+    for _ in 0..2 {
+        let (_, event) = tokio::time::timeout(WAIT, events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event, NodeEvent::Changed);
+    }
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(300), events.recv())
             .await
@@ -868,7 +881,7 @@ async fn the_scan_flag_is_kept_without_subscribers_and_wakes_a_waiter() {
             .await
             .is_err()
     );
-    nodes.scan.send_replace(false);
+    nodes.scheduler.startup.send_replace(false);
     tokio::time::timeout(WAIT, waiter).await.unwrap();
     // A waiter that starts after the end returns at once.
     tokio::time::timeout(std::time::Duration::from_secs(1), nodes.wait_for_scan())

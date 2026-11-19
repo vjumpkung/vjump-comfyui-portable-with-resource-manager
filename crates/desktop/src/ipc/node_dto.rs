@@ -193,6 +193,8 @@ pub struct NodeListDto {
     pub repair_required: bool,
     /// The routine inventory scan is scheduled or running, so `nodes` may not be complete yet.
     pub scanning: bool,
+    /// A background scan is queued or running; rows stay visible.
+    pub refreshing: bool,
     /// The last scan did not finish, so the stored inventory may be out of date.
     pub scan_incomplete: bool,
 }
@@ -595,6 +597,10 @@ pub fn describe(error: NodeAppError) -> (&'static str, String) {
             "node_ambiguous_reference",
             "The name matches both a branch and a tag. Use a commit to choose exactly.",
         ),
+        E::ComfyUiFile => fixed(
+            "node_repository_file",
+            "This file is part of the ComfyUI installation and can't be changed here.",
+        ),
         E::Failed(message) => ("node_failed", message),
     }
 }
@@ -749,6 +755,17 @@ mod tests {
             status: "  \n".into(),
         });
         assert!(empty.message.ends_with("so it was not changed."));
+    }
+
+    #[test]
+    fn comfyui_file_refusal_maps_to_node_repository_file() {
+        assert_eq!(
+            IpcError::from(NodeAppError::ComfyUiFile),
+            IpcError::new(
+                "node_repository_file",
+                "This file is part of the ComfyUI installation and can't be changed here.",
+            )
+        );
     }
 
     #[test]
