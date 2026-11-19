@@ -260,7 +260,7 @@ Package changes are not rolled back. If an operation fails partway, the environm
 
 ### Deleting an inactive environment
 
-Under "Delete an inactive environment", type the environment's recorded ID and confirm by typing it again. Only inactive environments can be deleted. Adopted environments are never deleted by the application.
+Under "Delete an inactive environment", type the environment's recorded ID and confirm by typing it again. Only inactive environments can be deleted. Adopted environments are never deleted by the application. Deletion is refused while a program this app did not start runs Python from that environment.
 
 ## 6. ComfyUI page
 
@@ -510,7 +510,7 @@ Known limitation: ComfyUI-Manager installed by first-run setup is listed with or
 
 ### Recovery after interruptions
 
-Node operations are journaled. If the application or system stops mid-operation, the interrupted work is reconciled at the next startup before any command runs (best effort: recovery is refused while ComfyUI is running or its state cannot be assessed) and again on later scans: unpublished staging is removed, and copies that cannot be proven safe are **preserved** rather than deleted. Use **Rescan / finish recovery** on the page to run reconciliation. Rescan also works while another program, such as a terminal opened in `ComfyUI/custom_nodes`, uses the ComfyUI folder: it then only reads the folders, unless an operation is waiting for recovery. Recovery moves folders, so it still needs ComfyUI stopped and the folder free. The operations panel shows unresolved operations, recent results and per-operation logs.
+Node operations are journaled. If the application or system stops mid-operation, the interrupted work is reconciled at the next startup before any command runs (best effort: recovery is refused while ComfyUI is running or its state cannot be assessed) and again on later scans: unpublished staging is removed, and copies that cannot be proven safe are **preserved** rather than deleted. Use **Rescan / finish recovery** on the page to run reconciliation. Rescan and recovery run whatever other programs are open, as long as no ComfyUI of this installation runs. Rescan also still reads the folders when the state of ComfyUI cannot be determined, unless an operation is waiting for recovery. Recovery moves folders, so a node folder that a program holds open makes the move fail with nothing changed. The operations panel shows unresolved operations, recent results and per-operation logs.
 
 Recovery is identity-based: a copy is matched by its source, commit and content digest, and a node's final content digest must equal the reviewed one unless an approved `install.py` ran (then the new digest is recorded). Ambiguous recovery states (for example a changed or foreign copy) block ComfyUI from starting until resolved, while ordinary cleanup that failed only because the trash was unavailable does not. The operations panel marks such operations with a **Blocks start** chip, and Restart is unavailable while one exists.
 
@@ -603,7 +603,13 @@ The Hugging Face tool's version check disables its update check and allows 60 se
 
 ### maintenance_busy
 
-Another maintenance operation (setup, an environment change, a node operation, a ComfyUI update, or a ComfyUI start) holds the application-wide lock. Wait for it to finish and try again. The application never stops another operation on your behalf.
+Another maintenance operation (setup, an environment change, a node operation, a ComfyUI update, or a ComfyUI start) holds the application-wide lock. Wait for it to finish and try again. The application never stops another operation on your behalf, with one exception: Start, Restart and Update ComfyUI cancel a routine custom-node scan (the startup scan, Rescan, or the rescan after Stop) instead of failing as busy.
+
+### environment_process_running
+
+A program outside this application's own process tree is running Python (or another executable) from that environment, and Windows keeps the loaded `.pyd` and `.dll` files locked, so changing or deleting the environment would fail part-way. The error names the program and its process id. It is returned by package changes, Update ComfyUI, custom-node installs, updates and dependency retries that run requirements or `install.py` (including Update all), and Delete environment. Setup into an existing environment refuses in its Preflight step with a message that names the program, not with this code. Nothing is changed. Close the named program and retry. Enabling, disabling and uninstalling a node never check this.
+
+Known limits: the check is skipped when the process list, or a process's executable, cannot be read. It does not match 8.3 short names or junction spellings of the environment folder. On Linux it is effectively inert, because a venv's `bin/python` resolves to the base interpreter and files in use can be replaced there.
 
 ### node_recovery_required
 
@@ -915,7 +921,7 @@ Notes:
 
 ## 17. IPC and generated bindings
 
-`app_ready()` is available before `AppState` exists and returns the startup gate's readiness (false if the gate is absent). Recovery mode counts as ready. The manager polls it while showing the startup loading screen; state-dependent queries wait for readiness. It takes no state parameter and is allowed only by `allow-app-ready` in the manager capability. Startup composition runs on the named `startup` thread, publishes state under the startup gate, then starts the runtime watch, the library/download services and the background custom-node scan. Recovery of interrupted node work stays before publication; the routine scan does not delay readiness. Closing stops the background scan; Start and Restart still wait for it to finish. An early close/exit prevents late publication; fatal factory errors request exit code 1. Shutdown joins that worker before flushing the logging guard.
+`app_ready()` is available before `AppState` exists and returns the startup gate's readiness (false if the gate is absent). Recovery mode counts as ready. The manager polls it while showing the startup loading screen; state-dependent queries wait for readiness. It takes no state parameter and is allowed only by `allow-app-ready` in the manager capability. Startup composition runs on the named `startup` thread, publishes state under the startup gate, then starts the runtime watch, the library/download services and the background custom-node scan. Recovery of interrupted node work stays before publication; the routine scan does not delay readiness. Closing stops the background scan; Start, Restart and Update ComfyUI cancel it (and Rescan, and the rescan after Stop) instead of waiting, and the Custom Nodes page shows the scan as incomplete. An early close/exit prevents late publication; fatal factory errors request exit code 1. Shutdown joins that worker before flushing the logging guard.
 
 IPC uses **tauri-specta** `2.0.0-rc.25` (a pinned prerelease, a deliberate exception to "stable only"). The command list is defined once, in `crates/desktop/src/ipc/bindings.rs` (`collect_commands!`), and is shared by `run()`, the binding export test and the ACL tests. The TypeScript output is `ui/src/shared/ipc/bindings.ts`, which is checked in.
 

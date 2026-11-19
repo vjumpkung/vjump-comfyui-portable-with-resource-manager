@@ -73,9 +73,9 @@ Desktop exceptions are marked **[desktop]**.
 ## 3. Typography
 | Role | Font | Notes |
 |---|---|---|
-| Sans | **Inter** → `--font-sans`, `--font-heading` | Bundled locally (`@fontsource-variable/inter`) **[desktop: no runtime Google Fonts; CSP and offline]** |
+| Sans | **Plus Jakarta Sans** (variable) → `--font-sans`, `--font-heading` | Bundled locally (`@fontsource-variable/plus-jakarta-sans`) **[desktop: no runtime Google Fonts; CSP and offline]** |
 | Mono | **Geist Mono** → `--font-mono` | Bundled locally |
-| Thai fallback | **Noto Sans Thai** / **Noto Sans Thai Looped** for mono contexts | **[desktop]** Added to both stacks, because Inter and Geist Mono have no Thai glyphs. Rendering is tested in WebView2 and WebKitGTK. |
+| Thai fallback | **Kanit** (Thai subset, weights 400/500/600/700/800) | **[desktop]** Bundled locally (`@fontsource/kanit`) and added to both the sans and mono stacks, because Plus Jakarta Sans and Geist Mono have no Thai glyphs. Kanit rendering still needs to be re-checked in WebView2 and WebKitGTK (font change 2026-11-19). |
 
 Type scale:
 | Element | Classes |

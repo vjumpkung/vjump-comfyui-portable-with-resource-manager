@@ -80,7 +80,7 @@ Rejected alternatives:
 | UI | React + TypeScript | React 19.x |
 | Styling | Tailwind CSS | 4.x |
 | Components | shadcn (**`radix-vega`** style, **lucide-react** icons, Sonner toasts). Logic is ported from the reference frontend and restyled per [DESIGN.md](DESIGN.md). | — |
-| Design system | [docs/DESIGN.md](DESIGN.md), adapted from vjump.dev: slate canvas, pastel yellow/cyan/pink accents, Inter + Geist Mono (bundled locally, Noto Sans Thai fallback), `next-themes` | — |
+| Design system | [docs/DESIGN.md](DESIGN.md), adapted from vjump.dev: slate canvas, pastel yellow/cyan/pink accents, Plus Jakarta Sans + Geist Mono (bundled locally, Kanit for Thai), `next-themes` | — |
 | Server state | `@tanstack/react-query` over Tauri `invoke` | 5.x |
 | Log view | `@xterm/xterm` (as the reference frontend uses) | — |
 
@@ -237,6 +237,9 @@ Rules by layer:
   - Ownership is held through subprocess cancellation and cleanup.
   - Composed workflows acquire the gate **once**, so there is no recursive locking.
   - The gate only controls work issued by this app. ComfyUI-Manager or user scripts are outside it, so the app re-scans after ComfyUI stops (FR-NODE-10).
+- **What counts as running.** An owned runtime, a recorded survivor, or any process whose command line runs `<root>/ComfyUI/main.py` (absolute, or relative to its working directory). Terminals, file managers, viewers and Pythons from `envs/` do not count as ComfyUI running (Pythons from `envs/` are covered by Environment in use below); an OS lock they hold surfaces as that operation's own error with nothing changed. A Python whose location cannot be read still makes the state unknown, and on Windows so does a relative `main.py` whose working directory cannot be read (an elevated process); on other systems that second rule does not apply.
+- **Environment in use.** This targets Windows file locks. Package changes, setup into an existing environment, Update ComfyUI, node installs, updates and dependency retries that run requirements or `install.py`, and Delete environment are refused (`environment_process_running`, naming the process and its pid) while a program outside this app's process tree runs an executable from that environment (Windows keeps loaded `.pyd`/`.dll` files locked).
+- **Scans yield.** The startup scan, Rescan and the rescan after a plain Stop are cancelled by Start, Restart and Update ComfyUI; nothing is written and the list is marked incomplete. The rescans inside Restart and Update, and recovery, do not yield.
 - **Not gated.** Downloads keep their own concurrency limit (FR-DL-6). Model rename, move and delete are **allowed while ComfyUI runs**. They are coordinated per destination path and rely on locked-file recovery (FR-MODEL-2/3).
 - **No general event bus initially.** Required effects use awaited orchestration, e.g. finishing a download registers the catalog entry (FR-DL-9). Channels and events are used for UI notification only.
 
@@ -385,7 +388,7 @@ The list is also extensible by any folder present on disk. Unknown categories fr
 | FR-NODE-7 | P0 | **Enable/disable.** Move the folder to `custom_nodes/.disabled/<name>`, the convention ComfyUI-Manager also uses, so both tools agree. |
 | FR-NODE-8 | P0 | **Uninstall.** Move the folder to trash. Python packages are left in place, with a note that they are shared. |
 | FR-NODE-9 | P0 | All node operations are serialized with env operations (FR-ENV-4) and require ComfyUI to be stopped. After success, offer "Restart ComfyUI". |
-| FR-NODE-10 | P1 | **ComfyUI-Manager coexistence.** Installing ComfyUI-Manager is optional; first-run setup ticks it by default (owner decision 2026-10-20). Current ComfyUI supports `manager_requirements.txt` and `--enable-manager`. If the Manager is present, the app re-scans `custom_nodes/` after every ComfyUI stop, so changes made through the Manager are reflected. |
+| FR-NODE-10 | P1 | **ComfyUI-Manager coexistence.** Installing ComfyUI-Manager is optional; first-run setup ticks it by default (owner decision 2026-10-20). Current ComfyUI supports `manager_requirements.txt` and `--enable-manager`. If the Manager is present, the app re-scans `custom_nodes/` after every ComfyUI stop, so changes made through the Manager are reflected. A Start, Restart or Update ComfyUI issued during that rescan cancels it; the list is then marked incomplete until the next stop or Rescan. |
 | FR-NODE-11 | P2 | Import/export a node set (a list of registry ids/versions and git URLs/commits) to reproduce an install. |
 | FR-NODE-12 | P1 | **Open in the system file manager.** The Custom Nodes page opens `ComfyUI/custom_nodes`; the details pane opens the node's folder (under `.disabled` when disabled) or reveals a single-file node. Nothing is created. |
 
