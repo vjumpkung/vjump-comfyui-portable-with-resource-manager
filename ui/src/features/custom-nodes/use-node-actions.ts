@@ -1,11 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 import {
   gateway,
   IpcClientError,
   type CommitInput,
   type InstalledNodeDto,
+  type NodeListDto,
   type NodeOutcomeDto,
   type PlanReviewDto,
 } from '@/shared/ipc/gateway'
@@ -46,6 +47,9 @@ export interface ActionNotice {
 }
 
 function toError(error: unknown): { code: string; message: string | NodeText } {
+  if (error instanceof IpcClientError && error.code === 'node_repository_file') {
+    return { code: error.code, message: { key: 'common.repositoryFile' } }
+  }
   return error instanceof IpcClientError
     ? error
     : { code: 'other', message: { key: 'common.operationError' } }
@@ -118,6 +122,7 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
   const preparations = useRef(new Map<string, NodePreparation>())
 
   const settle = () => refreshNodeState(client)
+  const clearRescanError = useCallback(() => setRescanError(null), [])
 
   function fail(
     error: unknown,
@@ -277,6 +282,8 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
 
   async function rescan(): Promise<void> {
     if (inflight.current || rescanning || resolving) return
+    // A background scan is running: a second one would only be refused.
+    if (client.getQueryData<NodeListDto>(NODE_KEY)?.refreshing) return
     setRescanning(true)
     setRescanError(null)
     try {
@@ -334,6 +341,7 @@ export function useNodeActions({ stopComfy }: { stopComfy: () => Promise<void> }
     stopping,
     rescanning,
     rescanError,
+    clearRescanError,
     resolving,
     resolveError,
     working: busy !== null || stopping || rescanning || resolving,

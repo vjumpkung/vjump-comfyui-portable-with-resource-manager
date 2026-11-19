@@ -6,6 +6,7 @@ import {
   configure,
   fireEvent,
   render,
+  renderHook,
   screen,
   waitFor,
   within,
@@ -34,6 +35,7 @@ import {
   registryInstalled,
   registryPage,
 } from './fixtures'
+import { useNodeActions } from './use-node-actions'
 import { NODE_KEY } from './use-nodes'
 
 // Rendering many rows in jsdom is slow when the whole suite runs in parallel.
@@ -578,12 +580,13 @@ it('does_not_offer_a_restart_while_an_operation_blocks_launch', async () => {
 
 it('offers_rescan_and_shows_its_failure', async () => {
   vi.mocked(gateway.nodeRescan).mockRejectedValue(
-    new IpcClientError('node_rescan_failed', 'The rescan failed.'),
+    new IpcClientError('node_storage', 'The journal is unavailable.'),
   )
   mount()
   await loaded()
   fireEvent.click(screen.getByRole('button', { name: 'Rescan / finish recovery' }))
   expect(await screen.findByText('The rescan failed')).toBeTruthy()
+  expect(screen.getByText('The journal is unavailable.')).toBeTruthy()
   expect(gateway.nodeRescan).toHaveBeenCalledTimes(1)
 })
 
@@ -626,7 +629,7 @@ it('keeping_files_clears_a_previous_rescan_failure', async () => {
   const resolved = nodeList()
   vi.mocked(gateway.nodeList).mockResolvedValue(nodeList({ unresolved: [interrupted] }))
   vi.mocked(gateway.nodeRescan).mockRejectedValue(
-    new IpcClientError('node_rescan_failed', 'The rescan failed.'),
+    new IpcClientError('node_storage', 'The journal is unavailable.'),
   )
   vi.mocked(gateway.nodeResolveOperation).mockImplementation(() => {
     vi.mocked(gateway.nodeList).mockResolvedValue(resolved)
@@ -740,6 +743,21 @@ it('shows_a_node_recovery_failure_from_a_commit_with_a_rescan_action', async () 
   await waitFor(() => expect(gateway.nodeRescan).toHaveBeenCalledTimes(1))
 })
 
+it('shows_the_localised_message_when_a_comfyui_file_is_refused', async () => {
+  vi.mocked(gateway.nodePrepareGit).mockRejectedValueOnce(
+    new IpcClientError('node_repository_file', 'backend message'),
+  )
+  mount()
+  await loaded()
+  await prepareFromGit()
+  expect(
+    await screen.findByText(
+      "This file is part of the ComfyUI installation and can't be changed here.",
+    ),
+  ).toBeTruthy()
+  expect(screen.queryByText('backend message')).toBeNull()
+})
+
 it('opens_the_custom_nodes_folder_from_the_toolbar', async () => {
   vi.mocked(gateway.nodeReveal).mockResolvedValue(null)
   mount()
@@ -775,6 +793,13 @@ function mountWith(client: QueryClient) {
     </QueryClientProvider>,
   )
 }
+
+/** Replaces the cached list the way a refetch result or an event-driven update would. */
+const setList = (client: QueryClient, list: NodeListDto) =>
+  act(async () => {
+    client.setQueryData(NODE_KEY, list)
+    await Promise.resolve()
+  })
 
 /** The list is cached before the page mounts, so the first render already has its data. */
 function mountList(list: NodeListDto) {
@@ -835,6 +860,114 @@ it('a_real_manual_rescan_error_still_shows_a_destructive_alert', async () => {
   const alert = (await screen.findByText('The rescan failed')).closest('[role="alert"]')
   expect(alert?.className).toContain('text-destructive')
   expect(alert?.textContent).toContain('The journal is unavailable.')
+})
+
+const REFRESHING = 'Refreshing the custom node list…'
+
+it('shows_a_refreshing_status_and_keeps_rows_while_refreshing', async () => {
+  mountList(nodeList({ refreshing: true }))
+  const status = screen.getByText(REFRESHING)
+  expect(status.getAttribute('role')).toBe('status')
+  expect(rowOf()).toBeTruthy()
+  expect(screen.queryByText(LOADING)).toBeNull()
+  expect(button('Update all (1)').disabled).toBe(false)
+  expect(button('Install from Git').disabled).toBe(false)
+  await waitFor(() => expect(gateway.nodeList).toHaveBeenCalled())
+})
+
+it('hides_the_incomplete_notice_while_refreshing', async () => {
+  const client = newClient()
+  client.setQueryData(NODE_KEY, nodeList({ scanIncomplete: true, refreshing: true }))
+  vi.mocked(gateway.nodeList).mockReturnValue(new Promise<NodeListDto>(() => undefined))
+  mountWith(client)
+  expect(screen.getByText(REFRESHING)).toBeTruthy()
+  expect(screen.queryByText(INCOMPLETE)).toBeNull()
+  expect(rowOf()).toBeTruthy()
+  await setList(client, nodeList({ scanIncomplete: true }))
+  expect(await screen.findByText(INCOMPLETE)).toBeTruthy()
+  expect(screen.queryByText(REFRESHING)).toBeNull()
+})
+
+it('disables_rescan_while_refreshing', async () => {
+  const client = newClient()
+  client.setQueryData(NODE_KEY, nodeList({ refreshing: true }))
+  vi.mocked(gateway.nodeList).mockReturnValue(new Promise<NodeListDto>(() => undefined))
+  mountWith(client)
+  expect(button('Rescan / finish recovery').disabled).toBe(true)
+  await setList(client, nodeList({ refreshing: false }))
+  await waitFor(() => expect(button('Rescan / finish recovery').disabled).toBe(false))
+  expect(screen.queryByText(REFRESHING)).toBeNull()
+})
+
+it('while_refreshing_only_the_rescan_actions_wait', async () => {
+  const client = newClient()
+  const unresolved = [operation({ id: 'op-interrupted', phase: 'published', blocksStart: true })]
+  client.setQueryData(NODE_KEY, nodeList({ refreshing: true, unresolved }))
+  vi.mocked(gateway.nodeList).mockReturnValue(new Promise<NodeListDto>(() => undefined))
+  vi.mocked(gateway.nodePrepareGit).mockRejectedValueOnce(
+    new IpcClientError(
+      'node_recovery_required',
+      'An interrupted custom node operation must be resolved first. Rescan the custom nodes.',
+    ),
+  )
+  mountWith(client)
+
+  // The panel's Rescan waits, but closing an operation does not depend on the background scan.
+  expect(button('Rescan / finish recovery').disabled).toBe(true)
+  expect(button('Keep the files of ComfyUI-Example as they are').disabled).toBe(false)
+  await prepareFromGit()
+  const notice = await screen.findByRole<HTMLButtonElement>('button', { name: 'Rescan nodes' })
+  expect(notice.disabled).toBe(true)
+  fireEvent.click(notice)
+  expect(gateway.nodeRescan).not.toHaveBeenCalled()
+
+  await setList(client, nodeList({ unresolved }))
+  await waitFor(() => expect(notice.disabled).toBe(false))
+  expect(button('Rescan / finish recovery').disabled).toBe(false)
+})
+
+it('rescan_returns_early_while_a_background_scan_is_running', async () => {
+  const client = newClient()
+  client.setQueryData(NODE_KEY, nodeList({ refreshing: true }))
+  const { result } = renderHook(() => useNodeActions({ stopComfy: () => Promise.resolve() }), {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  })
+
+  await act(() => result.current.rescan())
+
+  expect(gateway.nodeRescan).not.toHaveBeenCalled()
+  expect(result.current.rescanning).toBe(false)
+
+  // Once the background scan is over, a manual rescan goes through.
+  vi.mocked(gateway.nodeRescan).mockResolvedValue(nodeList())
+  client.setQueryData(NODE_KEY, nodeList())
+  await act(() => result.current.rescan())
+  expect(gateway.nodeRescan).toHaveBeenCalledTimes(1)
+})
+
+it('clears_a_stale_rescan_error_when_a_complete_list_arrives', async () => {
+  const client = newClient()
+  mountWith(client)
+  await loaded()
+  vi.mocked(gateway.nodeRescan).mockRejectedValue(
+    new IpcClientError('maintenance_busy', 'Another custom node job is running.'),
+  )
+  fireEvent.click(button('Rescan / finish recovery'))
+  expect(await screen.findByText('The rescan failed')).toBeTruthy()
+  // The failed rescan's own refresh returns the same list, which leaves the error alone.
+  await waitFor(() => expect(gateway.nodeList).toHaveBeenCalledTimes(2))
+  expect(screen.getByText('The rescan failed')).toBeTruthy()
+  vi.mocked(gateway.nodeList).mockReturnValue(new Promise<NodeListDto>(() => undefined))
+  await setList(client, nodeList({ refreshing: true }))
+  expect(await screen.findByText(REFRESHING)).toBeTruthy()
+  expect(screen.getByText('The rescan failed')).toBeTruthy()
+  await setList(client, nodeList({ scanIncomplete: true }))
+  expect(await screen.findByText(INCOMPLETE)).toBeTruthy()
+  expect(screen.getByText('The rescan failed')).toBeTruthy()
+  await setList(client, nodeList())
+  await waitFor(() => expect(screen.queryByText('The rescan failed')).toBeNull())
 })
 
 it('scanning_with_an_empty_database_shows_loading_instead_of_the_empty_state', async () => {

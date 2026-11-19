@@ -189,7 +189,7 @@ describe('eligibility and lists', () => {
     expect(failureKind('comfyui_running')).toBe('comfyui_running')
     expect(failureKind('environment_process_running')).toBe('environment_in_use')
     expect(failureKind('node_operation_running')).toBe('busy')
-    expect(failureKind('node_rescan_failed')).toBe('recovery')
+    expect(failureKind('node_recovery_required')).toBe('recovery')
     expect(failureKind('registry_refused')).toBe('registry_refused')
     expect(failureKind('something_new')).toBe('other')
     expect(formatCount(0)).toBe('0')

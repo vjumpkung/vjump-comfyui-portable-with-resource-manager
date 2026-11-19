@@ -174,7 +174,7 @@ it('enables Start as soon as ComfyUI is stopped, while the Stop request is still
   await snapshot({ ...stopped, lifecycle: 'running' })
   fireEvent.click(await screen.findByRole('button', { name: /^Stop$/ }))
   await waitFor(() => expect(gateway.comfyStop).toHaveBeenCalledTimes(1))
-  // The stop has taken effect but its rescan keeps the request open.
+  // The process is gone before the Stop request settles; Start must not wait for the request.
   emit({ kind: 'comfy:state', cursor: 2, status: stopped })
   const start = await screen.findByRole('button', { name: /^Start$/ })
   expect((start as HTMLButtonElement).disabled).toBe(false)

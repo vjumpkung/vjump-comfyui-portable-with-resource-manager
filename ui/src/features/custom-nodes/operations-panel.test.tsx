@@ -17,6 +17,7 @@ const props = {
   selectedId: null,
   onSelect: vi.fn(),
   rescanning: false,
+  refreshing: false,
   rescanError: null,
   onRescan: vi.fn(),
   onKeepFiles: vi.fn(),
@@ -38,6 +39,16 @@ it.each(['rescanning', 'resolving'] as const)('disables_recovery_buttons_while_%
   expect(
     screen.getByRole<HTMLButtonElement>('button', { name: /Keep the files of/ }).disabled,
   ).toBe(true)
+  expect(
+    screen.getByRole<HTMLButtonElement>('button', { name: 'Rescan / finish recovery' }).disabled,
+  ).toBe(true)
+})
+
+it('refreshing_disables_only_rescan', () => {
+  render(<OperationsPanel {...props} refreshing />)
+  expect(
+    screen.getByRole<HTMLButtonElement>('button', { name: /Keep the files of/ }).disabled,
+  ).toBe(false)
   expect(
     screen.getByRole<HTMLButtonElement>('button', { name: 'Rescan / finish recovery' }).disabled,
   ).toBe(true)

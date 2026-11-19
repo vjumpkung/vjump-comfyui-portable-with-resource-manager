@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { FolderOpen, LoaderCircle, Puzzle, Search, TriangleAlert, Wrench } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 
 import { useTranslation } from '@/shared/i18n'
@@ -104,6 +104,8 @@ export function CustomNodesPage({
   const repairRequired = list?.repairRequired ?? false
   // The startup scan is still filling the list, so rows and counts cannot be trusted yet.
   const scanning = list?.scanning ?? false
+  // A background scan is queued or running: rows stay visible and only the Rescan actions wait.
+  const refreshing = list?.refreshing ?? false
   const scanIncomplete = list?.scanIncomplete && !scanning
   const loading = nodes.isPending || scanning
   const pendingReviews = list?.pendingReviews ?? []
@@ -138,6 +140,12 @@ export function CustomNodesPage({
     !maintenanceBusy &&
     !runtimeBusy &&
     !actions.working
+
+  // A rescan error is stale once a complete list arrives; an unchanged list leaves it alone.
+  const { clearRescanError } = actions
+  useEffect(() => {
+    if (list && !list.refreshing && !list.scanIncomplete) clearRescanError()
+  }, [list, clearRescanError])
 
   const patchFilters = (change: Partial<NodeFilters>) =>
     setFilters((current) => ({ ...current, ...change }))
@@ -201,6 +209,7 @@ export function CustomNodesPage({
       onRetry={() => void actions.failure?.retry?.()}
       onPrepareAgain={(preparation) => void actions.prepare(preparation)}
       onRepair={onRepair}
+      rescanDisabled={refreshing || actions.rescanning || scanning}
       onRescan={() => void actions.rescan()}
       onDismiss={actions.dismissFailure}
     />
@@ -428,10 +437,15 @@ export function CustomNodesPage({
       )}
 
       <section aria-label={t('customNodes.installed')} className="flex flex-col gap-4">
-        {scanIncomplete && (
+        {scanIncomplete && !refreshing && (
           <Alert role="status">
             <AlertDescription>{t('customNodes.scanIncomplete')}</AlertDescription>
           </Alert>
+        )}
+        {refreshing && !loading && (
+          <p role="status" className="text-sm text-muted-foreground">
+            {t('customNodes.refreshing')}
+          </p>
         )}
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-56 flex-1">
@@ -524,6 +538,7 @@ export function CustomNodesPage({
         selectedId={operationId}
         onSelect={setOperationId}
         rescanning={actions.rescanning || scanning}
+        refreshing={refreshing}
         rescanError={actions.rescanError}
         onRescan={() => void actions.rescan()}
         onKeepFiles={setKeepFiles}

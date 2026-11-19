@@ -42,6 +42,7 @@ export function FailureNotice({
   onRetry,
   onPrepareAgain,
   onRepair,
+  rescanDisabled,
   onRescan,
   onDismiss,
 }: {
@@ -51,6 +52,8 @@ export function FailureNotice({
   onRetry: () => void
   onPrepareAgain: (preparation: NodePreparation) => void
   onRepair: () => void
+  /** A scan is already running, so a second one would only be refused. */
+  rescanDisabled: boolean
   onRescan: () => void
   onDismiss: () => void
 }) {
@@ -99,7 +102,7 @@ export function FailureNotice({
             </Button>
           )}
           {failure.kind === 'recovery' && (
-            <Button variant="outline" size="sm" onClick={onRescan}>
+            <Button variant="outline" size="sm" disabled={rescanDisabled} onClick={onRescan}>
               {t('customNodes.rescan')}
             </Button>
           )}

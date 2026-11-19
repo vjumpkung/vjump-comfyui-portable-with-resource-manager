@@ -422,7 +422,6 @@ export function failureKind(code: string): FailureKind {
     case 'environment_not_usable':
       return 'dependencies'
     case 'node_recovery_required':
-    case 'node_rescan_failed':
       return 'recovery'
     case 'registry_refused':
       return 'registry_refused'

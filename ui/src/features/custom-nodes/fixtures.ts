@@ -102,6 +102,7 @@ export function nodeList(overrides: Partial<NodeListDto> = {}): NodeListDto {
     recent: [],
     repairRequired: false,
     scanning: false,
+    refreshing: false,
     scanIncomplete: false,
     ...overrides,
   }

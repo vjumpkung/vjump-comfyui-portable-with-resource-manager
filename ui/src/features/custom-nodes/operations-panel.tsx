@@ -170,6 +170,7 @@ export function OperationsPanel({
   selectedId,
   onSelect,
   rescanning,
+  refreshing,
   rescanError,
   onRescan,
   onKeepFiles,
@@ -182,6 +183,8 @@ export function OperationsPanel({
   selectedId: string | null
   onSelect: (operationId: string | null) => void
   rescanning: boolean
+  /** A background scan is queued or running; only Rescan waits for it. */
+  refreshing: boolean
   rescanError: unknown
   onRescan: () => void
   onKeepFiles: (operation: OperationDto) => void
@@ -195,8 +198,12 @@ export function OperationsPanel({
     <section aria-label={t('customNodes.operation.title')} className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-bold tracking-tight">{t('customNodes.operation.title')}</h2>
-        <Button variant="outline" disabled={rescanning || resolving} onClick={onRescan}>
-          {rescanning ? (
+        <Button
+          variant="outline"
+          disabled={rescanning || refreshing || resolving}
+          onClick={onRescan}
+        >
+          {rescanning || refreshing ? (
             <LoaderCircle className="animate-spin" aria-hidden="true" />
           ) : (
             <RefreshCw aria-hidden="true" />
