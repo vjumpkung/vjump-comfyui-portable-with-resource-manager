@@ -632,6 +632,13 @@ impl RuntimeMaintenance for Stubs {
     }
 }
 
+#[async_trait]
+impl EnvironmentUsers for Stubs {
+    async fn first_user(&self, _: &Path) -> Option<EnvironmentUser> {
+        None
+    }
+}
+
 pub struct CountedManifests {
     inner: FsManifestStore,
     calls: HandlerCalls,
@@ -774,6 +781,7 @@ pub fn build_app_with(options: Options) -> TestApp {
                 root: stubs.clone(),
                 gate: Arc::new(TokioMaintenanceGate::new()),
                 runtime: stubs.clone(),
+                env_users: stubs.clone(),
                 clock: Arc::new(SystemClock),
                 ids: Arc::new(RandomIds::default()),
                 active_runs: Arc::new(ActiveRuns::default()),

@@ -520,11 +520,15 @@ pub fn describe(error: NodeAppError) -> (&'static str, String) {
         ),
         E::RuntimeRunning => fixed(
             "comfyui_running",
-            "ComfyUI must be stopped before changing custom nodes. If it is already stopped, close other programs that use the ComfyUI folder, such as a terminal opened there, and retry.",
+            "ComfyUI must be stopped before changing custom nodes. If it is already stopped, close any ComfyUI started outside this app, or a Python run as administrator, and retry.",
         ),
         E::EnvironmentUnavailable => fixed(
             "environment_not_usable",
             "A verified environment is required. Repair the environment first.",
+        ),
+        E::EnvironmentProcessRunning(user) => (
+            "environment_process_running",
+            super::error::environment_process_running(&user).message,
         ),
         E::RecoveryRequired => fixed(
             "node_recovery_required",
@@ -579,7 +583,7 @@ pub fn describe(error: NodeAppError) -> (&'static str, String) {
         ),
         E::Filesystem => fixed(
             "node_filesystem",
-            "A custom node file operation failed. Nothing was replaced.",
+            "A custom node file operation failed. Nothing was replaced. If a program such as a terminal or image viewer is using the node folder, close it and retry.",
         ),
         E::ResolutionFailed => fixed(
             "node_resolution_failed",
@@ -702,6 +706,21 @@ mod tests {
                 "node_git_unavailable",
                 "Git is unavailable. Complete tool setup on Windows or install Git on Linux.",
             )
+        );
+    }
+
+    #[test]
+    fn a_program_running_python_from_the_environment_is_named_without_a_path() {
+        let refused = IpcError::from(NodeAppError::EnvironmentProcessRunning(
+            application::environment::EnvironmentUser {
+                pid: 77,
+                name: "python.exe".into(),
+            },
+        ));
+        assert_eq!(refused.code, "environment_process_running");
+        assert_eq!(
+            refused.message,
+            "python.exe (process 77) is running Python from this environment. Close it, then retry."
         );
     }
 

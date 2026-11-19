@@ -1,6 +1,8 @@
 use application::{
     comfy_runtime::{RuntimeBlock, RuntimeError},
-    environment::{EnvRepoError, EnvironmentAppError, ProvisionError, RootSwitchError},
+    environment::{
+        EnvRepoError, EnvironmentAppError, EnvironmentUser, ProvisionError, RootSwitchError,
+    },
     gallery::GalleryError,
     models::{acquisition::DownloadError, library::LibraryError},
     settings::{CredentialStoreError, SettingsAppError, SettingsRepoError},
@@ -10,6 +12,15 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::state::RecoveryInfo;
+
+/// The refusal while a program outside this app runs Python from an environment. It names the
+/// program by file name and process id, never by path.
+pub(crate) fn environment_process_running(user: &EnvironmentUser) -> IpcError {
+    IpcError::new(
+        "environment_process_running",
+        &format!("{user} is running Python from this environment. Close it, then retry."),
+    )
+}
 
 /// Sanitized error crossing the IPC boundary: no paths, secrets or raw backend text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -246,6 +257,7 @@ impl From<EnvironmentAppError> for IpcError {
                 "environment_in_use",
                 "A setup run still targets this environment.",
             ),
+            E::EnvironmentProcessRunning(user) => environment_process_running(&user),
             E::PlanNotFound => Self::new("plan_not_found", "Unknown or expired package plan."),
             E::PlanStale => Self::new(
                 "plan_stale",
@@ -318,6 +330,7 @@ impl From<RuntimeError> for IpcError {
                 "environment_not_usable",
                 "A verified active environment is required. Repair the selected environment first.",
             ),
+            RuntimeError::EnvironmentProcessRunning(user) => environment_process_running(&user),
             RuntimeError::RecoveryRequired(message) => {
                 Self::new("comfy_recovery_required", &message)
             }
@@ -398,6 +411,26 @@ mod tests {
                 "extra_model_paths_invalid",
                 "Choose an absolute folder path on a local drive or network share."
             )
+        );
+    }
+
+    #[test]
+    fn an_environment_in_use_by_a_program_names_it_without_a_path() {
+        let user = EnvironmentUser {
+            pid: 4242,
+            name: "python.exe".into(),
+        };
+        let expected = IpcError::new(
+            "environment_process_running",
+            "python.exe (process 4242) is running Python from this environment. Close it, then retry.",
+        );
+        assert_eq!(
+            IpcError::from(EnvironmentAppError::EnvironmentProcessRunning(user.clone())),
+            expected
+        );
+        assert_eq!(
+            IpcError::from(RuntimeError::EnvironmentProcessRunning(user)),
+            expected
         );
     }
 

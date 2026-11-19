@@ -1019,6 +1019,13 @@ mod tests {
                 self.resume.notified().await;
                 self.gate.try_acquire().await
             }
+
+            async fn acquire_within(
+                &self,
+                wait: std::time::Duration,
+            ) -> Result<Box<dyn MaintenanceLease>, GateError> {
+                self.gate.acquire_within(wait).await
+            }
         }
 
         let gate = TokioMaintenanceGate::new();
