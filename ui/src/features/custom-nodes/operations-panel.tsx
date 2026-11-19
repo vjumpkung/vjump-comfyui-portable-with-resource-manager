@@ -67,7 +67,7 @@ function OperationDetail({
         </p>
       )}
       {status.isError && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-ink">
           {errorMessage(status.error)}
         </p>
       )}
@@ -79,7 +79,7 @@ function OperationDetail({
         </div>
       )}
       {operation?.failure && (
-        <p className="text-sm [overflow-wrap:anywhere] break-words text-destructive">
+        <p className="text-sm [overflow-wrap:anywhere] break-words text-destructive-ink">
           {operation.failure}
         </p>
       )}
@@ -122,7 +122,7 @@ function OperationRow({
         <span className="text-xs text-muted-foreground">{t(KIND_LABEL[operation.kind])}</span>
         <PhaseChip phase={operation.phase} />
         {operation.blocksStart && (
-          <Chip icon={TriangleAlert} className="bg-brand-pink">
+          <Chip icon={TriangleAlert} variant="accent">
             {t('customNodes.operation.blocksStart')}
           </Chip>
         )}
@@ -154,7 +154,7 @@ function OperationRow({
         </Button>
       </div>
       {operation.failure && (
-        <p className="text-sm [overflow-wrap:anywhere] break-words text-destructive">
+        <p className="text-sm [overflow-wrap:anywhere] break-words text-destructive-ink">
           {operation.failure}
         </p>
       )}
@@ -197,14 +197,14 @@ export function OperationsPanel({
   return (
     <section aria-label={t('customNodes.operation.title')} className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-bold tracking-tight">{t('customNodes.operation.title')}</h2>
+        <h2 className="text-xl font-bold">{t('customNodes.operation.title')}</h2>
         <Button
           variant="outline"
           disabled={rescanning || refreshing || resolving}
           onClick={onRescan}
         >
           {rescanning || refreshing ? (
-            <LoaderCircle className="animate-spin" aria-hidden="true" />
+            <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
           ) : (
             <RefreshCw aria-hidden="true" />
           )}
@@ -238,7 +238,7 @@ export function OperationsPanel({
       )}
       {unresolved.length > 0 && (
         <div className="flex flex-col gap-2">
-          <h3 className="font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+          <h3 className="text-sm font-semibold text-foreground">
             {t('customNodes.operation.unfinished')}
           </h3>
           <ul className="flex flex-col gap-2">
@@ -257,7 +257,7 @@ export function OperationsPanel({
       )}
       {recent.length > 0 ? (
         <div className="flex flex-col gap-2">
-          <h3 className="font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+          <h3 className="text-sm font-semibold text-foreground">
             {t('customNodes.operation.recent')}
           </h3>
           <ul className="flex flex-col gap-2">

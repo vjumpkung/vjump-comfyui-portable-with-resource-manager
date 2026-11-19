@@ -129,7 +129,7 @@ export function DetailsPane({
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" disabled={identifying} onClick={onIdentify}>
             {identifying ? (
-              <LoaderCircle className="animate-spin" aria-hidden="true" />
+              <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
             ) : (
               <Fingerprint aria-hidden="true" />
             )}

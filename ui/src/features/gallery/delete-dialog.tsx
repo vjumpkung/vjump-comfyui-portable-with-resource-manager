@@ -81,7 +81,10 @@ export function DeleteDialog({ entries, onClose }: Props) {
               <DialogTitle>{t('gallery.delete.title', { count: entries.length })}</DialogTitle>
               <DialogDescription>{t('gallery.delete.checking')}</DialogDescription>
             </DialogHeader>
-            <LoaderCircle className="animate-spin" aria-label={t('common.loadingLabel')} />
+            <LoaderCircle
+              className="motion-safe:animate-spin"
+              aria-label={t('common.loadingLabel')}
+            />
           </>
         ) : null}
 
@@ -104,7 +107,7 @@ export function DeleteDialog({ entries, onClose }: Props) {
                   <span className="min-w-0 truncate" title={baseName(item.entry.location.path)}>
                     {baseName(item.entry.location.path)}
                   </span>
-                  <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                     {formatBytes(item.bytes)}
                   </span>
                 </li>
@@ -125,7 +128,7 @@ export function DeleteDialog({ entries, onClose }: Props) {
                 onClick={() => execute(stage.plan)}
               >
                 {remove.isPending ? (
-                  <LoaderCircle className="animate-spin" aria-hidden="true" />
+                  <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
                 ) : null}
                 {t('common.delete')}
               </Button>

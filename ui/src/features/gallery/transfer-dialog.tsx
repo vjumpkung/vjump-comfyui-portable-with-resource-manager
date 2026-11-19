@@ -92,11 +92,11 @@ export function TransferDialog({
                 role="status"
                 className="flex items-center gap-2 p-2 text-sm text-muted-foreground"
               >
-                <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+                <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden="true" />
                 {t('gallery.loading')}
               </li>
             ) : listing.isError ? (
-              <li role="alert" className="p-2 text-sm text-destructive">
+              <li role="alert" className="p-2 text-sm text-destructive-ink">
                 {galleryErrorMessage(listing.error)}
               </li>
             ) : folders.length === 0 ? (
@@ -115,7 +115,7 @@ export function TransferDialog({
                         setPath(folder.location.path)
                       }
                     }}
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-brand-cyan/50"
+                    className="focus-inset flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
                   >
                     <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                     <span className="min-w-0 truncate" title={folder.name}>
@@ -127,7 +127,7 @@ export function TransferDialog({
             )}
           </ul>
           {failure ? (
-            <p role="alert" className="text-sm text-destructive">
+            <p role="alert" className="text-sm text-destructive-ink">
               {failure}
             </p>
           ) : null}
@@ -138,7 +138,7 @@ export function TransferDialog({
           </Button>
           <Button disabled={listing.data === undefined || transfer.isPending} onClick={confirm}>
             {transfer.isPending ? (
-              <LoaderCircle className="animate-spin" aria-hidden="true" />
+              <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
             ) : null}
             {mode === 'move' ? t('gallery.move.confirm') : t('gallery.copy.confirm')}
           </Button>

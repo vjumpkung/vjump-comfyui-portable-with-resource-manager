@@ -38,13 +38,18 @@ export function ThemeToggle() {
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
-          variant="ghost"
+          variant="outline"
           size="icon"
+          className="hover:border-accent hover:bg-card"
           aria-label={label}
           disabled={!settings.data || pending}
           onClick={toggle}
         >
-          {resolved === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
+          {resolved === 'dark' ? (
+            <Sun className="size-[18px]" aria-hidden="true" />
+          ) : (
+            <Moon className="size-[18px]" aria-hidden="true" />
+          )}
         </Button>
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>

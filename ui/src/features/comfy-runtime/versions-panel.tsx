@@ -25,9 +25,9 @@ import {
 } from '@/shared/ui/dialog'
 import { ErrorNotice } from '@/shared/ui/feedback'
 import { Label } from '@/shared/ui/label'
+import { OptionsSelect } from '@/shared/ui/options-select'
 import { Skeleton } from '@/shared/ui/skeleton'
 
-import { NativeSelect } from './native-select'
 import { comfyKeys, useRuntime } from './use-runtime'
 
 export function describeRevision(revision: RevisionDto): string {
@@ -114,13 +114,13 @@ export function VersionsPanel() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg font-bold tracking-tight">{t('common.version')}</CardTitle>
+        <CardTitle>{t('common.version')}</CardTitle>
         <CardDescription>{t('runtime.versions.hint')}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {data ? (
           <>
-            <p className="font-mono text-xs">
+            <p className="text-sm tabular-nums">
               {t('runtime.versions.current', { revision: describeRevision(data.current) })}
             </p>
             {data.pendingUpdate ? (
@@ -136,20 +136,22 @@ export function VersionsPanel() {
                       failure: data.pendingUpdate.failure ? `: ${data.pendingUpdate.failure}` : '',
                     })}
                   </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={update.isPending}
-                    onClick={() =>
-                      update.mutate({
-                        target: { kind: 'latest_release' },
-                        stopRunning: false,
-                        retry: data.pendingUpdate?.id ?? null,
-                      })
-                    }
-                  >
-                    {t('runtime.versions.retry')}
-                  </Button>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={update.isPending}
+                      onClick={() =>
+                        update.mutate({
+                          target: { kind: 'latest_release' },
+                          stopRunning: false,
+                          retry: data.pendingUpdate?.id ?? null,
+                        })
+                      }
+                    >
+                      {t('runtime.versions.retry')}
+                    </Button>
+                  </div>
                 </AlertDescription>
               </Alert>
             ) : null}
@@ -165,7 +167,7 @@ export function VersionsPanel() {
                 </AlertDescription>
               </Alert>
             ) : null}
-            <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-wrap items-end gap-2">
               <Button
                 variant="outline"
                 disabled={update.isPending}
@@ -182,14 +184,15 @@ export function VersionsPanel() {
               <div className="flex flex-wrap items-end gap-3">
                 <div className="flex min-w-48 flex-col gap-1.5">
                   <Label htmlFor="comfy-tag">{t('runtime.versions.releaseTag')}</Label>
-                  <NativeSelect
+                  <OptionsSelect
                     id="comfy-tag"
+                    className="w-full"
                     value={tag}
                     options={data.tags.map((value) => ({
                       value,
                       label: value,
                     }))}
-                    onChange={setSelectedTag}
+                    onValueChange={setSelectedTag}
                   />
                 </div>
                 <Button

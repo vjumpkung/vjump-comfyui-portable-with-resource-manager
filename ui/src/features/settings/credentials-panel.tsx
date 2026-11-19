@@ -113,10 +113,7 @@ function CredentialRow({
         <Label htmlFor={inputId} className="text-sm font-semibold">
           {t('settings.credentials.tokenLabel', { provider: label })}
         </Label>
-        <Badge
-          variant={isSet ? 'default' : 'outline'}
-          className="font-mono text-[9px] tracking-widest uppercase"
-        >
+        <Badge variant={isSet ? 'default' : 'muted'} className="type-tag">
           {status
             ? isSet
               ? t('settings.credentials.set')
@@ -124,7 +121,7 @@ function CredentialRow({
             : '...'}
         </Badge>
         {status ? (
-          <span className="font-mono text-xs text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {status.backend === 'keyring'
               ? t('settings.credentials.keyring')
               : t('settings.credentials.session')}
@@ -173,7 +170,7 @@ function CredentialRow({
         </Button>
       </form>
       {describeTest(status) ? (
-        <p className="font-mono text-xs text-muted-foreground">{describeTest(status)}</p>
+        <p className="text-xs text-muted-foreground tabular-nums">{describeTest(status)}</p>
       ) : null}
     </div>
   )
@@ -190,16 +187,14 @@ export function CredentialsPanel() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg font-bold tracking-tight">
-          {t('settings.credentials.title')}
-        </CardTitle>
+        <CardTitle>{t('settings.credentials.title')}</CardTitle>
         <CardDescription>{t('settings.credentials.hint')}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
         {sessionOnly ? (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-lg border border-brand-pink bg-brand-pink/20 p-3 text-sm"
+            className="flex items-start gap-2 rounded-xl bg-note-bg px-5 py-4 text-sm"
           >
             <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
             <p>{t('settings.credentials.sessionHint')}</p>

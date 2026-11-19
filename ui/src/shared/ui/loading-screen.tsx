@@ -9,7 +9,7 @@ export function LoadingScreen() {
       aria-busy="true"
     >
       <span
-        className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-brand-cyan motion-reduce:animate-none"
+        className="h-8 w-8 rounded-full border-2 border-muted border-t-pink-ink motion-safe:animate-spin"
         aria-hidden="true"
       />
       <span className="font-sans text-lg font-semibold">vjumpkung ComfyUI</span>

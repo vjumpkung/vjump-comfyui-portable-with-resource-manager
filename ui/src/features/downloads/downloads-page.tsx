@@ -27,10 +27,8 @@ export function DownloadsPage({ onOpenSettings }: { onOpenSettings: () => void }
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-            {t('nav.downloads')}
-          </h1>
-          <p className="font-mono text-xs text-muted-foreground">
+          <h1 className="type-page-title">{t('nav.downloads')}</h1>
+          <p className="text-[0.9375rem] leading-[1.65] text-muted-foreground tabular-nums">
             {t('downloads.counts', { active, total: list.length })}
           </p>
         </div>

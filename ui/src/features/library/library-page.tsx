@@ -10,6 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { EmptyState } from '@/shared/ui/empty-state'
 import { Input } from '@/shared/ui/input'
+import { OptionsSelect } from '@/shared/ui/options-select'
 import { cn } from '@/shared/lib/utils'
 import {
   Dialog,
@@ -37,9 +38,6 @@ import { ModelTable } from './model-table'
 import { RenameDialog } from './rename-dialog'
 import { useGuarded } from './use-guarded'
 import { useLibrary } from './use-library'
-
-const SELECT_CLASS =
-  'h-9 rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:border-brand-cyan focus-visible:ring-2 focus-visible:ring-brand-cyan/35'
 
 type Dialogs =
   | { kind: 'rename'; model: ModelEntryDto }
@@ -149,10 +147,8 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-            {t('library.title')}
-          </h1>
-          <p className="font-mono text-xs text-muted-foreground">
+          <h1 className="type-page-title">{t('library.title')}</h1>
+          <p className="text-[0.9375rem] leading-[1.65] text-muted-foreground tabular-nums">
             {all.length === 0
               ? t('library.summaryEmpty', { count: all.length })
               : selectedVisible.length > 0
@@ -175,7 +171,7 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
           ) : null}
           <Button variant="outline" disabled={scanning} onClick={() => void rescan()}>
             {scanning ? (
-              <LoaderCircle className="animate-spin" aria-hidden="true" />
+              <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
             ) : (
               <RefreshCw aria-hidden="true" />
             )}
@@ -235,56 +231,51 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-56 flex-1">
           <Search
-            className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground"
+            className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
             aria-hidden="true"
           />
           <Input
             aria-label={t('library.search')}
             placeholder={t('library.searchHint')}
-            className="pl-8"
+            className="pl-9"
             value={filters.search}
             onChange={(event) => patch({ search: event.target.value })}
           />
         </div>
-        <select
+        <OptionsSelect
           aria-label={t('common.category')}
-          className={SELECT_CLASS}
+          className="rounded-full"
           value={filters.category}
-          onChange={(event) => patch({ category: event.target.value })}
-        >
-          <option value="all">{t('library.allCategories')}</option>
-          {categories.map((category) => (
-            <option key={category} value={category}>
-              {category}
-            </option>
-          ))}
-        </select>
+          options={[
+            { value: 'all', label: t('library.allCategories') },
+            ...categories.map((category) => ({ value: category, label: category })),
+          ]}
+          onValueChange={(category) => patch({ category })}
+        />
         {roots.length > 1 ? (
-          <select
+          <OptionsSelect
             aria-label={t('library.modelFolder')}
-            className={SELECT_CLASS}
+            className="rounded-full"
             value={filters.root}
-            onChange={(event) => patch({ root: event.target.value })}
-          >
-            <option value="all">{t('library.allFolders')}</option>
-            {roots.map((root) => (
-              <option key={root.id} value={root.id}>
-                {root.label}
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: 'all', label: t('library.allFolders') },
+              ...roots.map((root) => ({ value: root.id, label: root.label })),
+            ]}
+            onValueChange={(root) => patch({ root })}
+          />
         ) : null}
-        <select
+        <OptionsSelect<SortKey>
           aria-label={t('library.sortBy')}
-          className={SELECT_CLASS}
+          className="rounded-full"
           value={filters.sort}
-          onChange={(event) => patch({ sort: event.target.value as SortKey })}
-        >
-          <option value="name">{t('common.name')}</option>
-          <option value="category">{t('common.category')}</option>
-          <option value="size">{t('common.size')}</option>
-          <option value="modified">{t('library.modified')}</option>
-        </select>
+          options={[
+            { value: 'name', label: t('common.name') },
+            { value: 'category', label: t('common.category') },
+            { value: 'size', label: t('common.size') },
+            { value: 'modified', label: t('library.modified') },
+          ]}
+          onValueChange={(sort) => patch({ sort })}
+        />
         <Button
           variant="outline"
           aria-label={filters.descending ? t('library.descending') : t('library.ascending')}
@@ -314,7 +305,7 @@ export function LibraryPage({ onStopComfy, store = libraryStore }: Props) {
           )}
         >
           <div className="min-w-0 overflow-x-auto">
-            <div className="min-w-[52rem]">
+            <div className="min-w-[58rem]">
               <ModelTable
                 models={visible}
                 selected={selected}

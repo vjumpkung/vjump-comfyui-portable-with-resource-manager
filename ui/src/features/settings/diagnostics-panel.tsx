@@ -48,7 +48,7 @@ export function DiagnosticsPanel() {
             value={fallback}
             rows={12}
             onFocus={(event) => event.currentTarget.select()}
-            className="w-full rounded-md border bg-muted p-3 font-mono text-xs"
+            className="w-full rounded-lg border border-input bg-card p-3 font-mono text-xs"
           />
         )}
       </CardContent>

@@ -17,6 +17,7 @@ import { Button } from '@/shared/ui/button'
 import { EmptyState } from '@/shared/ui/empty-state'
 import { ErrorNotice } from '@/shared/ui/feedback'
 import { Input } from '@/shared/ui/input'
+import { OptionsSelect } from '@/shared/ui/options-select'
 
 import { ConfirmDialog, type NodeConfirmation } from './confirm-dialog'
 import { FailureNotice } from './failure-notice'
@@ -43,9 +44,6 @@ import { UpdateAllDialog } from './update-all-dialog'
 import { UpdateDialog } from './update-dialog'
 import { useNodeActions } from './use-node-actions'
 import { refreshNodeState, useNodes } from './use-nodes'
-
-const SELECT_CLASS =
-  'h-9 rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:border-brand-cyan focus-visible:ring-2 focus-visible:ring-brand-cyan/35'
 
 export interface CustomNodesPageProps {
   /** An environment setup run holds the maintenance gate. */
@@ -221,10 +219,8 @@ export function CustomNodesPage({
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-            {t('nav.customNodes')}
-          </h1>
-          <p className="font-mono text-xs text-muted-foreground">
+          <h1 className="type-page-title">{t('nav.customNodes')}</h1>
+          <p className="text-[0.9375rem] leading-[1.65] text-muted-foreground tabular-nums">
             {loading
               ? null
               : selectedNodes.length > 0
@@ -273,7 +269,7 @@ export function CustomNodesPage({
 
       {maintenanceBusy && (
         <Alert>
-          <LoaderCircle className="animate-spin" aria-hidden="true" />
+          <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
           <AlertTitle>{t('customNodes.setupRunning')}</AlertTitle>
           <AlertDescription>{t('customNodes.setupPausedHint')}</AlertDescription>
         </Alert>
@@ -283,10 +279,12 @@ export function CustomNodesPage({
           <Wrench aria-hidden="true" />
           <AlertTitle>{t('customNodes.repairTitle')}</AlertTitle>
           <AlertDescription>
-            {t('customNodes.repairHint')}
-            <Button variant="outline" size="sm" onClick={onRepair}>
-              {t('setup.mode.repair')}
-            </Button>
+            <p>{t('customNodes.repairHint')}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={onRepair}>
+                {t('setup.mode.repair')}
+              </Button>
+            </div>
           </AlertDescription>
         </Alert>
       )}
@@ -295,15 +293,17 @@ export function CustomNodesPage({
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{t('customNodes.comfyRunning')}</AlertTitle>
           <AlertDescription>
-            {t('customNodes.stopHint')}
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={runtimeBusy}
-              onClick={() => void stopRunning()}
-            >
-              {t('customNodes.stopComfy')}
-            </Button>
+            <p>{t('customNodes.stopHint')}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={runtimeBusy}
+                onClick={() => void stopRunning()}
+              >
+                {t('customNodes.stopComfy')}
+              </Button>
+            </div>
           </AlertDescription>
         </Alert>
       )}
@@ -317,8 +317,8 @@ export function CustomNodesPage({
               {t('customNodes.waitingReview', { count: pendingReviews.length })}
             </AlertTitle>
             <AlertDescription>
-              {t('customNodes.resumeHint')}
-              <ul className="mt-2 flex flex-col gap-2">
+              <p>{t('customNodes.resumeHint')}</p>
+              <ul className="mt-3 flex flex-col gap-2">
                 {pendingReviews.map((plan) => (
                   <li key={plan.id} className="flex flex-wrap items-center gap-2">
                     <span className="min-w-0 font-medium [overflow-wrap:anywhere] break-words">
@@ -344,25 +344,29 @@ export function CustomNodesPage({
 
       {actions.busy && (
         <Alert role="status">
-          <LoaderCircle className="animate-spin" aria-hidden="true" />
+          <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
           <AlertTitle>
             {t('customNodes.busy', { context: actionContextLabel(actions.busy.context) })}
           </AlertTitle>
           <AlertDescription>
-            {actions.cancelRequested
-              ? t('customNodes.cancelRequested')
-              : actions.busy.kind === 'direct'
-                ? t('customNodes.cannotCancel')
-                : t('customNodes.closingHint')}
+            <p>
+              {actions.cancelRequested
+                ? t('customNodes.cancelRequested')
+                : actions.busy.kind === 'direct'
+                  ? t('customNodes.cannotCancel')
+                  : t('customNodes.closingHint')}
+            </p>
             {actions.busy.kind === 'prepare' && (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={actions.cancelRequested}
-                onClick={actions.requestCancel}
-              >
-                {t('customNodes.cancelPreparation')}
-              </Button>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={actions.cancelRequested}
+                  onClick={actions.requestCancel}
+                >
+                  {t('customNodes.cancelPreparation')}
+                </Button>
+              </div>
             )}
           </AlertDescription>
         </Alert>
@@ -393,37 +397,37 @@ export function CustomNodesPage({
           </AlertTitle>
           <AlertDescription>
             {restart.kind === 'port_conflict' && (
-              <>
+              <p>
                 {restart.suggested !== null
                   ? t('customNodes.portFree', { port: restart.suggested })
                   : ''}
                 {t('customNodes.choosePort')}
-                <Button variant="outline" size="sm" onClick={onOpenComfy}>
-                  {t('customNodes.openLaunchOptions')}
-                </Button>
-              </>
+              </p>
             )}
-            {restart.kind === 'idle' &&
-              (canRestart ? (
-                <Button size="sm" onClick={() => void restartComfy()}>
-                  {t('customNodes.restartComfy')}
+            {restart.kind === 'idle' && !canRestart && <p>{t('customNodes.restartUnavailable')}</p>}
+            {restart.kind !== 'working' && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {restart.kind === 'port_conflict' && (
+                  <Button variant="outline" size="sm" onClick={onOpenComfy}>
+                    {t('customNodes.openLaunchOptions')}
+                  </Button>
+                )}
+                {restart.kind === 'idle' && canRestart && (
+                  <Button size="sm" onClick={() => void restartComfy()}>
+                    {t('customNodes.restartComfy')}
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setRestart({ kind: 'idle' })
+                    actions.finishRestartOffer()
+                  }}
+                >
+                  {t('common.dismiss')}
                 </Button>
-              ) : (
-                t('customNodes.restartUnavailable')
-              ))}
-            {(restart.kind === 'started' ||
-              restart.kind === 'port_conflict' ||
-              restart.kind === 'idle') && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setRestart({ kind: 'idle' })
-                  actions.finishRestartOffer()
-                }}
-              >
-                {t('common.dismiss')}
-              </Button>
+              </div>
             )}
           </AlertDescription>
         </Alert>
@@ -450,38 +454,40 @@ export function CustomNodesPage({
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-56 flex-1">
             <Search
-              className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground"
+              className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
               aria-hidden="true"
             />
             <Input
               aria-label={t('customNodes.searchInstalled')}
               placeholder={t('customNodes.searchHint')}
-              className="pl-8"
+              className="pl-9"
               value={filters.text}
               onChange={(event) => patchFilters({ text: event.target.value })}
             />
           </div>
-          <select
+          <OptionsSelect<SourceFilter>
             aria-label={t('customNodes.sourceKind')}
-            className={SELECT_CLASS}
+            className="rounded-full"
             value={filters.source}
-            onChange={(event) => patchFilters({ source: event.target.value as SourceFilter })}
-          >
-            <option value="all">{t('customNodes.allSources')}</option>
-            <option value="registry">{t('customNodes.source.registry')}</option>
-            <option value="git">Git</option>
-            <option value="manual">{t('customNodes.source.manual')}</option>
-          </select>
-          <select
+            options={[
+              { value: 'all', label: t('customNodes.allSources') },
+              { value: 'registry', label: t('customNodes.source.registry') },
+              { value: 'git', label: 'Git' },
+              { value: 'manual', label: t('customNodes.source.manual') },
+            ]}
+            onValueChange={(source) => patchFilters({ source })}
+          />
+          <OptionsSelect<EnabledFilter>
             aria-label={t('customNodes.enabledState')}
-            className={SELECT_CLASS}
+            className="rounded-full"
             value={filters.enabled}
-            onChange={(event) => patchFilters({ enabled: event.target.value as EnabledFilter })}
-          >
-            <option value="all">{t('customNodes.bothStates')}</option>
-            <option value="enabled">{t('customNodes.enabledOnly')}</option>
-            <option value="disabled">{t('customNodes.disabledOnly')}</option>
-          </select>
+            options={[
+              { value: 'all', label: t('customNodes.bothStates') },
+              { value: 'enabled', label: t('customNodes.enabledOnly') },
+              { value: 'disabled', label: t('customNodes.disabledOnly') },
+            ]}
+            onValueChange={(enabled) => patchFilters({ enabled })}
+          />
         </div>
         {nodes.isError && (!list || scanning) ? (
           <ErrorNotice error={nodes.error} retry={() => void nodes.refetch()} />
@@ -503,7 +509,7 @@ export function CustomNodesPage({
         ) : (
           <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="min-w-0 overflow-x-auto">
-              <div className="min-w-[64rem] [&:lang(th)]:min-w-[72rem]">
+              <div className="min-w-[68rem] [&:lang(th)]:min-w-[73rem]">
                 <InstalledTable
                   nodes={visible}
                   selected={selected}

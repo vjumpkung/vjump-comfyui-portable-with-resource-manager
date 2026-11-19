@@ -112,11 +112,11 @@ export function RunProgress({
         </CardHeader>
         <CardContent>
           <Progress value={percentage} aria-label={t('setup.run.completedLabel')} />
-          <p className="font-mono text-xs">
+          <p className="text-xs tabular-nums">
             {t('setup.run.stepsComplete', { count: completed, total: run.steps.length })}
           </p>
           {progress?.runId === run.id && (
-            <p className="font-mono text-xs">
+            <p className="text-xs tabular-nums">
               {progress.step}: {bytes(progress.doneBytes)} / {bytes(progress.totalBytes)}
             </p>
           )}
@@ -124,7 +124,7 @@ export function RunProgress({
             {run.steps.map((step) => (
               <li key={step.step} className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <span className="font-mono text-xs">{step.number}. </span>
+                  <span className="text-xs tabular-nums">{step.number}. </span>
                   {Object.hasOwn(STEP_LABELS, step.step)
                     ? t(STEP_LABELS[step.step as keyof typeof STEP_LABELS])
                     : step.label}

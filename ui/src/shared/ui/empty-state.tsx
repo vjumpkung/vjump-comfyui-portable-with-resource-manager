@@ -18,7 +18,7 @@ export function EmptyState({ icon, title, description, className }: EmptyStatePr
       )}
     >
       {icon}
-      <p className="text-lg font-bold tracking-tight text-foreground">{title}</p>
+      <p className="text-base font-semibold text-foreground">{title}</p>
       {description ? <p>{description}</p> : null}
     </div>
   )

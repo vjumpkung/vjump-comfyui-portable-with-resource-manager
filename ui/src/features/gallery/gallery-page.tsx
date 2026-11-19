@@ -80,10 +80,8 @@ export function GalleryPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-            {t('gallery.title')}
-          </h1>
-          <p className="font-mono text-xs text-muted-foreground">
+          <h1 className="type-page-title">{t('gallery.title')}</h1>
+          <p className="text-[0.9375rem] leading-[1.65] text-muted-foreground tabular-nums">
             {t('common.itemCount', { count: entries.length })}
             {chosen.length > 0 ? ` · ${t('gallery.selected', { count: chosen.length })}` : ''}
           </p>
@@ -96,7 +94,7 @@ export function GalleryPage() {
             onClick={() => void listing.refetch()}
           >
             {listing.isFetching ? (
-              <LoaderCircle className="animate-spin" aria-hidden="true" />
+              <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
             ) : (
               <RefreshCw aria-hidden="true" />
             )}

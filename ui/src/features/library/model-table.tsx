@@ -12,7 +12,7 @@ import { formatBytes, formatModified, keyOf, sourceLabel, VIRTUALIZE_AFTER } fro
 
 export const ROW_HEIGHT = 40
 const COLUMNS =
-  'grid grid-cols-[2.25rem_minmax(12rem,3fr)_7rem_minmax(5rem,1.5fr)_5.5rem_10.5rem_8rem]'
+  'grid grid-cols-[2.25rem_minmax(12rem,3fr)_10.5rem_minmax(5rem,1.5fr)_5.5rem_10.5rem_8rem]'
 
 interface Props {
   models: readonly ModelEntryDto[]
@@ -146,9 +146,9 @@ export function ModelTable({
         }
         className={cn(
           COLUMNS,
-          'items-center gap-2 border-b px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan/50',
+          'focus-inset items-center gap-2 border-b px-2 text-sm',
           key === activeKey
-            ? 'bg-muted shadow-[inset_3px_0_0_var(--accent)]'
+            ? 'bg-muted ring-1 ring-input ring-inset'
             : isSelected
               ? 'bg-muted/60'
               : 'hover:bg-muted/50',
@@ -174,7 +174,11 @@ export function ModelTable({
           ) : null}
         </div>
         <div role="gridcell">
-          <Badge variant="outline">{model.category}</Badge>
+          <Badge variant="outline" className="max-w-full">
+            <span className="truncate" title={model.category}>
+              {model.category}
+            </span>
+          </Badge>
         </div>
         <div
           role="gridcell"
@@ -183,7 +187,7 @@ export function ModelTable({
         >
           {model.subfolder || '-'}
         </div>
-        <div role="gridcell" className="font-mono text-xs">
+        <div role="gridcell" className="text-xs tabular-nums">
           {formatBytes(model.size)}
         </div>
         <div role="gridcell" className="truncate text-xs text-muted-foreground">
@@ -202,14 +206,14 @@ export function ModelTable({
       aria-label={t('library.title')}
       aria-rowcount={models.length + 1}
       aria-multiselectable="true"
-      className="rounded-xl border"
+      className="rounded-lg border bg-card"
     >
       <div
         role="row"
         aria-rowindex={1}
         className={cn(
           COLUMNS,
-          'items-center gap-2 border-b bg-muted/40 px-2 py-2 text-xs font-semibold text-muted-foreground',
+          'items-center gap-2 rounded-t-[calc(var(--radius)-1px)] border-b border-ink/15 bg-secondary px-2 py-3 text-sm font-semibold text-secondary-foreground dark:[--ring:var(--ink)]',
         )}
       >
         <div role="columnheader">

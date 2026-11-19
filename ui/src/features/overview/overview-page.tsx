@@ -2,18 +2,32 @@ import type { ReactNode } from 'react'
 
 import { useTranslation } from '@/shared/i18n'
 import { IpcClientError } from '@/shared/ipc/gateway'
+import { cn } from '@/shared/lib/utils'
 import { Badge } from '@/shared/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
 
 import { useAppInfo } from './queries'
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
+function Row({
+  label,
+  mono = false,
+  children,
+}: {
+  label: string
+  mono?: boolean
+  children: ReactNode
+}) {
   return (
     <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-4">
-      <dt className="w-40 shrink-0 font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-        {label}
-      </dt>
-      <dd className="font-mono text-xs [overflow-wrap:anywhere] break-words">{children}</dd>
+      <dt className="w-40 shrink-0 type-label text-muted-foreground">{label}</dt>
+      <dd
+        className={cn(
+          'text-sm [overflow-wrap:anywhere] break-words tabular-nums',
+          mono && 'font-mono text-xs',
+        )}
+      >
+        {children}
+      </dd>
     </div>
   )
 }
@@ -25,26 +39,26 @@ export function OverviewPage() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-          {t('overview.title')}
-        </h1>
-        <p className="text-sm leading-relaxed font-medium text-muted-foreground">
+        <h1 className="type-page-title">{t('overview.title')}</h1>
+        <p className="text-[0.9375rem] leading-[1.65] text-muted-foreground">
           {t('overview.description')}
         </p>
       </header>
-      <Card className="transition-all duration-300 hover:border-brand-cyan">
+      <Card>
         <CardHeader>
-          <CardTitle className="text-lg font-bold tracking-tight">
-            {t('overview.application')}
-          </CardTitle>
+          <CardTitle>{t('overview.application')}</CardTitle>
         </CardHeader>
         <CardContent>
           {info.data ? (
             <dl className="flex flex-col gap-3">
-              <Row label={t('common.version')}>{info.data.version}</Row>
-              <Row label={t('overview.dataDirectory')}>{info.data.dataDir}</Row>
+              <Row label={t('common.version')} mono>
+                {info.data.version}
+              </Row>
+              <Row label={t('overview.dataDirectory')} mono>
+                {info.data.dataDir}
+              </Row>
               <Row label={t('overview.credentials')}>
-                <Badge variant="outline" className="font-mono text-[9px] tracking-widest uppercase">
+                <Badge variant="muted" className="type-tag">
                   {info.data.credentialBackend === 'keyring'
                     ? t('overview.keyring')
                     : t('overview.session')}
@@ -52,7 +66,7 @@ export function OverviewPage() {
               </Row>
             </dl>
           ) : info.isError ? (
-            <p className="text-sm text-destructive">
+            <p className="text-sm text-destructive-ink">
               {info.error instanceof IpcClientError
                 ? info.error.message
                 : t('common.somethingWrong')}

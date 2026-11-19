@@ -18,49 +18,46 @@ import { Badge } from '@/shared/ui/badge'
 
 import { isTerminalPhase, type GitHealth, type NodeTextKey } from './model'
 
-const CHIP = 'font-mono text-[9px] uppercase tracking-widest [&>svg]:size-3 text-[#2a313a]'
-const MUTED = 'bg-muted text-muted-foreground border-border'
-const YELLOW = 'bg-brand-yellow'
-const PINK = 'bg-brand-pink'
-const CYAN = 'border-brand-cyan bg-transparent text-foreground'
-const FAILED = 'bg-destructive text-white'
+export type ChipVariant = 'default' | 'accent' | 'muted' | 'outline' | 'destructive'
 
 /** A chip always carries an icon and a text label; color is never the only signal. */
 export function Chip({
   icon: Icon,
-  className,
+  variant,
   spin,
   children,
 }: {
   icon: LucideIcon
-  className: string
+  variant: ChipVariant
   spin?: boolean
   children: string
 }) {
   return (
-    <Badge variant="outline" className={cn(CHIP, className)}>
+    <Badge variant={variant} className="type-tag">
       <Icon aria-hidden="true" className={cn(spin && 'motion-safe:animate-spin')} />
       {children}
     </Badge>
   )
 }
 
-const SUPPORT: Record<SupportDto, { labelKey: NodeTextKey; icon: LucideIcon; className: string }> =
-  {
-    compatible: { labelKey: 'customNodes.support.compatible', icon: Check, className: YELLOW },
-    incompatible: {
-      labelKey: 'customNodes.support.incompatible',
-      icon: CircleX,
-      className: FAILED,
-    },
-    unknown: { labelKey: 'common.unknownValue', icon: CircleHelp, className: MUTED },
-  }
+const SUPPORT: Record<
+  SupportDto,
+  { labelKey: NodeTextKey; icon: LucideIcon; variant: ChipVariant }
+> = {
+  compatible: { labelKey: 'customNodes.support.compatible', icon: Check, variant: 'default' },
+  incompatible: {
+    labelKey: 'customNodes.support.incompatible',
+    icon: CircleX,
+    variant: 'destructive',
+  },
+  unknown: { labelKey: 'common.unknownValue', icon: CircleHelp, variant: 'muted' },
+}
 
 export function SupportChip({ name, value }: { name: string; value: SupportDto }) {
   const { t } = useTranslation()
   const style = SUPPORT[value]
   return (
-    <Chip icon={style.icon} className={style.className}>
+    <Chip icon={style.icon} variant={style.variant}>
       {t('customNodes.supportLabel', { name, support: t(style.labelKey) })}
     </Chip>
   )
@@ -69,11 +66,11 @@ export function SupportChip({ name, value }: { name: string; value: SupportDto }
 export function EnabledChip({ enabled }: { enabled: boolean }) {
   const { t } = useTranslation()
   return enabled ? (
-    <Chip icon={Check} className={YELLOW}>
+    <Chip icon={Check} variant="default">
       {t('common.enabled')}
     </Chip>
   ) : (
-    <Chip icon={Square} className={MUTED}>
+    <Chip icon={Square} variant="muted">
       {t('common.disabled')}
     </Chip>
   )
@@ -84,19 +81,19 @@ export function DependencyChip({ state }: { state: DependencyStateDto }) {
   switch (state) {
     case 'ok':
       return (
-        <Chip icon={ShieldCheck} className={YELLOW}>
+        <Chip icon={ShieldCheck} variant="default">
           {t('customNodes.status.depsOk')}
         </Chip>
       )
     case 'failed':
       return (
-        <Chip icon={TriangleAlert} className={PINK}>
+        <Chip icon={TriangleAlert} variant="accent">
           {t('customNodes.status.depsFailed')}
         </Chip>
       )
     case 'not_run':
       return (
-        <Chip icon={Clock} className={MUTED}>
+        <Chip icon={Clock} variant="muted">
           {t('customNodes.status.depsNotRun')}
         </Chip>
       )
@@ -108,24 +105,24 @@ export function HealthChip({ health }: { health: GitHealth }) {
   switch (health) {
     case 'clean':
       return (
-        <Chip icon={Check} className={YELLOW}>
+        <Chip icon={Check} variant="default">
           {t('customNodes.status.clean')}
         </Chip>
       )
     case 'dirty':
       return (
-        <Chip icon={TriangleAlert} className={PINK}>
+        <Chip icon={TriangleAlert} variant="accent">
           {t('customNodes.status.localChanges')}
         </Chip>
       )
     case 'unknown':
       return (
-        <Chip icon={CircleHelp} className={MUTED}>
+        <Chip icon={CircleHelp} variant="muted">
           {t('customNodes.status.gitUnknown')}
         </Chip>
       )
     case 'not_git':
-      return <span className="font-mono text-xs text-muted-foreground">—</span>
+      return <span className="text-xs text-muted-foreground">—</span>
   }
 }
 
@@ -140,37 +137,37 @@ export function PhaseChip({ phase }: { phase: string }) {
   const { t } = useTranslation()
   if (phase === 'failed')
     return (
-      <Chip icon={CircleX} className={FAILED}>
+      <Chip icon={CircleX} variant="destructive">
         {t('common.failed')}
       </Chip>
     )
   if (phase === 'completed')
     return (
-      <Chip icon={Check} className={YELLOW}>
+      <Chip icon={Check} variant="default">
         {t('common.completed')}
       </Chip>
     )
   if (phase === 'verified')
     return (
-      <Chip icon={ShieldCheck} className={YELLOW}>
+      <Chip icon={ShieldCheck} variant="default">
         {t('common.verified')}
       </Chip>
     )
   if (phase === 'cleanup_pending') {
     return (
-      <Chip icon={Trash2} className={PINK}>
+      <Chip icon={Trash2} variant="accent">
         {t('customNodes.status.cleanupPending')}
       </Chip>
     )
   }
   if (phase === 'prepared')
     return (
-      <Chip icon={Clock} className={MUTED}>
+      <Chip icon={Clock} variant="muted">
         {t('common.prepared')}
       </Chip>
     )
   return (
-    <Chip icon={LoaderCircle} className={CYAN} spin={!isTerminalPhase(phase)}>
+    <Chip icon={LoaderCircle} variant="outline" spin={!isTerminalPhase(phase)}>
       {Object.hasOwn(PHASE_LABELS, phase)
         ? t(PHASE_LABELS[phase as keyof typeof PHASE_LABELS])
         : phase.replaceAll('_', ' ')}

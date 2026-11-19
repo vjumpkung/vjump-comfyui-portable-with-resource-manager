@@ -127,6 +127,7 @@ export function PackageChanges({
             </Field>
           </FieldGroup>
           <Button
+            className="self-start"
             disabled={!spec.trim() || pending || maintenanceBusy}
             onClick={() => {
               apply.reset()

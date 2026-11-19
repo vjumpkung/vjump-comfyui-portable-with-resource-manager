@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { getLanguage, setLanguage } from '@/shared/i18n'
 import { gateway, type SettingsDto } from '@/shared/ipc/gateway'
+import { chooseOption, openSelect } from '@/shared/testing/select'
 import { SettingsForm } from './settings-form'
 
 vi.mock('@/shared/ipc/gateway', async (importOriginal) => ({
@@ -93,9 +94,12 @@ it('language_is_a_draft_until_save_succeeds_and_is_included_in_the_payload', asy
   vi.mocked(gateway.settingsSet).mockReturnValue(pending)
   mount()
   const language = await screen.findByLabelText('Language')
-  expect(screen.getByRole('option', { name: 'English' })).toBeTruthy()
+  openSelect(language)
+  expect(await screen.findByRole('option', { name: 'English' })).toBeTruthy()
   expect(screen.getByRole('option', { name: 'ไทย' })).toBeTruthy()
-  fireEvent.change(language, { target: { value: 'th' } })
+  fireEvent.keyDown(document.activeElement ?? language, { key: 'Escape' })
+  await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
+  await chooseOption(language, 'ไทย')
   expect(getLanguage()).toBe('en')
   expect(gateway.settingsSet).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
@@ -124,14 +128,14 @@ it('successful_save_applies_the_returned_language', async () => {
 it('failed_save_keeps_the_active_language_and_the_draft', async () => {
   vi.mocked(gateway.settingsSet).mockRejectedValue(new Error('Save failed'))
   mount()
-  fireEvent.change(await screen.findByLabelText('Language'), { target: { value: 'th' } })
+  await chooseOption(await screen.findByLabelText('Language'), 'ไทย')
   fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
   await waitFor(() => expect(gateway.settingsSet).toHaveBeenCalledTimes(1))
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'Save settings' })).toHaveProperty('disabled', false),
   )
   expect(getLanguage()).toBe('en')
-  expect(screen.getByLabelText('Language')).toHaveProperty('value', 'th')
+  expect(screen.getByLabelText('Language').textContent).toBe('ไทย')
 })
 
 it('dangerous security preference defaults off and is saved explicitly', async () => {

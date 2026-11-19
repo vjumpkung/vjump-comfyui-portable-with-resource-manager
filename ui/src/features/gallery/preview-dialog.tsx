@@ -57,7 +57,9 @@ function PreviewBody({ entry }: { entry: GalleryEntryDto }) {
   }
   return (
     <Suspense
-      fallback={<LoaderCircle className="animate-spin" aria-label={t('common.loadingLabel')} />}
+      fallback={
+        <LoaderCircle className="motion-safe:animate-spin" aria-label={t('common.loadingLabel')} />
+      }
     >
       <ModelViewer entry={entry} onError={fail} />
     </Suspense>

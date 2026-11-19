@@ -12,11 +12,13 @@ export function ErrorNotice({ error, retry }: { error: unknown; retry?: () => vo
       <TriangleAlert />
       <AlertTitle>{t('common.requestError')}</AlertTitle>
       <AlertDescription>
-        {errorMessage(error)}
+        <p>{errorMessage(error)}</p>
         {retry && (
-          <Button variant="outline" size="sm" onClick={retry}>
-            {t('common.tryAgain')}
-          </Button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={retry}>
+              {t('common.tryAgain')}
+            </Button>
+          </div>
         )}
       </AlertDescription>
     </Alert>

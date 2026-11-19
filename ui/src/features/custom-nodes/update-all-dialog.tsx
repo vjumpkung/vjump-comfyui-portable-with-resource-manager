@@ -42,7 +42,7 @@ import {
   updateUnavailableKey,
 } from './model'
 import { ReviewDialog } from './review-dialog'
-import { Chip } from './status-chips'
+import { Chip, type ChipVariant } from './status-chips'
 
 /** The cancellation key of a batch execution. */
 export const UPDATE_ALL_KEY = 'update-all'
@@ -63,41 +63,40 @@ type Entry =
 
 type Stage = 'intro' | 'preparing' | 'review' | 'result'
 
-const MUTED = 'bg-muted text-muted-foreground border-border'
 const CHIPS: Record<
   Entry['state'],
-  { labelKey: NodeTextKey; icon: LucideIcon; className: string; spin?: boolean }
+  { labelKey: NodeTextKey; icon: LucideIcon; variant: ChipVariant; spin?: boolean }
 > = {
-  pending: { labelKey: 'customNodes.batch.status.waiting', icon: Clock, className: MUTED },
+  pending: { labelKey: 'customNodes.batch.status.waiting', icon: Clock, variant: 'muted' },
   preparing: {
     labelKey: 'customNodes.batch.status.preparing',
     icon: LoaderCircle,
-    className: 'border-brand-cyan bg-transparent text-foreground',
+    variant: 'outline',
     spin: true,
   },
-  prepared: { labelKey: 'common.prepared', icon: Clock, className: MUTED },
+  prepared: { labelKey: 'common.prepared', icon: Clock, variant: 'muted' },
   applying: {
     labelKey: 'customNodes.batch.status.applying',
     icon: LoaderCircle,
-    className: 'border-brand-cyan bg-transparent text-foreground',
+    variant: 'outline',
     spin: true,
   },
-  skipped: { labelKey: 'common.skipped', icon: Ban, className: MUTED },
+  skipped: { labelKey: 'common.skipped', icon: Ban, variant: 'muted' },
   prepare_failed: {
     labelKey: 'customNodes.batch.status.prepareFailed',
     icon: CircleX,
-    className: 'bg-destructive text-white',
+    variant: 'destructive',
   },
   updated: {
     labelKey: 'customNodes.batch.status.updated',
     icon: Check,
-    className: 'bg-brand-yellow',
+    variant: 'default',
   },
-  up_to_date: { labelKey: 'customNodes.batch.status.upToDate', icon: Check, className: MUTED },
-  failed: { labelKey: 'common.failed', icon: CircleX, className: 'bg-destructive text-white' },
-  cancelled: { labelKey: 'common.cancelled', icon: Square, className: 'bg-brand-pink' },
-  discarded: { labelKey: 'customNodes.batch.status.discarded', icon: Trash2, className: MUTED },
-  not_run: { labelKey: 'customNodes.batch.status.notRun', icon: Clock, className: MUTED },
+  up_to_date: { labelKey: 'customNodes.batch.status.upToDate', icon: Check, variant: 'muted' },
+  failed: { labelKey: 'common.failed', icon: CircleX, variant: 'destructive' },
+  cancelled: { labelKey: 'common.cancelled', icon: Square, variant: 'accent' },
+  discarded: { labelKey: 'customNodes.batch.status.discarded', icon: Trash2, variant: 'muted' },
+  not_run: { labelKey: 'customNodes.batch.status.notRun', icon: Clock, variant: 'muted' },
 }
 
 /** Failures that would refuse every remaining node the same way. */
@@ -445,12 +444,14 @@ export function UpdateAllDialog({
         <AlertTitle>{t('customNodes.batch.refusedTitle')}</AlertTitle>
         <AlertDescription>
           <p>{nodeText(refusal.message)}</p>
-          {failureKind(refusal.code) === 'comfyui_running' && (
-            <Button size="sm" disabled={stoppingComfy} onClick={() => void stopComfy()}>
-              {stoppingComfy ? t('customNodes.stoppingComfy') : t('customNodes.stopComfy')}
-            </Button>
-          )}
           <p>{t('customNodes.batch.retryHint')}</p>
+          {failureKind(refusal.code) === 'comfyui_running' && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button size="sm" disabled={stoppingComfy} onClick={() => void stopComfy()}>
+                {stoppingComfy ? t('customNodes.stoppingComfy') : t('customNodes.stopComfy')}
+              </Button>
+            </div>
+          )}
         </AlertDescription>
       </Alert>
     )
@@ -520,7 +521,7 @@ export function UpdateAllDialog({
                     <span className="min-w-0 font-medium [overflow-wrap:anywhere] break-words">
                       {node.name}
                     </span>
-                    <Chip icon={chip.icon} className={chip.className} spin={chip.spin}>
+                    <Chip icon={chip.icon} variant={chip.variant} spin={chip.spin}>
                       {t(chip.labelKey)}
                     </Chip>
                   </div>
@@ -535,7 +536,7 @@ export function UpdateAllDialog({
           </ul>
         )}
         {stage === 'result' && (
-          <p className="font-mono text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground tabular-nums">
             {t('customNodes.batch.summary', {
               updated: counts.updated ?? 0,
               current: counts.up_to_date ?? 0,

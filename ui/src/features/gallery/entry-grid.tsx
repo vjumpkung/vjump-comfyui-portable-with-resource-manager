@@ -72,8 +72,10 @@ function Tile({ entry, selected, onSelect, onToggle, onOpen }: TileProps) {
         onDoubleClick={onOpen}
         onKeyDown={onKeyDown}
         className={cn(
-          'flex h-full w-full flex-col gap-1.5 rounded-lg border p-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan/50',
-          selected ? 'border-brand-cyan bg-muted' : 'bg-card hover:bg-muted/50',
+          'focus-inset flex h-full w-full flex-col gap-1.5 rounded-lg border p-2 text-left',
+          selected
+            ? 'border-input bg-muted ring-1 ring-input ring-inset'
+            : 'bg-card hover:bg-muted/50',
         )}
       >
         <span className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md bg-muted/50">
@@ -93,7 +95,7 @@ function Tile({ entry, selected, onSelect, onToggle, onOpen }: TileProps) {
         <span className="block w-full truncate text-sm font-medium" title={entry.name}>
           {entry.name}
         </span>
-        <span className="block font-mono text-xs text-muted-foreground">
+        <span className="block text-xs text-muted-foreground tabular-nums">
           {entry.kind === 'file' ? formatBytes(entry.sizeBytes) : t('gallery.folder')}
         </span>
       </button>

@@ -41,21 +41,21 @@ export function GitStatusView({ status }: { status: NodeGitStatusDto }) {
   const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-2">
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs sm:grid-cols-4">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm tabular-nums sm:grid-cols-4">
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.branch')}</dt>
-          <dd>{status.branch ?? t('customNodes.detached')}</dd>
+          <dt className="type-label text-muted-foreground">{t('customNodes.branch')}</dt>
+          <dd className="font-mono text-xs">{status.branch ?? t('customNodes.detached')}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.commit')}</dt>
-          <dd className="break-all">{status.commit.slice(0, 12)}</dd>
+          <dt className="type-label text-muted-foreground">{t('customNodes.commit')}</dt>
+          <dd className="font-mono text-xs break-all">{status.commit.slice(0, 12)}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.upstream')}</dt>
+          <dt className="type-label text-muted-foreground">{t('customNodes.upstream')}</dt>
           <dd>{status.hasUpstream ? t('customNodes.update.selected') : t('common.none')}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.aheadBehind')}</dt>
+          <dt className="type-label text-muted-foreground">{t('customNodes.aheadBehind')}</dt>
           <dd>
             {status.ahead ?? '—'} / {status.behind ?? '—'}
           </dd>
@@ -115,14 +115,18 @@ export function UpdateDialog({
           <Alert variant="destructive">
             <AlertTitle>{t('customNodes.inspectionError')}</AlertTitle>
             <AlertDescription>
-              {errorMessage(git.error)}{' '}
-              {git.error instanceof IpcClientError &&
-              failureKind(git.error.code) === 'git_unavailable'
-                ? t(FAILURE_GUIDANCE.git_unavailable)
-                : ''}
-              <Button variant="outline" size="sm" onClick={() => void git.refetch()}>
-                {t('customNodes.inspectAgain')}
-              </Button>
+              <p>
+                {errorMessage(git.error)}{' '}
+                {git.error instanceof IpcClientError &&
+                failureKind(git.error.code) === 'git_unavailable'
+                  ? t(FAILURE_GUIDANCE.git_unavailable)
+                  : ''}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => void git.refetch()}>
+                  {t('customNodes.inspectAgain')}
+                </Button>
+              </div>
             </AlertDescription>
           </Alert>
         )}
@@ -131,15 +135,17 @@ export function UpdateDialog({
           <Alert variant="destructive">
             <AlertTitle>{t('customNodes.refusedTitle')}</AlertTitle>
             <AlertDescription>
-              <ul>
+              <ul className="mb-2">
                 {check.refusals.map((reason) => (
                   <li key={reason}>{reason}</li>
                 ))}
               </ul>
-              {t('customNodes.resolveHint')}
-              <Button variant="outline" size="sm" onClick={() => void git.refetch()}>
-                {t('customNodes.inspectAgain')}
-              </Button>
+              <p>{t('customNodes.resolveHint')}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => void git.refetch()}>
+                  {t('customNodes.inspectAgain')}
+                </Button>
+              </div>
             </AlertDescription>
           </Alert>
         )}

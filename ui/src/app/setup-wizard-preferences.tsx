@@ -4,7 +4,6 @@ import { toast } from 'sonner'
 import { useSettings, useSettingsSavePending, useUpdateSettings } from '@/features/settings/queries'
 import {
   getLanguage,
-  isLanguage,
   LANGUAGES,
   setLanguage,
   t as translate,
@@ -13,6 +12,7 @@ import {
 } from '@/shared/i18n'
 import { IpcClientError } from '@/shared/ipc/gateway'
 import { Field, FieldDescription, FieldLabel } from '@/shared/ui/field'
+import { OptionsSelect } from '@/shared/ui/options-select'
 import { Skeleton } from '@/shared/ui/skeleton'
 
 const SetupWizard = lazy(() =>
@@ -55,22 +55,15 @@ export function SetupWizardPreferences(props: Props) {
           return (
             <Field data-disabled={disabled}>
               <FieldLabel htmlFor="setup-language">{t('setup.language')}</FieldLabel>
-              <select
+              <OptionsSelect
                 id="setup-language"
+                className="w-full"
                 value={language}
+                options={LANGUAGES}
                 disabled={disabled}
                 aria-describedby="setup-language-hint"
-                onChange={(event) => {
-                  if (isLanguage(event.target.value)) changeLanguage(event.target.value)
-                }}
-                className="h-9 w-full rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:border-brand-cyan focus-visible:ring-2 focus-visible:ring-brand-cyan/35"
-              >
-                {LANGUAGES.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                onValueChange={changeLanguage}
+              />
               <FieldDescription id="setup-language-hint">
                 {t('setup.languageHint')}
               </FieldDescription>

@@ -70,9 +70,7 @@ export function NodeDetails({
       className="flex flex-col gap-4 rounded-xl border bg-card p-4"
     >
       <div className="min-w-0">
-        <h2 className="text-lg font-bold tracking-tight [overflow-wrap:anywhere] break-words">
-          {node.name}
-        </h2>
+        <h2 className="text-xl font-bold [overflow-wrap:anywhere] break-words">{node.name}</h2>
         <p className="font-mono text-xs break-all text-muted-foreground">
           {sourceLabel(node.source)}
         </p>
@@ -82,7 +80,7 @@ export function NodeDetails({
         <DependencyChip state={node.dependencies} />
         <HealthChip health={gitHealth(node)} />
         {node.conflict && (
-          <Chip icon={TriangleAlert} className="bg-brand-pink">
+          <Chip icon={TriangleAlert} variant="accent">
             {t('customNodes.conflict')}
           </Chip>
         )}

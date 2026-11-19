@@ -18,6 +18,7 @@ import {
 } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
+import { OptionsSelect } from '@/shared/ui/options-select'
 
 import { formatSize } from './format'
 
@@ -182,31 +183,36 @@ export function ImportPackDialog({ onClose, onSubmit }: Props) {
                     <p className="text-sm font-semibold [overflow-wrap:anywhere] break-words">
                       {row.name}
                     </p>
-                    <p className="font-mono text-xs text-muted-foreground">
-                      {row.category}
-                      {file ? ` · ${file.filename} · ${formatSize(file.size)}` : ''}
+                    <p className="text-xs text-muted-foreground tabular-nums">
+                      <span className="font-mono">{row.category}</span>
+                      {file ? (
+                        <>
+                          {' · '}
+                          <span className="font-mono">{file.filename}</span>
+                          {` · ${formatSize(file.size)}`}
+                        </>
+                      ) : null}
                     </p>
                     {row.error ? (
-                      <p className="text-xs text-destructive">{row.error.message}</p>
+                      <p className="text-xs text-destructive-ink">{row.error.message}</p>
                     ) : null}
                     {files.length > 1 ? (
-                      <select
+                      <OptionsSelect
+                        size="sm"
+                        className="mt-1 w-full"
                         aria-label={t('downloads.fileFor', { name: row.name })}
-                        className="mt-1 h-8 w-full rounded-md border border-input bg-card px-2 text-xs"
-                        value={file?.index ?? 0}
-                        onChange={(event) =>
+                        value={String(file?.index ?? 0)}
+                        options={files.map((candidate) => ({
+                          value: String(candidate.index),
+                          label: `${candidate.filename} (${formatSize(candidate.size)})`,
+                        }))}
+                        onValueChange={(value) =>
                           setChoices((current) => ({
                             ...current,
-                            [index]: Number(event.target.value),
+                            [index]: Number(value),
                           }))
                         }
-                      >
-                        {files.map((candidate) => (
-                          <option key={candidate.index} value={candidate.index}>
-                            {candidate.filename} ({formatSize(candidate.size)})
-                          </option>
-                        ))}
-                      </select>
+                      />
                     ) : null}
                   </div>
                 </li>

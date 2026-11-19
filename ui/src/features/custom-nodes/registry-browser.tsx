@@ -16,13 +16,11 @@ import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { EmptyState } from '@/shared/ui/empty-state'
 import { Input } from '@/shared/ui/input'
+import { OptionsSelect } from '@/shared/ui/options-select'
 
 import { formatCount, formatFetched, formatList, unknownText } from './model'
 import { Chip, SupportChip } from './status-chips'
 import { REGISTRY_LIMITS, useRegistry, useRegistryControls } from './use-registry'
-
-const SELECT_CLASS =
-  'h-9 rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:border-brand-cyan focus-visible:ring-2 focus-visible:ring-brand-cyan/35'
 
 async function openRepository(repository: string) {
   try {
@@ -44,14 +42,14 @@ function RegistryRow({
 }) {
   const { t } = useTranslation()
   return (
-    <li className="flex flex-col gap-3 rounded-xl border bg-card p-4 transition-colors hover:border-brand-cyan">
+    <li className="flex flex-col gap-3 rounded-xl border bg-card p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-base font-bold tracking-tight [overflow-wrap:anywhere] break-words">
+          <h3 className="text-base font-semibold [overflow-wrap:anywhere] break-words">
             {node.name}
           </h3>
-          <p className="font-mono text-xs [overflow-wrap:anywhere] break-words text-muted-foreground">
-            {node.id} · {unknownText(node.publisher)}
+          <p className="text-xs [overflow-wrap:anywhere] break-words text-muted-foreground">
+            <span className="font-mono">{node.id}</span> · {unknownText(node.publisher)}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -84,24 +82,30 @@ function RegistryRow({
           node.description
         )}
       </p>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs sm:grid-cols-4">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm tabular-nums sm:grid-cols-4">
         <div>
-          <dt className="text-muted-foreground">{t('nav.downloads')}</dt>
+          <dt className="type-label text-muted-foreground">{t('nav.downloads')}</dt>
           <dd>{formatCount(node.downloads)}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.registry.githubStars')}</dt>
+          <dt className="type-label text-muted-foreground">
+            {t('customNodes.registry.githubStars')}
+          </dt>
           <dd className="flex items-center gap-1">
             <Star className="size-3" aria-hidden="true" />
             {formatCount(node.githubStars)}
           </dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.registry.latestVersion')}</dt>
-          <dd>{unknownText(node.latestVersion)}</dd>
+          <dt className="type-label text-muted-foreground">
+            {t('customNodes.registry.latestVersion')}
+          </dt>
+          <dd className="font-mono text-xs">{unknownText(node.latestVersion)}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.registry.registryStatus')}</dt>
+          <dt className="type-label text-muted-foreground">
+            {t('customNodes.registry.registryStatus')}
+          </dt>
           <dd className="[overflow-wrap:anywhere] break-words">{unknownText(node.status)}</dd>
         </div>
       </dl>
@@ -110,30 +114,34 @@ function RegistryRow({
         <SupportChip name={t('customNodes.registry.accelerator')} value={node.accelerator} />
         <SupportChip name="ComfyUI" value={node.comfyui} />
         {node.flagged && (
-          <Chip icon={TriangleAlert} className="bg-brand-pink">
+          <Chip icon={TriangleAlert} variant="accent">
             {t('customNodes.registry.flagged')}
           </Chip>
         )}
         {node.deprecated && (
-          <Chip icon={Archive} className="bg-brand-pink">
+          <Chip icon={Archive} variant="accent">
             {t('customNodes.registry.deprecated')}
           </Chip>
         )}
       </div>
-      <dl className="grid gap-x-4 gap-y-1 font-mono text-xs sm:grid-cols-3">
+      <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-3">
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.registry.supportedOs')}</dt>
+          <dt className="type-label text-muted-foreground">
+            {t('customNodes.registry.supportedOs')}
+          </dt>
           <dd>{formatList(node.supportedOs)}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">
+          <dt className="type-label text-muted-foreground">
             {t('customNodes.registry.supportedAccelerators')}
           </dt>
           <dd>{formatList(node.supportedAccelerators)}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.registry.supportedComfyui')}</dt>
-          <dd className="[overflow-wrap:anywhere] break-words">
+          <dt className="type-label text-muted-foreground">
+            {t('customNodes.registry.supportedComfyui')}
+          </dt>
+          <dd className="font-mono text-xs [overflow-wrap:anywhere] break-words">
             {unknownText(node.supportedComfyuiVersion)}
           </dd>
         </div>
@@ -185,32 +193,30 @@ export function RegistryBrowser({
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-56 flex-1">
           <Search
-            className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground"
+            className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
             aria-hidden="true"
           />
           <Input
             aria-label={t('customNodes.registry.search')}
             placeholder={t('customNodes.registry.searchHint')}
-            className="pl-8"
+            className="pl-9"
             value={controls.draft}
             onChange={(event) => controls.setDraft(event.target.value)}
           />
         </div>
-        <select
+        <OptionsSelect
           aria-label={t('customNodes.registry.pageLimit')}
-          className={SELECT_CLASS}
-          value={controls.query.limit}
-          onChange={(event) => controls.setLimit(Number(event.target.value))}
-        >
-          {REGISTRY_LIMITS.map((limit) => (
-            <option key={limit} value={limit}>
-              {t('customNodes.registry.perPage', { limit })}
-            </option>
-          ))}
-        </select>
+          className="rounded-full"
+          value={String(controls.query.limit)}
+          options={REGISTRY_LIMITS.map((limit) => ({
+            value: String(limit),
+            label: t('customNodes.registry.perPage', { limit }),
+          }))}
+          onValueChange={(limit) => controls.setLimit(Number(limit))}
+        />
         <Button variant="outline" disabled={registry.refreshing} onClick={registry.refresh}>
           {registry.refreshing ? (
-            <LoaderCircle className="animate-spin" aria-hidden="true" />
+            <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
           ) : (
             <RefreshCw aria-hidden="true" />
           )}
@@ -218,7 +224,7 @@ export function RegistryBrowser({
         </Button>
       </div>
       {data && (
-        <p className="font-mono text-xs text-muted-foreground">
+        <p className="text-sm text-muted-foreground tabular-nums">
           {t(
             registry.isFetching
               ? 'customNodes.registry.fetchedUpdating'
@@ -254,10 +260,12 @@ export function RegistryBrowser({
           <TriangleAlert aria-hidden="true" />
           <AlertTitle>{failure.title}</AlertTitle>
           <AlertDescription>
-            {failure.body}
-            <Button variant="outline" size="sm" onClick={registry.retry}>
-              {t('common.tryAgain')}
-            </Button>
+            <p>{failure.body}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={registry.retry}>
+                {t('common.tryAgain')}
+              </Button>
+            </div>
           </AlertDescription>
         </Alert>
       )}
@@ -295,7 +303,7 @@ export function RegistryBrowser({
           >
             {t('customNodes.registry.previousPage')}
           </Button>
-          <span className="font-mono text-xs text-muted-foreground">
+          <span className="text-sm text-muted-foreground tabular-nums">
             {t('customNodes.registry.pageOf', {
               page: data.page,
               total: Math.max(1, data.totalPages),

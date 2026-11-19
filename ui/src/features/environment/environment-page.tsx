@@ -114,20 +114,22 @@ export function EnvironmentPage({
     !busy
   return (
     <div className="flex flex-col gap-6">
-      <header>
-        <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-          {t('environment.title')}
-        </h1>
-        <p className="text-sm text-muted-foreground">{t('environment.description')}</p>
+      <header className="flex flex-col gap-1">
+        <h1 className="type-page-title">{t('environment.title')}</h1>
+        <p className="text-[0.9375rem] leading-[1.65] text-muted-foreground">
+          {t('environment.description')}
+        </p>
       </header>
       {needsRepair && (
         <Alert variant="destructive">
           <AlertTitle>{t('environment.repair.title')}</AlertTitle>
           <AlertDescription>
-            {t('environment.repair.hint')}
-            <Button onClick={() => onSetup('repair')} disabled={busy}>
-              {t('environment.repair.action')}
-            </Button>
+            <p>{t('environment.repair.hint')}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button size="sm" onClick={() => onSetup('repair')} disabled={busy}>
+                {t('environment.repair.action')}
+              </Button>
+            </div>
           </AlertDescription>
         </Alert>
       )}
@@ -135,10 +137,12 @@ export function EnvironmentPage({
         <Alert>
           <AlertTitle>{t('environment.setupAttention')}</AlertTitle>
           <AlertDescription>
-            {t('environment.runStopped', { id: status.run.id })}
-            <Button variant="outline" onClick={onResume}>
-              {t('environment.reviewFailure')}
-            </Button>
+            <p>{t('environment.runStopped', { id: status.run.id })}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={onResume}>
+                {t('environment.reviewFailure')}
+              </Button>
+            </div>
           </AlertDescription>
         </Alert>
       )}
@@ -170,15 +174,15 @@ export function EnvironmentPage({
           <CardContent>
             <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
               <div>
-                <dt>Python</dt>
+                <dt className="type-label text-muted-foreground">Python</dt>
                 <dd className="font-mono">{env.pythonVersion}</dd>
               </div>
               <div>
-                <dt>{t('environment.path')}</dt>
+                <dt className="type-label text-muted-foreground">{t('environment.path')}</dt>
                 <dd className="font-mono break-all">{env.path}</dd>
               </div>
               <div>
-                <dt>{t('environment.profile')}</dt>
+                <dt className="type-label text-muted-foreground">{t('environment.profile')}</dt>
                 <dd>
                   {t('environment.profileRevision', {
                     profile: info.data?.profileLabel ?? env.profileId,
@@ -187,20 +191,22 @@ export function EnvironmentPage({
                 </dd>
               </div>
               <div>
-                <dt>Torch / CUDA</dt>
+                <dt className="type-label text-muted-foreground">Torch / CUDA</dt>
                 <dd className="font-mono">
                   {info.data?.torchVersion ?? t('common.unknownValue')} /{' '}
                   {info.data?.cudaVariant ?? t('common.unknownValue')}
                 </dd>
               </div>
               <div>
-                <dt>Triton</dt>
+                <dt className="type-label text-muted-foreground">Triton</dt>
                 <dd className="font-mono">
                   {info.data?.tritonVersion ?? t('common.unknownValue')}
                 </dd>
               </div>
               <div>
-                <dt>{t('environment.acceleratorsReported')}</dt>
+                <dt className="type-label text-muted-foreground">
+                  {t('environment.acceleratorsReported')}
+                </dt>
                 <dd>
                   {info.data
                     ? info.data.accelerators.join(', ') || t('environment.noneReported')
@@ -208,13 +214,15 @@ export function EnvironmentPage({
                 </dd>
               </div>
               <div>
-                <dt>{t('environment.comfyReference')}</dt>
+                <dt className="type-label text-muted-foreground">
+                  {t('environment.comfyReference')}
+                </dt>
                 <dd className="font-mono break-all">
                   {info.data?.comfyuiReference ?? t('common.unknownValue')}
                 </dd>
               </div>
               <div>
-                <dt>{t('environment.comfyCommit')}</dt>
+                <dt className="type-label text-muted-foreground">{t('environment.comfyCommit')}</dt>
                 <dd className="font-mono break-all">
                   {info.data?.comfyuiCommit ?? t('common.unknownValue')}
                 </dd>
@@ -235,6 +243,7 @@ export function EnvironmentPage({
             </details>
             <Button
               variant="outline"
+              className="self-start"
               onClick={() => {
                 void info.refetch()
                 void packages.refetch()
@@ -265,11 +274,13 @@ export function EnvironmentPage({
                     <p className="font-mono break-all">{result.id}</p>
                     <dl className="grid gap-2 sm:grid-cols-3">
                       <div>
-                        <dt>{t('common.selected')}</dt>
+                        <dt className="type-label text-muted-foreground">{t('common.selected')}</dt>
                         <dd>{result.selected ? t('common.yes') : t('common.no')}</dd>
                       </div>
                       <div>
-                        <dt>{t('environment.accelerators.installStatus')}</dt>
+                        <dt className="type-label text-muted-foreground">
+                          {t('environment.accelerators.installStatus')}
+                        </dt>
                         <dd>
                           {Object.hasOwn(INSTALL_STATUS_KEYS, result.status)
                             ? t(INSTALL_STATUS_KEYS[result.status])
@@ -277,7 +288,9 @@ export function EnvironmentPage({
                         </dd>
                       </div>
                       <div>
-                        <dt>{t('environment.accelerators.importResult')}</dt>
+                        <dt className="type-label text-muted-foreground">
+                          {t('environment.accelerators.importResult')}
+                        </dt>
                         <dd>
                           {result.importable === null
                             ? t('environment.accelerators.untested')
@@ -342,7 +355,7 @@ export function EnvironmentPage({
                 </TableBody>
               </Table>
               {filtered.length === 0 && <p>{t('environment.packages.noMatch')}</p>}
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   variant="outline"
                   size="sm"
@@ -351,7 +364,7 @@ export function EnvironmentPage({
                 >
                   {t('common.previous')}
                 </Button>
-                <span className="font-mono text-xs">
+                <span className="text-sm tabular-nums">
                   {t('environment.packages.pagination', {
                     count: filtered.length,
                     page: currentPage + 1,
@@ -422,6 +435,7 @@ export function EnvironmentPage({
           </FieldGroup>
           <Button
             variant="destructive"
+            className="self-start"
             disabled={!canDelete || deletion.isPending}
             onClick={() => {
               setConfirmedId('')

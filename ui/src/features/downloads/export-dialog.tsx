@@ -70,7 +70,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             <textarea
               readOnly
               aria-label={t('downloads.resourceJson')}
-              className="h-64 w-full rounded-md border border-input bg-card p-2 font-mono text-xs"
+              className="h-64 w-full rounded-lg border border-input bg-card p-3 font-mono text-xs focus-visible:border-ring"
               value={data.json}
             />
             {data.excluded.length > 0 ? (

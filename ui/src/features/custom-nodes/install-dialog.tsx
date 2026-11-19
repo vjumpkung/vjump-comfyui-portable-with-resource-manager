@@ -137,7 +137,7 @@ export function InstallDialog({
                   onChange={(event) => setRepository(event.target.value)}
                 />
                 {touched && repositoryError && (
-                  <p role="alert" className="text-xs text-destructive">
+                  <p role="alert" className="text-xs text-destructive-ink">
                     {repositoryError}
                   </p>
                 )}

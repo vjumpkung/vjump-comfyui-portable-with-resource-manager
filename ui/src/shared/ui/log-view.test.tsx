@@ -45,10 +45,11 @@ function expectTerminalFrame(label: string, height: string) {
   const frame = host.parentElement!
   for (const name of [
     'border',
-    'border-secondary',
-    'p-3',
+    'border-transparent',
+    'rounded-xl',
+    'bg-code-bg',
+    'p-4',
     'overflow-hidden',
-    'setup-log',
     height,
   ]) {
     expect(frame.classList.contains(name)).toBe(true)

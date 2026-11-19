@@ -10,6 +10,7 @@ import {
   type DeleteReportDto,
   type ModelEventDto,
 } from '@/shared/ipc/gateway'
+import { chooseOption } from '@/shared/testing/select'
 
 import { many, model, snapshot, status } from './fixtures'
 import { LibraryPage } from './library-page'
@@ -99,9 +100,7 @@ it('lists models and filters them by search text and category', async () => {
   fireEvent.change(screen.getByLabelText('Search models'), {
     target: { value: '' },
   })
-  fireEvent.change(screen.getByLabelText('Category'), {
-    target: { value: 'checkpoints' },
-  })
+  await chooseOption(screen.getByLabelText('Category'), 'checkpoints')
   expect(screen.queryByText('beta.pt')).toBeNull()
   fireEvent.change(screen.getByLabelText('Search models'), {
     target: { value: 'zzz' },
@@ -382,7 +381,7 @@ it('refetches the list when the backend announces a change', async () => {
 it('model_table_active_row_keeps_readable_contrast', async () => {
   mount(snapshot([model({ name: 'a.pt' }), model({ name: 'b.pt' })]))
   fireEvent.click(await screen.findByRole('row', { name: /a\.pt/ }))
-  // No brand fill behind table text: the active row is muted with an accent bar.
+  // No brand fill behind table text: the active row is muted with an inset outline.
   const active = row('a.pt')
   expect(active.classList.contains('bg-muted')).toBe(true)
   expect(active.classList.contains('bg-accent')).toBe(false)

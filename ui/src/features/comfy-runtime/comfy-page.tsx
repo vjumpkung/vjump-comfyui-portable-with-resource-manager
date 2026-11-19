@@ -11,6 +11,7 @@ import {
   type StartResultDto,
 } from '@/shared/ipc/gateway'
 import { errorMessage } from '@/shared/lib/display'
+import { cn } from '@/shared/lib/utils'
 import { Alert, AlertDescription, AlertTitle } from '@/shared/ui/alert'
 import { Button } from '@/shared/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/ui/card'
@@ -51,13 +52,26 @@ const FAILURE_TITLE_KEYS = {
   keyof typeof import('@/shared/i18n/translations.json').en
 >
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
+function Row({
+  label,
+  mono = false,
+  children,
+}: {
+  label: string
+  mono?: boolean
+  children: ReactNode
+}) {
   return (
     <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-4">
-      <dt className="w-32 shrink-0 font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-        {label}
-      </dt>
-      <dd className="font-mono text-xs [overflow-wrap:anywhere] break-words">{children}</dd>
+      <dt className="w-32 shrink-0 type-label text-muted-foreground">{label}</dt>
+      <dd
+        className={cn(
+          'text-sm [overflow-wrap:anywhere] break-words tabular-nums',
+          mono && 'font-mono text-xs',
+        )}
+      >
+        {children}
+      </dd>
     </div>
   )
 }
@@ -86,7 +100,7 @@ function StatusDetails({ status }: { status: ComfyStatusDto }) {
   const session = status.session
   return (
     <dl className="flex flex-col gap-2">
-      <Row label={t('runtime.address')}>
+      <Row label={t('runtime.address')} mono>
         {status.origin ??
           (session
             ? t(session.options.listenLan ? 'runtime.portAll' : 'runtime.port', {
@@ -95,7 +109,9 @@ function StatusDetails({ status }: { status: ComfyStatusDto }) {
             : '-')}
       </Row>
       <Row label={t('runtime.process')}>{session?.pid ?? '-'}</Row>
-      <Row label={t('common.version')}>{session ? describeRevision(session.revision) : '-'}</Row>
+      <Row label={t('common.version')} mono>
+        {session ? describeRevision(session.revision) : '-'}
+      </Row>
       <Row label={t('runtime.started')}>{session?.startedAt ?? '-'}</Row>
     </dl>
   )
@@ -171,15 +187,15 @@ export function ComfyPage() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">ComfyUI</h1>
-        <p className="text-sm leading-relaxed font-medium text-muted-foreground">
+        <h1 className="type-page-title">ComfyUI</h1>
+        <p className="text-[0.9375rem] leading-[1.65] text-muted-foreground">
           {t('runtime.description')}
         </p>
       </header>
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-3 text-lg font-bold tracking-tight">
+          <CardTitle className="flex items-center gap-3">
             {t('common.status')} <LifecycleBadge lifecycle={lifecycle} />
           </CardTitle>
           <CardDescription>{status?.pendingOperation ?? t('runtime.statusHint')}</CardDescription>
@@ -213,7 +229,7 @@ export function ComfyPage() {
                 onClick={() => start.mutate(undefined, { onSuccess: handleStart, onError })}
               >
                 {starting ? (
-                  <LoaderCircle className="animate-spin" aria-hidden="true" />
+                  <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
                 ) : (
                   <Play aria-hidden="true" />
                 )}
@@ -227,7 +243,7 @@ export function ComfyPage() {
               onClick={() => restart.mutate(undefined, { onSuccess: handleStart, onError })}
             >
               {restarting ? (
-                <LoaderCircle className="animate-spin" aria-hidden="true" />
+                <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
               ) : (
                 <RotateCw aria-hidden="true" />
               )}
@@ -255,7 +271,7 @@ export function ComfyPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg font-bold tracking-tight">{t('runtime.log')}</CardTitle>
+          <CardTitle>{t('runtime.log')}</CardTitle>
           <CardDescription>{t('runtime.logHint')}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -282,7 +298,7 @@ export function ComfyPage() {
               value={diagnosticsFallback}
               rows={12}
               onFocus={(event) => event.currentTarget.select()}
-              className="w-full rounded-md border bg-muted p-3 font-mono text-xs"
+              className="w-full rounded-lg border border-input bg-card p-3 font-mono text-xs"
             />
           )}
         </CardContent>

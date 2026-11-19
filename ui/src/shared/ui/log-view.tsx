@@ -28,8 +28,9 @@ function newTerminal() {
     fontFamily: '"Geist Mono Variable", "Kanit", monospace',
     fontSize: 12,
     screenReaderMode: true,
+    allowTransparency: true,
     theme: {
-      background: '#2a313a',
+      background: '#00000000',
       foreground: '#e0e5ec',
       cyan: '#9ffaff',
       blue: '#9ffaff',
@@ -70,7 +71,10 @@ export function LogView({ lines }: { lines: string[] }) {
     term.write(lines.map(plainLog).join('\r\n'))
   }, [lines])
   return (
-    <div className="setup-log h-72 min-w-0 overflow-hidden rounded-lg border border-secondary p-3">
+    <div
+      data-slot="log-view"
+      className="h-72 min-w-0 overflow-hidden rounded-xl border border-transparent bg-code-bg p-4 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ring dark:border-border"
+    >
       <div ref={host} aria-label={t('setup.sanitizedLog')} className="h-full min-w-0" />
     </div>
   )
@@ -112,7 +116,10 @@ export function StreamLogView({ text, label }: { text: string; label: string }) 
     written.current = text
   }, [text])
   return (
-    <div className="setup-log h-80 min-w-0 overflow-hidden rounded-lg border border-secondary p-3">
+    <div
+      data-slot="log-view"
+      className="h-80 min-w-0 overflow-hidden rounded-xl border border-transparent bg-code-bg p-4 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ring dark:border-border"
+    >
       <div ref={host} aria-label={label} className="h-full min-w-0" />
     </div>
   )

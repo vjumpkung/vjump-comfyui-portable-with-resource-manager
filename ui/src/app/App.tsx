@@ -66,7 +66,7 @@ function SetupFrame({
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="flex h-14 shrink-0 items-center justify-between border-b px-6">
-        <span className="font-mono text-xs">{t('app.setupTitle')}</span>
+        <span className="text-sm font-bold">{t('app.setupTitle')}</span>
         {showThemeToggle && <ThemeToggle />}
       </header>
       <main className="flex flex-col gap-6 p-6">{children}</main>
@@ -135,14 +135,14 @@ function RootRecovery({ status, refresh }: { status: SetupStatusDto; refresh: ()
             </p>
           </div>
         )}
-        <div className="flex flex-wrap gap-2">
-          <Button disabled={busy} onClick={() => choose('existing')}>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button size="sm" disabled={busy} onClick={() => choose('existing')}>
             {t('app.locateInstall')}
           </Button>
-          <Button disabled={busy} onClick={() => choose('new')}>
+          <Button size="sm" disabled={busy} onClick={() => choose('new')}>
             {t('app.createInstall')}
           </Button>
-          <Button variant="outline" disabled={busy} onClick={refresh}>
+          <Button variant="outline" size="sm" disabled={busy} onClick={refresh}>
             {t('app.recheckInstall')}
           </Button>
         </div>
@@ -202,9 +202,11 @@ function Workspace() {
                 {data.recovery?.code} · {data.installRoot}
               </p>
               <p>{t('app.setupBlocked')}</p>
-              <Button variant="outline" onClick={refresh}>
-                {t('app.recheckInstall')}
-              </Button>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={refresh}>
+                  {t('app.recheckInstall')}
+                </Button>
+              </div>
             </AlertDescription>
           </Alert>
         )}

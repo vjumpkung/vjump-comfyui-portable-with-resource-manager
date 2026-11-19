@@ -1,6 +1,7 @@
 import { useTranslation } from '@/shared/i18n'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
+import { OptionsSelect } from '@/shared/ui/options-select'
 
 const CUSTOM = '__custom'
 
@@ -31,20 +32,20 @@ export function CategoryFields({
     <div className="grid gap-4 sm:grid-cols-2">
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={`${idPrefix}-category`}>{t('downloads.modelFolder')}</Label>
-        <select
+        <OptionsSelect
           id={`${idPrefix}-category`}
+          className="w-full"
           value={selectValue}
-          onChange={(event) => onCategory(event.target.value === CUSTOM ? ' ' : event.target.value)}
-          className="h-9 w-full rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:border-brand-cyan focus-visible:ring-2 focus-visible:ring-brand-cyan/35"
-        >
-          <option value="">{t('downloads.chooseFolder')}</option>
-          {known.map((name) => (
-            <option key={name} value={name}>
-              {name === suggested ? t('downloads.suggestedFolder', { folder: name }) : name}
-            </option>
-          ))}
-          <option value={CUSTOM}>{t('downloads.otherFolder')}</option>
-        </select>
+          placeholder={t('downloads.chooseFolder')}
+          options={[
+            ...known.map((name) => ({
+              value: name,
+              label: name === suggested ? t('downloads.suggestedFolder', { folder: name }) : name,
+            })),
+            { value: CUSTOM, label: t('downloads.otherFolder') },
+          ]}
+          onValueChange={(value) => onCategory(value === CUSTOM ? ' ' : value)}
+        />
         {selectValue === CUSTOM ? (
           <Input
             aria-label={t('downloads.customFolder')}
@@ -57,7 +58,7 @@ export function CategoryFields({
         {suggested && !known.includes(suggested) ? (
           <button
             type="button"
-            className="w-fit text-xs underline"
+            className="w-fit text-xs underline decoration-pink-ink underline-offset-4 hover:decoration-2"
             onClick={() => onCategory(suggested)}
           >
             {t('downloads.useSuggestedFolder', { folder: suggested })}

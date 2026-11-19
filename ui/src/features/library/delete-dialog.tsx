@@ -134,7 +134,10 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
               <DialogTitle>{t('library.delete.title')}</DialogTitle>
               <DialogDescription>{t('library.delete.checking')}</DialogDescription>
             </DialogHeader>
-            <LoaderCircle className="animate-spin" aria-label={t('common.loadingLabel')} />
+            <LoaderCircle
+              className="motion-safe:animate-spin"
+              aria-label={t('common.loadingLabel')}
+            />
           </>
         ) : null}
 
@@ -172,7 +175,7 @@ export function DeleteDialog({ locations, onStopComfy, onChanged, onClose }: Pro
               </DialogTitle>
               <DialogDescription>{t('library.delete.largeFiles')}</DialogDescription>
             </DialogHeader>
-            <LoaderCircle className="animate-spin" aria-label={t('common.working')} />
+            <LoaderCircle className="motion-safe:animate-spin" aria-label={t('common.working')} />
           </>
         ) : null}
 
@@ -258,7 +261,7 @@ function FileList({ plan }: { plan: DeletePlanDto }) {
           <span className="min-w-0 truncate" title={item.name}>
             {item.name}
           </span>
-          <span className="shrink-0 font-mono text-xs text-muted-foreground">
+          <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
             {formatBytes(item.size)}
           </span>
         </li>

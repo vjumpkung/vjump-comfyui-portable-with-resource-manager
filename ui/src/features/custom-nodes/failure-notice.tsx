@@ -76,7 +76,7 @@ export function FailureNotice({
         {failure.kind === 'git_refused' && failure.nodeId !== null && (
           <GitRefusalDetails nodeId={failure.nodeId} />
         )}
-        <div className="mt-2 flex flex-wrap gap-2">
+        <div className="mt-3 flex flex-wrap gap-2">
           {failure.kind === 'comfyui_running' && failure.retry !== null && (
             <Button size="sm" disabled={stopping} onClick={onStopAndRetry}>
               {stopping ? t('customNodes.stoppingComfy') : t('customNodes.stopAndRetry')}

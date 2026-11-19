@@ -33,7 +33,6 @@ export function RuntimeControls() {
       {canStop ? (
         <Button
           variant="outline"
-          size="sm"
           disabled={stop.isPending}
           onClick={() =>
             stop.mutate(undefined, {
@@ -46,13 +45,12 @@ export function RuntimeControls() {
         </Button>
       ) : (
         <Button
-          size="sm"
           disabled={start.isPending || !runtime.status || lifecycle === 'stopping'}
           aria-busy={start.isPending}
           onClick={onStart}
         >
           {start.isPending ? (
-            <LoaderCircle className="animate-spin" aria-hidden="true" />
+            <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
           ) : (
             <Play aria-hidden="true" />
           )}

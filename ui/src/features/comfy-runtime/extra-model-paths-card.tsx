@@ -59,9 +59,7 @@ export function ExtraModelPathsCard({ running }: { running: boolean }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg font-bold tracking-tight">
-          {t('runtime.paths.title')}
-        </CardTitle>
+        <CardTitle>{t('runtime.paths.title')}</CardTitle>
         <CardDescription>{t('runtime.paths.hint')}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -96,7 +94,7 @@ export function ExtraModelPathsCard({ running }: { running: boolean }) {
           </Button>
         </div>
         {error !== null ? (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="text-sm text-destructive-ink">
             {errorMessage(error)}
           </p>
         ) : null}
@@ -130,7 +128,7 @@ export function ExtraModelPathsCard({ running }: { running: boolean }) {
             </TableBody>
           </Table>
         ) : extraPaths.isError ? (
-          <p className="text-sm text-destructive">{errorMessage(extraPaths.error)}</p>
+          <p className="text-sm text-destructive-ink">{errorMessage(extraPaths.error)}</p>
         ) : (
           <p className="text-sm text-muted-foreground">
             {extraPaths.isPending ? t('common.loading') : t('runtime.paths.empty')}

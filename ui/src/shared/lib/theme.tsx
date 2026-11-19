@@ -47,7 +47,15 @@ function prefersDark(): boolean {
 }
 
 export function applyTheme(resolved: ResolvedTheme) {
-  document.documentElement.classList.toggle('dark', resolved === 'dark')
+  const root = document.documentElement
+  const dark = resolved === 'dark'
+  if (root.classList.contains('dark') === dark) return
+  // Suppress transitions for the swap so every surface repaints at once.
+  root.classList.add('theme-switching')
+  root.classList.toggle('dark', dark)
+  // Reading a computed style flushes the class change before the guard is lifted.
+  window.getComputedStyle(root).getPropertyValue('color')
+  window.setTimeout(() => root.classList.remove('theme-switching'), 1)
 }
 
 /** Applies the cached theme before React renders to limit first-paint flashing. */

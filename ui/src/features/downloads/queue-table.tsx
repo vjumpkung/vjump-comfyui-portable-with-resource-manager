@@ -88,7 +88,7 @@ function Row({
     <TableRow
       data-row=""
       tabIndex={0}
-      className="focus-visible:ring-2 focus-visible:ring-ring"
+      className="focus-inset focus-visible:bg-muted"
       style={{ height: ROW_HEIGHT }}
     >
       <TableCell className="max-w-64 align-top whitespace-normal">
@@ -112,23 +112,23 @@ function Row({
             <Progress
               value={value ?? 0}
               aria-label={t('downloads.progressOf', { filename: label })}
-              className={cn(job.state === 'paused' && '[&>div]:bg-brand-pink')}
+              className={cn(job.state === 'paused' && '[&>div]:bg-accent')}
             />
-            <p className="font-mono text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground tabular-nums">
               {job.finalizing ? t('downloads.finalizing') : progressText(job, progress)}
             </p>
           </div>
         ) : null}
         {job.state === 'queued' && job.retryCount > 0 ? (
-          <p className="font-mono text-xs text-muted-foreground">
+          <p className="text-xs text-muted-foreground tabular-nums">
             {t('downloads.retryAttempt', { attempt: job.retryCount + 1 })}
           </p>
         ) : null}
         {job.error && job.state !== 'completed' ? (
           <div className="flex flex-col items-start gap-1">
-            <p className="text-xs text-destructive">{job.error.message}</p>
+            <p className="text-xs text-destructive-ink">{job.error.message}</p>
             {CREDENTIAL_CODES.includes(job.error.code) ? (
-              <Button variant="outline" size="xs" onClick={onOpenSettings}>
+              <Button variant="outline" size="sm" onClick={onOpenSettings}>
                 {t('common.openSettings')}
               </Button>
             ) : null}
@@ -154,7 +154,7 @@ function Row({
           ) : null}
           {job.state === 'paused' ? (
             waitingForDecision ? (
-              <Button variant="outline" size="xs" disabled={busy} onClick={() => onResolve(job)}>
+              <Button variant="outline" size="sm" disabled={busy} onClick={() => onResolve(job)}>
                 {t('downloads.resolveConflict')}
               </Button>
             ) : (
@@ -273,13 +273,13 @@ export function QueueTable({ jobs, progress, onOpenSettings }: Props) {
           if (windowed) setScrollTop(event.currentTarget.scrollTop)
         }}
       >
-        <Table>
+        <Table bare>
           <TableHeader>
-            <TableRow className="bg-brand-cyan text-[#2a313a] hover:bg-brand-cyan">
-              <TableHead className="text-[#2a313a]">{t('common.download')}</TableHead>
-              <TableHead className="text-[#2a313a]">{t('common.status')}</TableHead>
-              <TableHead className="text-[#2a313a]">{t('common.progress')}</TableHead>
-              <TableHead className="text-right text-[#2a313a]">{t('common.actions')}</TableHead>
+            <TableRow>
+              <TableHead>{t('common.download')}</TableHead>
+              <TableHead>{t('common.status')}</TableHead>
+              <TableHead>{t('common.progress')}</TableHead>
+              <TableHead className="text-right">{t('common.actions')}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody onKeyDown={onKeyDown}>

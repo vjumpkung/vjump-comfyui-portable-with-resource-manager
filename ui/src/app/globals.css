@@ -10,6 +10,14 @@
   --color-brand-yellow: #fff89c;
   --color-brand-cyan: #9ffaff;
   --color-brand-pink: #ff9fed;
+  --color-ink: var(--ink);
+  --color-pink-ink: var(--pink-ink);
+  --color-note-bg: var(--note-bg);
+  --color-code-bg: var(--code-bg);
+  --color-code-fg: var(--code-fg);
+  --color-fill-edge: var(--fill-edge);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-ink: color-mix(in oklab, var(--destructive) 70%, var(--foreground));
   --font-sans: 'Plus Jakarta Sans Variable', 'Kanit', ui-sans-serif, system-ui, sans-serif;
   --font-heading: var(--font-sans);
   --font-mono: 'Geist Mono Variable', 'Kanit', ui-monospace, monospace;
@@ -42,6 +50,7 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  --radius-xs: 0.25rem;
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -51,30 +60,42 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* Resting surfaces carry no shadow; overlays use shadow-2xl. */
+@theme {
+  --shadow-xs: 0 0 #0000;
+}
+
 :root {
   color-scheme: light;
   --background: #e0e5ec;
   --foreground: #2a313a;
   --card: #edf1f5;
   --card-foreground: #2a313a;
-  --popover: #edf1f5;
+  --popover: #f4f6f9;
   --popover-foreground: #2a313a;
   --primary: #fff89c;
   --primary-foreground: #2a313a;
   --secondary: #9ffaff;
   --secondary-foreground: #2a313a;
   --muted: #d2d8e0;
-  --muted-foreground: #56606c;
+  --muted-foreground: #4b5562;
   --accent: #ff9fed;
   --accent-foreground: #2a313a;
   --destructive: oklch(0.577 0.245 27.325);
-  --border: #aab3be;
-  --input: #aab3be;
-  --ring: #ff9fed;
+  --destructive-foreground: #ffffff;
+  --border: #b6bfc9;
+  --input: #6f7a87;
+  --ring: #a3237e;
+  --ink: #2a313a;
+  --pink-ink: #a3237e;
+  --note-bg: color-mix(in srgb, #ff9fed 22%, #edf1f5);
+  --code-bg: #2a313a;
+  --code-fg: #e0e5ec;
+  --fill-edge: #2a313a;
   --chart-1: #fff89c;
   --chart-2: #9ffaff;
   --chart-3: #ff9fed;
-  --chart-4: #56606c;
+  --chart-4: #4b5562;
   --chart-5: #2a313a;
   --radius: 0.625rem;
   --sidebar: #edf1f5;
@@ -83,8 +104,8 @@
   --sidebar-primary-foreground: #2a313a;
   --sidebar-accent: #ff9fed;
   --sidebar-accent-foreground: #2a313a;
-  --sidebar-border: #aab3be;
-  --sidebar-ring: #ff9fed;
+  --sidebar-border: #b6bfc9;
+  --sidebar-ring: #a3237e;
 }
 
 .dark {
@@ -104,9 +125,16 @@
   --accent: #ff9fed;
   --accent-foreground: #2a313a;
   --destructive: oklch(0.704 0.191 22.216);
-  --border: #596674;
-  --input: #596674;
-  --ring: #9ffaff;
+  --destructive-foreground: #2a313a;
+  --border: #4a5563;
+  --input: #808d9c;
+  --ring: #ff9fed;
+  --ink: #2a313a;
+  --pink-ink: #ff9fed;
+  --note-bg: color-mix(in srgb, #ff9fed 12%, #2a313a);
+  --code-bg: #1f252c;
+  --code-fg: #e0e5ec;
+  --fill-edge: transparent;
   --chart-1: #fff89c;
   --chart-2: #9ffaff;
   --chart-3: #ff9fed;
@@ -118,48 +146,102 @@
   --sidebar-primary-foreground: #2a313a;
   --sidebar-accent: #ff9fed;
   --sidebar-accent-foreground: #2a313a;
-  --sidebar-border: #596674;
-  --sidebar-ring: #9ffaff;
+  --sidebar-border: #4a5563;
+  --sidebar-ring: #ff9fed;
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
+  }
+  html {
+    @apply font-sans;
+    scrollbar-color: var(--border) transparent;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   body {
     @apply bg-background text-foreground;
   }
-  html {
-    @apply font-sans;
+  input,
+  textarea {
+    caret-color: var(--ring);
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+  p,
+  li,
+  blockquote {
+    text-wrap: pretty;
+  }
+  time,
+  .tabular {
+    font-variant-numeric: tabular-nums;
   }
   ::selection {
     @apply bg-accent text-accent-foreground;
   }
 }
 
-/* Keep Thai vowel and tone marks legible in small chips. */
-html:lang(th) .text-\[9px\] {
-  font-size: 11px;
-  letter-spacing: 0.025em;
+/* Type roles from docs/DESIGN.md. Never combine one with text-size, leading, weight or
+   tracking utilities on the same element. */
+@utility type-page-title {
+  font-size: 1.875rem;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
 }
 
-.setup-log {
-  background: #2a313a;
+@utility type-tag {
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.3333;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
-[data-slot='progress-indicator'] {
-  background: var(--secondary);
+@utility type-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.5;
 }
 
-[data-slot='table-header'] {
-  background: var(--secondary);
-  color: var(--secondary-foreground);
+/* Keep Thai vowel and tone marks legible in small tags. */
+html:lang(th) .type-tag {
+  letter-spacing: normal;
 }
 
-[data-slot='table-header'] [data-slot='table-head'] {
-  color: inherit;
+/* One focus indicator for every control. Unlayered so it beats `outline-none` utilities.
+   Listbox options, menu items and dialog surfaces show their own state instead. */
+:focus-visible:not(
+  [role='option'],
+  [role='menuitem'],
+  [role='listbox'],
+  [role='dialog'],
+  [role='alertdialog']
+) {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
-[data-slot='table-body'] [data-slot='table-row']:nth-child(even) {
-  background: color-mix(in srgb, var(--muted) 45%, transparent);
+/* The only sanctioned outline override: rows and tiles inside scroll or clip containers. */
+.focus-inset:focus-visible {
+  outline-offset: -2px;
+}
+
+/* xterm.css paints the viewport black; let the log frame's code background show. */
+[data-slot='log-view'] .xterm .xterm-viewport {
+  background-color: transparent;
+}
+
+/* Theme swaps repaint at once instead of animating every transition. */
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
 }

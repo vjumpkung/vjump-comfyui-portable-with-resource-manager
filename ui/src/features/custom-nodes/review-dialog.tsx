@@ -59,39 +59,51 @@ function PlanConsent({
   return (
     <FieldSet>
       <FieldLegend>{plan.name}</FieldLegend>
-      <dl className="flex flex-col gap-1 font-mono text-xs break-all">
+      <dl className="flex flex-col gap-1">
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.review.resolvedSource')}</dt>
-          <dd>{sourceLabel(plan.source)}</dd>
+          <dt className="type-label text-muted-foreground">
+            {t('customNodes.review.resolvedSource')}
+          </dt>
+          <dd className="font-mono text-xs break-all">{sourceLabel(plan.source)}</dd>
         </div>
         {plan.priorSource && (
           <div>
-            <dt className="text-muted-foreground">{t('customNodes.review.previousSource')}</dt>
-            <dd>{sourceLabel(plan.priorSource)}</dd>
+            <dt className="type-label text-muted-foreground">
+              {t('customNodes.review.previousSource')}
+            </dt>
+            <dd className="font-mono text-xs break-all">{sourceLabel(plan.priorSource)}</dd>
           </div>
         )}
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.review.treeIdentity')}</dt>
-          <dd>{plan.treeDigest}</dd>
+          <dt className="type-label text-muted-foreground">
+            {t('customNodes.review.treeIdentity')}
+          </dt>
+          <dd className="font-mono text-xs break-all">{plan.treeDigest}</dd>
         </div>
         {plan.artifactDigest && (
           <div>
-            <dt className="text-muted-foreground">{t('customNodes.review.artifactHash')}</dt>
-            <dd>{plan.artifactDigest}</dd>
+            <dt className="type-label text-muted-foreground">
+              {t('customNodes.review.artifactHash')}
+            </dt>
+            <dd className="font-mono text-xs break-all">{plan.artifactDigest}</dd>
           </div>
         )}
         {plan.hookDigest && (
           <div>
-            <dt className="text-muted-foreground">{t('customNodes.review.scriptHash')}</dt>
-            <dd>{plan.hookDigest}</dd>
+            <dt className="type-label text-muted-foreground">
+              {t('customNodes.review.scriptHash')}
+            </dt>
+            <dd className="font-mono text-xs break-all">{plan.hookDigest}</dd>
           </div>
         )}
         <div>
-          <dt className="text-muted-foreground">{t('customNodes.review.requirements')}</dt>
-          <dd>
+          <dt className="type-label text-muted-foreground">
+            {t('customNodes.review.requirements')}
+          </dt>
+          <dd className="text-sm">
             {plan.hasRequirements ? t('customNodes.review.includesRequirements') : t('common.none')}
             {plan.requirements.length > 0 && (
-              <ul className="mt-1 max-h-40 overflow-y-auto rounded-md border p-2">
+              <ul className="mt-1 max-h-40 overflow-y-auto rounded-md border p-2 font-mono text-xs break-all">
                 {plan.requirements.map((requirement, index) => (
                   <li key={index}>{requirement}</li>
                 ))}

@@ -91,11 +91,13 @@ export function RebuildSetup({
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {reason && <p className="[overflow-wrap:anywhere] break-words">{reason.message}</p>}
-          <dl className="font-mono text-xs [overflow-wrap:anywhere] break-words">
-            <dt>{t('setup.rebuild.currentRoot')}</dt>
-            <dd>{status.installRoot}</dd>
-            <dt>{t('setup.rebuild.recordedProfile')}</dt>
-            <dd>
+          <dl className="[overflow-wrap:anywhere] break-words">
+            <dt className="type-label text-muted-foreground">{t('setup.rebuild.currentRoot')}</dt>
+            <dd className="font-mono text-xs">{status.installRoot}</dd>
+            <dt className="type-label text-muted-foreground">
+              {t('setup.rebuild.recordedProfile')}
+            </dt>
+            <dd className="text-sm">
               {recorded
                 ? t('setup.rebuild.profileRevision', {
                     profile: recorded.profileId,
@@ -103,8 +105,12 @@ export function RebuildSetup({
                   })
                 : t('common.unavailable')}
             </dd>
-            <dt>{t('setup.rebuild.recordedPython')}</dt>
-            <dd>{recorded?.pythonVersion ?? t('common.unavailable')}</dd>
+            <dt className="type-label text-muted-foreground">
+              {t('setup.rebuild.recordedPython')}
+            </dt>
+            <dd className="font-mono text-xs">
+              {recorded?.pythonVersion ?? t('common.unavailable')}
+            </dd>
           </dl>
           <p>{t('setup.rebuild.preserveData')}</p>
           <p>{t('setup.rebuild.replacementHint')}</p>

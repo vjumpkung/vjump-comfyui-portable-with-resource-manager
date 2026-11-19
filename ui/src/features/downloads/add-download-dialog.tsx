@@ -139,7 +139,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
           <div className="flex gap-2">
             <div className="relative flex-1">
               <Link2
-                className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground"
+                className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
                 aria-hidden="true"
               />
               <Input
@@ -167,10 +167,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
             </Button>
           </div>
           {provider ? (
-            <Badge
-              variant="outline"
-              className="w-fit font-mono text-[9px] tracking-widest uppercase"
-            >
+            <Badge variant="outline" className="type-tag">
               {provider === 'direct' ? t(PROVIDER_LABELS.direct) : PROVIDER_LABELS[provider]}
             </Badge>
           ) : null}
@@ -193,16 +190,18 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
             <AlertDescription>
               <p>{errorMessage(error)}</p>
               {code && CREDENTIAL_CODES.includes(code) ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    onClose()
-                    onOpenSettings()
-                  }}
-                >
-                  {t('common.openSettings')}
-                </Button>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      onClose()
+                      onOpenSettings()
+                    }}
+                  >
+                    {t('common.openSettings')}
+                  </Button>
+                </div>
               ) : null}
             </AlertDescription>
           </Alert>
@@ -213,13 +212,13 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
             {files.length > 1 ? (
               <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="font-mono text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                  <p className="text-sm font-semibold text-foreground tabular-nums">
                     {t('downloads.filesSelected', { count: selected.size, total: files.length })}
                   </p>
                   {files.length > 8 ? (
                     <Input
                       aria-label={t('downloads.filterFiles')}
-                      className="h-8 max-w-48"
+                      className="max-w-48"
                       placeholder={t('common.filter')}
                       value={filter}
                       onChange={(event) => setFilter(event.target.value)}
@@ -243,7 +242,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
                             ? t('downloads.primaryFile', { filename: file.filename })
                             : file.filename}
                         </span>
-                        <span className="font-mono text-xs font-normal text-muted-foreground">
+                        <span className="text-xs font-normal text-muted-foreground tabular-nums">
                           {formatSize(file.size)}
                         </span>
                       </Label>
@@ -254,7 +253,7 @@ export function AddDownloadDialog({ onClose, onSubmit, onOpenSettings }: Props) 
             ) : files[0] ? (
               <p className="text-sm [overflow-wrap:anywhere] break-words">
                 <span className="font-semibold">{files[0].filename}</span>{' '}
-                <span className="font-mono text-xs text-muted-foreground">
+                <span className="text-xs text-muted-foreground tabular-nums">
                   {formatSize(files[0].size)}
                   {' · '}
                   {files[0].sha256 ? t('downloads.checksumPublished') : t('status.unverified')}

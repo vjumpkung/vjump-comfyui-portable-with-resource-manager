@@ -18,10 +18,8 @@ export function SettingsPage({
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-          {t('nav.settings')}
-        </h1>
-        <p className="text-sm leading-relaxed font-medium text-muted-foreground">
+        <h1 className="type-page-title">{t('nav.settings')}</h1>
+        <p className="text-[0.9375rem] leading-[1.65] text-muted-foreground">
           {t('settings.description')}
         </p>
       </header>

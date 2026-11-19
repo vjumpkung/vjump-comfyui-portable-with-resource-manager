@@ -220,7 +220,7 @@ export function SetupWizard({
   if (showRun || (resume && dismissedRun !== status.run?.id))
     return (
       <div className="flex flex-col gap-6">
-        <h1 className="text-2xl font-extrabold tracking-tighter">{t(modeLabels[mode])}</h1>
+        <h1 className="type-page-title">{t(modeLabels[mode])}</h1>
         <RunProgress
           run={status.run}
           controller={controller}
@@ -243,12 +243,10 @@ export function SetupWizard({
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
       <header className="flex flex-col gap-2">
-        <h1 className="text-2xl font-extrabold tracking-tighter sm:text-3xl">
-          {t(modeLabels[mode])}
-        </h1>
-        <p className="text-sm text-muted-foreground">{t('setup.intro')}</p>
+        <h1 className="type-page-title">{t(modeLabels[mode])}</h1>
+        <p className="text-[0.9375rem] leading-[1.65] text-muted-foreground">{t('setup.intro')}</p>
       </header>
-      <ol aria-label={t('setup.stages')} className="flex flex-wrap gap-3 font-mono text-xs">
+      <ol aria-label={t('setup.stages')} className="flex flex-wrap gap-3">
         {STAGES.map((name, index) => (
           <li key={name} aria-current={stage === index ? 'step' : undefined}>
             <Badge variant={stage === index ? 'secondary' : 'outline'}>
@@ -306,16 +304,18 @@ export function SetupWizard({
                   <Check />
                   <AlertTitle>{t('setup.restartRequired')}</AlertTitle>
                   <AlertDescription>
-                    {t('setup.rootRestartHint', { root: root.trim() })}
-                    <Button
-                      size="sm"
-                      disabled={restartApp.isPending || restartApp.isSuccess}
-                      onClick={() => restartApp.mutate()}
-                    >
-                      {restartApp.isPending || restartApp.isSuccess
-                        ? t('setup.restarting')
-                        : t('setup.restartNow')}
-                    </Button>
+                    <p>{t('setup.rootRestartHint', { root: root.trim() })}</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        disabled={restartApp.isPending || restartApp.isSuccess}
+                        onClick={() => restartApp.mutate()}
+                      >
+                        {restartApp.isPending || restartApp.isSuccess
+                          ? t('setup.restarting')
+                          : t('setup.restartNow')}
+                      </Button>
+                    </div>
                   </AlertDescription>
                 </Alert>
               )}
@@ -338,13 +338,15 @@ export function SetupWizard({
                 <>
                   <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
                     <div>
-                      <dt>{t('setup.platform')}</dt>
+                      <dt className="type-label text-muted-foreground">{t('setup.platform')}</dt>
                       <dd className="font-mono">
                         {hardware.data.os} · {hardware.data.osVersion}
                       </dd>
                     </div>
                     <div>
-                      <dt>{t('setup.nvidiaDetection')}</dt>
+                      <dt className="type-label text-muted-foreground">
+                        {t('setup.nvidiaDetection')}
+                      </dt>
                       <dd>
                         {hardware.data.gpuStatus === 'unavailable'
                           ? t('setup.probeUnavailable')
@@ -354,25 +356,29 @@ export function SetupWizard({
                       </dd>
                     </div>
                     <div>
-                      <dt>{t('setup.driverCuda')}</dt>
+                      <dt className="type-label text-muted-foreground">{t('setup.driverCuda')}</dt>
                       <dd className="font-mono">
                         {hardware.data.driverVersion ?? t('common.unknownValue')} /{' '}
                         {hardware.data.driverCuda ?? t('common.unknownValue')}
                       </dd>
                     </div>
                     <div>
-                      <dt>{t('setup.installFree')}</dt>
-                      <dd className="font-mono">{bytes(hardware.data.installVolumeFreeBytes)}</dd>
+                      <dt className="type-label text-muted-foreground">{t('setup.installFree')}</dt>
+                      <dd className="tabular-nums">
+                        {bytes(hardware.data.installVolumeFreeBytes)}
+                      </dd>
                     </div>
                     {hardware.data.envOnSeparateVolume && (
                       <div>
-                        <dt>{t('setup.environmentFree')}</dt>
-                        <dd className="font-mono">{bytes(hardware.data.envVolumeFreeBytes)}</dd>
+                        <dt className="type-label text-muted-foreground">
+                          {t('setup.environmentFree')}
+                        </dt>
+                        <dd className="tabular-nums">{bytes(hardware.data.envVolumeFreeBytes)}</dd>
                       </div>
                     )}
                     {hardware.data.os === 'windows' && (
                       <div>
-                        <dt>{t('setup.longPaths')}</dt>
+                        <dt className="type-label text-muted-foreground">{t('setup.longPaths')}</dt>
                         <dd>
                           {hardware.data.longPathsEnabled === null
                             ? t('common.unknownValue')
@@ -385,7 +391,7 @@ export function SetupWizard({
                   </dl>
                   <ul className="flex flex-col gap-2">
                     {hardware.data.gpus.map((gpu) => (
-                      <li key={gpu.index} className="font-mono text-xs">
+                      <li key={gpu.index} className="text-xs tabular-nums">
                         GPU {gpu.index}: {gpu.name} · CC{' '}
                         {gpu.computeCapability ?? t('common.unknownLowercase')} ·{' '}
                         {gpu.vramMib === null ? t('setup.unknownVram') : `${gpu.vramMib} MiB VRAM`}
@@ -767,15 +773,15 @@ export function SetupWizard({
             <>
               <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
                 <div>
-                  <dt>{t('setup.installRoot')}</dt>
+                  <dt className="type-label text-muted-foreground">{t('setup.installRoot')}</dt>
                   <dd className="font-mono break-all">{status.installRoot}</dd>
                 </div>
                 <div>
-                  <dt>{t('setup.mode')}</dt>
+                  <dt className="type-label text-muted-foreground">{t('setup.mode')}</dt>
                   <dd>{t(modeLabels[mode])}</dd>
                 </div>
                 <div>
-                  <dt>Python</dt>
+                  <dt className="type-label text-muted-foreground">Python</dt>
                   <dd className="font-mono break-all">
                     {source.kind === 'managed'
                       ? t('setup.managedVersion', { version: chosen?.python ?? '' })
@@ -783,11 +789,11 @@ export function SetupWizard({
                   </dd>
                 </div>
                 <div>
-                  <dt>{t('setup.profile')}</dt>
+                  <dt className="type-label text-muted-foreground">{t('setup.profile')}</dt>
                   <dd>{chosen?.label ?? t('setup.noEligibleProfile')}</dd>
                 </div>
                 <div>
-                  <dt>{t('nav.comfyui')}</dt>
+                  <dt className="type-label text-muted-foreground">{t('nav.comfyui')}</dt>
                   <dd>
                     {mode === 'first_run'
                       ? comfySource === 'tag'
@@ -799,7 +805,7 @@ export function SetupWizard({
                   </dd>
                 </div>
                 <div>
-                  <dt>{t('setup.managerCache')}</dt>
+                  <dt className="type-label text-muted-foreground">{t('setup.managerCache')}</dt>
                   <dd>
                     {mode === 'repair'
                       ? t('setup.recordedComponents')
@@ -812,7 +818,7 @@ export function SetupWizard({
                   </dd>
                 </div>
                 <div>
-                  <dt>{t('setup.accelerators')}</dt>
+                  <dt className="type-label text-muted-foreground">{t('setup.accelerators')}</dt>
                   <dd>
                     {mode === 'repair'
                       ? t('setup.recordedChoices')
@@ -824,7 +830,7 @@ export function SetupWizard({
                 </div>
                 {mode === 'first_run' && (
                   <div>
-                    <dt>{t('setup.curatedNodes')}</dt>
+                    <dt className="type-label text-muted-foreground">{t('setup.curatedNodes')}</dt>
                     <dd>
                       {curated.data
                         ?.filter((entry) => curatedSelection?.includes(entry.id))

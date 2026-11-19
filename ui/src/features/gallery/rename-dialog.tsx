@@ -69,7 +69,7 @@ export function RenameDialog({ entry, onClose }: Props) {
               }}
             />
             {failure ? (
-              <p role="alert" className="text-sm text-destructive">
+              <p role="alert" className="text-sm text-destructive-ink">
                 {failure}
               </p>
             ) : null}

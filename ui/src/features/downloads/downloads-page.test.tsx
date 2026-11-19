@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { gateway, type DownloadEventDto } from '@/shared/ipc/gateway'
+import { chooseOption } from '@/shared/testing/select'
 
 import { DownloadsPage } from './downloads-page'
 import { job } from './fixtures'
@@ -148,7 +149,8 @@ it('resolves a link, requires a folder and queues the chosen file', async () => 
   })
   fireEvent.click(screen.getByRole('button', { name: 'Look up' }))
   expect(await screen.findByText('real.safetensors')).toBeTruthy()
-  expect(screen.getByLabelText<HTMLSelectElement>('Model folder').value).toBe('loras')
+  // The suggested folder is labelled "loras (suggested)", so the trigger text contains the name.
+  await waitFor(() => expect(screen.getByLabelText('Model folder').textContent).toContain('loras'))
   fireEvent.change(screen.getByLabelText('Sub-folder (optional)'), {
     target: { value: 'sdxl' },
   })
@@ -214,9 +216,7 @@ it('asks about a name conflict and re-queues with the chosen answer', async () =
   })
   fireEvent.click(screen.getByRole('button', { name: 'Look up' }))
   await screen.findByText('a.bin')
-  fireEvent.change(screen.getByLabelText('Model folder'), {
-    target: { value: 'vae' },
-  })
+  await chooseOption(screen.getByLabelText('Model folder'), 'vae')
   fireEvent.click(screen.getByRole('button', { name: 'Download' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Keep both' }))
   await waitFor(() => expect(gateway.dlEnqueue).toHaveBeenCalledTimes(2))

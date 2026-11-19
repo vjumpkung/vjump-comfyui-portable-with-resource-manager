@@ -215,13 +215,13 @@ it('installed_table_widens_dependency_and_git_columns_in_thai', () => {
     .querySelector('[aria-rowindex="1"]')
   for (const element of [header, row('a')]) {
     const classes = [...(element?.classList ?? [])]
-    // The English template stays; Thai chips are wider, so only :lang(th) widens tracks 7 and 9.
+    // The English template fits the 12px chips; Thai chips are wider, so :lang(th) widens tracks 6, 7 and 9.
     expect(classes).toContain(
-      'grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_6.5rem_7.5rem_5.5rem_minmax(7rem,1fr)]',
+      'grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_7rem_8.75rem_5.5rem_minmax(10rem,1fr)]',
     )
     const thai = classes.find((name) => name.startsWith('[&:lang(th)]:grid-cols-['))
     expect(thai).toBeDefined()
-    expect(thai).toContain('_11rem_5.5rem_minmax(11rem,1fr)]')
+    expect(thai).toContain('_7.5rem_11.5rem_5.5rem_minmax(11.5rem,1fr)]')
   }
 })
 
@@ -230,7 +230,7 @@ it('installed_table_active_row_keeps_readable_contrast', () => {
   render(<Harness nodes={[a, b]} initial={a.id} />)
   const active = row('a') as HTMLElement
   expect(active.dataset.active).toBe('true')
-  // No brand fill behind table text: the active row is muted with an accent bar.
+  // No brand fill behind table text: the active row is muted with an inset outline.
   expect(active.classList.contains('bg-muted')).toBe(true)
   expect(active.classList.contains('bg-accent')).toBe(false)
   expect(row('b')?.classList.contains('bg-accent')).toBe(false)

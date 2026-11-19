@@ -13,6 +13,7 @@ import {
 } from '@/shared/ui/dialog'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
+import { OptionsSelect } from '@/shared/ui/options-select'
 
 interface Props {
   model: ModelEntryDto
@@ -72,18 +73,13 @@ export function MoveDialog({ model, roots, categories, onClose, onSubmit }: Prop
         >
           <div className="flex flex-col gap-2">
             <Label htmlFor="move-root">{t('library.modelFolder')}</Label>
-            <select
+            <OptionsSelect
               id="move-root"
+              className="w-full"
               value={rootId}
-              onChange={(event) => setRootId(event.target.value)}
-              className="h-9 w-full rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:border-brand-cyan focus-visible:ring-2 focus-visible:ring-brand-cyan/35"
-            >
-              {usable.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  {candidate.label}
-                </option>
-              ))}
-            </select>
+              options={usable.map((candidate) => ({ value: candidate.id, label: candidate.label }))}
+              onValueChange={setRootId}
+            />
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="move-directory">

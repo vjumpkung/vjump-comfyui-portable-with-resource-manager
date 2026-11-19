@@ -75,7 +75,7 @@ function Offer({
       <p className="text-xs text-muted-foreground">{t('settings.updates.installHint')}</p>
       {progress && (
         <div className="flex flex-col gap-2" aria-live="polite">
-          <p className="text-sm">{describeProgress(progress, t)}</p>
+          <p className="text-sm tabular-nums">{describeProgress(progress, t)}</p>
           {value !== null && <Progress value={value} />}
         </div>
       )}

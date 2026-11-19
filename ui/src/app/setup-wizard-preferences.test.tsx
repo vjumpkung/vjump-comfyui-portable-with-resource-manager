@@ -7,6 +7,7 @@ import { getLanguage, setLanguage } from '@/shared/i18n'
 import { gateway, type SettingsDto } from '@/shared/ipc/gateway'
 import { ThemeProvider } from '@/shared/lib/theme'
 import { setupStatus } from '@/shared/testing/environment'
+import { chooseOption, openSelect } from '@/shared/testing/select'
 import { TooltipProvider } from '@/shared/ui/tooltip'
 
 import { SetupWizardPreferences } from './setup-wizard-preferences'
@@ -101,8 +102,11 @@ it('renders_the_endonym_selector_at_the_top_of_stage_zero', async () => {
       .contains(language),
   ).toBe(true)
   expect(language.compareDocumentPosition(root) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-  expect(screen.getByRole('option', { name: 'English' })).toHaveProperty('value', 'en')
-  expect(screen.getByRole('option', { name: 'ไทย' })).toHaveProperty('value', 'th')
+  openSelect(language)
+  expect(await screen.findByRole('option', { name: 'English' })).toBeTruthy()
+  expect(screen.getByRole('option', { name: 'ไทย' })).toBeTruthy()
+  fireEvent.keyDown(document.activeElement ?? language, { key: 'Escape' })
+  await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
 })
 
 it('switches_to_thai_immediately_saves_full_settings_and_blocks_root_and_theme_until_saved', async () => {
@@ -111,9 +115,9 @@ it('switches_to_thai_immediately_saves_full_settings_and_blocks_root_and_theme_u
   const { client } = mount()
   const language = await screen.findByLabelText('Language')
   await waitFor(() => expect(language).toHaveProperty('disabled', false))
-  fireEvent.change(language, { target: { value: 'th' } })
+  await chooseOption(language, 'ไทย')
   expect(getLanguage()).toBe('th')
-  expect(screen.getByLabelText('ภาษา')).toHaveProperty('value', 'th')
+  expect(screen.getByLabelText('ภาษา').textContent).toBe('ไทย')
   expect(screen.getByLabelText('โฟลเดอร์ติดตั้ง')).toBeTruthy()
   expect(screen.getByText('1. โฟลเดอร์ติดตั้ง')).toBeTruthy()
   await waitFor(() =>
@@ -155,7 +159,7 @@ it('failed_language_save_restores_the_previous_language', async () => {
   mount()
   const language = await screen.findByLabelText('Language')
   await waitFor(() => expect(language).toHaveProperty('disabled', false))
-  fireEvent.change(language, { target: { value: 'th' } })
+  await chooseOption(language, 'ไทย')
   expect(screen.getByLabelText('ภาษา')).toBeTruthy()
   await waitFor(() => expect(gateway.settingsSet).toHaveBeenCalledTimes(1))
   await act(async () => {
@@ -163,7 +167,7 @@ it('failed_language_save_restores_the_previous_language', async () => {
     await save.promise.catch(() => undefined)
   })
   await waitFor(() => expect(getLanguage()).toBe('en'))
-  expect(screen.getByLabelText('Language')).toHaveProperty('value', 'en')
+  expect(screen.getByLabelText('Language').textContent).toBe('English')
   expect(screen.getByText('1. Install root')).toBeTruthy()
   expect(screen.getByRole('button', { name: 'Continue' })).toHaveProperty('disabled', false)
 })
@@ -173,11 +177,11 @@ it('successful_language_save_reconciles_with_the_returned_language', async () =>
   mount()
   const language = await screen.findByLabelText('Language')
   await waitFor(() => expect(language).toHaveProperty('disabled', false))
-  fireEvent.change(language, { target: { value: 'th' } })
+  await chooseOption(language, 'ไทย')
   expect(getLanguage()).toBe('th')
   await waitFor(() => expect(gateway.settingsSet).toHaveBeenCalledTimes(1))
   await waitFor(() => expect(getLanguage()).toBe('en'))
-  expect(screen.getByLabelText('Language')).toHaveProperty('value', 'en')
+  expect(screen.getByLabelText('Language').textContent).toBe('English')
 })
 
 it('disables_language_while_root_transfer_is_pending_and_after_it_succeeds', async () => {

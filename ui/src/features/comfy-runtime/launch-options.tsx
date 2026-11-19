@@ -21,9 +21,9 @@ import { Checkbox } from '@/shared/ui/checkbox'
 import { ErrorNotice } from '@/shared/ui/feedback'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
+import { OptionsSelect } from '@/shared/ui/options-select'
 import { Skeleton } from '@/shared/ui/skeleton'
 
-import { NativeSelect } from './native-select'
 import { comfyKeys } from './use-runtime'
 
 const VRAM = [
@@ -171,15 +171,16 @@ function Form({ options, active }: { options: LaunchOptionsDto; active: SessionD
             onChange={(event) => patch('port', event.target.value)}
           />
           {portInvalid ? (
-            <p className="text-xs text-destructive">{t('runtime.launch.portError')}</p>
+            <p className="text-xs text-destructive-ink">{t('runtime.launch.portError')}</p>
           ) : null}
         </Row>
         <Row id="launch-vram" label={t('runtime.launch.vram')}>
-          <NativeSelect
+          <OptionsSelect
             id="launch-vram"
+            className="w-full"
             value={draft.vram}
             options={VRAM.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
-            onChange={(value) => patch('vram', value)}
+            onValueChange={(value) => patch('vram', value)}
           />
         </Row>
         <Row
@@ -187,19 +188,21 @@ function Form({ options, active }: { options: LaunchOptionsDto; active: SessionD
           label={t('runtime.launch.attention')}
           hint={t('runtime.launch.attentionHint')}
         >
-          <NativeSelect
+          <OptionsSelect
             id="launch-attention"
+            className="w-full"
             value={draft.attention}
             options={ATTENTION.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
-            onChange={(value) => patch('attention', value)}
+            onValueChange={(value) => patch('attention', value)}
           />
         </Row>
         <Row id="launch-preview" label={t('runtime.launch.preview')}>
-          <NativeSelect
+          <OptionsSelect
             id="launch-preview"
+            className="w-full"
             value={draft.preview}
             options={PREVIEW.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
-            onChange={(value) => patch('preview', value)}
+            onValueChange={(value) => patch('preview', value)}
           />
         </Row>
       </div>
@@ -248,7 +251,7 @@ function Form({ options, active }: { options: LaunchOptionsDto; active: SessionD
           spellCheck={false}
           value={draft.extraArgs}
           onChange={(event) => patch('extraArgs', event.target.value)}
-          className="w-full rounded-md border border-input bg-card px-2.5 py-2 font-mono text-xs outline-none focus-visible:border-brand-cyan focus-visible:ring-2 focus-visible:ring-brand-cyan/35"
+          className="w-full rounded-lg border border-input bg-card px-3 py-2 font-mono text-xs transition-colors outline-none focus-visible:border-ring"
         />
       </Row>
       <div>
@@ -269,9 +272,7 @@ export function LaunchOptionsCard({ active }: { active: SessionDto | null }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg font-bold tracking-tight">
-          {t('runtime.launch.title')}
-        </CardTitle>
+        <CardTitle>{t('runtime.launch.title')}</CardTitle>
         <CardDescription>{t('runtime.launch.hint')}</CardDescription>
       </CardHeader>
       <CardContent>

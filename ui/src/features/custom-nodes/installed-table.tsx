@@ -13,7 +13,7 @@ import { Chip, DependencyChip, EnabledChip, HealthChip } from './status-chips'
 
 export const ROW_HEIGHT = 56
 const COLUMNS =
-  'grid grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_6.5rem_7.5rem_5.5rem_minmax(7rem,1fr)] [&:lang(th)]:grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_6.5rem_11rem_5.5rem_minmax(11rem,1fr)]'
+  'grid grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_7rem_8.75rem_5.5rem_minmax(10rem,1fr)] [&:lang(th)]:grid-cols-[2.25rem_minmax(12rem,3fr)_5.5rem_minmax(7rem,1.2fr)_minmax(5rem,1fr)_7.5rem_11.5rem_5.5rem_minmax(11.5rem,1fr)]'
 const KIND_LABEL = {
   registry: 'customNodes.source.registry',
   git: 'customNodes.source.git',
@@ -148,9 +148,9 @@ export function InstalledTable({
         }
         className={cn(
           COLUMNS,
-          'items-center gap-2 border-b px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan/50',
+          'focus-inset items-center gap-2 border-b px-2 text-sm',
           node.id === activeId
-            ? 'bg-muted shadow-[inset_3px_0_0_var(--accent)]'
+            ? 'bg-muted ring-1 ring-input ring-inset'
             : isSelected
               ? 'bg-muted/60 hover:bg-muted'
               : 'even:bg-muted/45 hover:bg-muted',
@@ -196,7 +196,7 @@ export function InstalledTable({
         <div role="gridcell" className="flex flex-wrap gap-1">
           <HealthChip health={gitHealth(node)} />
           {node.conflict && (
-            <Chip icon={TriangleAlert} className="bg-brand-pink">
+            <Chip icon={TriangleAlert} variant="accent">
               {t('customNodes.conflict')}
             </Chip>
           )}
@@ -218,7 +218,7 @@ export function InstalledTable({
         aria-rowindex={1}
         className={cn(
           COLUMNS,
-          'items-center gap-2 border-b bg-brand-cyan px-2 py-2 text-xs font-semibold text-[#2a313a]',
+          'items-center gap-2 rounded-t-[calc(var(--radius)-1px)] border-b border-ink/15 bg-secondary px-2 py-3 text-sm font-semibold text-secondary-foreground dark:[--ring:var(--ink)]',
         )}
       >
         <div role="columnheader">

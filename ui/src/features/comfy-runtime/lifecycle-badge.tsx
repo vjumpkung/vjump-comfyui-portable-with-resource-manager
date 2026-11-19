@@ -36,8 +36,9 @@ export function LifecycleBadge({ lifecycle }: { lifecycle: LifecycleDto | undefi
             ? 'destructive'
             : busy || !lifecycle
               ? 'secondary'
-              : 'outline'
+              : 'muted'
       }
+      className="type-tag"
       data-lifecycle={lifecycle ?? 'connecting'}
     >
       <Icon aria-hidden="true" />

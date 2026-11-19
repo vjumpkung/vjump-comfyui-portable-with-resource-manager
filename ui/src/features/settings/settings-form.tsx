@@ -16,10 +16,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/sha
 import { Field as FormField, FieldLabel, FieldLegend, FieldSet } from '@/shared/ui/field'
 import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
+import { OptionsSelect } from '@/shared/ui/options-select'
 
 import { errorMessage } from './error-message'
 import { useSettings, useUpdateSettings } from './queries'
-import { SelectField } from './select-field'
 
 const HF_ENGINES = [
   { value: 'hf_cli', labelKey: 'settings.engine.hfCli' },
@@ -99,7 +99,7 @@ function Field({
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={id}>{label}</Label>
       {children}
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {error ? <p className="text-xs text-destructive-ink">{error}</p> : null}
     </div>
   )
 }
@@ -172,41 +172,45 @@ function SettingsFormFields({ settings }: { settings: SettingsDto }) {
           />
         </Field>
         <Field id="hf-engine" label={t('settings.hfEngine')}>
-          <SelectField
+          <OptionsSelect
             id="hf-engine"
+            className="w-full"
             value={draft.hfEngine}
             options={HF_ENGINES.map((option) => ({
               value: option.value,
               label: t(option.labelKey),
             }))}
-            onChange={(value) => patch('hfEngine', value)}
+            onValueChange={(value) => patch('hfEngine', value)}
           />
         </Field>
         <Field id="close-behavior" label={t('settings.closeBehavior')}>
-          <SelectField
+          <OptionsSelect
             id="close-behavior"
+            className="w-full"
             value={draft.closeBehavior}
             options={CLOSE_BEHAVIORS.map((option) => ({
               value: option.value,
               label: t(option.labelKey),
             }))}
-            onChange={(value) => patch('closeBehavior', value)}
+            onValueChange={(value) => patch('closeBehavior', value)}
           />
         </Field>
         <Field id="theme" label={t('settings.theme')}>
-          <SelectField
+          <OptionsSelect
             id="theme"
+            className="w-full"
             value={draft.theme}
             options={THEMES.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
-            onChange={(value) => patch('theme', value)}
+            onValueChange={(value) => patch('theme', value)}
           />
         </Field>
         <Field id="language" label={t('settings.language')}>
-          <SelectField
+          <OptionsSelect
             id="language"
+            className="w-full"
             value={draft.language}
             options={LANGUAGES}
-            onChange={(value) => patch('language', value)}
+            onValueChange={(value) => patch('language', value)}
           />
         </Field>
         <Field
@@ -274,9 +278,7 @@ export function SettingsForm() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg font-bold tracking-tight">
-          {t('settings.preferences')}
-        </CardTitle>
+        <CardTitle>{t('settings.preferences')}</CardTitle>
         <CardDescription>{t('settings.storageHint')}</CardDescription>
       </CardHeader>
       <CardContent>
@@ -284,7 +286,7 @@ export function SettingsForm() {
           // Re-key on the stored values so the draft resets after each successful save.
           <SettingsFormFields key={JSON.stringify(settings.data)} settings={settings.data} />
         ) : settings.isError ? (
-          <p className="text-sm text-destructive">{errorMessage(settings.error)}</p>
+          <p className="text-sm text-destructive-ink">{errorMessage(settings.error)}</p>
         ) : (
           <p className="text-sm text-muted-foreground">{t('settings.loading')}</p>
         )}

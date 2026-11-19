@@ -9,6 +9,7 @@ import {
   type ComfyStatusDto,
   type StartResultDto,
 } from '@/shared/ipc/gateway'
+import { chooseOption } from '@/shared/testing/select'
 
 import { ComfyPage } from './comfy-page'
 import { CloseRequestDialog } from './close-request-dialog'
@@ -267,9 +268,7 @@ it('offers_latest_commit_and_tag_updates', async () => {
     }),
   )
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-  fireEvent.change(screen.getByLabelText('Release tag'), {
-    target: { value: 'v0.40.0' },
-  })
+  await chooseOption(screen.getByLabelText('Release tag'), 'v0.40.0')
   fireEvent.click(screen.getByRole('button', { name: 'Switch to v0.40.0' }))
   expect(gateway.comfyUpdate).toHaveBeenCalledTimes(1)
   expect(await screen.findByText(/Move ComfyUI to release v0.40.0/)).toBeTruthy()
