@@ -1,6 +1,6 @@
 # ADR-0002: Clean Architecture + DDD, Rust adaptation
 
-- Status: Accepted (Rust adaptation approved by project owner, 2026-10-15)
+- Status: Accepted (Rust adaptation approved by project owner, 2026-10-15; amended 2026-11-19, owner-approved: custom-node scans and node operations also share a node lock)
 - Date: 2026-10-15
 - Requirements: §3.3, §6.2, NFR-MAINT
 
@@ -28,6 +28,7 @@
 5. **Errors per layer.** Each layer has its own `thiserror` enums. Errors are translated at each boundary and sanitized at IPC.
 6. **Coordination without an event bus.**
    - One application-level **maintenance gate** serializes environment, node, update and start operations.
+   - Amended 2026-11-19 (owner-approved): custom-node scans and node operations also share a **node lock**, and scans no longer hold the maintenance gate; a scan only try-acquires it briefly to settle interrupted node operations. Lock order is the gate, then the node lock; anything holding the node lock only try-acquires the gate.
    - Required cross-context effects, e.g. download → catalog, are awaited and idempotent.
    - Events and channels are used only for UI notification.
 7. **No CQRS or event sourcing.** Query use cases may use read ports. Controllers never touch SQLite.
