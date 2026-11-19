@@ -376,6 +376,35 @@ fn mutations_wait_for_the_gate_and_a_stopped_runtime() {
 }
 
 #[test]
+fn a_program_running_python_from_the_environment_refuses_apply_and_keeps_the_plan() {
+    let fixture = fixture();
+    fixture.queue_preview(Ok(installs(&[("requests", "2.34.2")])));
+    let plan = fixture
+        .preview(PackageOperation::Install(vec!["requests".into()]))
+        .unwrap();
+    let user = EnvironmentUser {
+        pid: 77,
+        name: "python.exe".into(),
+    };
+    *fixture.world.env_user.lock().unwrap() = Some(user.clone());
+    let listed = fixture.world.count("list");
+
+    assert!(matches!(
+        fixture.apply(&plan, Vec::new()),
+        Err(EnvironmentAppError::EnvironmentProcessRunning(found)) if found == user
+    ));
+    assert_eq!(fixture.world.count("list"), listed);
+    assert!(fixture.world.installs.lock().unwrap().is_empty());
+    assert_eq!(fixture.world.count("uninstall"), 0);
+    assert_eq!(fixture.world.env("env-old").state(), EnvState::Verified);
+    assert!(fixture.deps.plans.get(&plan.id).is_some());
+
+    // The plan survives the refusal: once the program is gone it applies.
+    *fixture.world.env_user.lock().unwrap() = None;
+    assert!(fixture.apply(&plan, Vec::new()).is_ok());
+}
+
+#[test]
 fn invalid_package_requests_are_rejected_before_resolution() {
     let fixture = fixture();
     let bad = [

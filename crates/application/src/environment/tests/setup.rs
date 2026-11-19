@@ -202,6 +202,29 @@ fn a_running_comfyui_blocks_before_any_mutation() {
 }
 
 #[test]
+fn a_program_running_python_from_the_target_environment_blocks_setup_before_any_mutation() {
+    let world = World::new();
+    *world.env_user.lock().unwrap() = Some(EnvironmentUser {
+        pid: 77,
+        name: "python.exe".into(),
+    });
+    let run_id = register(&world, request()).unwrap();
+    let (outcome, _) = execute(&world, &run_id);
+    let RunOutcome::Failed(failure) = outcome else {
+        panic!("expected a failure")
+    };
+    assert_eq!(failure.step, StepId::Preflight);
+    assert!(
+        failure.message.contains("python.exe (process 77)"),
+        "{}",
+        failure.message
+    );
+    assert!(world.envs.lock().unwrap().is_empty());
+    assert_eq!(world.count("create_venv"), 0);
+    assert!(!world.calls().contains(&"ensure_uv".to_owned()));
+}
+
+#[test]
 fn a_required_failure_keeps_the_previous_environment_and_retry_resumes_the_same_run() {
     let world = World::new();
     world.seed_active_env("env-old", PythonVersion::new(3, 13, 16));

@@ -358,6 +358,9 @@ impl DeleteEnvironment {
         if in_use {
             return Err(EnvironmentAppError::EnvironmentInUse);
         }
+        if let Some(user) = deps.env_users.first_user(&env.path).await {
+            return Err(EnvironmentAppError::EnvironmentProcessRunning(user));
+        }
         deps.python.remove_environment(&env).await?;
         deps.envs.delete(&env.id).await?;
         Ok(())

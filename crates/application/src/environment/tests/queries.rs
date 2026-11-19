@@ -194,6 +194,34 @@ fn only_inactive_app_owned_environments_are_deleted_under_the_gate() {
 }
 
 #[test]
+fn a_program_running_python_from_the_environment_blocks_its_deletion() {
+    let world = World::new();
+    world.seed_active_env("env-active", PythonVersion::new(3, 13, 16));
+    world.envs.lock().unwrap().insert(
+        "env-owned".into(),
+        environment("env-owned", Ownership::AppOwned),
+    );
+    let user = EnvironmentUser {
+        pid: 77,
+        name: "python.exe".into(),
+    };
+    *world.env_user.lock().unwrap() = Some(user.clone());
+    let delete = || {
+        block_on(DeleteEnvironment::new(world.deps()).execute(&EnvId::new("env-owned").unwrap()))
+    };
+    assert!(matches!(
+        delete(),
+        Err(EnvironmentAppError::EnvironmentProcessRunning(found)) if found == user
+    ));
+    assert_eq!(world.count("remove_environment:env-owned"), 0);
+    assert!(world.envs.lock().unwrap().contains_key("env-owned"));
+
+    *world.env_user.lock().unwrap() = None;
+    delete().unwrap();
+    assert_eq!(world.count("remove_environment:env-owned"), 1);
+}
+
+#[test]
 fn an_environment_targeted_by_an_unfinished_run_is_not_deleted() {
     let world = World::new();
     let run_id = register(&world, request()).unwrap();

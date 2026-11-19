@@ -1,7 +1,7 @@
 use domain::environment::{EnvironmentError, IneligibleReason};
 use thiserror::Error;
 
-use super::ports::{EnvRepoError, ManifestError, ProvisionError, RootSwitchError};
+use super::ports::{EnvRepoError, EnvironmentUser, ManifestError, ProvisionError, RootSwitchError};
 use crate::{comfy_runtime::RuntimeBlock, shared::GateError};
 
 #[derive(Debug, Error)]
@@ -74,6 +74,8 @@ pub enum EnvironmentAppError {
     EnvironmentNotUsable,
     #[error("a setup run still targets this environment")]
     EnvironmentInUse,
+    #[error("{0} is running Python from this environment")]
+    EnvironmentProcessRunning(EnvironmentUser),
     #[error("unknown or expired package plan")]
     PlanNotFound,
     #[error("the environment changed after the plan was made; preview the change again")]

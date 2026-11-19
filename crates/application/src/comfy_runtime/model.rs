@@ -174,6 +174,8 @@ pub enum RuntimeError {
     NodeRescanFailed,
     #[error("a verified active environment is required; repair the selected environment first")]
     EnvironmentNotUsable,
+    #[error("{0} is running Python from the selected environment")]
+    EnvironmentProcessRunning(crate::environment::EnvironmentUser),
     #[error("installation recovery is required: {0}")]
     RecoveryRequired(String),
     #[error("port {requested:?} is occupied")]

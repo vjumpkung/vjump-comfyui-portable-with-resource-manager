@@ -5,8 +5,14 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 struct State {
     paused: usize,
-    active: Option<CancelToken>,
+    active: Option<Active>,
     incomplete: bool,
+}
+
+struct Active {
+    token: CancelToken,
+    /// Whether [`ScanControl::preempt`] may cancel this scan.
+    yields: bool,
 }
 
 /// Process-local coordination for cooperative inventory observation.
@@ -14,7 +20,20 @@ struct State {
 pub struct ScanControl(Mutex<State>);
 
 impl ScanControl {
-    pub fn begin(self: &Arc<Self>, _lease: &dyn MaintenanceLease) -> Option<ScanActivity> {
+    pub fn begin(self: &Arc<Self>, lease: &dyn MaintenanceLease) -> Option<ScanActivity> {
+        self.start(lease, false)
+    }
+
+    /// Like [`Self::begin`], but the scan yields to [`Self::preempt`].
+    pub fn begin_yielding(self: &Arc<Self>, lease: &dyn MaintenanceLease) -> Option<ScanActivity> {
+        self.start(lease, true)
+    }
+
+    fn start(
+        self: &Arc<Self>,
+        _lease: &dyn MaintenanceLease,
+        yields: bool,
+    ) -> Option<ScanActivity> {
         let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
         if state.paused > 0 {
             return None;
@@ -27,7 +46,10 @@ impl ScanControl {
             return None;
         }
         let token = CancelToken::new();
-        state.active = Some(token.clone());
+        state.active = Some(Active {
+            token: token.clone(),
+            yields,
+        });
         Some(ScanActivity {
             scans: self.clone(),
             token,
@@ -46,8 +68,8 @@ impl ScanControl {
     pub fn pause(self: &Arc<Self>) -> ScanPause {
         let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
         state.paused += 1;
-        let stopped_scan = if let Some(token) = &state.active {
-            token.cancel();
+        let stopped_scan = if let Some(active) = &state.active {
+            active.token.cancel();
             true
         } else {
             false
@@ -61,6 +83,24 @@ impl ScanControl {
 
     pub fn closing(&self) -> bool {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).paused > 0
+    }
+
+    /// Cancels a running scan that yields to Start, Restart and Update ComfyUI and holds new
+    /// scans off until dropped. None when no yielding scan runs or a pause (closing, another
+    /// preemption) is held.
+    pub fn preempt(self: &Arc<Self>) -> Option<ScanPause> {
+        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if state.paused > 0 {
+            return None;
+        }
+        let token = state.active.as_ref().filter(|a| a.yields)?.token.clone();
+        token.cancel();
+        state.paused += 1;
+        Some(ScanPause {
+            scans: self.clone(),
+            stopped_scan: true,
+            kept: false,
+        })
     }
 }
 
@@ -235,5 +275,48 @@ mod tests {
         assert!(!scans.incomplete());
         drop(pause);
         assert!(scans.begin(&Lease).is_some());
+    }
+
+    #[test]
+    fn preempt_cancels_a_yielding_scan_and_holds_off_new_scans() {
+        let scans = Arc::new(ScanControl::default());
+        let activity = scans.begin_yielding(&Lease).unwrap();
+        let token = activity.token().clone();
+        let preemption = scans.preempt().unwrap();
+        assert!(preemption.stopped_scan());
+        assert!(token.is_cancelled());
+        assert!(scans.closing());
+        assert!(scans.begin(&Lease).is_none());
+        assert!(scans.begin_yielding(&Lease).is_none());
+        assert_eq!(activity.finish(Ok(())), Err(NodeAppError::Cancelled));
+        drop(preemption);
+        assert!(!scans.closing());
+        let next = scans.begin_yielding(&Lease).unwrap();
+        assert!(!next.token().is_cancelled());
+    }
+
+    #[test]
+    fn preempt_ignores_a_finishing_scan_and_an_idle_control() {
+        let scans = Arc::new(ScanControl::default());
+        assert!(scans.preempt().is_none());
+        assert!(!scans.closing());
+        let activity = scans.begin(&Lease).unwrap();
+        assert!(scans.preempt().is_none());
+        assert!(!activity.token().is_cancelled());
+        assert!(!scans.closing());
+        assert_eq!(activity.finish(Ok(7)), Ok(7));
+    }
+
+    #[test]
+    fn preempt_defers_to_a_held_pause() {
+        let scans = Arc::new(ScanControl::default());
+        let activity = scans.begin_yielding(&Lease).unwrap();
+        let pause = scans.pause();
+        assert!(scans.preempt().is_none());
+        drop(pause);
+        let first = scans.preempt().unwrap();
+        assert!(scans.preempt().is_none());
+        drop(first);
+        drop(activity);
     }
 }

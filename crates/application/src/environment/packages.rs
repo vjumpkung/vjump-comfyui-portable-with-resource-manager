@@ -336,6 +336,9 @@ impl ApplyPackageChange {
         if env.id != plan.env_id || env.pins != plan.current_pins {
             return Err(EnvironmentAppError::PlanStale);
         }
+        if let Some(user) = deps.env_users.first_user(&env.path).await {
+            return Err(EnvironmentAppError::EnvironmentProcessRunning(user));
+        }
         let protected = protected_names(&env);
         let installed = deps.packages.list(&root, &env.path, Some(&ctx)).await?;
         if pins_of(&installed, &protected) != plan.current_pins {

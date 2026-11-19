@@ -9,9 +9,9 @@ use super::{
     packages::{PackagePlan, PlanId},
     ports::{
         ActivationStore, ComfySource, CuratedNodeCatalog, EnvVerifier, EnvironmentRepository,
-        HardwareProbe, InstallManifestStore, ManagerConfigWriter, NodeRequirementSource,
-        PackageInstaller, ProfileCatalog, ProvisioningRunRepository, PythonProvisioner,
-        RootSwitcher, ToolProvisioner, WheelFetcher, WizardDraftStore,
+        EnvironmentUsers, HardwareProbe, InstallManifestStore, ManagerConfigWriter,
+        NodeRequirementSource, PackageInstaller, ProfileCatalog, ProvisioningRunRepository,
+        PythonProvisioner, RootSwitcher, ToolProvisioner, WheelFetcher, WizardDraftStore,
     },
 };
 use crate::{
@@ -133,6 +133,7 @@ pub struct EnvironmentDeps {
     pub root: Arc<dyn RootSwitcher>,
     pub gate: Arc<dyn MaintenanceGate>,
     pub runtime: Arc<dyn RuntimeMaintenance>,
+    pub env_users: Arc<dyn EnvironmentUsers>,
     pub clock: Arc<dyn Clock>,
     pub ids: Arc<dyn IdGenerator>,
     pub active_runs: Arc<ActiveRuns>,

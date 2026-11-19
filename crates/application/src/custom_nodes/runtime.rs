@@ -1,6 +1,6 @@
 use super::{NodeAppError, NodeService};
 use crate::{
-    comfy_runtime::{NodeLifecycle, RuntimeError},
+    comfy_runtime::{NodeLifecycle, PostStopScan, RuntimeError, ScanPreemption},
     shared::MaintenanceLease,
 };
 use async_trait::async_trait;
@@ -14,8 +14,15 @@ impl NodeLifecycle for NodeService {
         self.ensure_reconciled().await.map_err(before_start_error)
     }
 
-    async fn after_stop(&self, lease: &mut dyn MaintenanceLease) -> Result<(), RuntimeError> {
-        let activity = self.scans().begin(lease);
+    async fn after_stop(
+        &self,
+        lease: &mut dyn MaintenanceLease,
+        scan: PostStopScan,
+    ) -> Result<(), RuntimeError> {
+        let activity = match scan {
+            PostStopScan::Yields => self.scans().begin_yielding(lease),
+            PostStopScan::Finishes => self.scans().begin(lease),
+        };
         let reconciled = self.reconcile_held(lease).await;
         let Some(activity) = activity else {
             reconciled.map_err(after_stop_error)?;
@@ -31,6 +38,14 @@ impl NodeLifecycle for NodeService {
             .finish(result)
             .map(|_| ())
             .map_err(after_stop_error)
+    }
+
+    fn preempt_scan(&self) -> Option<ScanPreemption> {
+        self.scans().preempt().map(ScanPreemption::new)
+    }
+
+    fn scans_held_off(&self) -> bool {
+        self.scans().closing()
     }
 }
 

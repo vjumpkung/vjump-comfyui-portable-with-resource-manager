@@ -308,6 +308,7 @@ impl NodeService {
             .try_acquire()
             .await
             .map_err(|_| NodeAppError::Busy)?;
+        let mut changes_packages = false;
         {
             let plans = self
                 .deps
@@ -315,14 +316,32 @@ impl NodeService {
                 .0
                 .lock()
                 .map_err(|_| NodeAppError::Storage)?;
-            for (id, _) in &decisions {
+            for (id, decision) in &decisions {
                 match plans.get(id) {
                     Some(plan)
                         if plan.operation.kind == OperationKind::Update
-                            && plan.target == NodeTarget::Active => {}
+                            && plan.target == NodeTarget::Active =>
+                    {
+                        changes_packages |=
+                            plan.package.is_some() || decision.consent.run_install_py;
+                    }
                     _ => return Err(NodeAppError::StalePlan),
                 }
             }
+        }
+        // Checked for the whole batch up front, so nothing is committed or discarded when a
+        // program outside this app runs Python from the environment the updates would change.
+        if changes_packages
+            && let Some(env) = self
+                .deps
+                .environment
+                .envs
+                .active()
+                .await
+                .map_err(|_| NodeAppError::Storage)?
+            && let Some(user) = self.deps.environment.env_users.first_user(&env.path).await
+        {
+            return Err(NodeAppError::EnvironmentProcessRunning(user));
         }
         let mut batch = BatchOutcome {
             results: Vec::new(),
@@ -366,11 +385,11 @@ impl NodeService {
         }
         Ok(batch)
     }
-    /// Desktop calls this after a verified stop, and from the Rescan button. Interrupted
-    /// operations are settled first, which moves folders and so needs ComfyUI verified stopped.
-    /// Scanning only reads, so when the state of ComfyUI cannot be determined (another program,
-    /// for example a terminal, uses the folder) it still runs, unless an operation is waiting to
-    /// be settled.
+    /// Desktop calls this from the Rescan button. Interrupted operations are settled first,
+    /// which moves folders and so needs ComfyUI verified stopped. Scanning only reads, so when
+    /// the state of ComfyUI cannot be determined (an elevated Python whose location cannot be
+    /// read, for example) it still runs, unless an operation is waiting to be settled. A Start,
+    /// Restart or Update ComfyUI cancels the scan instead of waiting for it.
     pub async fn rescan(&self) -> Result<Vec<InstalledNode>, NodeAppError> {
         let mut lease = self
             .deps
@@ -382,7 +401,8 @@ impl NodeService {
         self.rescan_held(&mut *lease).await
     }
     /// Same as [`Self::rescan`] for the startup scan: it queues behind maintenance that got the
-    /// gate first instead of being dropped.
+    /// gate first instead of being dropped, and yields to Start, Restart and Update ComfyUI the
+    /// same way.
     pub async fn rescan_when_free(&self) -> Result<Vec<InstalledNode>, NodeAppError> {
         let mut lease = self
             .deps
@@ -397,7 +417,7 @@ impl NodeService {
         &self,
         lease: &mut dyn MaintenanceLease,
     ) -> Result<Vec<InstalledNode>, NodeAppError> {
-        let Some(activity) = self.deps.scans.begin(lease) else {
+        let Some(activity) = self.deps.scans.begin_yielding(lease) else {
             self.deps.scans.mark_incomplete();
             return Err(NodeAppError::Cancelled);
         };

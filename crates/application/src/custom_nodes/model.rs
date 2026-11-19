@@ -23,6 +23,8 @@ pub enum NodeAppError {
     RuntimeRunning,
     #[error("a verified environment is required")]
     EnvironmentUnavailable,
+    #[error("{0} is running Python from the selected environment")]
+    EnvironmentProcessRunning(crate::environment::EnvironmentUser),
     #[error("node recovery must finish before this operation")]
     RecoveryRequired,
     #[error("the prepared plan is missing or stale; prepare again")]

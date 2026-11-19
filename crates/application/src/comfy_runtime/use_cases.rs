@@ -1,12 +1,42 @@
 use super::*;
 use crate::{
     environment::{ManifestState, RootSwitcher, same_location},
-    shared::MaintenanceLease,
+    shared::{GateError, MaintenanceLease},
 };
 use domain::{
     comfy_runtime::*,
     environment::{EnvState, PythonEnvironment},
 };
+use std::time::Duration;
+
+/// How long a Start, Restart or Update waits for a cancelled scan to release the gate.
+pub(crate) const SCAN_PREEMPT_WAIT: Duration = Duration::from_secs(5);
+
+/// Takes the gate for Start, Restart and Update. When something else holds it, a yielding
+/// custom-node scan is cancelled and awaited for a short while; any other holder means Busy. A
+/// lease taken while closing holds scans off is released again: closing wins over a preemption.
+pub(crate) async fn acquire_for_runtime(
+    deps: &RuntimeDeps,
+) -> Result<Box<dyn MaintenanceLease>, RuntimeError> {
+    let gate = &deps.environment.gate;
+    let lease = match gate.try_acquire().await {
+        Ok(lease) => lease,
+        Err(GateError::Busy) => {
+            let Some(preemption) = deps.nodes.preempt_scan() else {
+                return Err(RuntimeError::Busy);
+            };
+            let lease = gate.acquire_within(SCAN_PREEMPT_WAIT).await;
+            drop(preemption);
+            lease.map_err(|_| RuntimeError::Busy)?
+        }
+        Err(_) => return Err(RuntimeError::Busy),
+    };
+    if deps.nodes.scans_held_off() {
+        drop(lease);
+        return Err(RuntimeError::Busy);
+    }
+    Ok(lease)
+}
 
 pub(crate) async fn selected(
     deps: &RuntimeDeps,
@@ -64,13 +94,7 @@ impl StartComfy {
         Self { deps }
     }
     pub async fn execute(&self) -> Result<RuntimeStatus, RuntimeError> {
-        let lease = self
-            .deps
-            .environment
-            .gate
-            .try_acquire()
-            .await
-            .map_err(|_| RuntimeError::Busy)?;
+        let lease = acquire_for_runtime(&self.deps).await?;
         self.start_under_lease(lease).await
     }
     pub(crate) async fn start_under_lease(
@@ -150,7 +174,12 @@ impl StopComfy {
             .map_err(|_| RuntimeError::Busy)?;
         // Another Start may have won the interval before we acquired the gate.
         let status = self.deps.supervisor.stop().await?;
-        match self.deps.nodes.after_stop(&mut *lease).await {
+        match self
+            .deps
+            .nodes
+            .after_stop(&mut *lease, PostStopScan::Yields)
+            .await
+        {
             Ok(()) | Err(RuntimeError::Cancelled) => {}
             Err(error) => return Err(error),
         }
@@ -165,15 +194,12 @@ impl RestartComfy {
         Self { deps }
     }
     pub async fn execute(&self) -> Result<RuntimeStatus, RuntimeError> {
-        let mut lease = self
-            .deps
-            .environment
-            .gate
-            .try_acquire()
-            .await
-            .map_err(|_| RuntimeError::Busy)?;
+        let mut lease = acquire_for_runtime(&self.deps).await?;
         self.deps.supervisor.stop().await?;
-        self.deps.nodes.after_stop(&mut *lease).await?;
+        self.deps
+            .nodes
+            .after_stop(&mut *lease, PostStopScan::Finishes)
+            .await?;
         StartComfy::new(self.deps.clone())
             .start_under_lease(lease)
             .await

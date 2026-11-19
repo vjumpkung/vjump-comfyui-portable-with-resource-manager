@@ -557,6 +557,16 @@ impl NodeService {
                             | OperationKind::Uninstall
                     ))
                     .await?;
+                if matches!(
+                    plan.operation.kind,
+                    OperationKind::Install
+                        | OperationKind::Update
+                        | OperationKind::RetryDependencies
+                ) && (plan.package.is_some() || decision.consent.run_install_py)
+                    && let Some(user) = d.env_users.first_user(&env.path).await
+                {
+                    return Err(NodeAppError::EnvironmentProcessRunning(user));
+                }
                 Bound {
                     root,
                     env,

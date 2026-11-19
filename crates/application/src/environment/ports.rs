@@ -199,6 +199,29 @@ pub trait RelocationStore: Send + Sync {
     async fn accept(&self, old_root: &Path, new_root: &Path) -> Result<(), RelocationError>;
 }
 
+/// A program that holds an environment's files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentUser {
+    pub pid: u32,
+    /// The executable's file name only, never a path.
+    pub name: String,
+}
+
+impl std::fmt::Display for EnvironmentUser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (process {})", self.name, self.pid)
+    }
+}
+
+/// Finds programs that hold an environment's files: on Windows a running Python keeps the
+/// `.pyd`/`.dll` files it loaded locked, so package changes or deletion would fail part-way.
+#[async_trait]
+pub trait EnvironmentUsers: Send + Sync {
+    /// First process outside this app's process tree whose executable is inside `env`;
+    /// None also when the process list cannot be read (narrows failures; not a gate).
+    async fn first_user(&self, env: &Path) -> Option<EnvironmentUser>;
+}
+
 #[async_trait]
 pub trait ExistingInstallOpener: Send + Sync {
     async fn open_existing(&self, path: &Path) -> Result<(), RootSwitchError>;

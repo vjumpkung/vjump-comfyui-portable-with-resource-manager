@@ -72,11 +72,44 @@ pub trait ExtraModelPathsWriter: Send + Sync {
     async fn remove(&self, root: &Path) -> Result<(), RuntimeError>;
 }
 
-/// Called under the runtime workflow's held lease; implementations must not acquire the gate.
+/// How the rescan after a stop treats a Start, Restart or Update ComfyUI that arrives meanwhile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostStopScan {
+    /// Plain Stop: Start, Restart and Update may cancel it; Stop still succeeds.
+    Yields,
+    /// Restart and Update: only closing the app cancels it.
+    Finishes,
+}
+
+/// Keeps new custom-node scans off while it lives; dropping it lets them run again.
+pub struct ScanPreemption {
+    _guard: Box<dyn Send + Sync>,
+}
+
+impl ScanPreemption {
+    pub fn new(guard: impl Send + Sync + 'static) -> Self {
+        Self {
+            _guard: Box::new(guard),
+        }
+    }
+}
+
+/// `before_start` and `after_stop` run under the runtime workflow's held lease and must not
+/// acquire the gate. `preempt_scan` runs without a lease, before the gate is taken.
 #[async_trait]
 pub trait NodeLifecycle: Send + Sync {
     async fn before_start(&self, lease: &mut dyn MaintenanceLease) -> Result<(), RuntimeError>;
-    async fn after_stop(&self, lease: &mut dyn MaintenanceLease) -> Result<(), RuntimeError>;
+    async fn after_stop(
+        &self,
+        lease: &mut dyn MaintenanceLease,
+        scan: PostStopScan,
+    ) -> Result<(), RuntimeError>;
+    /// Cancels a running scan that yields and holds new scans off until the guard is dropped.
+    /// Never touches the gate.
+    fn preempt_scan(&self) -> Option<ScanPreemption>;
+    /// True while closing (or another runtime action) holds scans off, so a Start, Restart or
+    /// Update that just took the gate must not go on. Never touches the gate.
+    fn scans_held_off(&self) -> bool;
 }
 
 /// One installation-scoped supervisor, also used by M1 RuntimeMaintenance.

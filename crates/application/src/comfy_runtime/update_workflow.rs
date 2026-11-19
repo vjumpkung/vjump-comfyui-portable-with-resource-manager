@@ -30,18 +30,20 @@ impl UpdateComfy {
         cancel: CancelToken,
     ) -> Result<UpdateRun, RuntimeError> {
         let deps = &self.deps;
-        let mut lease = deps
-            .environment
-            .gate
-            .try_acquire()
-            .await
-            .map_err(|_| RuntimeError::Busy)?;
+        let mut lease = super::use_cases::acquire_for_runtime(deps).await?;
+        // Checked before the stop below, so a refused update never stops ComfyUI first.
+        let early = super::use_cases::selected(deps, input.retry.is_some()).await?;
+        if let Some(user) = deps.environment.env_users.first_user(&early.path).await {
+            return Err(RuntimeError::EnvironmentProcessRunning(user));
+        }
         let root = deps.environment.root.current().root;
         match deps.supervisor.inventory(&root).await? {
             InventoryState::Stopped => {}
             InventoryState::OwnedRunning if input.stop_running => {
                 deps.supervisor.stop().await?;
-                deps.nodes.after_stop(&mut *lease).await?;
+                deps.nodes
+                    .after_stop(&mut *lease, PostStopScan::Finishes)
+                    .await?;
             }
             InventoryState::OwnedRunning => return Err(RuntimeError::NeedsStop),
             _ => {
@@ -54,6 +56,7 @@ impl UpdateComfy {
             .ensure_stopped(&root)
             .await
             .map_err(|_| RuntimeError::NeedsStop)?;
+        // Read again: the recovery in `after_stop` can mark the environment repair-required.
         let mut env = super::use_cases::selected(deps, input.retry.is_some()).await?;
         let pending = deps.store.unfinished_update().await?;
         let mut run = match (input.retry, pending) {

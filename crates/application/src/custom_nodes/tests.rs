@@ -2,7 +2,7 @@
 //! so protected-package behavior is exercised against the same pin guard M1 tests use.
 use super::*;
 use crate::{
-    comfy_runtime::{NodeLifecycle, RuntimeBlock, RuntimeError},
+    comfy_runtime::{NodeLifecycle, PostStopScan, RuntimeBlock, RuntimeError},
     environment::{
         EnvironmentRepository, ProvisionError, ResolutionPreview,
         tests::fakes::{ROOT, World},
@@ -931,7 +931,8 @@ impl EnvironmentRepository for FailingActiveRead {
         self.inner.get(id).await
     }
     async fn active(&self) -> Result<Option<PythonEnvironment>, crate::environment::EnvRepoError> {
-        if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+        // Reads: the batch's environment-in-use check, the first commit, then its post-commit check.
+        if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
             Err(crate::environment::EnvRepoError::Unavailable)
         } else {
             self.inner.active().await
@@ -1804,6 +1805,104 @@ fn enable_disable_and_uninstall_use_the_journal_and_recycle_the_backup() {
 }
 
 #[test]
+fn a_program_running_python_from_the_environment_refuses_an_install_that_runs_packages() {
+    let h = Harness::new();
+    let review = h.prepare();
+    let user = crate::environment::EnvironmentUser {
+        pid: 77,
+        name: "python.exe".into(),
+    };
+    *h.world.env_user.lock().unwrap() = Some(user.clone());
+    let result = block_on(
+        h.service
+            .commit(&review.id, Harness::decision(&review), &h.ctx()),
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        NodeAppError::EnvironmentProcessRunning(user)
+    );
+    assert_eq!(h.world.count("files:publish"), 0);
+    assert_eq!(h.world.count("install:node"), 0);
+    assert_eq!(h.env().state(), EnvState::Verified);
+    assert!(block_on(h.service.list()).unwrap().is_empty());
+
+    // The plan was not consumed: once the program is gone the same plan commits.
+    *h.world.env_user.lock().unwrap() = None;
+    let outcome = block_on(
+        h.service
+            .commit(&review.id, Harness::decision(&review), &h.ctx()),
+    )
+    .unwrap();
+    assert_eq!(outcome.node.dependencies, DependencyState::Ok);
+}
+
+#[test]
+fn an_install_that_runs_no_packages_and_no_install_py_ignores_programs_in_the_environment() {
+    let h = Harness::new();
+    {
+        let mut files = h.files.state.lock().unwrap();
+        let staged = files.staged.as_mut().unwrap();
+        staged.requirement_lines.clear();
+        staged.requirements_digest = None;
+        staged.dependencies.clear();
+        files.requirements_digest = None;
+    }
+    let review = h.prepare();
+    *h.world.env_user.lock().unwrap() = Some(crate::environment::EnvironmentUser {
+        pid: 77,
+        name: "python.exe".into(),
+    });
+    block_on(
+        h.service
+            .commit(&review.id, Harness::decision(&review), &h.ctx()),
+    )
+    .unwrap();
+    assert_eq!(h.world.count("files:publish"), 1);
+    assert_eq!(h.world.count("install:node"), 0);
+    assert_eq!(h.world.count("env_users"), 0);
+}
+
+#[test]
+fn a_program_running_python_from_the_environment_does_not_block_enable_disable_or_uninstall() {
+    let h = Harness::new();
+    let node = h.installed();
+    *h.world.env_user.lock().unwrap() = Some(crate::environment::EnvironmentUser {
+        pid: 77,
+        name: "python.exe".into(),
+    });
+    for enabled in [false, true] {
+        let review = block_on(h.service.prepare(
+            PrepareRequest::SetEnabled {
+                node: node.id.clone(),
+                enabled,
+            },
+            &h.ctx(),
+        ))
+        .unwrap();
+        let outcome = block_on(
+            h.service
+                .commit(&review.id, Harness::decision(&review), &h.ctx()),
+        )
+        .unwrap();
+        assert_eq!(outcome.node.enabled, enabled);
+    }
+    let review = block_on(h.service.prepare(
+        PrepareRequest::Uninstall {
+            node: node.id.clone(),
+        },
+        &h.ctx(),
+    ))
+    .unwrap();
+    block_on(
+        h.service
+            .commit(&review.id, Harness::decision(&review), &h.ctx()),
+    )
+    .unwrap();
+    assert!(block_on(h.service.list()).unwrap().is_empty());
+    assert_eq!(h.world.count("env_users"), 0, "these never touch packages");
+}
+
+#[test]
 fn disable_then_enable_moves_the_tree_from_its_current_location() {
     let h = Harness::new();
     let node = h.installed();
@@ -2572,6 +2671,61 @@ fn update_all_discards_remaining_plans_after_a_blocking_failure() {
 }
 
 #[test]
+fn update_all_is_refused_as_a_whole_while_a_program_runs_python_from_the_environment() {
+    let h = Harness::new();
+    let first = h.installed();
+    let mut second = first.clone();
+    second.id = NodeId::new("n-2").unwrap();
+    second.name = SafeFileName::new("second").unwrap();
+    block_on(h.store.save_node(&second)).unwrap();
+    {
+        let mut state = h.files.state.lock().unwrap();
+        state.staged = Some(staged("1.1.0"));
+        state.digest = "tree:1.1.0".into();
+    }
+    let reviews: Vec<_> = [&first, &second]
+        .into_iter()
+        .map(|node| {
+            block_on(h.service.prepare(
+                PrepareRequest::Update {
+                    node: node.id.clone(),
+                    reference: None,
+                },
+                &h.ctx(),
+            ))
+            .unwrap()
+        })
+        .collect();
+    let decisions = || -> Vec<_> {
+        reviews
+            .iter()
+            .map(|review| (review.id.clone(), Harness::decision(review)))
+            .collect()
+    };
+    let user = crate::environment::EnvironmentUser {
+        pid: 77,
+        name: "python.exe".into(),
+    };
+    *h.world.env_user.lock().unwrap() = Some(user.clone());
+
+    assert_eq!(
+        block_on(h.service.update_all(decisions(), &h.ctx())).unwrap_err(),
+        NodeAppError::EnvironmentProcessRunning(user)
+    );
+    assert_eq!(h.world.count("files:publish"), 0);
+    assert_eq!(h.world.count("files:discard"), 0);
+    assert_eq!(h.world.count("install:node"), 0);
+    assert_eq!(h.env().state(), EnvState::Verified);
+    assert_eq!(h.service.pending_reviews().unwrap().len(), 2);
+
+    // Nothing was consumed: once the program is gone the same plans run.
+    *h.world.env_user.lock().unwrap() = None;
+    let batch = block_on(h.service.update_all(decisions(), &h.ctx())).unwrap();
+    assert_eq!(batch.results.len(), 2);
+    assert!(batch.results.iter().all(|(_, outcome)| outcome.is_ok()));
+}
+
+#[test]
 fn update_all_discards_remaining_plans_after_a_post_commit_storage_error() {
     let mut h = Harness::new();
     let first = h.installed();
@@ -2928,6 +3082,17 @@ impl crate::shared::MaintenanceGate for HeldGate {
             Err(crate::shared::GateError::Busy)
         }
     }
+
+    async fn acquire_within(
+        &self,
+        wait: std::time::Duration,
+    ) -> Result<Box<dyn crate::shared::MaintenanceLease>, crate::shared::GateError> {
+        if self.open.load(std::sync::atomic::Ordering::SeqCst) {
+            self.inner.acquire_within(wait).await
+        } else {
+            Err(crate::shared::GateError::Busy)
+        }
+    }
 }
 
 #[test]
@@ -3045,7 +3210,7 @@ fn runtime_node_checks_reconcile_and_scan_without_acquiring_again() {
             .phase,
         OperationPhase::Failed
     );
-    block_on(h.service.after_stop(&mut *lease)).unwrap();
+    block_on(h.service.after_stop(&mut *lease, PostStopScan::Finishes)).unwrap();
     assert_eq!(h.world.count("files:scan"), 1);
     assert_eq!(
         h.world
@@ -3088,7 +3253,7 @@ fn runtime_node_checks_map_recovery_scan_and_running_failures() {
         Err(RuntimeError::NodeRecoveryRequired)
     );
     assert_eq!(
-        block_on(h.service.after_stop(&mut *lease)),
+        block_on(h.service.after_stop(&mut *lease, PostStopScan::Finishes)),
         Err(RuntimeError::NodeRescanFailed)
     );
     assert_eq!(h.world.count("files:scan"), 0);
@@ -3097,7 +3262,7 @@ fn runtime_node_checks_map_recovery_scan_and_running_failures() {
     h.store.state.lock().unwrap().operations.clear();
     h.files.state.lock().unwrap().scan_error = Some(NodeAppError::Filesystem);
     assert_eq!(
-        block_on(h.service.after_stop(&mut *lease)),
+        block_on(h.service.after_stop(&mut *lease, PostStopScan::Finishes)),
         Err(RuntimeError::NodeRescanFailed)
     );
     assert_eq!(h.world.count("files:scan"), 1);
@@ -3109,7 +3274,7 @@ fn runtime_node_checks_map_recovery_scan_and_running_failures() {
             Err(RuntimeError::NeedsStop)
         );
         assert_eq!(
-            block_on(h.service.after_stop(&mut *lease)),
+            block_on(h.service.after_stop(&mut *lease, PostStopScan::Finishes)),
             Err(RuntimeError::NeedsStop)
         );
     }
@@ -5770,6 +5935,105 @@ fn rescan_while_paused_marks_incomplete_without_observation() {
 }
 
 #[test]
+fn a_pending_rescan_yields_to_preempt_scan() {
+    use std::task::{Context, Poll, Waker};
+    let h = Harness::new();
+    let stored = h.installed();
+    {
+        let mut state = h.files.state.lock().unwrap();
+        state.scan = vec![stored.clone()];
+        state.observe_pending = true;
+    }
+    let mut scan = Box::pin(h.service.rescan());
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(scan.as_mut().poll(&mut context).is_pending());
+    let preemption = h.service.preempt_scan().expect("a rescan yields");
+    assert_eq!(
+        scan.as_mut().poll(&mut context),
+        Poll::Ready(Err(NodeAppError::Cancelled))
+    );
+    assert_eq!(h.store.state.lock().unwrap().nodes, [stored]);
+    assert!(h.store.state.lock().unwrap().applied_scans.is_empty());
+    assert!(h.service.scans().incomplete());
+    drop(scan);
+    h.files.state.lock().unwrap().observe_pending = false;
+    // New scans stay off while the preemption is held, then run again.
+    assert_eq!(block_on(h.service.rescan()), Err(NodeAppError::Cancelled));
+    assert!(h.service.scans().incomplete());
+    drop(preemption);
+    block_on(h.service.rescan()).unwrap();
+    assert!(!h.service.scans().incomplete());
+}
+
+#[test]
+fn a_yielding_post_stop_scan_is_cancelled_but_a_finishing_one_is_not() {
+    use std::task::{Context, Poll, Waker};
+    let h = Harness::new();
+    let stored = h.installed();
+    {
+        let mut state = h.files.state.lock().unwrap();
+        state.scan = vec![stored.clone()];
+        state.observe_pending = true;
+    }
+    let mut lease = block_on(h.world.deps().gate.try_acquire()).unwrap();
+    let mut context = Context::from_waker(Waker::noop());
+
+    let mut finishing = Box::pin(h.service.after_stop(&mut *lease, PostStopScan::Finishes));
+    assert!(finishing.as_mut().poll(&mut context).is_pending());
+    assert!(h.service.preempt_scan().is_none());
+    h.files.state.lock().unwrap().observe_pending = false;
+    assert_eq!(finishing.as_mut().poll(&mut context), Poll::Ready(Ok(())));
+    drop(finishing);
+    let applied = h.store.state.lock().unwrap().applied_scans.len();
+    assert_eq!(applied, 1);
+    assert!(!h.service.scans().incomplete());
+
+    h.files.state.lock().unwrap().observe_pending = true;
+    let mut yielding = Box::pin(h.service.after_stop(&mut *lease, PostStopScan::Yields));
+    assert!(yielding.as_mut().poll(&mut context).is_pending());
+    let preemption = h
+        .service
+        .preempt_scan()
+        .expect("a yielding post-stop scan is preempted");
+    assert_eq!(
+        yielding.as_mut().poll(&mut context),
+        Poll::Ready(Err(RuntimeError::Cancelled))
+    );
+    assert_eq!(h.store.state.lock().unwrap().applied_scans.len(), applied);
+    assert!(h.service.scans().incomplete());
+    drop(yielding);
+    drop(preemption);
+    assert!(!h.service.scans().closing());
+}
+
+#[test]
+fn preempt_scan_defers_to_a_closing_pause() {
+    use std::task::{Context, Poll, Waker};
+    let h = Harness::new();
+    let stored = h.installed();
+    {
+        let mut state = h.files.state.lock().unwrap();
+        state.scan = vec![stored];
+        state.observe_pending = true;
+    }
+    let mut lease = block_on(h.world.deps().gate.try_acquire()).unwrap();
+    let mut context = Context::from_waker(Waker::noop());
+    let mut scan = Box::pin(h.service.after_stop(&mut *lease, PostStopScan::Yields));
+    assert!(scan.as_mut().poll(&mut context).is_pending());
+    let closing = h.service.scans().pause();
+    assert!(closing.stopped_scan());
+    assert!(h.service.preempt_scan().is_none());
+    assert!(h.service.scans().closing());
+    assert_eq!(
+        scan.as_mut().poll(&mut context),
+        Poll::Ready(Err(RuntimeError::Cancelled))
+    );
+    drop(scan);
+    drop(closing);
+    assert!(!h.service.scans().closing());
+}
+
+#[test]
 fn reconcile_failure_inside_rescan_marks_incomplete_and_clears_activity() {
     let h = Harness::new();
     h.store.state.lock().unwrap().journal_error = Some(NodeAppError::Storage);
@@ -5818,7 +6082,7 @@ fn after_stop_reconciles_even_when_the_scan_is_skipped() {
     let pause = h.service.scans().pause();
     let mut lease = block_on(h.world.deps().gate.try_acquire()).unwrap();
     assert_eq!(
-        block_on(h.service.after_stop(&mut *lease)),
+        block_on(h.service.after_stop(&mut *lease, PostStopScan::Finishes)),
         Err(RuntimeError::Cancelled)
     );
     assert_eq!(h.world.count("files:recover"), 1);
@@ -5842,7 +6106,7 @@ fn after_stop_cancellation_during_observation_writes_no_inventory() {
     }
     let mut lease = block_on(h.world.deps().gate.try_acquire()).unwrap();
     assert_eq!(
-        block_on(h.service.after_stop(&mut *lease)),
+        block_on(h.service.after_stop(&mut *lease, PostStopScan::Finishes)),
         Err(RuntimeError::Cancelled)
     );
     let state = h.store.state.lock().unwrap();
@@ -5859,7 +6123,7 @@ fn after_stop_late_cancellation_keeps_the_commit_and_returns_cancelled() {
     h.service.scans().mark_incomplete();
     let mut lease = block_on(h.world.deps().gate.try_acquire()).unwrap();
     assert_eq!(
-        block_on(h.service.after_stop(&mut *lease)),
+        block_on(h.service.after_stop(&mut *lease, PostStopScan::Finishes)),
         Err(RuntimeError::Cancelled)
     );
     let state = h.store.state.lock().unwrap();

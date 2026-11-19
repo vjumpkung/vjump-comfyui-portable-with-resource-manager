@@ -125,6 +125,7 @@ pub struct FakeGate {
     pub busy: Arc<AtomicBool>,
     pub acquires: AtomicUsize,
     pub try_acquires: AtomicUsize,
+    pub acquire_withins: AtomicUsize,
 }
 
 struct FakeLease(Arc<FakeLeaseOwner>);
@@ -176,6 +177,14 @@ impl MaintenanceGate for FakeGate {
         self.try_acquires.fetch_add(1, Ordering::SeqCst);
         self.take()
     }
+
+    async fn acquire_within(
+        &self,
+        _: std::time::Duration,
+    ) -> Result<Box<dyn MaintenanceLease>, GateError> {
+        self.acquire_withins.fetch_add(1, Ordering::SeqCst);
+        self.take()
+    }
 }
 
 pub struct World {
@@ -209,6 +218,7 @@ pub struct World {
     pub node_reviews: Mutex<BTreeMap<String, PlanReview>>,
     pub node_installed: Mutex<Vec<String>>,
     pub runtime_block: Mutex<Option<RuntimeBlock>>,
+    pub env_user: Mutex<Option<EnvironmentUser>>,
     pub gate: Arc<FakeGate>,
     pub drift_on_requirements: AtomicBool,
     pub drift_on_node_requirements: AtomicBool,
@@ -264,6 +274,7 @@ impl World {
             node_reviews: Mutex::default(),
             node_installed: Mutex::default(),
             runtime_block: Mutex::default(),
+            env_user: Mutex::default(),
             gate: Arc::new(FakeGate::default()),
             drift_on_requirements: AtomicBool::new(false),
             drift_on_node_requirements: AtomicBool::new(false),
@@ -309,6 +320,7 @@ impl World {
             root: self.clone(),
             gate: self.gate.clone(),
             runtime: self.clone(),
+            env_users: self.clone(),
             clock: self.clone(),
             ids: self.clone(),
             active_runs: Arc::new(ActiveRuns::default()),
@@ -716,6 +728,14 @@ impl RuntimeMaintenance for World {
             Some(block) => Err(block),
             None => Ok(()),
         }
+    }
+}
+
+#[async_trait]
+impl EnvironmentUsers for World {
+    async fn first_user(&self, _env: &Path) -> Option<EnvironmentUser> {
+        self.call("env_users");
+        self.env_user.lock().unwrap().clone()
     }
 }
 

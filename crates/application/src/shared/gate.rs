@@ -23,4 +23,9 @@ pub trait MaintenanceGate: Send + Sync {
     async fn acquire(&self) -> Result<Box<dyn MaintenanceLease>, GateError>;
     /// Fails with [`GateError::Busy`] instead of waiting.
     async fn try_acquire(&self) -> Result<Box<dyn MaintenanceLease>, GateError>;
+    /// Waits at most `wait` for the gate, then fails with [`GateError::Busy`].
+    async fn acquire_within(
+        &self,
+        wait: std::time::Duration,
+    ) -> Result<Box<dyn MaintenanceLease>, GateError>;
 }

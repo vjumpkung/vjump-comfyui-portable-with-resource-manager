@@ -431,6 +431,11 @@ impl Execution {
                 }
             }));
         }
+        if let Some(user) = deps.env_users.first_user(&self.env_path()).await {
+            return Err(failed(format!(
+                "{user} is running Python from the target environment. Close it, then retry."
+            )));
+        }
         let hardware = deps
             .hardware
             .probe(
