@@ -8,7 +8,7 @@ use super::{
     registry::{REGISTRY_BASE, RegistryHttp},
     sqlite::SqliteNodes,
 };
-use crate::shared::{download::Downloader, sqlite::Db};
+use crate::shared::{download::Downloader, gate::TokioMaintenanceGate, sqlite::Db};
 use application::{
     custom_nodes::{NodeDeps, NodePlans, ScanControl},
     environment::{EnvironmentDeps, SetupEvent, SetupProgressSink},
@@ -186,6 +186,7 @@ impl NodeAdapters {
             hook: Arc::new(PythonHook),
             plans: Arc::<NodePlans>::default(),
             scans: Arc::<ScanControl>::default(),
+            node_lock: Arc::new(TokioMaintenanceGate::new()),
         };
         NodeStack {
             deps,

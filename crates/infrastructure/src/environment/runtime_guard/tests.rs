@@ -1,5 +1,7 @@
 use std::{
+    cell::Cell,
     ffi::OsString,
+    sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 
@@ -183,7 +185,7 @@ fn an_unreadable_python_is_flagged_and_an_empty_snapshot_cannot_be_trusted() {
     };
     assert_eq!(
         assess(&snapshot_with(vec![hidden]), &root, OWN_PID),
-        Verdict::Unreadable
+        Verdict::Unreadable(9)
     );
     let hidden_other = ProcessInfo {
         pid: 9,
@@ -210,7 +212,7 @@ fn a_relative_main_py_with_an_unreadable_cwd_is_unknown_only_on_windows() {
     // On Windows a readable command line with an unreadable cwd is an elevated process; on Linux
     // another user's `python main.py` is the normal case and must not block anything.
     let expected = if cfg!(windows) {
-        Verdict::Unreadable
+        Verdict::Unreadable(9)
     } else {
         Verdict::Stopped
     };
@@ -239,6 +241,96 @@ fn a_relative_main_py_with_an_unreadable_cwd_is_unknown_only_on_windows() {
         assess(&snapshot_with(vec![other_install]), &root, OWN_PID),
         Verdict::Stopped
     );
+}
+
+fn hidden_python(pid: u32) -> ProcessInfo {
+    ProcessInfo {
+        pid,
+        name: "python.exe".into(),
+        exe: None,
+        cwd: None,
+        cmd: Vec::new(),
+        parent: None,
+    }
+}
+
+#[test]
+fn assess_names_the_first_unreadable_process() {
+    let root = root();
+    let all = snapshot_with(vec![
+        process(1, "notepad"),
+        hidden_python(31),
+        hidden_python(32),
+    ]);
+    assert_eq!(assess(&all, &root, OWN_PID), Verdict::Unreadable(31));
+}
+
+#[test]
+fn settle_returns_a_settled_observation_at_once() {
+    let calls = Cell::new(0);
+    let result = settle(
+        || {
+            calls.set(calls.get() + 1);
+            "settled"
+        },
+        |_| false,
+        3,
+        Duration::ZERO,
+    );
+    assert_eq!(result, "settled");
+    assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn settle_retakes_an_unsettled_observation_until_it_settles() {
+    let calls = Cell::new(0);
+    let result = settle(
+        || {
+            calls.set(calls.get() + 1);
+            calls.get()
+        },
+        |observation| *observation < 3,
+        5,
+        Duration::ZERO,
+    );
+    assert_eq!(result, 3);
+    assert_eq!(calls.get(), 3);
+}
+
+#[test]
+fn settle_gives_up_after_the_retry_budget() {
+    let calls = Cell::new(0);
+    let result = settle(
+        || {
+            calls.set(calls.get() + 1);
+            calls.get()
+        },
+        |_| true,
+        3,
+        Duration::ZERO,
+    );
+    // The first observation plus three retakes; the last one is returned unsettled.
+    assert_eq!(result, 4);
+    assert_eq!(calls.get(), 4);
+}
+
+static SETTLING_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// The first snapshot catches a python starting (unreadable); later ones are clean.
+fn python_starting_snapshot() -> Vec<ProcessInfo> {
+    let call = SETTLING_CALLS.fetch_add(1, Ordering::SeqCst);
+    if call == 0 {
+        snapshot_with(vec![hidden_python(9)])
+    } else {
+        snapshot_with(Vec::new())
+    }
+}
+
+#[test]
+fn assess_settled_retakes_a_snapshot_that_caught_a_python_starting() {
+    let verdict = assess_settled(python_starting_snapshot, &root(), OWN_PID);
+    assert_eq!(verdict, Verdict::Stopped);
+    assert!(SETTLING_CALLS.load(Ordering::SeqCst) >= 2);
 }
 
 #[cfg(windows)]

@@ -1,6 +1,6 @@
 //! OS identity and listening socket ownership checks.
 use crate::{
-    environment::runtime_guard::{Verdict, assess},
+    environment::runtime_guard::{Verdict, assess_settled},
     shared::procscan::SnapshotFn,
 };
 use application::comfy_runtime::{InventoryState, RuntimeError, RuntimeSession, RuntimeStore};
@@ -16,7 +16,7 @@ pub async fn inspect(
 ) -> Result<InventoryState, RuntimeError> {
     let root = root.to_path_buf();
     let verdict =
-        tokio::task::spawn_blocking(move || assess(&snapshot(), &root, std::process::id()))
+        tokio::task::spawn_blocking(move || assess_settled(snapshot, &root, std::process::id()))
             .await
             .map_err(|_| RuntimeError::Failed("process inventory failed".into()))?;
     let sessions = store.unfinished_sessions().await?;
@@ -33,7 +33,7 @@ pub async fn inspect(
         Verdict::Running(pid) => Ok(InventoryState::Unknown(format!(
             "ComfyUI from this installation (process {pid}) is running but is not controlled by this app; close it and retry"
         ))),
-        Verdict::Unreadable | Verdict::SnapshotFailed => Ok(InventoryState::Unknown(
+        Verdict::Unreadable(_) | Verdict::SnapshotFailed => Ok(InventoryState::Unknown(
             "process ownership could not be assessed; close the surviving process and retry".into(),
         )),
     }

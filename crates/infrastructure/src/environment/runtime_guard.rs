@@ -49,8 +49,8 @@ impl Default for ProcessRuntimeGuard {
 pub enum Verdict {
     Stopped,
     Running(u32),
-    /// A python process whose location is unreadable (for example an elevated one).
-    Unreadable,
+    /// A process whose location is unreadable (for example an elevated python): its pid.
+    Unreadable(u32),
     /// The process list does not even contain this app, so it cannot be trusted.
     SnapshotFailed,
 }
@@ -103,29 +103,90 @@ fn main_arg(process: &ProcessInfo, main: &Path) -> MainArg {
 /// (`ProcessCommandLineInformation`), possibly this installation's ComfyUI run as administrator.
 /// On Linux `/proc/<pid>/cwd` needs ptrace access while `/proc/<pid>/cmdline` is world-readable,
 /// so another user's (or a root Docker container's) `python main.py` would otherwise block every
-/// operation; there the unresolvable argument is ignored. Pure, so every rule is testable.
+/// operation; there the unresolvable argument is ignored. `Unreadable` carries the pid of the first
+/// such process. Pure, so every rule is testable.
 pub fn assess(processes: &[ProcessInfo], root: &Path, own_pid: u32) -> Verdict {
     if !processes.iter().any(|process| process.pid == own_pid) {
         return Verdict::SnapshotFailed;
     }
     let main = normalized_path(&Layout::new(root).comfyui_dir().join("main.py"));
-    let mut unreadable = false;
+    let mut unreadable: Option<u32> = None;
     for process in processes.iter().filter(|process| process.pid != own_pid) {
         match main_arg(process, &main) {
             MainArg::This => return Verdict::Running(process.pid),
-            MainArg::Unresolvable => unreadable |= cfg!(windows),
+            MainArg::Unresolvable => {
+                if cfg!(windows) {
+                    unreadable.get_or_insert(process.pid);
+                }
+            }
             MainArg::Absent => {}
         }
         let python_like = process.name.to_lowercase().contains("python");
         if python_like && process.cwd.is_none() && process.exe.is_none() && process.cmd.is_empty() {
-            unreadable = true;
+            unreadable.get_or_insert(process.pid);
         }
     }
-    if unreadable {
-        Verdict::Unreadable
-    } else {
-        Verdict::Stopped
+    match unreadable {
+        Some(pid) => Verdict::Unreadable(pid),
+        None => Verdict::Stopped,
     }
+}
+
+/// How many more snapshots [`assess_settled`] takes while the process list looks unsettled.
+pub const SETTLE_RETRIES: usize = 3;
+/// The pause between those snapshots.
+pub const SETTLE_DELAY: Duration = Duration::from_millis(150);
+
+/// Blocking. Retakes `observe` while `unsettled`, at most `retries` more times `delay` apart.
+pub fn settle<T>(
+    mut observe: impl FnMut() -> T,
+    unsettled: impl Fn(&T) -> bool,
+    retries: usize,
+    delay: Duration,
+) -> T {
+    let mut observation = observe();
+    for _ in 0..retries {
+        if !unsettled(&observation) {
+            break;
+        }
+        std::thread::sleep(delay);
+        observation = observe();
+    }
+    observation
+}
+
+/// [`assess`] over a fresh snapshot. A snapshot that caught a python starting or exiting (briefly
+/// unreadable) is taken again; `Running` and `Stopped` are never retried. Blocking.
+pub fn assess_settled(snapshot: SnapshotFn, root: &Path, own_pid: u32) -> Verdict {
+    let (verdict, processes) = settle(
+        || {
+            let processes = snapshot();
+            (assess(&processes, root, own_pid), processes)
+        },
+        |(verdict, _)| matches!(verdict, Verdict::Unreadable(_) | Verdict::SnapshotFailed),
+        SETTLE_RETRIES,
+        SETTLE_DELAY,
+    );
+    let name_of = |pid: u32| {
+        processes
+            .iter()
+            .find(|process| process.pid == pid)
+            .map_or("unknown", |process| process.name.as_str())
+    };
+    match &verdict {
+        Verdict::Unreadable(pid) => tracing::warn!(
+            pid,
+            name = %name_of(*pid),
+            "a process whose location cannot be read makes the ComfyUI state unknown"
+        ),
+        Verdict::Running(pid) => tracing::debug!(
+            pid,
+            name = %name_of(*pid),
+            "ComfyUI from this installation is running"
+        ),
+        Verdict::Stopped | Verdict::SnapshotFailed => {}
+    }
+    verdict
 }
 
 /// True when something on loopback answers like ComfyUI. It cannot be proven to be this
@@ -158,18 +219,18 @@ impl RuntimeMaintenance for ProcessRuntimeGuard {
         let root: PathBuf = install_root.to_owned();
         let own_pid = std::process::id();
         let snapshot = self.snapshot;
-        let verdict = tokio::task::spawn_blocking(move || assess(&snapshot(), &root, own_pid))
+        let verdict = tokio::task::spawn_blocking(move || assess_settled(snapshot, &root, own_pid))
             .await
             .unwrap_or(Verdict::SnapshotFailed);
         match verdict {
             Verdict::Running(_) => return Err(RuntimeBlock::Running),
             Verdict::SnapshotFailed => return Err(RuntimeBlock::CannotAssess),
-            Verdict::Stopped | Verdict::Unreadable => {}
+            Verdict::Stopped | Verdict::Unreadable(_) => {}
         }
         if comfyui_answers(self.port).await {
             return Err(RuntimeBlock::Running);
         }
-        if verdict == Verdict::Unreadable && port_is_open(self.port).await {
+        if matches!(verdict, Verdict::Unreadable(_)) && port_is_open(self.port).await {
             return Err(RuntimeBlock::CannotAssess);
         }
         Ok(())

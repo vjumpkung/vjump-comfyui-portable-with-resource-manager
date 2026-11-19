@@ -22,7 +22,7 @@ use crate::{
     environment::{
         manifest::parse_manifest,
         python::normalize_path,
-        runtime_guard::{Verdict, assess},
+        runtime_guard::{Verdict, assess_settled},
         source::GitSource,
         sqlite::SqliteEnvironmentStore,
         switcher::nested,
@@ -198,12 +198,11 @@ async fn ensure_roots_stopped_with(
 ) -> Result<(), RootSwitchError> {
     let roots: Vec<_> = roots.iter().map(|root| normalize_path(root)).collect();
     tokio::task::spawn_blocking(move || {
-        let snapshot = snapshot();
         for root in roots {
-            match assess(&snapshot, &root, std::process::id()) {
+            match assess_settled(snapshot, &root, std::process::id()) {
                 Verdict::Stopped => {}
                 Verdict::Running(_) => return Err(RootSwitchError::ComfyUiRunning),
-                Verdict::Unreadable | Verdict::SnapshotFailed => {
+                Verdict::Unreadable(_) | Verdict::SnapshotFailed => {
                     return Err(RootSwitchError::ComfyUiStateUnknown);
                 }
             }

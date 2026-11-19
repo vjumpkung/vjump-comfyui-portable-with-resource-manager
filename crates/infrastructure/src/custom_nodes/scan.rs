@@ -188,6 +188,9 @@ pub fn scan(
             if name.starts_with('.') || name == "__pycache__" {
                 continue;
             }
+            if enabled && is_comfyui_shipped(name) {
+                continue;
+            }
             let Ok(safe) = SafeFileName::new(name) else {
                 continue;
             };
@@ -330,6 +333,29 @@ mod tests {
                 .all(|n| n.origin == ProvenanceOrigin::ExternallyObserved)
         );
         assert_eq!(by_name("pack").id, scan_id("pack", false));
+    }
+
+    #[test]
+    fn comfyui_files_are_not_listed_but_a_disabled_copy_is() {
+        let directory = tempfile::tempdir().unwrap();
+        let cn = directory.path();
+        write(&cn.join("websocket_image_save.py"), "x");
+        write(&cn.join("example_node.py.example"), "x");
+        write(&cn.join("solo.py"), "x");
+        write(&cn.join(".disabled/websocket_image_save.py"), "x");
+
+        let nodes = scan(&pin_absolute(cn).unwrap(), &CancelToken::new()).unwrap();
+        let listed = nodes
+            .iter()
+            .map(|n| (n.name.as_str(), n.enabled, n.single_file))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            listed,
+            [
+                ("solo.py", true, true),
+                ("websocket_image_save.py", false, true)
+            ]
+        );
     }
 
     #[test]
