@@ -383,6 +383,7 @@ export function trashName(): string {
 
 export type FailureKind =
   | 'comfyui_running'
+  | 'environment_in_use'
   | 'busy'
   | 'stale'
   | 'consent'
@@ -401,6 +402,8 @@ export function failureKind(code: string): FailureKind {
   switch (code) {
     case 'comfyui_running':
       return 'comfyui_running'
+    case 'environment_process_running':
+      return 'environment_in_use'
     case 'maintenance_busy':
     case 'node_operation_running':
       return 'busy'
@@ -439,6 +442,8 @@ export function failureKind(code: string): FailureKind {
 
 export const FAILURE_GUIDANCE = {
   comfyui_running: 'customNodes.guidance.comfyuiRunning',
+  // The backend message already says to close the program and retry.
+  environment_in_use: null,
   busy: 'customNodes.guidance.busy',
   stale: 'customNodes.guidance.stale',
   consent: 'customNodes.guidance.consent',

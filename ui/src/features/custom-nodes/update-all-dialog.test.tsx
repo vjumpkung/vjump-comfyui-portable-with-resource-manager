@@ -363,3 +363,24 @@ it('keeps the review open when ComfyUI is running and applies nothing', async ()
   await screen.findByText('Update results')
   expect(gateway.nodeUpdateAll).toHaveBeenCalledTimes(2)
 })
+
+it('keeps the review open when a program runs Python from the environment and applies nothing', async () => {
+  vi.mocked(gateway.nodeUpdateAll).mockRejectedValueOnce(
+    new IpcClientError(
+      'environment_process_running',
+      'python.exe (process 77) is running Python from this environment. Close it, then retry.',
+    ),
+  )
+  mount([registryInstalled({ id: 'a', name: 'a' })])
+  start(1)
+  await screen.findByText('Review of 1 plans')
+  apply()
+  await screen.findByText('The batch was not applied')
+  expect(screen.getByText(/python\.exe \(process 77\) is running Python/)).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Stop ComfyUI' })).toBeNull()
+  expect(screen.queryByText('Update results')).toBeNull()
+  expect(onStopComfy).not.toHaveBeenCalled()
+  apply()
+  await screen.findByText('Update results')
+  expect(gateway.nodeUpdateAll).toHaveBeenCalledTimes(2)
+})

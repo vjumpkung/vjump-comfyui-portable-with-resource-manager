@@ -25,7 +25,7 @@ function newTerminal() {
     convertEol: true,
     scrollback: 1500,
     rows: 12,
-    fontFamily: '"Geist Mono Variable", "Noto Sans Thai Looped", monospace',
+    fontFamily: '"Geist Mono Variable", "Kanit", monospace',
     fontSize: 12,
     screenReaderMode: true,
     theme: {

@@ -79,11 +79,12 @@ export function FailureNotice({
               {stopping ? t('customNodes.stoppingComfy') : t('customNodes.stopAndRetry')}
             </Button>
           )}
-          {failure.kind === 'busy' && failure.retry !== null && (
-            <Button variant="outline" size="sm" onClick={onRetry}>
-              {t('common.tryAgain')}
-            </Button>
-          )}
+          {(failure.kind === 'busy' || failure.kind === 'environment_in_use') &&
+            failure.retry !== null && (
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                {t('common.tryAgain')}
+              </Button>
+            )}
           {failure.kind === 'stale' && prepare !== null && (
             <Button size="sm" onClick={() => onPrepareAgain(prepare)}>
               {t('customNodes.prepareAgain')}

@@ -140,7 +140,7 @@ export function ComfyPage() {
     },
     onSettled: () => void runtimeStore.refresh().catch(() => undefined),
   })
-  // A launch can wait for the startup node scan, so its button must show that it is working.
+  // A launch can take a while (preflight, readiness), so its button must show that it is working.
   const starting = start.isPending || acceptPort.isPending
   const restarting = restart.isPending || acceptPort.isPending
 
@@ -208,7 +208,7 @@ export function ComfyPage() {
               </Button>
             ) : (
               <Button
-                disabled={busy || !status}
+                disabled={start.isPending || restart.isPending || transitioning || !status}
                 aria-busy={starting}
                 onClick={() => start.mutate(undefined, { onSuccess: handleStart, onError })}
               >

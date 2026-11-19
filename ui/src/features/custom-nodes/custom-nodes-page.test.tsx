@@ -323,7 +323,7 @@ it('stop_is_awaited_before_retry', async () => {
   vi.mocked(gateway.nodePrepareGit).mockRejectedValueOnce(
     new IpcClientError(
       'comfyui_running',
-      'ComfyUI must be stopped before changing custom nodes. If it is already stopped, close other programs that use the ComfyUI folder, such as a terminal opened there, and retry.',
+      'ComfyUI must be stopped before changing custom nodes. If it is already stopped, close any ComfyUI started outside this app, or a Python run as administrator, and retry.',
     ),
   )
   mount()

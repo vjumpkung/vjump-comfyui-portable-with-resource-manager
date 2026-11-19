@@ -168,6 +168,18 @@ it('marks Restart busy while a restart is pending', async () => {
   await waitFor(() => expect(restart.getAttribute('aria-busy')).not.toBe('true'))
 })
 
+it('enables Start as soon as ComfyUI is stopped, while the Stop request is still pending', async () => {
+  vi.mocked(gateway.comfyStop).mockReturnValueOnce(new Promise<ComfyStatusDto>(() => undefined))
+  mount(<ComfyPage />)
+  await snapshot({ ...stopped, lifecycle: 'running' })
+  fireEvent.click(await screen.findByRole('button', { name: /^Stop$/ }))
+  await waitFor(() => expect(gateway.comfyStop).toHaveBeenCalledTimes(1))
+  // The stop has taken effect but its rescan keeps the request open.
+  emit({ kind: 'comfy:state', cursor: 2, status: stopped })
+  const start = await screen.findByRole('button', { name: /^Start$/ })
+  expect((start as HTMLButtonElement).disabled).toBe(false)
+})
+
 it('shows the crash reason and live log text', async () => {
   mount(<ComfyPage />)
   await snapshot({

@@ -113,6 +113,7 @@ const GLOBAL_REFUSALS = new Set([
 /** Refused before anything ran: the review stays open so the same batch can be applied again. */
 const BEFORE_RUN = new Set([
   'comfyui_running',
+  'environment_process_running',
   'maintenance_busy',
   'node_operation_running',
   'node_consent_required',

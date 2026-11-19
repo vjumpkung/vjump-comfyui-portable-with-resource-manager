@@ -89,7 +89,12 @@ const PLAN_VERB = {
 } as const satisfies Record<PlanReviewDto['kind'], NodeText['key']>
 
 /** A refusal before anything ran: the review can be kept and the same request repeated. */
-const KEEP_REVIEW: readonly FailureKind[] = ['consent', 'comfyui_running', 'busy']
+const KEEP_REVIEW: readonly FailureKind[] = [
+  'consent',
+  'comfyui_running',
+  'environment_in_use',
+  'busy',
+]
 
 /**
  * Preparation, review, commit and direct node changes for the page. One request runs at a time.

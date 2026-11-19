@@ -187,6 +187,7 @@ describe('eligibility and lists', () => {
 
   it('maps IPC codes to the documented behaviour and keeps zero distinct from unknown', () => {
     expect(failureKind('comfyui_running')).toBe('comfyui_running')
+    expect(failureKind('environment_process_running')).toBe('environment_in_use')
     expect(failureKind('node_operation_running')).toBe('busy')
     expect(failureKind('node_rescan_failed')).toBe('recovery')
     expect(failureKind('registry_refused')).toBe('registry_refused')
