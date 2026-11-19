@@ -9,6 +9,16 @@ pub enum NodeError {
     ConsentMismatch,
 }
 
+/// Entries the ComfyUI checkout itself ships in `custom_nodes/`; they are not custom nodes.
+pub const COMFYUI_SHIPPED: [&str; 2] = ["websocket_image_save.py", "example_node.py.example"];
+
+/// True when `name` is one of the entries the ComfyUI checkout ships in `custom_nodes/`.
+pub fn is_comfyui_shipped(name: &str) -> bool {
+    COMFYUI_SHIPPED
+        .iter()
+        .any(|shipped| shipped.eq_ignore_ascii_case(name))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId(String);
 impl NodeId {
@@ -184,6 +194,17 @@ mod tests {
             assert!(NodeId::new(bad).is_err(), "{bad}");
         }
         assert!(NodeId::new("node-0f_1").is_ok());
+    }
+
+    #[test]
+    fn comfyui_shipped_files_are_recognised_case_insensitively() {
+        assert!(is_comfyui_shipped("websocket_image_save.py"));
+        assert!(is_comfyui_shipped("WebSocket_Image_Save.PY"));
+        assert!(is_comfyui_shipped("example_node.py.example"));
+        assert!(is_comfyui_shipped("EXAMPLE_NODE.PY.EXAMPLE"));
+        assert!(!is_comfyui_shipped("example_node.py"));
+        assert!(!is_comfyui_shipped("websocket_image_save"));
+        assert!(!is_comfyui_shipped("my-node"));
     }
 
     #[test]
