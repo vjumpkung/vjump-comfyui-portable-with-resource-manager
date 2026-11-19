@@ -1,169 +1,345 @@
-# DESIGN.md — vjumpkung-rust-comfyui-desktop
-
-This is the visual and interaction design system for the manager UI (`ui/`). It applies only to the manager webview; ComfyUI's own web UI is not restyled.
-
-**Upstream.** This document is adapted from the vjump.dev design system:
-
-| | |
-|---|---|
-| Source | `d:\vjump\vjump-dev-new-website\DESIGN.md` |
-| Source fingerprint | sha256 `36a7e467c0c6ba12…` |
-| Captured | 2026-10-15 |
-| Token source | `src/app/globals.css` |
-| Component config | `components.json`: `radix-vega`, `lucide` |
-
-The tokens below are copied verbatim, so this repo is self-contained. When upstream changes, re-sync this file deliberately and note the new fingerprint.
-
-Desktop exceptions are marked **[desktop]**.
-
+---
+name: vjump.dev
+description: Cool grey paper, dark ink and three highlighter pens. A reading-first system for mixed Thai and Latin content, in light and dark.
+colors:
+    background: '#e0e5ec'
+    foreground: '#2a313a'
+    card: '#edf1f5'
+    card-foreground: '#2a313a'
+    popover: '#f4f6f9'
+    popover-foreground: '#2a313a'
+    primary: '#fff89c'
+    primary-foreground: '#2a313a'
+    secondary: '#9ffaff'
+    secondary-foreground: '#2a313a'
+    accent: '#ff9fed'
+    accent-foreground: '#2a313a'
+    muted: '#d2d8e0'
+    muted-foreground: '#4b5562'
+    destructive: 'oklch(0.577 0.245 27.325)'
+    border: '#b6bfc9'
+    input: '#6f7a87'
+    ring: '#a3237e'
+    ink: '#2a313a'
+    pink-ink: '#a3237e'
+    brand-yellow: '#fff89c'
+    brand-cyan: '#9ffaff'
+    brand-pink: '#ff9fed'
+    marker-yellow: '#fff89c'
+    marker-cyan: '#9ffaff'
+    marker-pink: '#ff9fed'
+    note-bg: 'color-mix(in srgb, #ff9fed 22%, #edf1f5)'
+    code-bg: '#2a313a'
+    code-fg: '#e0e5ec'
+    background-dark: '#2a313a'
+    foreground-dark: '#e0e5ec'
+    card-dark: '#343d48'
+    card-foreground-dark: '#e0e5ec'
+    popover-dark: '#343d48'
+    popover-foreground-dark: '#e0e5ec'
+    muted-dark: '#3b4652'
+    muted-foreground-dark: '#b8c0c9'
+    destructive-dark: 'oklch(0.704 0.191 22.216)'
+    border-dark: '#4a5563'
+    input-dark: '#808d9c'
+    ring-dark: '#ff9fed'
+    pink-ink-dark: '#ff9fed'
+    note-bg-dark: 'color-mix(in srgb, #ff9fed 12%, #2a313a)'
+    code-bg-dark: '#1f252c'
+typography:
+    display:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: 'clamp(2.25rem, 1.4rem + 3.4vw, 3.75rem)'
+        fontWeight: 700
+        lineHeight: 1.2
+        letterSpacing: '-0.02em'
+    headline:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: 'clamp(1.875rem, 1.4rem + 1.9vw, 2.625rem)'
+        fontWeight: 700
+        lineHeight: 1.25
+        letterSpacing: '-0.02em'
+    section-title:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '1.5rem'
+        fontWeight: 700
+        lineHeight: 1.35
+        letterSpacing: '-0.01em'
+    feature-title:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '1.625rem'
+        fontWeight: 700
+        lineHeight: 1.3
+    list-title:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '1.25rem'
+        fontWeight: 700
+        lineHeight: 1.4
+    row-title:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '1rem'
+        fontWeight: 600
+        lineHeight: 1.45
+    prose-h1:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '1.75rem'
+        fontWeight: 700
+        lineHeight: 1.3
+        letterSpacing: '-0.01em'
+    prose-h2:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '1.5rem'
+        fontWeight: 700
+        lineHeight: 1.4
+        letterSpacing: '-0.01em'
+    prose-h3:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '1.1875rem'
+        fontWeight: 600
+        lineHeight: 1.45
+    lede:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '1.125rem'
+        fontWeight: 400
+        lineHeight: 1.5556
+    body-prose:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '1rem'
+        fontWeight: 400
+        lineHeight: 1.85
+    body-list:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '1rem'
+        fontWeight: 400
+        lineHeight: 1.8
+    body-ui:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '0.9375rem'
+        fontWeight: 400
+        lineHeight: 1.65
+    nav:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '0.9375rem'
+        fontWeight: 500
+        lineHeight: 1.5
+    control:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '0.875rem'
+        fontWeight: 500
+        lineHeight: 1.4286
+    label:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '0.8125rem'
+        fontWeight: 500
+        lineHeight: 1.5
+    tag:
+        fontFamily: 'Plus Jakarta Sans, Kanit, ui-sans-serif, system-ui, sans-serif'
+        fontSize: '0.75rem'
+        fontWeight: 600
+        lineHeight: 1.3333
+        letterSpacing: '0.05em'
+    code-block:
+        fontFamily: 'Geist Mono, Kanit, ui-monospace, monospace'
+        fontSize: '0.8125rem'
+        fontWeight: 400
+        lineHeight: 1.7
+    code-inline:
+        fontFamily: 'Geist Mono, Kanit, ui-monospace, monospace'
+        fontSize: '0.875em'
+        fontWeight: 500
+rounded:
+    xs: '0.25rem'
+    md: '0.5rem'
+    lg: '0.625rem'
+    xl: '0.875rem'
+    full: '9999px'
+spacing:
+    gutter: '20px'
+    gutter-wide: '32px'
+    page-y: '40px'
+    page-y-wide: '56px'
+    section-gap: '80px'
+    section-gap-wide: '96px'
+    block-gap: '40px'
+    group-gap: '24px'
+    card: '24px'
+    card-compact: '20px'
+    target: '40px'
+    target-large: '44px'
+components:
+    nav-link:
+        textColor: '{colors.muted-foreground}'
+        typography: '{typography.nav}'
+        height: '40px'
+    nav-link-hover:
+        textColor: '{colors.foreground}'
+    nav-link-active:
+        textColor: '{colors.foreground}'
+    nav-tab-active:
+        backgroundColor: '{colors.brand-yellow}'
+        textColor: '{colors.ink}'
+        typography: '{typography.control}'
+        rounded: '{rounded.full}'
+        padding: '0 16px'
+        height: '40px'
+    nav-tab-hover:
+        backgroundColor: '{colors.muted}'
+        textColor: '{colors.foreground}'
+    pill-control:
+        backgroundColor: '{colors.card}'
+        textColor: '{colors.foreground}'
+        typography: '{typography.control}'
+        rounded: '{rounded.full}'
+        padding: '0 16px'
+        height: '40px'
+    pill-control-hover:
+        backgroundColor: '{colors.muted}'
+    filter-chip-active:
+        backgroundColor: '{colors.foreground}'
+        textColor: '{colors.background}'
+        typography: '{typography.control}'
+        rounded: '{rounded.full}'
+        padding: '0 16px'
+        height: '40px'
+    icon-control:
+        textColor: '{colors.muted-foreground}'
+        rounded: '{rounded.full}'
+        size: '40px'
+    icon-control-hover:
+        backgroundColor: '{colors.brand-yellow}'
+        textColor: '{colors.ink}'
+    scroll-to-top:
+        backgroundColor: '{colors.primary}'
+        textColor: '{colors.primary-foreground}'
+        rounded: '{rounded.full}'
+        size: '44px'
+    category-tag-yellow:
+        backgroundColor: '{colors.brand-yellow}'
+        textColor: '{colors.ink}'
+        typography: '{typography.tag}'
+        rounded: '{rounded.full}'
+        padding: '2px 10px'
+    category-tag-cyan:
+        backgroundColor: '{colors.brand-cyan}'
+        textColor: '{colors.ink}'
+        typography: '{typography.tag}'
+        rounded: '{rounded.full}'
+        padding: '2px 10px'
+    category-tag-pink:
+        backgroundColor: '{colors.brand-pink}'
+        textColor: '{colors.ink}'
+        typography: '{typography.tag}'
+        rounded: '{rounded.full}'
+        padding: '2px 10px'
+    input-search:
+        backgroundColor: '{colors.card}'
+        textColor: '{colors.foreground}'
+        rounded: '{rounded.lg}'
+        padding: '0 40px'
+        height: '44px'
+    panel-card:
+        backgroundColor: '{colors.card}'
+        textColor: '{colors.card-foreground}'
+        rounded: '{rounded.xl}'
+        padding: '24px'
+    link-card:
+        backgroundColor: '{colors.card}'
+        textColor: '{colors.card-foreground}'
+        rounded: '{rounded.xl}'
+        padding: '20px'
+    contact-row:
+        backgroundColor: '{colors.background}'
+        textColor: '{colors.foreground}'
+        typography: '{typography.control}'
+        rounded: '{rounded.lg}'
+        padding: '0 16px'
+        height: '44px'
+    contact-row-hover:
+        backgroundColor: '{colors.brand-yellow}'
+        textColor: '{colors.ink}'
+    callout:
+        backgroundColor: '{colors.note-bg}'
+        textColor: '{colors.foreground}'
+        typography: '{typography.body-list}'
+        rounded: '{rounded.xl}'
+        padding: '16px 20px'
+    code-block:
+        backgroundColor: '{colors.code-bg}'
+        textColor: '{colors.code-fg}'
+        typography: '{typography.code-block}'
+        rounded: '{rounded.xl}'
+        padding: '16px 48px 16px 16px'
+    code-inline:
+        backgroundColor: '{colors.brand-yellow}'
+        textColor: '{colors.ink}'
+        typography: '{typography.code-inline}'
+        rounded: '{rounded.md}'
+        padding: '2px 6px'
+    code-inline-dark:
+        backgroundColor: '{colors.muted-dark}'
+        textColor: '{colors.brand-yellow}'
+    copy-button:
+        textColor: '{colors.code-fg}'
+        rounded: '{rounded.md}'
+        size: '32px'
+    copy-button-hover:
+        backgroundColor: '{colors.brand-yellow}'
+        textColor: '{colors.ink}'
+    table-header:
+        backgroundColor: '{colors.brand-cyan}'
+        textColor: '{colors.ink}'
+        padding: '12px 16px'
+    table-cell:
+        textColor: '{colors.foreground}'
+        padding: '10px 16px'
+    search-dialog:
+        backgroundColor: '{colors.popover}'
+        textColor: '{colors.popover-foreground}'
+        rounded: '{rounded.xl}'
+        width: '36rem'
+    search-result-selected:
+        backgroundColor: '{colors.muted}'
+        textColor: '{colors.foreground}'
+        rounded: '{rounded.md}'
+        padding: '12px'
+    lightbox-close:
+        backgroundColor: '{colors.brand-pink}'
+        textColor: '{colors.ink}'
+        rounded: '{rounded.full}'
+        size: '40px'
+    lightbox-close-hover:
+        backgroundColor: '{colors.brand-yellow}'
 ---
 
-## 1. Principles
+# Design System: vjump.dev
 
-1. **Soft slate canvas with three pastel accents.** Neutral surfaces are cool blue-grey slate. All color comes from yellow, cyan and pink. There are no saturated "primary blue" buttons.
-2. **Border-first, flat surfaces.** Elements are separated by 1px `border-border` lines and `bg-card` surfaces. Shadows appear only on overlays (`shadow-2xl`).
-3. **Hover = accent border or accent fill.** Interactive elements start neutral (`border-border bg-card text-muted-foreground`). On hover they take a brand border, or a brand fill with dark text.
-4. **Monospace for metadata.** Sizes, hashes, versions, paths, speeds, ETAs, status chips, section eyebrows, keyboard hints and log output use `font-mono`. Chips and eyebrows are often uppercase with wide tracking.
-5. **Tight, heavy headlines; small calm body.** Page titles use `font-extrabold tracking-tighter`. Body text uses `text-sm font-medium leading-relaxed`.
-6. **[desktop] English and Thai copy for release 1.** Manager UI copy is user-selectable, with English as the default. Fonts MUST render Thai glyphs in UI copy, paths, model names and node names (§3).
-
-**[desktop] Translation pattern.**
-
-- Keep both locales in one `ui/src/shared/i18n/translations.json` catalog (`{ "en": {...}, "th": {...} }`), accessed through the `ui/src/shared/i18n/index.ts` module's `t()` / `useTranslation()`; the module keeps the current language in a zustand store. Load the catalog synchronously; existing bundler resolution supports JSON, so change TypeScript configuration only if typecheck requires it.
-- Use flat semantic keys with dotted namespaces and camelCase segments. Translate complete messages with named `{placeholders}`, never concatenated translated fragments. Define `_one` / `_other` plural variants in both locales (Thai values may match). Prefer string interpolation; add a ReactNode translation component only when a sentence needs one.
-- Store keys and data, not translated strings, in state and constant maps. Translate at render time or message-delivery time, using the current language after an asynchronous operation. `useTranslation()` makes mounted UI react to language changes.
-- Translate all manager-owned visible copy, accessible names (`aria-label`, `title`, placeholders), toasts, dialogs and validation messages. Map status/enum labels by transport value and known setup step names by `step.step`; unknown values retain their existing raw or underscore-to-space fallback.
-- Keep product and technical names untranslated. Display arbitrary backend/IPC errors, logs, external descriptions/release notes, paths, file names and identifiers as delivered; backend diagnostic text and logs remain English.
-- The backend setting is authoritative. Cache it in localStorage (`vjumpkung-comfyui.language`) for first paint and update `<html lang>`; default to `en` without browser-language detection. Recovery/rebuild routes use only the cached language and make no settings calls.
-- Show language options by endonym: **English** / **ไทย**. Put the selector at the top of the existing first setup stage (**Install root**), keeping six stages and no header language control. Apply the wizard choice locally at once, save the full settings, reconcile with the returned language and restore the previous language on failure. Settings keeps language as a draft until a successful **Save**. The app layer coordinates wizard preferences without feature-to-feature imports.
-- Number and date formatting stays unchanged.
-
-## 2. Color
-
-### 2.1 Brand accents (fixed in both themes)
-| Token | Hex | Role in this app |
-|---|---|---|
-| `brand-yellow` / `primary` | `#fff89c` | Active nav item, selected filter, primary action fill, "completed" chip |
-| `brand-cyan` / `secondary` | `#9ffaff` | Card/row hover border, table header, input focus, progress fill, "running/downloading" chip |
-| `brand-pink` / `accent` | `#ff9fed` | Active nav underline, link underline, `::selection`, light-mode `ring`, "paused/attention" chip |
-
-**Rule: text on a brand fill is always `#2a313a`** (`text-[#2a313a]` or `*-foreground`) in both themes.
-
-### 2.2 Neutral / semantic tokens
-| Token | Light | Dark | Usage |
-|---|---|---|---|
-| `background` | `#e0e5ec` | `#2a313a` | App canvas, title/top bar (`/80` + blur) |
-| `foreground` | `#2a313a` | `#e0e5ec` | Primary text |
-| `card` / `popover` | `#edf1f5` | `#343d48` | Panels, sidebar, inputs, dialogs, tables |
-| `muted` | `#d2d8e0` | `#3b4652` | Hover rows, kbd, progress track, zebra stripes |
-| `muted-foreground` | `#56606c` | `#b8c0c9` | Secondary text, meta, icons |
-| `border` / `input` | `#aab3be` | `#596674` | All 1px rules and outlines |
-| `ring` | `#ff9fed` | `#9ffaff` | Focus rings |
-| `destructive` | `oklch(0.577 0.245 27.325)` | `oklch(0.704 0.191 22.216)` | **[desktop]** Used for delete/uninstall confirmations and the `failed` state. Upstream does not use it in custom UI. |
-
-- Light and dark swap `#2a313a` and `#e0e5ec`.
-- **Code, log and terminal surfaces use dark slate `#2a313a` in both themes.**
-- Chart tokens `chart-1…5` map to yellow, cyan, pink, muted-fg and fg.
-
-### 2.3 Theming
-- `next-themes` (framework-agnostic React) with `attribute="class"`, `defaultTheme="system"`, `enableSystem` and `disableTransitionOnChange`. Its injected script and style MUST pass the production CSP. If they don't, replace it with a minimal provider that has the same semantics.
-- Dark variant: `@custom-variant dark (&:is(.dark *))`.
-- The theme toggle is a ghost icon button (Sun/Moon) in the top bar and also lives in Settings.
-
-## 3. Typography
-| Role | Font | Notes |
-|---|---|---|
-| Sans | **Plus Jakarta Sans** (variable) → `--font-sans`, `--font-heading` | Bundled locally (`@fontsource-variable/plus-jakarta-sans`) **[desktop: no runtime Google Fonts; CSP and offline]** |
-| Mono | **Geist Mono** → `--font-mono` | Bundled locally |
-| Thai fallback | **Kanit** (Thai subset, weights 400/500/600/700/800) | **[desktop]** Bundled locally (`@fontsource/kanit`) and added to both the sans and mono stacks, because Plus Jakarta Sans and Geist Mono have no Thai glyphs. Kanit rendering still needs to be re-checked in WebView2 and WebKitGTK (font change 2026-11-19). |
-
-Type scale:
-| Element | Classes |
-|---|---|
-| Page title | `text-2xl sm:text-3xl font-extrabold tracking-tighter` |
-| Panel/section title | `text-lg font-bold tracking-tight` |
-| Section eyebrow | `font-mono text-xs font-semibold uppercase tracking-wider text-muted-foreground` |
-| Body | `text-sm font-medium leading-relaxed` |
-| Meta (size, version, ETA) | `font-mono text-xs text-muted-foreground` |
-| Chip | `font-mono text-[9px] uppercase tracking-widest` |
-
-When the interface language is Thai, 9px monospace chips render at 11px without wide tracking because Thai vowel and tone marks are illegible at 9px.
-
-Long paths, model names and URLs wrap with `break-words [overflow-wrap:anywhere]`, or truncate with a tooltip in tables.
-
-## 4. Shape, spacing, layout
-- **Radius base** `--radius: 0.625rem`. Scale: `sm ×0.6`, `md ×0.8`, `lg ×1`, `xl ×1.4`, `2xl ×1.8`, `3xl ×2.2`, `4xl ×2.6`.
-  - `rounded-md`: buttons, inputs, chips, nav items
-  - `rounded-lg`: tables, dialogs, log panels
-  - `rounded-xl`: cards
-  - `rounded-full`: avatars, circular icon buttons
-- **[desktop] App shell** (replaces the website's centred `max-w-5xl` container):
-  - left sidebar: `w-56`, `bg-card border-r`, collapsible to icons at `< md`;
-  - top bar: `h-14 bg-background/80 backdrop-blur-md border-b`, holding the ComfyUI status chip, Start/Stop button and theme toggle;
-  - content: `p-6`, sections stacked with `flex flex-col gap-6`;
-  - minimum window width 960px.
-- Sidebar items, in order: **Overview**, **ComfyUI**, **Downloads**, **Models**, **Custom Nodes**, **Environment**, **Settings**.
-  - Active item: `bg-brand-yellow text-[#2a313a] font-semibold`.
-  - Inactive item: muted, and gets a pink left bar on hover.
-
-## 5. Components and patterns
-- **Buttons.** shadcn `Button`, style **`radix-vega`**, with variants `default | outline | secondary | ghost | destructive | link`. Primary actions fill yellow, outline buttons hover cyan or pink, and destructive actions use the `destructive` variant. Press feedback is `translate-y-px`.
-- **Cards and panels.** `rounded-xl border border-border bg-card p-5 transition-all duration-300` with `hover:border-brand-cyan`, or pink for a neighbouring card. Alternating accents between neighbours is deliberate.
-- **Tables** (models, nodes, downloads, packages):
-  - wrapper: `overflow-x-auto rounded-lg border bg-card`;
-  - header: cyan `bg-brand-cyan text-[#2a313a]`;
-  - zebra rows `even:bg-muted/45`, hover rows `hover:bg-muted`;
-  - Active row: `bg-muted` with a 3px accent inset bar (`shadow-[inset_3px_0_0_var(--accent)]`); checked rows `bg-muted/60`. Never put a brand fill behind table text (contrast).
-  - columns for size, hash and version use mono;
-  - lists over 200 rows are virtualized.
-- **Status chips [desktop].** These use the chip style. Each one MUST include a text label and a Lucide icon, never color alone.
-
-  | State | Style | Icon |
-  |---|---|---|
-  | queued / stopped | `bg-muted text-muted-foreground border-border` | `Clock` / `Square` |
-  | resolving / starting / verifying | cyan outline | `Loader2` (spin, `motion-safe`) |
-  | downloading / running | cyan fill | `ArrowDownToLine` / `Play` |
-  | paused / repair required / deps-failed | pink fill | `Pause` / `Wrench` / `TriangleAlert` |
-  | completed / verified / active env | yellow fill | `Check` / `ShieldCheck` |
-  | unverified | yellow outline | `ShieldQuestion` |
-  | failed / crashed | `destructive` fill, light text | `CircleX` |
-
-- **Progress bar [desktop].** `h-1.5 rounded-full bg-muted` track with a cyan fill, or pink when paused. Beside it, mono `bytes / total · speed · ETA`. For hf-CLI jobs, speed reads as an estimate (FR-DL-7).
-- **Inputs.** `rounded-md border bg-card text-xs`, with an icon at left `pl-9`. Focus: `border-brand-cyan ring-2 ring-brand-cyan/35`. The clear button is a small round `X`.
-- **Dialogs.** Overlay `bg-[#2a313a]/80 backdrop-blur-xs`; panel `rounded-lg bg-popover shadow-2xl`. Destructive confirmations state what will happen, e.g. "Move 3 files (12.4 GB) to Recycle Bin".
-- **Log / terminal [desktop].** xterm on `#2a313a` in both themes, with a cyan border, `rounded-lg`, Geist Mono and a hover-revealed copy button. Theme mapping: cursor and selection pink, blue ANSI → cyan, yellow ANSI → brand yellow.
-- **Toasts.** Sonner styled as `bg-popover border` with no shadow beyond overlays. Accent left bar: cyan for info, yellow for success, pink for warning, destructive for error.
-- **Empty states.** `rounded-xl border border-dashed p-12 text-center text-sm text-muted-foreground`, plus one primary action, e.g. "Add download".
-- **Links.** `font-semibold underline decoration-brand-pink decoration-2 underline-offset-2`. External links open in the system browser and show an `ExternalLink` icon.
-
-### Startup loading screen
-
-The manager first paints a static splash from `index.html`, using the static `splash.css` stylesheet: centered product name and a cyan spinner, with no untranslated status copy. It uses the background/foreground pairs `#e0e5ec` / `#2a313a` (light) and `#2a313a` / `#e0e5ec` (dark), selected by `prefers-color-scheme`; the spinner track uses `muted` and its top uses `brand-cyan`.
-
-The splash stylesheet is external because Tauri injects a style nonce into inline `<style>` elements. That nonce disables CSP `'unsafe-inline'` for runtime-injected styles, including Sonner toasts and Radix scroll lock.
-
-React replaces the splash with the shared `LoadingScreen`, using the same layout and theme tokens plus translated “Starting…” text. `BootGate` polls `app_ready` one request at a time; state-dependent queries mount only after startup state is published. The lazy app import starts immediately alongside readiness polling. Shell pages, setup/rebuild and curated review load as separate chunks, with Skeleton fallbacks while their imports finish. Both startup screens use `role="status"` and `aria-busy="true"`, hide the decorative spinner from assistive technology, and disable its animation for `prefers-reduced-motion`.
-
-Startup composition runs on the named startup worker. A locked Initializing/Ready/Exiting gate prevents publication after an early close/exit; background services and the custom-node inventory scan start only after state publication; until that scan finishes, the Custom Nodes page shows its loading status. The Custom Nodes page shows a notice when the last scan did not finish. The existing manager can be restored and focused before readiness.
-
-## 6. Motion
-- Default `transition-colors`; cards use `transition-all duration-300`.
-- Micro-motion: arrow nudge on hover, button press, a 2 s cyan check after copying.
-- All animation is `motion-safe:`. Theme switching is instant.
-- Upstream known gaps (`animate-fade-in`, `scrollbar-thin`) are **not** used. Use `tw-animate-css` `animate-in fade-in` instead, and style scrollbars in CSS if needed.
-
-## 7. Accessibility
-- Every interactive element has `focus-visible:ring-2 ring-ring`. Full keyboard navigation covers the sidebar, tables (arrow keys), dialogs (focus trap, Esc) and the download queue.
-- Icon-only buttons have `aria-label`s translated into the selected interface language. Dialogs use `role="dialog" aria-modal="true"`.
-- Text on brand fills is always `#2a313a`. WCAG AA contrast is verified for all chip and button states in both themes.
-- Status is never conveyed by color alone (§5).
-- Layout survives 200 % zoom and long Unicode paths.
-
-## 8. Iconography
-- **lucide-react** for all UI icons, usually `h-3.5`–`h-4`. This replaces Remixicon from the reference frontend.
-- App icon and logo: TBD (upstream `vjumpkung-landscape.svg` may be reused with permission of the owner).
-
-## 9. Not adopted from upstream
-- MDX/article typography, blog cards/bento, image lightbox, GitHub gist embeds, and `search.json` search.
-- A `⌘K` command palette is not part of release 1.
-- Thai-first copy; the desktop UI offers English and Thai, defaulting to English (see §1.6).
+<!-- impeccable:design-map -->
+Name: vjump.dev
+Colors: background #e0e5ec, foreground #2a313a, card #edf1f5, card-foreground #2a313a, popover #f4f6f9, popover-foreground #2a313a, primary #fff89c, primary-foreground #2a313a, secondary #9ffaff, secondary-foreground #2a313a, accent #ff9fed (+33 more in the frontmatter)
+Fonts: Plus Jakarta Sans (display, headline, section-title, feature-title, list-title, row-title, prose-h1, prose-h2, prose-h3, lede, body-prose, body-list, body-ui, nav, control, label, tag); Geist Mono (code-block, code-inline)
+Spacing: gutter 20px, gutter-wide 32px, page-y 40px, page-y-wide 56px, section-gap 80px, section-gap-wide 96px, block-gap 40px, group-gap 24px, card 24px, card-compact 20px, target 40px (+1 more in the frontmatter)
+Radius: xs 0.25rem, md 0.5rem, lg 0.625rem, xl 0.875rem, full 9999px
+North Star: "The Highlighter Notebook"
+Rules:
+- The Three Highlighters Rule. Yellow, cyan and pink are the only accents.
+- The Ink On Pastel Rule. A highlighter fill always carries Graphite Ink text, in both themes.
+- The Pens Are Not Pencils Rule. Highlighters never set text on the light page, where they measure 1.15:1 (yellow), 1.06:1 (cyan) and 1.45:1 (pink).
+- The One Family Rule. Headings and body share one sans family.
+- The Tight Top Rule. Negative tracking belongs to titles at section-title size and above.
+- The Flat Paper Rule. Cards, panels, rows and inputs carry no shadow at rest.
+- The Pill And Sheet Rule. Compact controls and labels are pills.
+- (+1 more)
+Elevation:
+- Avatar lift: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)
+- Floating control: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)
+- Overlay: 0 25px 50px -12px rgb(0 0 0 / 0.25)
+Don't:
+- Don't use highlighter colours or `primary` as text on the light theme.
+- Don't add a fourth accent, or blend the highlighters into a gradient.
+- Don't put a marker swipe behind light text in the dark theme.
+- Don't add shadows to resting cards, panels, rows or inputs.
+- Don't introduce a separate display typeface.
+- Don't rely on Hairline alone to identify a standalone control.
+- Don't spread the marker widely.
+- Don't use dashed borders for anything except empty states.
+Full: .impeccable/design-full.md (read a section when you need its detail)
