@@ -428,6 +428,13 @@ impl RuntimeMaintenance for Stopped {
     }
 }
 
+#[async_trait]
+impl EnvironmentUsers for Stopped {
+    async fn first_user(&self, _: &Path) -> Option<EnvironmentUser> {
+        None
+    }
+}
+
 /// Consumes one scheduled failure, if any.
 fn take_failure(remaining: &Mutex<usize>) -> bool {
     let mut remaining = remaining.lock().unwrap();
@@ -543,6 +550,7 @@ async fn start(root: &Path, sim: Arc<Sim>, faults: Faults) -> Machine {
         )),
         gate: Arc::new(TokioMaintenanceGate::new()),
         runtime: Arc::new(Stopped),
+        env_users: Arc::new(Stopped),
         clock: Arc::new(SystemClock),
         ids: Arc::new(RandomIds::default()),
         active_runs: Arc::new(ActiveRuns::default()),

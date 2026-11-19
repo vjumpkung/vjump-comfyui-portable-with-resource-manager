@@ -30,10 +30,9 @@ pub async fn inspect(
             }
             Ok(InventoryState::Stopped)
         }
-        Verdict::Running(_) => Ok(InventoryState::Unknown(
-            "a process is using this installation; its termination scope is not owned by this core"
-                .into(),
-        )),
+        Verdict::Running(pid) => Ok(InventoryState::Unknown(format!(
+            "ComfyUI from this installation (process {pid}) is running but is not controlled by this app; close it and retry"
+        ))),
         Verdict::Unreadable | Verdict::SnapshotFailed => Ok(InventoryState::Unknown(
             "process ownership could not be assessed; close the surviving process and retry".into(),
         )),

@@ -9,6 +9,7 @@ pub struct ProcessInfo {
     pub exe: Option<PathBuf>,
     pub cwd: Option<PathBuf>,
     pub cmd: Vec<String>,
+    pub parent: Option<u32>,
 }
 
 /// A blocking snapshot of the running processes with their executable, working directory and
@@ -36,6 +37,7 @@ pub fn snapshot() -> Vec<ProcessInfo> {
                 .iter()
                 .map(|part| part.to_string_lossy().into_owned())
                 .collect(),
+            parent: process.parent().map(|pid| pid.as_u32()),
         })
         .collect()
 }
@@ -44,18 +46,30 @@ pub fn snapshot() -> Vec<ProcessInfo> {
 /// about the rest of the machine inject [`test_snapshot`], so they cannot be failed by it.
 pub type SnapshotFn = fn() -> Vec<ProcessInfo>;
 
-/// The real snapshot minus python interpreters whose location cannot be read. A python caught
-/// while starting or exiting (the parallel suite spawns many) briefly has no readable cwd, exe or
-/// command line, and `assess` rightly treats such a process as unassessable. Mirrors that rule.
+/// The real snapshot minus processes whose location cannot be read and so cannot be assessed: a
+/// python caught while starting or exiting (the parallel suite spawns many) briefly has no
+/// readable cwd, exe or command line, and on Windows a process with a relative `main.py` argument
+/// but no readable cwd cannot be placed either (other OSes ignore that case). Mirrors both
+/// Unreadable rules of `assess`.
 #[cfg(test)]
 pub fn test_snapshot() -> Vec<ProcessInfo> {
     snapshot()
         .into_iter()
         .filter(|process| {
-            !(process.name.to_lowercase().contains("python")
+            let hidden_python = process.name.to_lowercase().contains("python")
                 && process.cwd.is_none()
                 && process.exe.is_none()
-                && process.cmd.is_empty())
+                && process.cmd.is_empty();
+            let relative_main_without_cwd = cfg!(windows)
+                && process.cwd.is_none()
+                && process.cmd.iter().any(|part| {
+                    let part = std::path::Path::new(part);
+                    part.is_relative()
+                        && part
+                            .file_name()
+                            .is_some_and(|name| name.eq_ignore_ascii_case("main.py"))
+                });
+            !(hidden_python || relative_main_without_cwd)
         })
         .collect()
 }
