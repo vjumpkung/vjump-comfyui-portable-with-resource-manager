@@ -13,8 +13,8 @@ use super::*;
 use crate::{
     comfy_runtime::{
         ComfyRepository, ExtraModelPaths, FrozenUpdate, InventoryState, LaunchPreflight, ModelRoot,
-        NodeLifecycle, PortProbe, PostStopScan, RuntimeBlock, RuntimeError, RuntimeMaintenance,
-        RuntimeSession, RuntimeStore, RuntimeSupervisor, ScanPreemption, UpdateRun, VersionList,
+        NodeLifecycle, PortProbe, RuntimeBlock, RuntimeError, RuntimeMaintenance, RuntimeSession,
+        RuntimeStore, RuntimeSupervisor, UpdateRun, VersionList,
     },
     environment::{
         AcceleratorResult, ComponentStatus, InstallManifest, InstalledComponents, ManagerResult,
@@ -89,19 +89,27 @@ impl NodeLifecycle for Machine {
         unreachable!("diagnostics never start nodes")
     }
 
-    async fn after_stop(
-        &self,
-        _: &mut dyn MaintenanceLease,
-        _: PostStopScan,
-    ) -> Result<(), RuntimeError> {
-        unreachable!("diagnostics never rescan nodes")
+    async fn reconcile_after_stop(&self, _: &mut dyn MaintenanceLease) -> Result<(), RuntimeError> {
+        unreachable!("diagnostics never reconcile nodes")
     }
 
-    fn preempt_scan(&self) -> Option<ScanPreemption> {
-        None
+    fn note_start(&self) {
+        unreachable!("diagnostics never start nodes")
+    }
+
+    fn start_finished(&self) {
+        unreachable!("diagnostics never start nodes")
+    }
+
+    fn request_scan(&self) {
+        unreachable!("diagnostics never request scans")
     }
 
     fn scans_held_off(&self) -> bool {
+        false
+    }
+
+    fn scan_settling(&self) -> bool {
         false
     }
 }

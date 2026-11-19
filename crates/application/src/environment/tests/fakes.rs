@@ -220,6 +220,10 @@ pub struct World {
     pub runtime_block: Mutex<Option<RuntimeBlock>>,
     pub env_user: Mutex<Option<EnvironmentUser>>,
     pub gate: Arc<FakeGate>,
+    /// The custom-node lock a setup run takes through [`SetupNodes::exclusive`].
+    pub node_lock: Arc<FakeGate>,
+    /// Whether the node lock was held at every scripted node call, in order.
+    pub node_lock_seen: Mutex<Vec<bool>>,
     pub drift_on_requirements: AtomicBool,
     pub drift_on_node_requirements: AtomicBool,
     pub gate_busy_at_cancel_cleanup: Mutex<Option<bool>>,
@@ -276,6 +280,8 @@ impl World {
             runtime_block: Mutex::default(),
             env_user: Mutex::default(),
             gate: Arc::new(FakeGate::default()),
+            node_lock: Arc::new(FakeGate::default()),
+            node_lock_seen: Mutex::default(),
             drift_on_requirements: AtomicBool::new(false),
             drift_on_node_requirements: AtomicBool::new(false),
             gate_busy_at_cancel_cleanup: Mutex::default(),
@@ -596,6 +602,14 @@ impl World {
             .push_back(error);
     }
 
+    /// Records whether the node lock is held right now, for the scripted node calls.
+    fn note_node_lock(&self) {
+        self.node_lock_seen
+            .lock()
+            .unwrap()
+            .push(self.node_lock.busy.load(Ordering::SeqCst));
+    }
+
     fn node_injected(&self, method: &str) -> Result<(), SetupNodeError> {
         match self
             .node_failures
@@ -613,6 +627,10 @@ impl World {
 /// A scripted node service for runs that must not depend on the real node workflow.
 #[async_trait]
 impl SetupNodes for World {
+    async fn exclusive(&self) -> Result<Box<dyn MaintenanceLease>, GateError> {
+        self.node_lock.acquire().await
+    }
+
     async fn prepare(
         &self,
         _run: &RunId,
@@ -620,6 +638,7 @@ impl SetupNodes for World {
         _ctx: &StepContext,
         _lease: &mut dyn MaintenanceLease,
     ) -> Result<PlanReview, SetupNodeError> {
+        self.note_node_lock();
         self.call(&format!("setup_nodes:prepare:{}", entry.id));
         self.node_injected("prepare")?;
         let id = format!("node-{}-{}", entry.id, self.new_id());
@@ -660,6 +679,7 @@ impl SetupNodes for World {
         _ctx: &StepContext,
         _lease: &mut dyn MaintenanceLease,
     ) -> Result<NodeOutcome, SetupNodeError> {
+        self.note_node_lock();
         self.call(&format!("setup_nodes:commit:{plan}"));
         self.node_injected("commit")?;
         let review = self
@@ -714,6 +734,7 @@ impl SetupNodes for World {
         entry: &CuratedNodeSpec,
         _lease: &mut dyn MaintenanceLease,
     ) -> Result<bool, SetupNodeError> {
+        self.note_node_lock();
         self.call(&format!("setup_nodes:installed:{}", entry.id));
         self.node_injected("installed")?;
         Ok(self.node_installed.lock().unwrap().contains(&entry.name))

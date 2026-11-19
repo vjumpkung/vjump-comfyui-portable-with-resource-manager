@@ -33,16 +33,18 @@ struct Machine {
     inventory_checked: AtomicBool,
     mutation_saw_repair: AtomicBool,
     node_journal_failure: AtomicBool,
-    node_rescan_failure: AtomicBool,
-    node_rescan_cancelled: AtomicBool,
+    reconcile_failure: AtomicBool,
     stop_held: Mutex<Vec<bool>>,
-    post_stop_scans: Mutex<Vec<PostStopScan>>,
-    scan_lease: Mutex<Option<Box<dyn MaintenanceLease>>>,
-    preemption_released: Arc<AtomicBool>,
-    /// Whether the preemption guard was already dropped each time `after_stop` ran.
-    released_at_after_stop: Mutex<Vec<bool>>,
+    /// Whether the gate was held each time a scan was requested.
+    scan_requested_under_gate: Mutex<Vec<bool>>,
     /// What `scans_held_off` answers: closing holds scans off.
     held_off: AtomicBool,
+    /// What `scan_settling` answers: a scan is settling under the gate.
+    settling: AtomicBool,
+    /// Makes the configured port unavailable.
+    port_taken: AtomicBool,
+    /// Makes every stop fail.
+    fail_stop: AtomicBool,
     hold_start: AtomicBool,
     start_lease: Mutex<Option<Box<dyn MaintenanceLease>>>,
     start_waker: Mutex<Option<std::task::Waker>>,
@@ -83,14 +85,13 @@ impl Machine {
             inventory_checked: AtomicBool::new(false),
             mutation_saw_repair: AtomicBool::new(false),
             node_journal_failure: AtomicBool::new(false),
-            node_rescan_failure: AtomicBool::new(false),
-            node_rescan_cancelled: AtomicBool::new(false),
+            reconcile_failure: AtomicBool::new(false),
             stop_held: Mutex::default(),
-            post_stop_scans: Mutex::default(),
-            scan_lease: Mutex::default(),
-            preemption_released: Arc::default(),
-            released_at_after_stop: Mutex::default(),
+            scan_requested_under_gate: Mutex::default(),
             held_off: AtomicBool::new(false),
+            settling: AtomicBool::new(false),
+            port_taken: AtomicBool::new(false),
+            fail_stop: AtomicBool::new(false),
             hold_start: AtomicBool::new(false),
             start_lease: Mutex::default(),
             start_waker: Mutex::default(),
@@ -127,45 +128,35 @@ impl NodeLifecycle for Machine {
             Ok(())
         }
     }
-    async fn after_stop(
-        &self,
-        _: &mut dyn MaintenanceLease,
-        scan: PostStopScan,
-    ) -> Result<(), RuntimeError> {
+    async fn reconcile_after_stop(&self, _: &mut dyn MaintenanceLease) -> Result<(), RuntimeError> {
         assert!(self.env.gate.busy.load(Ordering::SeqCst));
         assert_eq!(self.status.lock().unwrap().lifecycle, Lifecycle::Stopped);
-        self.env.call("nodes_after_stop");
-        self.post_stop_scans.lock().unwrap().push(scan);
-        self.released_at_after_stop
-            .lock()
-            .unwrap()
-            .push(self.preemption_released.load(Ordering::SeqCst));
-        if self.node_rescan_failure.load(Ordering::SeqCst) {
-            Err(RuntimeError::NodeRescanFailed)
-        } else if self.node_rescan_cancelled.load(Ordering::SeqCst) {
-            Err(RuntimeError::Cancelled)
+        self.env.call("nodes_reconcile_after_stop");
+        if self.reconcile_failure.load(Ordering::SeqCst) {
+            Err(RuntimeError::NodeRecoveryRequired)
         } else {
             Ok(())
         }
     }
-    /// Stands for a yielding scan: cancelling it releases the lease it holds on the gate.
-    fn preempt_scan(&self) -> Option<ScanPreemption> {
-        self.env.call("nodes_preempt_scan");
-        let scan = self.scan_lease.lock().unwrap().take()?;
-        drop(scan);
-        Some(ScanPreemption::new(ReleaseFlag(
-            self.preemption_released.clone(),
-        )))
+    fn note_start(&self) {
+        assert!(self.env.gate.busy.load(Ordering::SeqCst));
+        self.env.call("nodes_note_start");
+    }
+    fn start_finished(&self) {
+        self.env.call("nodes_start_finished");
+    }
+    fn request_scan(&self) {
+        self.env.call("nodes_request_scan");
+        self.scan_requested_under_gate
+            .lock()
+            .unwrap()
+            .push(self.env.gate.busy.load(Ordering::SeqCst));
     }
     fn scans_held_off(&self) -> bool {
         self.held_off.load(Ordering::SeqCst)
     }
-}
-/// Sets its flag when the preemption guard is dropped.
-struct ReleaseFlag(Arc<AtomicBool>);
-impl Drop for ReleaseFlag {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
+    fn scan_settling(&self) -> bool {
+        self.settling.load(Ordering::SeqCst)
     }
 }
 #[async_trait]
@@ -264,6 +255,9 @@ impl RuntimeSupervisor for Machine {
     }
     async fn stop(&self) -> Result<RuntimeStatus, RuntimeError> {
         self.env.call("runtime_stop");
+        if self.fail_stop.load(Ordering::SeqCst) {
+            return Err(RuntimeError::Storage);
+        }
         self.stop_held
             .lock()
             .unwrap()
@@ -350,13 +344,14 @@ fn a_journal_failure_created_before_lease_acquisition_blocks_start() {
 }
 
 #[test]
-fn restart_stops_rescans_and_starts_with_one_acquisition() {
+fn restart_stops_and_starts_with_one_acquisition() {
     let m = Machine::new();
     m.status.lock().unwrap().lifecycle = Lifecycle::Running;
     let status = block_on(RestartComfy::new(m.deps()).execute()).unwrap();
     assert_eq!(status.lifecycle, Lifecycle::Running);
     assert_eq!(m.env.gate.try_acquires.load(Ordering::SeqCst), 1);
     assert_eq!(m.env.gate.acquires.load(Ordering::SeqCst), 0);
+    assert_eq!(m.env.gate.acquire_withins.load(Ordering::SeqCst), 0);
     assert_eq!(*m.stop_held.lock().unwrap(), [true]);
     let calls: Vec<_> = m
         .env
@@ -368,12 +363,50 @@ fn restart_stops_rescans_and_starts_with_one_acquisition() {
         calls,
         [
             "runtime_stop",
-            "nodes_after_stop",
+            "nodes_note_start",
             "nodes_before_start",
             "runtime_inventory",
             "runtime_start",
+            "nodes_start_finished",
+            "nodes_request_scan",
         ]
     );
+}
+
+#[test]
+fn restart_requests_a_scan_after_the_start_returns() {
+    for start_fails in [false, true] {
+        let m = Machine::new();
+        m.status.lock().unwrap().lifecycle = Lifecycle::Running;
+        m.node_journal_failure.store(start_fails, Ordering::SeqCst);
+
+        let result = block_on(RestartComfy::new(m.deps()).execute());
+
+        assert_eq!(result.is_err(), start_fails);
+        // One request, after the start attempt, and the gate is free again by then.
+        assert_eq!(*m.scan_requested_under_gate.lock().unwrap(), [false]);
+        assert!(m.env.position("runtime_stop") < m.env.position("nodes_before_start"));
+        assert!(m.env.position("nodes_before_start") < m.env.position("nodes_request_scan"));
+        assert_eq!(m.env.count("runtime_start"), usize::from(!start_fails));
+        assert!(!m.env.gate.busy.load(Ordering::SeqCst));
+    }
+}
+
+#[test]
+fn stop_requests_a_scan_after_releasing_the_gate() {
+    let m = Machine::new();
+    m.status.lock().unwrap().lifecycle = Lifecycle::Running;
+
+    let status = block_on(StopComfy::new(m.deps()).execute()).unwrap();
+
+    assert_eq!(status.lifecycle, Lifecycle::Stopped);
+    assert_eq!(*m.stop_held.lock().unwrap(), [false, true]);
+    assert_eq!(*m.scan_requested_under_gate.lock().unwrap(), [false]);
+    assert!(m.env.position("runtime_stop") < m.env.position("nodes_request_scan"));
+    // Stop neither settles nor records a start: that waits for the next start or scan.
+    assert_eq!(m.env.count("nodes_reconcile_after_stop"), 0);
+    assert_eq!(m.env.count("nodes_before_start"), 0);
+    assert!(!m.env.gate.busy.load(Ordering::SeqCst));
 }
 
 #[test]
@@ -397,7 +430,7 @@ fn stop_cancels_start_before_waiting_for_the_gate() {
     assert_eq!(block_on(starting), Err(RuntimeError::Cancelled));
     assert_eq!(m.env.gate.acquires.load(Ordering::SeqCst), 1);
     assert_eq!(*m.stop_held.lock().unwrap(), [true, true]);
-    assert_eq!(m.env.count("nodes_after_stop"), 1);
+    assert_eq!(m.env.count("nodes_request_scan"), 1);
     assert!(!m.env.gate.busy.load(Ordering::SeqCst));
 }
 
@@ -418,106 +451,13 @@ fn stop_rechecks_termination_after_acquiring_the_gate() {
     assert_eq!(status.lifecycle, Lifecycle::Stopped);
     assert_eq!(*m.stop_held.lock().unwrap(), [false, true]);
     assert_eq!(m.env.count("runtime_stop"), 2);
-    assert_eq!(m.env.count("nodes_after_stop"), 1);
+    assert_eq!(m.env.count("nodes_request_scan"), 1);
     assert_eq!(m.env.gate.acquires.load(Ordering::SeqCst), 1);
     assert_eq!(m.env.gate.try_acquires.load(Ordering::SeqCst), 0);
 }
 
 #[test]
-fn stop_succeeds_when_the_post_stop_scan_is_cancelled() {
-    let m = Machine::new();
-    m.status.lock().unwrap().lifecycle = Lifecycle::Running;
-    m.node_rescan_cancelled.store(true, Ordering::SeqCst);
-
-    let status = block_on(StopComfy::new(m.deps()).execute()).unwrap();
-
-    assert_eq!(status.lifecycle, Lifecycle::Stopped);
-    assert_eq!(m.status.lock().unwrap().lifecycle, Lifecycle::Stopped);
-    assert_eq!(m.env.count("runtime_stop"), 2);
-    assert_eq!(m.env.count("nodes_after_stop"), 1);
-    assert_eq!(m.env.count("nodes_before_start"), 0);
-    assert_eq!(m.env.count("runtime_start"), 0);
-    assert!(!m.env.gate.busy.load(Ordering::SeqCst));
-}
-
-#[test]
-fn restart_does_not_start_when_the_post_stop_scan_is_cancelled() {
-    let m = Machine::new();
-    m.status.lock().unwrap().lifecycle = Lifecycle::Running;
-    m.node_rescan_cancelled.store(true, Ordering::SeqCst);
-
-    assert_eq!(
-        block_on(RestartComfy::new(m.deps()).execute()),
-        Err(RuntimeError::Cancelled)
-    );
-
-    assert_eq!(m.status.lock().unwrap().lifecycle, Lifecycle::Stopped);
-    assert_eq!(m.env.count("runtime_stop"), 1);
-    assert_eq!(m.env.count("nodes_after_stop"), 1);
-    assert_eq!(m.env.count("nodes_before_start"), 0);
-    assert_eq!(m.env.count("runtime_start"), 0);
-    assert!(!m.env.gate.busy.load(Ordering::SeqCst));
-}
-
-#[test]
-fn stop_and_restart_finish_real_cancelled_node_scans_without_starting() {
-    for late in [false, true] {
-        for operation in ["stop", "restart"] {
-            let m = Machine::new();
-            m.status.lock().unwrap().lifecycle = Lifecycle::Running;
-            let service = crate::custom_nodes::tests::lifecycle_scan_service(m.env.deps(), late);
-            let mut deps = m.deps();
-            deps.nodes = Arc::new(service.clone());
-
-            if operation == "stop" {
-                let status = block_on(StopComfy::new(deps).execute()).unwrap();
-                assert_eq!(status.lifecycle, Lifecycle::Stopped);
-            } else {
-                assert_eq!(
-                    block_on(RestartComfy::new(deps).execute()),
-                    Err(RuntimeError::Cancelled)
-                );
-            }
-
-            assert_eq!(m.status.lock().unwrap().lifecycle, Lifecycle::Stopped);
-            assert_eq!(m.env.count("runtime_start"), 0);
-            assert_eq!(block_on(service.list()).unwrap().len(), usize::from(late));
-            assert_eq!(service.scans().incomplete(), !late);
-            assert!(!m.env.gate.busy.load(Ordering::SeqCst));
-        }
-    }
-}
-
-#[test]
-fn after_stop_failure_is_returned_and_prevents_restart() {
-    for operation in ["stop", "restart", "update"] {
-        let m = Machine::new();
-        m.status.lock().unwrap().lifecycle = Lifecycle::Running;
-        m.node_rescan_failure.store(true, Ordering::SeqCst);
-        let error = match operation {
-            "stop" => block_on(StopComfy::new(m.deps()).execute()).unwrap_err(),
-            "restart" => block_on(RestartComfy::new(m.deps()).execute()).unwrap_err(),
-            _ => {
-                let mut request = Machine::request();
-                request.stop_running = true;
-                block_on(UpdateComfy::new(m.deps()).execute(request, CancelToken::new()))
-                    .unwrap_err()
-            }
-        };
-        assert_eq!(error, RuntimeError::NodeRescanFailed);
-        assert_eq!(m.status.lock().unwrap().lifecycle, Lifecycle::Stopped);
-        assert_eq!(m.env.count("nodes_after_stop"), 1);
-        assert_eq!(m.env.count("nodes_before_start"), 0);
-        assert_eq!(m.env.count("runtime_start"), 0);
-        assert_eq!(m.env.count("runtime_fetch"), 0);
-        assert_eq!(m.env.count("runtime_apply"), 0);
-        assert!(m.env.installs.lock().unwrap().is_empty());
-        assert!(!m.env.gate.busy.load(Ordering::SeqCst));
-    }
-}
-
-#[test]
-fn update_with_stop_rescans_under_its_existing_lease() {
+fn update_with_stop_reconciles_under_its_existing_lease() {
     let m = Machine::new();
     m.status.lock().unwrap().lifecycle = Lifecycle::Running;
     let mut request = Machine::request();
@@ -527,11 +467,39 @@ fn update_with_stop_rescans_under_its_existing_lease() {
     assert_eq!(*m.stop_held.lock().unwrap(), [true]);
     assert_eq!(m.env.gate.try_acquires.load(Ordering::SeqCst), 1);
     assert_eq!(m.env.gate.acquires.load(Ordering::SeqCst), 0);
-    assert_eq!(m.env.count("nodes_after_stop"), 1);
-    assert!(m.env.position("runtime_stop") < m.env.position("nodes_after_stop"));
-    assert!(m.env.position("nodes_after_stop") < m.env.position("runtime_fetch"));
-    assert!(m.env.position("nodes_after_stop") < m.env.position("runtime_apply"));
+    assert_eq!(m.env.gate.acquire_withins.load(Ordering::SeqCst), 0);
+    assert_eq!(m.env.count("nodes_reconcile_after_stop"), 1);
+    assert_eq!(m.env.count("nodes_request_scan"), 1);
+    // Settling comes first; the scan is requested right after it, before the update goes on.
+    assert!(m.env.position("runtime_stop") < m.env.position("nodes_reconcile_after_stop"));
+    assert!(m.env.position("nodes_reconcile_after_stop") < m.env.position("nodes_request_scan"));
+    assert!(m.env.position("nodes_request_scan") < m.env.position("runtime_fetch"));
+    assert!(m.env.position("nodes_request_scan") < m.env.position("runtime_apply"));
 }
+
+#[test]
+fn a_failed_reconcile_after_stop_blocks_the_update() {
+    let m = Machine::new();
+    m.status.lock().unwrap().lifecycle = Lifecycle::Running;
+    m.reconcile_failure.store(true, Ordering::SeqCst);
+    let mut request = Machine::request();
+    request.stop_running = true;
+
+    let error =
+        block_on(UpdateComfy::new(m.deps()).execute(request, CancelToken::new())).unwrap_err();
+
+    assert_eq!(error, RuntimeError::NodeRecoveryRequired);
+    assert_eq!(m.status.lock().unwrap().lifecycle, Lifecycle::Stopped);
+    assert_eq!(m.env.count("nodes_reconcile_after_stop"), 1);
+    // The scan is requested even though settling failed, and only after it.
+    assert_eq!(m.env.count("nodes_request_scan"), 1);
+    assert!(m.env.position("nodes_reconcile_after_stop") < m.env.position("nodes_request_scan"));
+    assert_eq!(m.env.count("runtime_fetch"), 0);
+    assert_eq!(m.env.count("runtime_apply"), 0);
+    assert!(m.env.installs.lock().unwrap().is_empty());
+    assert!(!m.env.gate.busy.load(Ordering::SeqCst));
+}
+
 const GATED_OPERATIONS: [&str; 3] = ["start", "restart", "update"];
 
 /// A fresh machine for the operation: Restart and Update (which stops it) find ComfyUI running.
@@ -555,90 +523,56 @@ fn run_runtime_operation(m: &Arc<Machine>, operation: &str) -> Result<(), Runtim
     }
 }
 
-#[test]
-fn start_restart_and_update_cancel_a_yielding_scan_instead_of_failing_busy() {
-    for operation in GATED_OPERATIONS {
-        let m = machine_for(operation);
-        *m.scan_lease.lock().unwrap() = Some(block_on(m.env.gate.try_acquire()).unwrap());
-
-        run_runtime_operation(&m, operation).unwrap();
-
-        assert_eq!(m.env.gate.acquire_withins.load(Ordering::SeqCst), 1);
-        assert_eq!(m.env.count("nodes_preempt_scan"), 1);
-        assert!(m.scan_lease.lock().unwrap().is_none());
-        assert!(m.preemption_released.load(Ordering::SeqCst));
-        if operation == "start" {
-            assert!(m.env.position("nodes_preempt_scan") < m.env.position("nodes_before_start"));
-            assert!(m.released_at_after_stop.lock().unwrap().is_empty());
-        } else {
-            assert!(m.env.position("nodes_preempt_scan") < m.env.position("runtime_stop"));
-            // The guard is gone before the rescan inside Restart or Update runs, so that rescan
-            // is not held off by the preemption itself.
-            assert_eq!(
-                *m.released_at_after_stop.lock().unwrap(),
-                [true],
-                "{operation}"
-            );
-        }
-        assert!(!m.env.gate.busy.load(Ordering::SeqCst));
-    }
-}
+/// What a Start, Restart or Update that was refused must not have called.
+const NOTHING_RAN: [&str; 10] = [
+    "nodes_note_start",
+    "nodes_start_finished",
+    "nodes_before_start",
+    "nodes_reconcile_after_stop",
+    "nodes_request_scan",
+    "runtime_stop",
+    "runtime_inventory",
+    "runtime_start",
+    "runtime_fetch",
+    "runtime_apply",
+];
 
 #[test]
 fn closing_wins_over_a_start_restart_or_update_that_took_the_gate() {
     for operation in GATED_OPERATIONS {
-        for preempting in [false, true] {
-            let m = machine_for(operation);
-            m.held_off.store(true, Ordering::SeqCst);
-            if preempting {
-                *m.scan_lease.lock().unwrap() = Some(block_on(m.env.gate.try_acquire()).unwrap());
-            }
+        let m = machine_for(operation);
+        m.held_off.store(true, Ordering::SeqCst);
 
-            assert_eq!(
-                run_runtime_operation(&m, operation),
-                Err(RuntimeError::Busy),
-                "{operation} (preempting: {preempting})"
-            );
+        assert_eq!(
+            run_runtime_operation(&m, operation),
+            Err(RuntimeError::Busy),
+            "{operation}"
+        );
 
-            for call in [
-                "nodes_before_start",
-                "nodes_after_stop",
-                "runtime_stop",
-                "runtime_inventory",
-                "runtime_start",
-                "runtime_fetch",
-                "runtime_apply",
-            ] {
-                assert_eq!(m.env.count(call), 0, "{operation}: {call}");
-            }
-            assert!(!m.env.gate.busy.load(Ordering::SeqCst));
-            drop(block_on(m.env.gate.try_acquire()).expect("the gate is free again"));
+        for call in NOTHING_RAN {
+            assert_eq!(m.env.count(call), 0, "{operation}: {call}");
         }
+        assert!(!m.env.gate.busy.load(Ordering::SeqCst));
+        drop(block_on(m.env.gate.try_acquire()).expect("the gate is free again"));
     }
 }
 
 #[test]
-fn a_busy_gate_without_a_yielding_scan_stays_busy() {
+fn start_restart_and_update_are_busy_while_the_gate_is_held() {
     for operation in GATED_OPERATIONS {
         let m = machine_for(operation);
         let held = block_on(m.env.gate.try_acquire()).unwrap();
 
         assert_eq!(
             run_runtime_operation(&m, operation),
-            Err(RuntimeError::Busy)
+            Err(RuntimeError::Busy),
+            "{operation}"
         );
 
+        // Nobody waits for the holder: no scan is settling, so there is nothing to wait for.
+        assert_eq!(m.env.gate.acquires.load(Ordering::SeqCst), 0);
         assert_eq!(m.env.gate.acquire_withins.load(Ordering::SeqCst), 0);
-        assert!(!m.preemption_released.load(Ordering::SeqCst));
-        for call in [
-            "nodes_before_start",
-            "nodes_after_stop",
-            "runtime_stop",
-            "runtime_inventory",
-            "runtime_start",
-            "runtime_fetch",
-            "runtime_apply",
-        ] {
+        for call in NOTHING_RAN {
             assert_eq!(m.env.count(call), 0, "{operation}: {call}");
         }
         assert!(m.env.gate.busy.load(Ordering::SeqCst));
@@ -647,32 +581,167 @@ fn a_busy_gate_without_a_yielding_scan_stays_busy() {
 }
 
 #[test]
-fn a_free_gate_never_preempts() {
+fn start_restart_and_update_wait_briefly_for_a_scan_that_is_settling() {
     for operation in GATED_OPERATIONS {
         let m = machine_for(operation);
-        run_runtime_operation(&m, operation).unwrap();
+        m.settling.store(true, Ordering::SeqCst);
+        let held = block_on(m.env.gate.try_acquire()).unwrap();
 
-        assert_eq!(m.env.count("nodes_preempt_scan"), 0);
-        assert_eq!(m.env.gate.acquire_withins.load(Ordering::SeqCst), 0);
-        assert!(!m.preemption_released.load(Ordering::SeqCst));
+        // The settling scan does not let go in time: one bounded wait, then Busy, nothing else.
+        assert_eq!(
+            run_runtime_operation(&m, operation),
+            Err(RuntimeError::Busy),
+            "{operation}"
+        );
+
+        assert_eq!(m.env.gate.try_acquires.load(Ordering::SeqCst), 2);
+        assert_eq!(m.env.gate.acquire_withins.load(Ordering::SeqCst), 1);
+        assert_eq!(m.env.gate.acquires.load(Ordering::SeqCst), 0);
+        for call in NOTHING_RAN {
+            assert_eq!(m.env.count(call), 0, "{operation}: {call}");
+        }
+        assert!(m.env.gate.busy.load(Ordering::SeqCst));
+        drop(held);
     }
 }
 
 #[test]
-fn stop_yields_its_rescan_and_restart_and_update_finish_theirs() {
+fn a_settling_scan_does_not_delay_an_operation_that_finds_the_gate_free() {
+    let m = machine_for("start");
+    m.settling.store(true, Ordering::SeqCst);
+
+    block_on(StartComfy::new(m.deps()).execute()).unwrap();
+
+    assert_eq!(m.env.gate.acquire_withins.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn start_and_restart_record_the_start_around_every_outcome() {
+    #[derive(Clone, Copy)]
+    enum Outcome {
+        Started,
+        JournalFailure,
+        PortConflict,
+        NeedsStop,
+    }
+    for (restart, outcome) in [
+        (false, Outcome::Started),
+        (false, Outcome::JournalFailure),
+        (false, Outcome::PortConflict),
+        (false, Outcome::NeedsStop),
+        (true, Outcome::Started),
+        (true, Outcome::JournalFailure),
+        (true, Outcome::PortConflict),
+    ] {
+        let m = Machine::new();
+        // Restart stops a running ComfyUI first; a plain Start refuses one.
+        if restart || matches!(outcome, Outcome::NeedsStop) {
+            m.status.lock().unwrap().lifecycle = Lifecycle::Running;
+        }
+        match outcome {
+            Outcome::JournalFailure => m.node_journal_failure.store(true, Ordering::SeqCst),
+            Outcome::PortConflict => m.port_taken.store(true, Ordering::SeqCst),
+            _ => {}
+        }
+
+        let result = if restart {
+            block_on(RestartComfy::new(m.deps()).execute()).map(|_| ())
+        } else {
+            block_on(StartComfy::new(m.deps()).execute()).map(|_| ())
+        };
+
+        let label = format!("restart={restart}");
+        let expected = match outcome {
+            Outcome::Started => Ok(()),
+            Outcome::JournalFailure => Err(RuntimeError::NodeRecoveryRequired),
+            Outcome::PortConflict => Err(RuntimeError::PortConflict {
+                requested: Port::default(),
+                suggested: None,
+            }),
+            Outcome::NeedsStop => Err(RuntimeError::NeedsStop),
+        };
+        assert_eq!(result, expected, "{label}");
+        assert_eq!(m.env.count("nodes_note_start"), 1, "{label}");
+        assert_eq!(m.env.count("nodes_start_finished"), 1, "{label}");
+        assert!(
+            m.env.position("nodes_note_start") < m.env.position("nodes_before_start"),
+            "{label}"
+        );
+        assert!(
+            m.env.position("nodes_before_start") < m.env.position("nodes_start_finished"),
+            "{label}"
+        );
+        if result.is_ok() {
+            // The runtime start is part of the recorded interval.
+            assert!(
+                m.env.position("runtime_start") < m.env.position("nodes_start_finished"),
+                "{label}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_dropped_start_still_finishes_its_record() {
+    use std::{future::Future, pin::pin, task::Context};
+
+    let m = Machine::new();
+    m.hold_start.store(true, Ordering::SeqCst);
+    let start = StartComfy::new(m.deps());
+    {
+        let mut starting = pin!(start.execute());
+        assert!(
+            starting
+                .as_mut()
+                .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+        );
+        assert_eq!(m.env.count("nodes_note_start"), 1);
+        assert_eq!(m.env.count("nodes_start_finished"), 0);
+        // The caller disconnects: the future is dropped while the start is still pending.
+    }
+    assert_eq!(m.env.count("nodes_start_finished"), 1);
+}
+
+#[test]
+fn a_failed_second_stop_still_requests_the_scan_and_a_failed_first_stop_does_not() {
+    // The first stop succeeds and the gate cannot be taken: ComfyUI did stop, so a scan is asked for.
     let m = Machine::new();
     m.status.lock().unwrap().lifecycle = Lifecycle::Running;
-    block_on(StopComfy::new(m.deps()).execute()).unwrap();
-    assert_eq!(*m.post_stop_scans.lock().unwrap(), [PostStopScan::Yields]);
+    let mut deps = m.deps();
+    deps.environment.gate = Arc::new(UnavailableGate);
+    assert_eq!(
+        block_on(StopComfy::new(deps).execute()),
+        Err(RuntimeError::Busy)
+    );
+    assert_eq!(m.env.count("runtime_stop"), 1);
+    assert_eq!(m.env.count("nodes_request_scan"), 1);
 
-    for operation in ["restart", "update"] {
-        let m = machine_for(operation);
-        run_runtime_operation(&m, operation).unwrap();
-        assert_eq!(
-            *m.post_stop_scans.lock().unwrap(),
-            [PostStopScan::Finishes],
-            "{operation}"
-        );
+    // The first stop fails: nothing stopped, so there is nothing for a scan to see.
+    let m = Machine::new();
+    m.fail_stop.store(true, Ordering::SeqCst);
+    assert_eq!(
+        block_on(StopComfy::new(m.deps()).execute()),
+        Err(RuntimeError::Storage)
+    );
+    assert_eq!(m.env.count("nodes_request_scan"), 0);
+}
+
+struct UnavailableGate;
+
+#[async_trait]
+impl MaintenanceGate for UnavailableGate {
+    async fn acquire(&self) -> Result<Box<dyn MaintenanceLease>, GateError> {
+        Err(GateError::Unavailable)
+    }
+    async fn try_acquire(&self) -> Result<Box<dyn MaintenanceLease>, GateError> {
+        Err(GateError::Unavailable)
+    }
+    async fn acquire_within(
+        &self,
+        _: std::time::Duration,
+    ) -> Result<Box<dyn MaintenanceLease>, GateError> {
+        Err(GateError::Unavailable)
     }
 }
 #[async_trait]
@@ -744,7 +813,7 @@ impl LaunchPreflight for Machine {
 #[async_trait]
 impl PortProbe for Machine {
     async fn available(&self, _: Port, _: bool) -> Result<bool, RuntimeError> {
-        Ok(true)
+        Ok(!self.port_taken.load(Ordering::SeqCst))
     }
     async fn next_free(&self, _: Port, _: bool) -> Result<Option<Port>, RuntimeError> {
         Ok(None)
@@ -908,7 +977,7 @@ fn a_program_running_python_from_the_environment_refuses_a_stopping_update_befor
         RuntimeError::EnvironmentProcessRunning(user)
     );
     assert_eq!(m.env.count("runtime_stop"), 0);
-    assert_eq!(m.env.count("nodes_after_stop"), 0);
+    assert_eq!(m.env.count("nodes_reconcile_after_stop"), 0);
     assert_eq!(m.env.count("runtime_fetch"), 0);
     assert_eq!(m.status.lock().unwrap().lifecycle, Lifecycle::Running);
     assert!(!m.env.gate.busy.load(Ordering::SeqCst));

@@ -41,9 +41,10 @@ impl UpdateComfy {
             InventoryState::Stopped => {}
             InventoryState::OwnedRunning if input.stop_running => {
                 deps.supervisor.stop().await?;
-                deps.nodes
-                    .after_stop(&mut *lease, PostStopScan::Finishes)
-                    .await?;
+                // The scan is requested whether or not settling works; it waits for the gate.
+                let reconciled = deps.nodes.reconcile_after_stop(&mut *lease).await;
+                deps.nodes.request_scan();
+                reconciled?;
             }
             InventoryState::OwnedRunning => return Err(RuntimeError::NeedsStop),
             _ => {
@@ -56,7 +57,7 @@ impl UpdateComfy {
             .ensure_stopped(&root)
             .await
             .map_err(|_| RuntimeError::NeedsStop)?;
-        // Read again: the recovery in `after_stop` can mark the environment repair-required.
+        // Read again: the recovery in `reconcile_after_stop` can mark the environment repair-required.
         let mut env = super::use_cases::selected(deps, input.retry.is_some()).await?;
         let pending = deps.store.unfinished_update().await?;
         let mut run = match (input.retry, pending) {

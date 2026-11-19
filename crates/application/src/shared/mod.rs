@@ -10,5 +10,5 @@ mod retained;
 pub use cancel::CancelToken;
 pub use clock::{Clock, IdGenerator};
 pub use explorer::ExplorerTarget;
-pub use gate::{GateError, MaintenanceGate, MaintenanceLease};
+pub use gate::{GateError, MaintenanceGate, MaintenanceLease, WithNodeLock};
 pub use retained::Retained;

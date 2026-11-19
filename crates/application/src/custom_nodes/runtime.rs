@@ -1,6 +1,6 @@
 use super::{NodeAppError, NodeService};
 use crate::{
-    comfy_runtime::{NodeLifecycle, PostStopScan, RuntimeError, ScanPreemption},
+    comfy_runtime::{NodeLifecycle, RuntimeError},
     shared::MaintenanceLease,
 };
 use async_trait::async_trait;
@@ -8,58 +8,41 @@ use async_trait::async_trait;
 #[async_trait]
 impl NodeLifecycle for NodeService {
     async fn before_start(&self, lease: &mut dyn MaintenanceLease) -> Result<(), RuntimeError> {
-        self.reconcile_held(lease)
-            .await
-            .map_err(before_start_error)?;
-        self.ensure_reconciled().await.map_err(before_start_error)
+        self.reconcile_held(lease).await.map_err(runtime_error)
     }
 
-    async fn after_stop(
+    async fn reconcile_after_stop(
         &self,
         lease: &mut dyn MaintenanceLease,
-        scan: PostStopScan,
     ) -> Result<(), RuntimeError> {
-        let activity = match scan {
-            PostStopScan::Yields => self.scans().begin_yielding(lease),
-            PostStopScan::Finishes => self.scans().begin(lease),
-        };
-        let reconciled = self.reconcile_held(lease).await;
-        let Some(activity) = activity else {
-            reconciled.map_err(after_stop_error)?;
-            self.scans().mark_incomplete();
-            return Err(RuntimeError::Cancelled);
-        };
-        let result = async {
-            reconciled?;
-            self.commit_observation(lease, activity.token()).await
-        }
-        .await;
-        activity
-            .finish(result)
-            .map(|_| ())
-            .map_err(after_stop_error)
+        self.reconcile_held(lease).await.map_err(runtime_error)
     }
 
-    fn preempt_scan(&self) -> Option<ScanPreemption> {
-        self.scans().preempt().map(ScanPreemption::new)
+    fn note_start(&self) {
+        self.scans().note_start();
     }
+
+    fn start_finished(&self) {
+        self.scans().start_finished();
+    }
+
+    /// The service cannot spawn work (the application layer has no executor); the desktop wrapper
+    /// schedules the scan.
+    fn request_scan(&self) {}
 
     fn scans_held_off(&self) -> bool {
         self.scans().closing()
     }
-}
 
-fn before_start_error(error: NodeAppError) -> RuntimeError {
-    match error {
-        NodeAppError::RuntimeRunning => RuntimeError::NeedsStop,
-        _ => RuntimeError::NodeRecoveryRequired,
+    fn scan_settling(&self) -> bool {
+        self.scans().settling()
     }
 }
 
-fn after_stop_error(error: NodeAppError) -> RuntimeError {
+fn runtime_error(error: NodeAppError) -> RuntimeError {
     match error {
-        NodeAppError::Cancelled => RuntimeError::Cancelled,
         NodeAppError::RuntimeRunning => RuntimeError::NeedsStop,
-        _ => RuntimeError::NodeRescanFailed,
+        NodeAppError::Busy => RuntimeError::Busy,
+        _ => RuntimeError::NodeRecoveryRequired,
     }
 }

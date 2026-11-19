@@ -199,6 +199,14 @@ impl NodeService {
             None
         };
         if let Some(node) = &mut prior {
+            // The ComfyUI checkout owns these files. A copy an earlier app version disabled can
+            // only be enabled again.
+            if is_comfyui_shipped(node.name.as_str())
+                && !(!node.enabled
+                    && matches!(request, PrepareRequest::SetEnabled { enabled: true, .. }))
+            {
+                return Err(NodeAppError::ComfyUiFile);
+            }
             // A node whose disk provenance disagrees with the stored record can still be disabled
             // or removed, but nothing may update it or run its dependency steps.
             if node.conflict

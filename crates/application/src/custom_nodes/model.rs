@@ -1,7 +1,7 @@
 use super::ports::*;
 use crate::{
     environment::{EnvironmentDeps, PackagePlan, RunId},
-    shared::CancelToken,
+    shared::{CancelToken, MaintenanceGate},
 };
 use domain::{
     custom_nodes::*,
@@ -67,6 +67,8 @@ pub enum NodeAppError {
     InvalidRequest,
     #[error("the reference names both a branch and a tag")]
     AmbiguousReference,
+    #[error("the file belongs to the ComfyUI installation")]
+    ComfyUiFile,
     #[error("{0}")]
     Failed(String),
 }
@@ -367,6 +369,11 @@ pub struct NodeDeps {
     pub hook: Arc<dyn NodeHook>,
     pub plans: Arc<NodePlans>,
     pub scans: Arc<super::ScanControl>,
+    /// Serializes everything that reads or changes the custom-node inventory: scans, node
+    /// operations and setup. It is not the maintenance gate, so Start, Stop, Restart and Update
+    /// ComfyUI never wait for a scan. Lock order: maintenance gate first, then this lock; a
+    /// holder of this lock only ever `try_acquire`s the maintenance gate.
+    pub node_lock: Arc<dyn MaintenanceGate>,
 }
 impl NodeDeps {
     pub(crate) fn take_plan(&self, id: &str) -> Result<PreparedPlan, NodeAppError> {

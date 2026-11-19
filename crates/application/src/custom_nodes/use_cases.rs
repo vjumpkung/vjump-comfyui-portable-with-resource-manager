@@ -1,9 +1,20 @@
 use super::*;
-use crate::{
-    comfy_runtime::RuntimeBlock,
-    shared::{CancelToken, ExplorerTarget, MaintenanceLease},
-};
+use crate::shared::{CancelToken, ExplorerTarget, MaintenanceLease, Retained, WithNodeLock};
 use domain::{custom_nodes::*, environment::EnvState};
+use std::time::Duration;
+
+/// How long a node operation waits for a cancelled scan to release the node lock.
+pub(crate) const SCAN_YIELD_WAIT: Duration = Duration::from_secs(5);
+
+/// A scan's settle step: the maintenance lease it just took plus the node lock it already holds,
+/// so subprocess survivors retain both.
+struct BothLeases<'a>(&'a mut dyn MaintenanceLease, &'a dyn MaintenanceLease);
+
+impl MaintenanceLease for BothLeases<'_> {
+    fn retained(&self) -> Retained {
+        self.0.retained().merge(self.1.retained())
+    }
+}
 
 #[derive(Clone)]
 pub struct NodeService {
@@ -16,6 +27,20 @@ impl NodeService {
     }
     pub fn scans(&self) -> &std::sync::Arc<ScanControl> {
         &self.deps.scans
+    }
+    /// Takes the node lock for an operation that already holds the maintenance gate (or for
+    /// setup, which holds it for the whole run). A running scan is cancelled and new ones stay
+    /// off while this waits; the wait is bounded, and Busy when the lock stays taken.
+    ///
+    /// Lock order: maintenance gate, then node lock. Whoever holds the node lock only ever
+    /// try-acquires the maintenance gate, so this wait cannot be part of a cycle.
+    pub(crate) async fn lock_nodes(&self) -> Result<Box<dyn MaintenanceLease>, NodeAppError> {
+        let _yield = self.deps.scans.yield_to_operation();
+        self.deps
+            .node_lock
+            .acquire_within(SCAN_YIELD_WAIT)
+            .await
+            .map_err(|_| NodeAppError::Busy)
     }
     pub async fn search(
         &self,
@@ -30,6 +55,7 @@ impl NodeService {
     }
     pub async fn list(&self) -> Result<Vec<InstalledNode>, NodeAppError> {
         let mut nodes = self.deps.store.nodes().await?;
+        nodes.retain(|node| !(node.enabled && is_comfyui_shipped(node.name.as_str())));
         self.project_dependencies(&mut nodes).await?;
         Ok(nodes)
     }
@@ -131,7 +157,7 @@ impl NodeService {
             .ok_or(NodeAppError::NotFound)
     }
     pub async fn resolve_operation(&self, id: &str) -> Result<(), NodeAppError> {
-        let mut lease = self
+        let mut gate = self
             .deps
             .environment
             .gate
@@ -145,6 +171,10 @@ impl NodeService {
             .ensure_stopped(&root)
             .await
             .map_err(|_| NodeAppError::RuntimeRunning)?;
+        let mut held = WithNodeLock {
+            lease: &mut *gate,
+            nodes: self.lock_nodes().await?,
+        };
         let mut op = self.operation_status(id).await?;
         if !op.blocks_start() {
             return Ok(());
@@ -162,11 +192,11 @@ impl NodeService {
         op.phase = OperationPhase::Failed;
         op.failure = Some("Closed by the user. The files were kept as they are; any preserved copies stay in custom_nodes/.disabled.".into());
         self.deps.store.save_operation(&op).await?;
-        let Some(activity) = self.deps.scans.begin(&*lease) else {
+        let Some(activity) = self.deps.scans.begin(&held) else {
             self.deps.scans.mark_incomplete();
             return Err(NodeAppError::Cancelled);
         };
-        let result = self.commit_observation(&mut *lease, activity.token()).await;
+        let result = self.commit_observation(&mut held, activity.token()).await;
         activity.finish(result).map(|_| ())
     }
     /// True when the selected environment needs repair; node operations are limited until then.
@@ -196,14 +226,18 @@ impl NodeService {
         request: PrepareRequest,
         ctx: &NodeContext,
     ) -> Result<PlanReview, NodeAppError> {
-        let mut lease = self
+        let mut gate = self
             .deps
             .environment
             .gate
             .try_acquire()
             .await
             .map_err(|_| NodeAppError::Busy)?;
-        self.prepare_held(request, ctx, &mut *lease).await
+        let mut held = WithNodeLock {
+            lease: &mut *gate,
+            nodes: self.lock_nodes().await?,
+        };
+        self.prepare_held(request, ctx, &mut held).await
     }
     pub async fn commit(
         &self,
@@ -211,14 +245,18 @@ impl NodeService {
         decision: CommitDecision,
         ctx: &NodeContext,
     ) -> Result<NodeOutcome, NodeAppError> {
-        let mut lease = self
+        let mut gate = self
             .deps
             .environment
             .gate
             .try_acquire()
             .await
             .map_err(|_| NodeAppError::Busy)?;
-        self.commit_held(id, decision, ctx, &mut *lease).await
+        let mut held = WithNodeLock {
+            lease: &mut *gate,
+            nodes: self.lock_nodes().await?,
+        };
+        self.commit_held(id, decision, ctx, &mut held).await
     }
     /// Enable, disable and uninstall: the user's click is the confirmation, because the plan has
     /// no source to review, no hook and no packages. One lease spans prepare and commit.
@@ -233,14 +271,18 @@ impl NodeService {
         ) {
             return Err(NodeAppError::InvalidRequest);
         }
-        let mut lease = self
+        let mut gate = self
             .deps
             .environment
             .gate
             .try_acquire()
             .await
             .map_err(|_| NodeAppError::Busy)?;
-        let review = self.prepare_held(request, ctx, &mut *lease).await?;
+        let mut held = WithNodeLock {
+            lease: &mut *gate,
+            nodes: self.lock_nodes().await?,
+        };
+        let review = self.prepare_held(request, ctx, &mut held).await?;
         let decision = CommitDecision {
             consent: InstallConsent {
                 plan_id: review.id.clone(),
@@ -254,8 +296,7 @@ impl NodeService {
             },
             protected_changes: review.protected_changes.clone(),
         };
-        self.commit_held(&review.id, decision, ctx, &mut *lease)
-            .await
+        self.commit_held(&review.id, decision, ctx, &mut held).await
     }
     /// Drops a reviewed-but-unused plan and removes its owned staging.
     pub async fn discard(&self, id: &str) -> Result<(), NodeAppError> {
@@ -301,13 +342,17 @@ impl NodeService {
         decisions: Vec<(String, CommitDecision)>,
         ctx: &NodeContext,
     ) -> Result<BatchOutcome, NodeAppError> {
-        let mut lease = self
+        let mut gate = self
             .deps
             .environment
             .gate
             .try_acquire()
             .await
             .map_err(|_| NodeAppError::Busy)?;
+        let mut held = WithNodeLock {
+            lease: &mut *gate,
+            nodes: self.lock_nodes().await?,
+        };
         let mut changes_packages = false;
         {
             let plans = self
@@ -351,7 +396,7 @@ impl NodeService {
         let mut storage_error = None;
         for (id, decision) in decisions {
             remaining.retain(|r| r != &id);
-            let outcome = self.commit_held(&id, decision, ctx, &mut *lease).await;
+            let outcome = self.commit_held(&id, decision, ctx, &mut held).await;
             let blocked = match self.ensure_reconciled().await {
                 Ok(()) => false,
                 Err(NodeAppError::RecoveryRequired) => true,
@@ -378,72 +423,106 @@ impl NodeService {
             batch
                 .results
                 .push((id.clone(), Err(NodeAppError::Cancelled)));
-            let _ = self.discard_held(&id, &mut *lease).await;
+            let _ = self.discard_held(&id, &mut held).await;
         }
         if let Some(error) = storage_error {
             return Err(error);
         }
         Ok(batch)
     }
-    /// Desktop calls this from the Rescan button. Interrupted operations are settled first,
-    /// which moves folders and so needs ComfyUI verified stopped. Scanning only reads, so when
-    /// the state of ComfyUI cannot be determined (an elevated Python whose location cannot be
-    /// read, for example) it still runs, unless an operation is waiting to be settled. A Start,
-    /// Restart or Update ComfyUI cancels the scan instead of waiting for it.
+    /// Desktop calls this from the Rescan button. It takes the node lock only, never the
+    /// maintenance gate for its whole run, so Start, Stop, Restart and Update ComfyUI neither
+    /// wait for it nor fail because of it; a node operation cancels it instead. Busy when a node
+    /// operation, setup or another scan holds the node lock.
+    ///
+    /// Interrupted operations are settled first, but only when ComfyUI is verified stopped and
+    /// the maintenance gate is free right now, because settling moves folders. Otherwise the scan
+    /// only adds and updates rows and reuses stored digests, so it never deletes a node whose
+    /// folder a running ComfyUI may be touching.
     pub async fn rescan(&self) -> Result<Vec<InstalledNode>, NodeAppError> {
-        let mut lease = self
+        let nodes = self
             .deps
-            .environment
-            .gate
+            .node_lock
             .try_acquire()
             .await
             .map_err(|_| NodeAppError::Busy)?;
-        self.rescan_held(&mut *lease).await
+        self.rescan_held(nodes).await
     }
-    /// Same as [`Self::rescan`] for the startup scan: it queues behind maintenance that got the
-    /// gate first instead of being dropped, and yields to Start, Restart and Update ComfyUI the
-    /// same way.
+    /// Same as [`Self::rescan`] for the background scan: it queues behind a node operation that
+    /// got the node lock first instead of being dropped.
     pub async fn rescan_when_free(&self) -> Result<Vec<InstalledNode>, NodeAppError> {
-        let mut lease = self
+        let nodes = self
             .deps
-            .environment
-            .gate
+            .node_lock
             .acquire()
             .await
             .map_err(|_| NodeAppError::Busy)?;
-        self.rescan_held(&mut *lease).await
+        self.rescan_held(nodes).await
     }
     async fn rescan_held(
         &self,
-        lease: &mut dyn MaintenanceLease,
+        nodes: Box<dyn MaintenanceLease>,
     ) -> Result<Vec<InstalledNode>, NodeAppError> {
-        let Some(activity) = self.deps.scans.begin_yielding(lease) else {
+        let Some(activity) = self.deps.scans.begin(&*nodes) else {
             self.deps.scans.mark_incomplete();
             return Err(NodeAppError::Cancelled);
         };
-        let result = async {
-            let root = self.deps.environment.root.current().root;
-            match self.deps.environment.runtime.ensure_stopped(&root).await {
-                Ok(()) => self.reconcile_stopped(&root, lease).await?,
-                Err(RuntimeBlock::Running) => return Err(NodeAppError::RuntimeRunning),
-                Err(RuntimeBlock::CannotAssess) => {
-                    for op in self.deps.store.operations().await? {
-                        if op.blocks_start() || self.should_settle(&op)? {
-                            return Err(NodeAppError::RuntimeRunning);
-                        }
-                    }
+        let result = self.observe_and_apply(&*nodes, activity.token()).await;
+        activity.finish(result)
+    }
+    /// The scan proper, under the node lock. Rows are only removed when ComfyUI was verified
+    /// stopped before and after the observation, no start was recorded (or in progress) meanwhile
+    /// and every unfinished operation is settled.
+    async fn observe_and_apply(
+        &self,
+        nodes: &dyn MaintenanceLease,
+        cancel: &CancelToken,
+    ) -> Result<Vec<InstalledNode>, NodeAppError> {
+        let d = &self.deps.environment;
+        let scans = &self.deps.scans;
+        let root = d.root.current().root;
+        // Odd while a start is in progress: ComfyUI may not be visible yet, so a stopped reading
+        // proves nothing and the process state is not even asked.
+        let since = scans.starts();
+        let stopped_before =
+            since.is_multiple_of(2) && d.runtime.ensure_stopped(&root).await.is_ok();
+        let mut settled = !self.needs_settling().await?;
+        if !settled && stopped_before {
+            // Reported to Start before the gate is tried, so Start waits for this brief hold
+            // instead of failing. Declared before the lease: it ends after the gate is released.
+            let _settling = scans.enter_settling();
+            if let Ok(mut lease) = d.gate.try_acquire().await {
+                let mut both = BothLeases(&mut *lease, nodes);
+                match self.reconcile_with(&mut both, true).await {
+                    Ok(()) => settled = true,
+                    // Still unsettled: the scan only adds and updates rows.
+                    Err(NodeAppError::RuntimeRunning | NodeAppError::RecoveryRequired) => {}
+                    Err(error) => return Err(error),
                 }
             }
-            self.commit_observation(lease, activity.token()).await
         }
-        .await;
-        activity.finish(result)
+        // The maintenance lease is released before the observation starts.
+        let (observed, removed) = self
+            .observe_held(nodes, cancel, stopped_before.then_some(since))
+            .await?;
+        if cancel.is_cancelled() {
+            return Err(NodeAppError::Cancelled);
+        }
+        let prune = settled
+            && stopped_before
+            && scans.starts() == since
+            && d.runtime.ensure_stopped(&root).await.is_ok();
+        let removed = if prune { removed } else { Vec::new() };
+        self.deps.store.apply_scan(&observed, &removed).await?;
+        Ok(observed)
     }
     pub async fn scan_held(
         &self,
         lease: &mut dyn MaintenanceLease,
     ) -> Result<Vec<InstalledNode>, NodeAppError> {
-        let (nodes, removed) = self.observe_held(lease, &CancelToken::new()).await?;
+        let (nodes, removed) = self
+            .observe_held(&*lease, &CancelToken::new(), Some(self.deps.scans.starts()))
+            .await?;
         self.deps.store.apply_scan(&nodes, &removed).await?;
         Ok(nodes)
     }
@@ -452,17 +531,23 @@ impl NodeService {
         lease: &mut dyn MaintenanceLease,
         cancel: &CancelToken,
     ) -> Result<Vec<InstalledNode>, NodeAppError> {
-        let (nodes, removed) = self.observe_held(lease, cancel).await?;
+        let (nodes, removed) = self
+            .observe_held(&*lease, cancel, Some(self.deps.scans.starts()))
+            .await?;
         if cancel.is_cancelled() {
             return Err(NodeAppError::Cancelled);
         }
         self.deps.store.apply_scan(&nodes, &removed).await?;
         Ok(nodes)
     }
+    /// `hash_since` is the start count the caller saw while ComfyUI was verified stopped. Files
+    /// are only hashed while no start was recorded since; otherwise ComfyUI may be writing, so a
+    /// stored digest is reused for every node whose id and source did not change.
     async fn observe_held(
         &self,
-        lease: &mut dyn MaintenanceLease,
+        lease: &dyn MaintenanceLease,
         cancel: &CancelToken,
+        hash_since: Option<u64>,
     ) -> Result<(Vec<InstalledNode>, Vec<NodeId>), NodeAppError> {
         let root = self.deps.environment.root.current().root;
         let observed = self
@@ -478,11 +563,24 @@ impl NodeService {
             }
             super::requirements::merge_observed(&mut node, &old);
             if !node.conflict {
-                node.tree_digest = self
-                    .deps
-                    .files
-                    .observe_digest(&root, &node, lease.retained(), cancel)
-                    .await?;
+                let stored = if hash_since == Some(self.deps.scans.starts()) {
+                    None
+                } else {
+                    old.iter().find(|prior| {
+                        prior.id == node.id
+                            && prior.source == node.source
+                            && !prior.tree_digest.is_empty()
+                    })
+                };
+                node.tree_digest = match stored {
+                    Some(prior) => prior.tree_digest.clone(),
+                    None => {
+                        self.deps
+                            .files
+                            .observe_digest(&root, &node, lease.retained(), cancel)
+                            .await?
+                    }
+                };
             }
             self.project_dependencies(std::slice::from_mut(&mut node))
                 .await?;
@@ -505,31 +603,65 @@ impl NodeService {
             .map_err(|_| NodeAppError::Busy)?;
         self.reconcile_held(&mut *lease).await
     }
+    /// Settles interrupted work under the maintenance lease the caller holds. The node lock is
+    /// taken here, and only when something has to be settled.
     pub async fn reconcile_held(
         &self,
         lease: &mut dyn MaintenanceLease,
     ) -> Result<(), NodeAppError> {
-        let d = &self.deps.environment;
-        let root = d.root.current().root;
-        d.runtime
+        self.reconcile_with(lease, false).await
+    }
+    /// `node_held` says the caller already holds the node lock (a scan or setup), and `lease`
+    /// already retains it. Settling moves folders, so it needs ComfyUI verified stopped; when
+    /// nothing has to be settled, the process state is not looked at.
+    pub(crate) async fn reconcile_with(
+        &self,
+        lease: &mut dyn MaintenanceLease,
+        node_held: bool,
+    ) -> Result<(), NodeAppError> {
+        self.discard_obsolete_setup_plans().await?;
+        if !self.needs_settling().await? {
+            return self.ensure_reconciled().await;
+        }
+        let root = self.deps.environment.root.current().root;
+        self.deps
+            .environment
+            .runtime
             .ensure_stopped(&root)
             .await
             .map_err(|_| NodeAppError::RuntimeRunning)?;
-        self.reconcile_stopped(&root, lease).await
+        if node_held {
+            self.settle_all(&root, lease).await?;
+        } else {
+            // Survivors of the settle steps retain both locks.
+            let mut held = WithNodeLock {
+                lease,
+                nodes: self.lock_nodes().await?,
+            };
+            self.settle_all(&root, &mut held).await?;
+        }
+        self.ensure_reconciled().await
     }
-    /// Settles every unfinished operation. The caller has verified that ComfyUI is stopped.
-    async fn reconcile_stopped(
+    async fn settle_all(
         &self,
         root: &std::path::Path,
         lease: &mut dyn MaintenanceLease,
     ) -> Result<(), NodeAppError> {
-        self.discard_obsolete_setup_plans().await?;
         for op in self.deps.store.operations().await? {
             if self.should_settle(&op)? {
                 self.settle(root, op, lease).await?;
             }
         }
-        self.ensure_reconciled().await
+        Ok(())
+    }
+    /// Whether any stored operation has to be settled.
+    async fn needs_settling(&self) -> Result<bool, NodeAppError> {
+        for op in self.deps.store.operations().await? {
+            if self.should_settle(&op)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     /// Whether reconciliation has to settle `op`: everything unfinished except a staged plan that
     /// is still reviewable (plans are process-local, so a live one is not discarded by a rescan).

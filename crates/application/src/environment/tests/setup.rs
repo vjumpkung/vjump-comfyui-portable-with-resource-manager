@@ -7,7 +7,12 @@ use domain::environment::{
 };
 
 use super::fakes::*;
-use crate::{comfy_runtime::RuntimeBlock, environment::*, test_support::block_on};
+use crate::{
+    comfy_runtime::RuntimeBlock,
+    environment::*,
+    shared::{GateError, MaintenanceGate},
+    test_support::block_on,
+};
 
 pub fn request() -> SetupRequest {
     SetupRequest {
@@ -2032,6 +2037,50 @@ fn curated_step_reviews_every_node_and_installs_only_with_exact_decisions() {
     );
     // Final activation re-checks the installed nodes.
     assert!(c.world.position("setup_nodes:installed:beta") < c.world.position("publish_manifest"));
+}
+
+#[test]
+fn a_setup_run_holds_the_node_lock_for_the_whole_run() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let c = Curated::new();
+    let id = c.register_consenting(&["alpha", "beta"]);
+
+    assert_eq!(c.execute(&id), RunOutcome::Succeeded);
+
+    // The lock is taken once, right after the gate, and covers every node call of the run.
+    assert_eq!(c.world.node_lock.acquires.load(SeqCst), 1);
+    assert_eq!(c.world.gate.acquires.load(SeqCst), 1);
+    assert_eq!(c.world.node_lock.try_acquires.load(SeqCst), 0);
+    let seen = c.world.node_lock_seen.lock().unwrap().clone();
+    assert!(seen.len() >= 4, "installed, prepare and commit calls ran");
+    assert!(seen.iter().all(|held| *held), "{seen:?}");
+    // Both are released when the run is over.
+    assert!(!c.world.node_lock.busy.load(SeqCst));
+    assert!(!c.world.gate.busy.load(SeqCst));
+}
+
+#[test]
+fn a_setup_run_that_cannot_take_the_node_lock_fails_without_running() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let c = Curated::new();
+    let id = c.register_consenting(&["alpha"]);
+    let scan = block_on(c.world.node_lock.try_acquire()).unwrap();
+
+    let result = block_on(
+        ExecuteSetup::new(c.deps.clone(), c.world.nodes())
+            .execute(&id, Arc::new(RecordingSink::default())),
+    );
+
+    assert!(matches!(
+        result,
+        Err(EnvironmentAppError::Gate(GateError::Busy))
+    ));
+    assert_eq!(c.world.count("setup_nodes:prepare:alpha"), 0);
+    // The maintenance gate is released and the run is no longer registered as active.
+    assert!(!c.world.gate.busy.load(SeqCst));
+    assert!(c.deps.active_runs.get(&id).is_none());
+    drop(scan);
+    assert_eq!(c.execute(&id), RunOutcome::Succeeded);
 }
 
 #[test]

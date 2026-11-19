@@ -26,7 +26,7 @@ use super::{
 use crate::{
     comfy_runtime::RuntimeBlock,
     custom_nodes::{CommitDecision, PlanReview, SETUP_HOOK_WARNING},
-    shared::{CancelToken, MaintenanceLease},
+    shared::{CancelToken, MaintenanceLease, WithNodeLock},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,7 +113,21 @@ impl ExecuteSetup {
                 return Err(error.into());
             }
         };
-        let result = self.run_locked(run_id, sink, cancel, &mut *lease).await;
+        // Gate first, then the node lock: scans never wait for the gate while holding it.
+        let nodes = match self.nodes.exclusive().await {
+            Ok(nodes) => nodes,
+            Err(error) => {
+                deps.active_runs.remove(run_id);
+                return Err(error.into());
+            }
+        };
+        let result = {
+            let mut held = WithNodeLock {
+                lease: &mut *lease,
+                nodes,
+            };
+            self.run_locked(run_id, sink, cancel, &mut held).await
+        };
         deps.installation.invalidate();
         deps.active_runs.remove(run_id);
         if retain_on_success && matches!(result, Ok(RunOutcome::Succeeded)) {

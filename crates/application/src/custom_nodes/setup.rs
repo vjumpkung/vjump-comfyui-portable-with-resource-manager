@@ -8,7 +8,7 @@ use crate::{
         CuratedNodeSpec, ProvisioningRun, RunId, RunStatus, SetupNodeError, SetupNodes,
         StepContext, StepId, StepStatus, same_location,
     },
-    shared::MaintenanceLease,
+    shared::{GateError, MaintenanceLease},
 };
 use async_trait::async_trait;
 use domain::{
@@ -190,7 +190,7 @@ impl NodeService {
         }
         self.discard_obsolete_setup_plans().await?;
         if self.ensure_reconciled().await.is_err() {
-            self.reconcile_held(lease).await?;
+            self.reconcile_with(lease, true).await?;
         }
         self.prepare_target(NodeTarget::Setup(run.clone()), request, ctx, lease)
             .await
@@ -279,6 +279,13 @@ impl NodeService {
 
 #[async_trait]
 impl SetupNodes for NodeService {
+    async fn exclusive(&self) -> Result<Box<dyn MaintenanceLease>, GateError> {
+        // The setup run holds the maintenance gate, so this wait cannot be part of a cycle: a
+        // scan only ever try-acquires the gate while it holds the node lock. The scan is
+        // cancelled and the wait is bounded; Busy when the node lock stays taken.
+        self.lock_nodes().await.map_err(|_| GateError::Busy)
+    }
+
     async fn prepare(
         &self,
         run: &RunId,

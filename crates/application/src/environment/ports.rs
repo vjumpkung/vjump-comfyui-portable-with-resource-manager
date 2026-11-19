@@ -14,7 +14,7 @@ use super::model::{
 };
 use crate::{
     custom_nodes::{CommitDecision, NodeOutcome, PlanReview},
-    shared::{CancelToken, MaintenanceLease},
+    shared::{CancelToken, GateError, MaintenanceLease},
 };
 
 // ---------------------------------------------------------------------------------------
@@ -501,6 +501,10 @@ pub enum SetupNodeError {
 /// environment from the persisted run, never from caller-supplied paths.
 #[async_trait]
 pub trait SetupNodes: Send + Sync {
+    /// Takes the custom-node lock for the whole run. Called once, right after the maintenance
+    /// gate; the other methods never take it, so they run under the lock the run already holds.
+    async fn exclusive(&self) -> Result<Box<dyn MaintenanceLease>, GateError>;
+
     /// Prepares a reviewable plan for the exact catalog commit and requires the resolved source
     /// to equal the entry.
     async fn prepare(

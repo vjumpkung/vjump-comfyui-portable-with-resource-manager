@@ -5,14 +5,16 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 struct State {
     paused: usize,
-    active: Option<Active>,
+    /// Node operations that cancelled the active scan and wait for the node lock.
+    yielding: usize,
+    /// Seqlock-style start counter: [`ScanControl::note_start`] makes it odd (a start is in
+    /// progress) and [`ScanControl::start_finished`] makes it even again. It only ever grows, so a
+    /// scan that saw it odd or changed must not trust a stopped reading taken before.
+    starts: u64,
+    /// Scans that are about to settle, or are settling, interrupted node operations.
+    settling: usize,
+    active: Option<CancelToken>,
     incomplete: bool,
-}
-
-struct Active {
-    token: CancelToken,
-    /// Whether [`ScanControl::preempt`] may cancel this scan.
-    yields: bool,
 }
 
 /// Process-local coordination for cooperative inventory observation.
@@ -20,36 +22,22 @@ struct Active {
 pub struct ScanControl(Mutex<State>);
 
 impl ScanControl {
-    pub fn begin(self: &Arc<Self>, lease: &dyn MaintenanceLease) -> Option<ScanActivity> {
-        self.start(lease, false)
-    }
-
-    /// Like [`Self::begin`], but the scan yields to [`Self::preempt`].
-    pub fn begin_yielding(self: &Arc<Self>, lease: &dyn MaintenanceLease) -> Option<ScanActivity> {
-        self.start(lease, true)
-    }
-
-    fn start(
-        self: &Arc<Self>,
-        _lease: &dyn MaintenanceLease,
-        yields: bool,
-    ) -> Option<ScanActivity> {
+    /// Starts a scan. The caller holds the node lock, so at most one scan is active. None while
+    /// closing or while a node operation waits for the node lock.
+    pub fn begin(self: &Arc<Self>, _nodes: &dyn MaintenanceLease) -> Option<ScanActivity> {
         let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        if state.paused > 0 {
+        if state.paused > 0 || state.yielding > 0 {
             return None;
         }
         debug_assert!(
             state.active.is_none(),
-            "scan already active under maintenance lease"
+            "scan already active under the node lock"
         );
         if state.active.is_some() {
             return None;
         }
         let token = CancelToken::new();
-        state.active = Some(Active {
-            token: token.clone(),
-            yields,
-        });
+        state.active = Some(token.clone());
         Some(ScanActivity {
             scans: self.clone(),
             token,
@@ -68,8 +56,8 @@ impl ScanControl {
     pub fn pause(self: &Arc<Self>) -> ScanPause {
         let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
         state.paused += 1;
-        let stopped_scan = if let Some(active) = &state.active {
-            active.token.cancel();
+        let stopped_scan = if let Some(token) = &state.active {
+            token.cancel();
             true
         } else {
             false
@@ -85,22 +73,50 @@ impl ScanControl {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).paused > 0
     }
 
-    /// Cancels a running scan that yields to Start, Restart and Update ComfyUI and holds new
-    /// scans off until dropped. None when no yielding scan runs or a pause (closing, another
-    /// preemption) is held.
-    pub fn preempt(self: &Arc<Self>) -> Option<ScanPause> {
+    /// A node operation (or a setup run) is about to wait for the node lock: cancels the active
+    /// scan and holds new ones off until the returned guard is dropped.
+    pub fn yield_to_operation(self: &Arc<Self>) -> ScanYield {
         let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        if state.paused > 0 {
-            return None;
+        state.yielding += 1;
+        if let Some(token) = &state.active {
+            token.cancel();
         }
-        let token = state.active.as_ref().filter(|a| a.yields)?.token.clone();
-        token.cancel();
-        state.paused += 1;
-        Some(ScanPause {
+        ScanYield {
             scans: self.clone(),
-            stopped_scan: true,
-            kept: false,
-        })
+        }
+    }
+
+    /// Records that a start of ComfyUI began: the counter turns odd until
+    /// [`Self::start_finished`].
+    pub fn note_start(&self) {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).starts += 1;
+    }
+
+    /// Records that the start recorded by [`Self::note_start`] ended, however it ended: the
+    /// counter turns even again.
+    pub fn start_finished(&self) {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).starts += 1;
+    }
+
+    /// The start counter: odd while a start is in progress, and it changes whenever one began or
+    /// ended, so equal readings mean no start happened in between.
+    pub fn starts(&self) -> u64 {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).starts
+    }
+
+    /// Marks a scan as settling interrupted node operations until the guard is dropped. Created
+    /// before the scan tries the maintenance gate, so Start can tell a scan that holds it briefly
+    /// from another holder.
+    pub fn enter_settling(self: &Arc<Self>) -> ScanSettling {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).settling += 1;
+        ScanSettling {
+            scans: self.clone(),
+        }
+    }
+
+    /// Whether a scan is settling interrupted node operations right now.
+    pub fn settling(&self) -> bool {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).settling > 0
     }
 }
 
@@ -175,6 +191,36 @@ impl Drop for ScanPause {
                 .unwrap_or_else(|p| p.into_inner())
                 .paused -= 1;
         }
+    }
+}
+
+/// A scan that is settling interrupted node operations; see [`ScanControl::enter_settling`].
+pub struct ScanSettling {
+    scans: Arc<ScanControl>,
+}
+
+impl Drop for ScanSettling {
+    fn drop(&mut self) {
+        self.scans
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .settling -= 1;
+    }
+}
+
+/// Holds new scans off while a node operation waits for the node lock.
+pub struct ScanYield {
+    scans: Arc<ScanControl>,
+}
+
+impl Drop for ScanYield {
+    fn drop(&mut self) {
+        self.scans
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .yielding -= 1;
     }
 }
 
@@ -278,45 +324,52 @@ mod tests {
     }
 
     #[test]
-    fn preempt_cancels_a_yielding_scan_and_holds_off_new_scans() {
+    fn a_yield_cancels_the_active_scan_and_holds_new_ones_off_until_dropped() {
         let scans = Arc::new(ScanControl::default());
-        let activity = scans.begin_yielding(&Lease).unwrap();
-        let token = activity.token().clone();
-        let preemption = scans.preempt().unwrap();
-        assert!(preemption.stopped_scan());
-        assert!(token.is_cancelled());
-        assert!(scans.closing());
-        assert!(scans.begin(&Lease).is_none());
-        assert!(scans.begin_yielding(&Lease).is_none());
-        assert_eq!(activity.finish(Ok(())), Err(NodeAppError::Cancelled));
-        drop(preemption);
+        let idle = scans.yield_to_operation();
         assert!(!scans.closing());
-        let next = scans.begin_yielding(&Lease).unwrap();
+        assert!(scans.begin(&Lease).is_none());
+        drop(idle);
+        let activity = scans.begin(&Lease).unwrap();
+        let token = activity.token().clone();
+        let first = scans.yield_to_operation();
+        let second = scans.yield_to_operation();
+        assert!(token.is_cancelled());
+        // A yield is not a pause: closing stays false, and the scan ends as cancelled.
+        assert!(!scans.closing());
+        assert!(scans.begin(&Lease).is_none());
+        assert_eq!(activity.finish(Ok(())), Err(NodeAppError::Cancelled));
+        drop(first);
+        assert!(scans.begin(&Lease).is_none());
+        drop(second);
+        let next = scans.begin(&Lease).unwrap();
         assert!(!next.token().is_cancelled());
     }
 
     #[test]
-    fn preempt_ignores_a_finishing_scan_and_an_idle_control() {
-        let scans = Arc::new(ScanControl::default());
-        assert!(scans.preempt().is_none());
-        assert!(!scans.closing());
-        let activity = scans.begin(&Lease).unwrap();
-        assert!(scans.preempt().is_none());
-        assert!(!activity.token().is_cancelled());
-        assert!(!scans.closing());
-        assert_eq!(activity.finish(Ok(7)), Ok(7));
+    fn the_start_counter_is_odd_while_a_start_is_in_progress_and_only_grows() {
+        let scans = ScanControl::default();
+        assert_eq!(scans.starts(), 0);
+        scans.note_start();
+        assert_eq!(scans.starts(), 1);
+        scans.start_finished();
+        assert_eq!(scans.starts(), 2);
+        scans.note_start();
+        assert_eq!(scans.starts() % 2, 1);
+        scans.start_finished();
+        assert_eq!(scans.starts(), 4);
     }
 
     #[test]
-    fn preempt_defers_to_a_held_pause() {
+    fn settling_is_reported_while_a_guard_is_held() {
         let scans = Arc::new(ScanControl::default());
-        let activity = scans.begin_yielding(&Lease).unwrap();
-        let pause = scans.pause();
-        assert!(scans.preempt().is_none());
-        drop(pause);
-        let first = scans.preempt().unwrap();
-        assert!(scans.preempt().is_none());
+        assert!(!scans.settling());
+        let first = scans.enter_settling();
+        let second = scans.enter_settling();
+        assert!(scans.settling());
         drop(first);
-        drop(activity);
+        assert!(scans.settling());
+        drop(second);
+        assert!(!scans.settling());
     }
 }

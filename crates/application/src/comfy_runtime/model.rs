@@ -170,8 +170,6 @@ pub enum RuntimeError {
     NeedsStop,
     #[error("interrupted custom-node work must be resolved before launch")]
     NodeRecoveryRequired,
-    #[error("ComfyUI stopped, but custom nodes could not be rescanned; retry Rescan")]
-    NodeRescanFailed,
     #[error("a verified active environment is required; repair the selected environment first")]
     EnvironmentNotUsable,
     #[error("{0} is running Python from the selected environment")]

@@ -29,3 +29,20 @@ pub trait MaintenanceGate: Send + Sync {
         wait: std::time::Duration,
     ) -> Result<Box<dyn MaintenanceLease>, GateError>;
 }
+
+/// The maintenance lease plus the node lock; subprocess survivors retain both.
+///
+/// Lock order: the maintenance gate comes first, then the node lock. Anything that holds the
+/// node lock only ever `try_acquire`s the maintenance gate. Blocking or bounded node-lock
+/// acquisitions happen only while holding the maintenance gate, or in scans that hold nothing
+/// else, so no wait cycle can form (not even with a fair mutex).
+pub struct WithNodeLock<'a> {
+    pub lease: &'a mut dyn MaintenanceLease,
+    pub nodes: Box<dyn MaintenanceLease>,
+}
+
+impl MaintenanceLease for WithNodeLock<'_> {
+    fn retained(&self) -> super::Retained {
+        self.lease.retained().merge(self.nodes.retained())
+    }
+}
