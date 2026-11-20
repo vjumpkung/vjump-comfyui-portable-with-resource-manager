@@ -670,7 +670,8 @@ impl Downloader for ScriptedEngine {
     }
 }
 async fn wait_terminal(repository: &dyn JobRepository, id: &JobId) -> DownloadJob {
-    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    // Hang guard, not a speed check: returns as soon as the job is terminal; loaded CI runners need headroom.
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
             let job = repository.get(id).await.unwrap();
             if !job.state.active() {
