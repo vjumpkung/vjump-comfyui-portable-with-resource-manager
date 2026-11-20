@@ -227,7 +227,7 @@ impl ComfyRuntimeSupervisor {
         store: Arc<dyn RuntimeStore>,
         hub: RuntimeLogHub,
     ) -> Self {
-        Self::with_readiness_timeout(root, runner, store, hub, Duration::from_secs(120))
+        Self::with_readiness_timeout(root, runner, store, hub, Duration::from_secs(10 * 60))
     }
     pub fn with_readiness_timeout(
         root: PathBuf,
