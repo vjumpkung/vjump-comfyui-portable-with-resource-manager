@@ -17,28 +17,19 @@ Read `docs/REQUIREMENTS.md` and relevant ADRs before architectural changes. Depe
 
 Run from the repository root. Use the Rust toolchain in `rust-toolchain.toml` and pnpm version in `ui/package.json`.
 
+- `node scripts/check-all.mjs`: run every CI check locally, in CI order: UI install, lint, typecheck, Vitest and build; Rust format, clippy and tests (including binding drift and ACL checks); the release-protocol desktop build; the architecture checks; and the coverage gates. Use this one command whenever you run tests or checks (see "Before finishing a feature").
 - `pnpm -C ui install --frozen-lockfile`: install frontend dependencies.
 - `pnpm -C ui tauri dev`: launch desktop development; `pnpm -C ui dev`: frontend only.
 - `pnpm -C ui build`: build frontend assets; `pnpm -C ui tauri build`: bundle desktop.
-- `pnpm -C ui lint` / `pnpm -C ui typecheck`: check lint and types.
 - `pnpm -C ui format` / `pnpm -C ui format:check`: apply or verify Prettier formatting.
-- `pnpm -C ui test`: run Vitest.
-- `cargo test --workspace --locked`: run Rust tests, including binding drift and ACL checks.
-- `cargo fmt --all -- --check`: check formatting.
-- `cargo clippy --workspace --all-targets --locked -- -D warnings`: lint Rust.
-- `node scripts/check-arch-deps.mjs`: validate dependency boundaries.
 
-CI (`.github/workflows/ci.yml`) runs these checks on every push and pull request; still run relevant checks locally. `.github/workflows/release.yml` builds draft release bundles only when `version` in `crates/desktop/tauri.conf.json` changes on the default branch.
+CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull request. `.github/workflows/release.yml` builds draft release bundles only when `version` in `crates/desktop/tauri.conf.json` changes on the default branch.
 
 ### Before finishing a feature
 
-When you implement a new feature, run every CI step locally before calling it done, and keep `ci.yml` and this list in sync. All must pass:
+When you implement a new feature, run `node scripts/check-all.mjs` before calling it done; it must exit 0 and end with `check-all: all N checks passed`. Whenever you run tests or checks, run this script instead of the individual commands or a hand-written chain. Run a single command (one test, one crate, or an ignored test such as the native start-up smoke test) only to reproduce or debug a failure or for a test the script does not cover; it never replaces a full script run.
 
-1. `pnpm -C ui install --frozen-lockfile`, then `pnpm -C ui lint`, `pnpm -C ui typecheck`, `pnpm -C ui test`, `pnpm -C ui build` (the desktop crate embeds `ui/dist`, so build the UI first).
-2. `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`.
-3. `cargo build -p desktop --locked --features tauri/custom-protocol`.
-4. `node --test scripts/check-arch-deps.test.mjs` and `node scripts/check-arch-deps.mjs`.
-5. Coverage gates (needs `cargo-llvm-cov` 0.9.1 and `llvm-tools-preview`): `cargo llvm-cov -p domain --locked --fail-under-lines 90` and `cargo llvm-cov -p application --locked --fail-under-lines 80`.
+The script runs the steps of the `check` job in `ci.yml` in order (the UI is built before the Rust steps because the desktop crate embeds `ui/dist`), then the steps of the `core-coverage` job, with `CI=true` as on GitHub Actions; it skips CI's setup steps, takes no options, and stops at the first failing step. A full run takes about 15 minutes on Windows. The coverage gates need `cargo-llvm-cov` 0.9.1 and `llvm-tools-preview`. When you change a step in `ci.yml`, change `steps` in `scripts/check-all.mjs` in the same change, and the reverse.
 
 CI also runs the check job on Ubuntu; if you cannot run Linux locally, say so and call out any `cfg(target_os = "linux")`/`cfg(unix)` code you changed.
 

@@ -1071,7 +1071,7 @@ The owner authorized re-enabling CI on 2026-10-21; hosted validation is pending.
 
 `.github/workflows/ci.yml` runs on every push and pull request. It runs the UI lint, typecheck, tests and build, Rust fmt, clippy and tests, the desktop build and the architecture checks on Windows and Ubuntu 24.04, plus the domain (90 %) and application (80 %) coverage thresholds.
 
-`.github/workflows/release.yml` builds the Windows and Linux bundles and attaches them to a draft GitHub release `v<version>`. It runs only on the default branch and only when a push changes `version` in `crates/desktop/tauri.conf.json`; other pushes, and tag pushes, do not build bundles. The two platforms build one after the other so they share one draft.
+`.github/workflows/release.yml` builds the Windows and Linux bundles and attaches them to a draft GitHub release `v<version>`. It runs only on the default branch and only when a push changes `version` in `crates/desktop/tauri.conf.json`; other pushes, and tag pushes, do not build bundles. The two platforms build one after the other so they share one draft. The draft's description lists the commits since the previous `v*` tag, grouped into features, fixes and other changes (the version-bump commit is left out), followed by a compare link. tauri-action writes it only when it creates the draft, so a rebuilt draft keeps its description; the owner can edit it before publishing.
 
 To cut a release:
 
