@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       release: ${{ steps.gate.outputs.release }}
+      notes: ${{ steps.notes.outputs.notes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,6 +83,51 @@ jobs:
             }
           }
           finish(true)
+          JS
+
+      # Draft description: commits since the previous v* tag, grouped by commit type.
+      - name: Write release notes from commits since the previous tag
+        id: notes
+        if: steps.gate.outputs.release == 'true'
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync, readFileSync } from 'node:fs'
+          import { execFileSync } from 'node:child_process'
+          import { randomUUID } from 'node:crypto'
+
+          const git = (...args) =>
+            execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+          const version = JSON.parse(readFileSync('crates/desktop/tauri.conf.json', 'utf8')).version
+          const tag = 'v' + version
+          let previous = ''
+          try {
+            previous = git('describe', '--tags', '--abbrev=0', '--match', 'v[0-9]*', '--exclude', tag, 'HEAD')
+          } catch {
+            console.log('::notice::No earlier release tag; listing the whole history.')
+          }
+          const site = process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY
+          const groups = [['Features', 'feat', []], ['Fixes', 'fix', []], ['Other changes', null, []]]
+          for (const line of git('log', '--no-merges', '--format=%H%x1f%s', previous ? previous + '..HEAD' : 'HEAD').split('\n')) {
+            if (!line) continue
+            const [sha, subject] = line.split('\x1f')
+            const match = /^(\w+)(?:\(([^)]+)\))?!?: (.+)$/.exec(subject)
+            if (match && match[1] === 'chore' && match[2] === 'release') continue
+            const text = match ? (match[2] ? '**' + match[2] + ':** ' : '') + match[3] : subject
+            const group = groups.find(g => match && g[1] === match[1]) ?? groups[2]
+            group[2].push('- ' + text + ' ([' + sha.slice(0, 7) + '](' + site + '/commit/' + sha + '))')
+          }
+          const lines = []
+          if (groups.some(g => g[2].length)) {
+            lines.push(previous ? '## Changes since ' + previous : '## Changes', '')
+            for (const [title, , entries] of groups) {
+              if (entries.length) lines.push('### ' + title, '', ...entries, '')
+            }
+          }
+          if (previous) lines.push('**Full changelog:** ' + site + '/compare/' + previous + '...' + tag, '')
+          lines.push('Windows and Linux x64 bundles. GPU setup runs on first launch. See README.md for requirements and signing status.')
+          const delimiter = 'NOTES_' + randomUUID()
+          appendFileSync(process.env.GITHUB_OUTPUT, 'notes<<' + delimiter + '\n' + lines.join('\n') + '\n' + delimiter + '\n')
           JS
 
   bundle:
@@ -151,7 +197,8 @@ jobs:
           tagName: v__VERSION__
           releaseName: v__VERSION__
           releaseDraft: true
-          releaseBody: 'Windows and Linux x64 bundles. GPU setup runs on first launch. See README.md for requirements and signing status.'
+          # Used only when tauri-action creates the draft; an existing draft keeps its description.
+          releaseBody: ${{ needs.version.outputs.notes }}
           uploadUpdaterJson: ${{ env.HAS_UPDATER_KEY == 'true' }}
           updaterJsonPreferNsis: true
           # Also attach the unbundled Windows executable; tauri-action finds it through mainBinaryName.
