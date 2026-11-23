@@ -266,11 +266,13 @@ Under "Delete an inactive environment", type the environment's recorded ID and c
 
 ### Start, stop and restart
 
-The ComfyUI page has Start, Stop and Restart; the top bar has Start and Stop only, and the Custom Nodes page offers Restart after a node change. ComfyUI runs as a child process that the application owns, started as `python -s main.py --listen 127.0.0.1 --port <port>` plus your options. The application waits for ComfyUI to become ready before it reports Running. Verified natively on Windows: ComfyUI 0.42.1 reported `cuda:0 NVIDIA GeForce RTX 3060` through `/system_stats`, and Stop freed the port and left no Python process (N5, N13; session 5).
+The ComfyUI page has Start, Stop and Restart; the top bar has Start and Stop only, and the Custom Nodes page offers Restart after a node change. ComfyUI runs as a child process that the application owns, started as `python -s main.py --listen 127.0.0.1 --port <port>` plus your options. The application waits up to 24 hours for ComfyUI to become ready before it reports Running. Verified natively on Windows: ComfyUI 0.42.1 reported `cuda:0 NVIDIA GeForce RTX 3060` through `/system_stats`, and Stop freed the port and left no Python process (N5, N13; session 5).
 
 Start first checks: custom-node recovery state, a leftover ComfyUI process, a pending update, the selected environment and the port. Start, Restart and Stop run their checks under one maintenance lease, and start, stop, update and package operations are serialised, so only one runs at a time. They do not run the custom-node scan. Stop returns as soon as ComfyUI is stopped and then asks for a background scan, Restart asks for one after ComfyUI started again, and Update ComfyUI asks for one after stopping. A running scan never delays or cancels Stop. Start, Restart and Update ComfyUI wait up to 5 seconds for a scan that is settling interrupted node operations, and otherwise a scan never delays them; none of them cancels a scan.
 
 Start is refused with `node_recovery_required` ("interrupted custom-node work must be resolved before launch.") while an interrupted custom-node operation needs resolving. Closing cancels a running background scan (see [Troubleshooting](#closing-is-refused)).
+
+**Restart from ComfyUI-Manager.** When ComfyUI-Manager restarts ComfyUI, the application starts ComfyUI again with the same options. The status stays Running and the ComfyUI window reconnects. If the relaunched ComfyUI exits or never becomes ready, the status shows Crashed. More than 5 restarts before ComfyUI is ready count as a failed start. The custom-node list is not rescanned after such a restart: use Rescan, or it rescans after the next Stop.
 
 **Port conflicts.** If the port is in use, a dialog tells you which port is taken and offers a free port. If you accept, the new port is saved as your launch port.
 
@@ -686,6 +688,7 @@ Everything lives in the install root you chose, apart from one small pointer fil
 | `<root>/data/cache/wheels/<sha256>/` | Verified accelerator wheels, one folder per pinned SHA-256 |
 | `<root>/data/downloads/` | In-progress downloads (temporary files) |
 | `<root>/data/tmp/hf` | Temporary area for `hf` CLI downloads |
+| `<root>/data/tmp/comfyui/` | Restart requests from ComfyUI-Manager, one short-lived `<session>.reboot` marker at a time |
 | `<root>/data/backups/` | Copies of an `extra_model_paths.yaml` that the application replaced |
 | `<root>/data/logs/` | Log files |
 
