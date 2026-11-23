@@ -2,7 +2,11 @@ use super::*;
 use crate::shared::gate::TokioMaintenanceGate;
 use application::shared::MaintenanceGate;
 use domain::environment::EnvId;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::{
+    collections::VecDeque,
+    ffi::OsString,
+    sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -50,13 +54,41 @@ enum Mode {
     Foreign,
     Exit,
     Spawn,
+    /// Exits 0 right away after asking for a Manager restart, like a prestartup restart.
+    MarkerExit,
+    /// Ready; once `exit_now` is set, exits 0, with or without the Manager restart marker.
+    ReadyThenExit {
+        marker: bool,
+    },
+    /// Ready; leaves a restart marker and exit code 0 behind when it is stopped.
+    MarkerOnCancel,
 }
 struct Runner {
     mode: Mode,
+    /// The modes of the first runs; later runs use `mode`.
+    first: Mutex<VecDeque<Mode>>,
     cleanup: bool,
     gate: Arc<TokioMaintenanceGate>,
     gate_held_during_cleanup: AtomicBool,
     spawned: AtomicBool,
+    runs: AtomicUsize,
+    exit_now: AtomicBool,
+    /// The `/system_stats` requests answered so far.
+    probes: AtomicUsize,
+    /// The session variable of the latest run's environment.
+    session_variable: Mutex<Option<OsString>>,
+}
+fn session_variable(spec: &CommandSpec) -> Option<&OsString> {
+    spec.env
+        .iter()
+        .find(|(name, _)| name == MANAGER_SESSION_VARIABLE)
+        .map(|(_, value)| value)
+}
+/// What ComfyUI-Manager does under comfy-cli's protocol: an empty `<value>.reboot` file.
+fn request_restart(spec: &CommandSpec) {
+    let mut marker = session_variable(spec).expect("session variable").clone();
+    marker.push(".reboot");
+    std::fs::write(marker, b"").unwrap();
 }
 struct Owned {
     alive: Arc<AtomicBool>,
@@ -85,7 +117,10 @@ impl RuntimeProcessRunner for Runner {
         observer: Arc<dyn RuntimeProcessObserver>,
         cancel: CancelToken,
     ) -> ProcessCompletion {
-        if matches!(self.mode, Mode::Spawn) {
+        let mode = self.first.lock().unwrap().pop_front().unwrap_or(self.mode);
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        *self.session_variable.lock().unwrap() = session_variable(&spec).cloned();
+        if matches!(mode, Mode::Spawn) {
             return ProcessCompletion {
                 exit_code: None,
                 spawn_failed: true,
@@ -95,12 +130,15 @@ impl RuntimeProcessRunner for Runner {
         let alive = Arc::new(AtomicBool::new(true));
         observer.spawned(Arc::new(Owned {
             alive: alive.clone(),
-            member: !matches!(self.mode, Mode::Foreign),
+            member: !matches!(mode, Mode::Foreign),
         }));
         self.spawned.store(true, Ordering::SeqCst);
         observer.chunk(false, "ไทย token=sec".as_bytes());
         observer.chunk(false, b"ret-value\rready\n");
-        if matches!(self.mode, Mode::Exit) {
+        if matches!(mode, Mode::Exit | Mode::MarkerExit) {
+            if matches!(mode, Mode::MarkerExit) {
+                request_restart(&spec);
+            }
             alive.store(false, Ordering::SeqCst);
             return ProcessCompletion {
                 exit_code: Some(0),
@@ -112,12 +150,22 @@ impl RuntimeProcessRunner for Runner {
         let port = args.windows(2).find(|w| w[0] == "--port").unwrap()[1]
             .parse::<u16>()
             .unwrap();
-        let listener = if matches!(self.mode, Mode::Ready | Mode::Foreign) {
+        let listener = if matches!(
+            mode,
+            Mode::Ready | Mode::Foreign | Mode::ReadyThenExit { .. } | Mode::MarkerOnCancel
+        ) {
             Some(TcpListener::bind(("127.0.0.1", port)).await.unwrap())
         } else {
             None
         };
+        let mut triggered = false;
         while !cancel.is_cancelled() {
+            if matches!(mode, Mode::ReadyThenExit { .. })
+                && self.exit_now.swap(false, Ordering::SeqCst)
+            {
+                triggered = true;
+                break;
+            }
             tokio::select! {
                 _=tokio::time::sleep(Duration::from_millis(10))=>{},
                 accepted=async{listener.as_ref().unwrap().accept().await},if listener.is_some()=>{
@@ -125,15 +173,30 @@ impl RuntimeProcessRunner for Runner {
                     let body=r#"{"system":{},"devices":[]}"#;
                     let reply=format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
                     let _=socket.write_all(reply.as_bytes()).await;
+                    self.probes.fetch_add(1, Ordering::SeqCst);
                 }
             }
         }
         self.gate_held_during_cleanup
             .store(self.gate.try_acquire().await.is_err(), Ordering::SeqCst);
+        // Like Manager, leave the marker behind before the process is gone.
+        let exit_code = match mode {
+            Mode::ReadyThenExit { marker } if triggered => {
+                if marker {
+                    request_restart(&spec);
+                }
+                Some(0)
+            }
+            Mode::MarkerOnCancel => {
+                request_restart(&spec);
+                Some(0)
+            }
+            _ => None,
+        };
         alive.store(false, Ordering::SeqCst);
         drop(listener);
         ProcessCompletion {
-            exit_code: None,
+            exit_code,
             spawn_failed: false,
             cleanup_verified: self.cleanup,
         }
@@ -180,10 +243,15 @@ fn fixture_with_timeout(mode: Mode, cleanup: bool, readiness_timeout: Duration) 
     let store = Arc::new(Store::default());
     let runner = Arc::new(Runner {
         mode,
+        first: Mutex::new(VecDeque::new()),
         cleanup,
         gate: gate.clone(),
         gate_held_during_cleanup: AtomicBool::new(false),
         spawned: AtomicBool::new(false),
+        runs: AtomicUsize::new(0),
+        exit_now: AtomicBool::new(false),
+        probes: AtomicUsize::new(0),
+        session_variable: Mutex::new(None),
     });
     let mut supervisor = ComfyRuntimeSupervisor::with_readiness_timeout(
         root.clone(),
@@ -233,6 +301,43 @@ impl Fixture {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "the runner was never spawned"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+    /// Makes the next run use `mode` instead of the fixture's.
+    fn first(&self, mode: Mode) {
+        self.runner.first.lock().unwrap().push_back(mode);
+    }
+    /// Where Manager leaves its restart request for this fixture's session.
+    fn marker(&self) -> PathBuf {
+        self._directory
+            .path()
+            .join("data/tmp/comfyui")
+            .join(format!("{}.reboot", self.session.id.as_str()))
+    }
+    /// Waits until the status satisfies `done`. Bounded like `spawned`.
+    async fn until(&self, what: &str, done: impl Fn(&RuntimeStatus) -> bool) -> RuntimeStatus {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let status = self.supervisor.status().await;
+            if done(&status) {
+                return status;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the status never became {what}"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+    /// Waits until the runner has been run `runs` times. Bounded like `spawned`.
+    async fn runs(&self, runs: usize) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while self.runner.runs.load(Ordering::SeqCst) < runs {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the runner was not run {runs} times"
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -465,4 +570,109 @@ async fn disconnected_start_caller_does_not_abandon_core_cleanup() {
         Lifecycle::Stopped
     );
     assert!(f.runner.gate_held_during_cleanup.load(Ordering::SeqCst));
+}
+#[tokio::test]
+async fn manager_restart_after_readiness_relaunches_the_same_session() {
+    let f = fixture(Mode::Ready, true);
+    f.first(Mode::ReadyThenExit { marker: true });
+    assert_eq!(f.start().await.unwrap().lifecycle, Lifecycle::Running);
+    assert!(f.gate.try_acquire().await.is_ok());
+    let probes = f.runner.probes.load(Ordering::SeqCst);
+    f.runner.exit_now.store(true, Ordering::SeqCst);
+    f.runs(2).await;
+    // The relaunched ComfyUI answers a readiness probe of its own.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while f.runner.probes.load(Ordering::SeqCst) == probes {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the relaunched ComfyUI was never probed"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let status = f
+        .until("Running", |s| s.lifecycle == Lifecycle::Running)
+        .await;
+    assert!(status.failure.is_none());
+    assert_eq!(status.session.unwrap().id, f.session.id);
+    assert!(!f.marker().exists());
+    let unfinished = f.store.unfinished_sessions().await.unwrap();
+    assert_eq!(unfinished.len(), 1);
+    assert_eq!(unfinished[0].id, f.session.id);
+    assert_eq!(f.runner.runs.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        f.supervisor.stop().await.unwrap().lifecycle,
+        Lifecycle::Stopped
+    );
+    assert!(f.store.unfinished_sessions().await.unwrap().is_empty());
+}
+#[tokio::test]
+async fn a_relaunch_that_exits_before_readiness_is_a_crash() {
+    let f = fixture(Mode::Exit, true);
+    f.first(Mode::ReadyThenExit { marker: true });
+    assert_eq!(f.start().await.unwrap().lifecycle, Lifecycle::Running);
+    f.runner.exit_now.store(true, Ordering::SeqCst);
+    let status = f
+        .until("Crashed", |s| s.lifecycle == Lifecycle::Crashed)
+        .await;
+    assert_eq!(status.failure.unwrap().kind, FailureKind::ExitBeforeReady);
+    assert_eq!(f.runner.runs.load(Ordering::SeqCst), 2);
+    assert!(!f.marker().exists());
+}
+#[tokio::test]
+async fn manager_restart_during_startup_is_part_of_the_start() {
+    let f = fixture(Mode::Ready, true);
+    f.first(Mode::MarkerExit);
+    let status = f.start().await.unwrap();
+    assert_eq!(status.lifecycle, Lifecycle::Running);
+    assert_eq!(f.runner.runs.load(Ordering::SeqCst), 2);
+    assert!(!f.marker().exists());
+    let folder = f._directory.path().join("data/tmp/comfyui");
+    assert!(folder.is_dir());
+    // Every run gets the comfy-cli session variable, pointing at `<folder>/<session id>`.
+    let value = f.runner.session_variable.lock().unwrap().clone().unwrap();
+    assert_eq!(PathBuf::from(value), folder.join(f.session.id.as_str()));
+    assert!(f.gate.try_acquire().await.is_ok());
+    assert_eq!(
+        f.supervisor.stop().await.unwrap().lifecycle,
+        Lifecycle::Stopped
+    );
+}
+#[tokio::test]
+async fn clean_exit_without_a_restart_request_is_still_a_crash() {
+    let f = fixture(Mode::Ready, true);
+    f.first(Mode::ReadyThenExit { marker: false });
+    assert_eq!(f.start().await.unwrap().lifecycle, Lifecycle::Running);
+    f.runner.exit_now.store(true, Ordering::SeqCst);
+    let status = f
+        .until("Crashed", |s| s.lifecycle == Lifecycle::Crashed)
+        .await;
+    let failure = status.failure.unwrap();
+    assert_eq!(failure.kind, FailureKind::UnexpectedExit);
+    assert_eq!(failure.exit_code, Some(0));
+    assert_eq!(f.runner.runs.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn stop_wins_over_a_pending_manager_restart() {
+    let f = fixture(Mode::MarkerOnCancel, true);
+    assert_eq!(f.start().await.unwrap().lifecycle, Lifecycle::Running);
+    assert_eq!(
+        f.supervisor.stop().await.unwrap().lifecycle,
+        Lifecycle::Stopped
+    );
+    assert_eq!(f.runner.runs.load(Ordering::SeqCst), 1);
+    assert!(!f.marker().exists());
+}
+#[tokio::test]
+async fn manager_restarts_before_readiness_are_limited() {
+    let f = fixture(Mode::MarkerExit, true);
+    assert!(f.start().await.is_err());
+    let failure = f.supervisor.status().await.failure.unwrap();
+    assert_eq!(failure.kind, FailureKind::ExitBeforeReady);
+    assert_eq!(failure.exit_code, Some(0));
+    assert_eq!(
+        f.runner.runs.load(Ordering::SeqCst),
+        MANAGER_RESTARTS_BEFORE_READY + 1
+    );
+    assert!(!f.marker().exists());
+    assert!(f.gate.try_acquire().await.is_ok());
 }

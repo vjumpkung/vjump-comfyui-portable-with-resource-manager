@@ -165,6 +165,13 @@ impl RuntimeProcessRunner for SharedRuntimeRunner {
     }
 }
 
+/// comfy-cli's relaunch protocol. With it set, ComfyUI-Manager's restart creates `<value>.reboot`
+/// and exits 0 instead of calling `os.execv`, whose Windows successor would start inside the Job
+/// Object and be killed with the tree when the root process exits.
+const MANAGER_SESSION_VARIABLE: &str = "__COMFY_CLI_SESSION__";
+/// Consecutive Manager restarts allowed before readiness (for example the dependency restarts
+/// of its prestartup script); reset once Running is published. Comfy Desktop uses the same limit.
+const MANAGER_RESTARTS_BEFORE_READY: usize = 5;
 struct Observer {
     owned: Mutex<Option<Arc<dyn OwnedRuntimeProcess>>>,
     log: Arc<SessionLog>,
@@ -227,7 +234,7 @@ impl ComfyRuntimeSupervisor {
         store: Arc<dyn RuntimeStore>,
         hub: RuntimeLogHub,
     ) -> Self {
-        Self::with_readiness_timeout(root, runner, store, hub, Duration::from_secs(10 * 60))
+        Self::with_readiness_timeout(root, runner, store, hub, Duration::from_secs(24 * 60 * 60))
     }
     pub fn with_readiness_timeout(
         root: PathBuf,
@@ -345,6 +352,10 @@ impl ComfyRuntimeSupervisor {
                 &session,
                 self.inner.hub.clone(),
             )?);
+            let restarts_dir = self.inner.root.join("data/tmp/comfyui");
+            std::fs::create_dir_all(&restarts_dir).map_err(|_| {
+                RuntimeError::Failed("the ComfyUI restart folder is unavailable".into())
+            })?;
             let args = match arguments {
                 LaunchArguments::Ready(args) => args,
                 LaunchArguments::Preflight { env, preflight } => {
@@ -368,10 +379,10 @@ impl ComfyRuntimeSupervisor {
                         .await?,
                 });
             }
-            Ok((log, args))
+            Ok((log, args, restarts_dir.join(session.id.as_str())))
         }
         .await;
-        let (log, args) = match prepare {
+        let (log, args, restart_base) = match prepare {
             Ok(value) => value,
             Err(error) => {
                 let cancelled = matches!(error, RuntimeError::Cancelled) || cancel.is_cancelled();
@@ -397,11 +408,10 @@ impl ComfyRuntimeSupervisor {
                 return;
             }
         };
-        let observer = Arc::new(Observer {
-            owned: Mutex::new(None),
-            log: log.clone(),
-            spawned: tokio::sync::Notify::new(),
-        });
+        // Python builds the marker as `value + '.reboot'`, so append without any path handling.
+        let mut marker = restart_base.clone().into_os_string();
+        marker.push(".reboot");
+        let marker = PathBuf::from(marker);
         // Best effort: ComfyUI-Manager's own Git clones inside ComfyUI use the portable MinGit.
         if cfg!(windows)
             && let Err(error) = configure_mingit_line_endings(&Layout::new(&self.inner.root))
@@ -416,90 +426,135 @@ impl ComfyRuntimeSupervisor {
         .cwd(&session.checkout)
         .args(args);
         spec.env.push(("PYTHONUNBUFFERED".into(), "1".into()));
-        let runner = self.inner.runner.clone();
-        let runner_observer = observer.clone();
-        let runner_cancel = cancel.clone();
-        let mut running =
-            tokio::spawn(async move { runner.run(spec, runner_observer, runner_cancel).await });
+        spec.env.push((
+            MANAGER_SESSION_VARIABLE.into(),
+            restart_base.into_os_string(),
+        ));
         enum First {
             Ready(Result<(), ReadinessError>),
             Exited(ProcessCompletion),
         }
-        let first = {
-            let readiness = self.readiness(&mut session, &observer, &cancel);
-            tokio::pin!(readiness);
-            tokio::select! {
-                value=&mut readiness=>First::Ready(value),
-                result=&mut running=>First::Exited(completion(result)),
-            }
-        };
         let mut started = Some(started);
-        let (outcome, mut failed) = match first {
-            First::Ready(Ok(())) => {
-                // A stop may race the last readiness check; never publish Running after Stopping.
-                if !self.publish(&id, Lifecycle::Running, None) {
-                    (
-                        completion(running.await),
-                        Some(failure(FailureKind::Cancelled, None, "start cancelled")),
-                    )
-                } else {
-                    lease.take();
-                    let _ = started
-                        .take()
-                        .expect("start response exists")
-                        .send(Ok(self.inner.hub.status()));
-                    (completion(running.await), None)
+        let mut restarts = 0;
+        let (outcome, mut failed) = loop {
+            // A stop that lands between a Manager restart and the relaunch ends the session here.
+            if cancel.is_cancelled() {
+                break (
+                    ProcessCompletion {
+                        exit_code: None,
+                        spawn_failed: false,
+                        cleanup_verified: true,
+                    },
+                    Some(failure(FailureKind::Cancelled, None, "start cancelled")),
+                );
+            }
+            let observer = Arc::new(Observer {
+                owned: Mutex::new(None),
+                log: log.clone(),
+                spawned: tokio::sync::Notify::new(),
+            });
+            let runner = self.inner.runner.clone();
+            let runner_spec = spec.clone();
+            let runner_observer = observer.clone();
+            let runner_cancel = cancel.clone();
+            let mut running = tokio::spawn(async move {
+                runner
+                    .run(runner_spec, runner_observer, runner_cancel)
+                    .await
+            });
+            let first = {
+                let readiness = self.readiness(&mut session, &observer, &cancel);
+                tokio::pin!(readiness);
+                tokio::select! {
+                    value=&mut readiness=>First::Ready(value),
+                    result=&mut running=>First::Exited(completion(result)),
                 }
-            }
-            First::Ready(Err(error)) => {
-                let was_cancelled = cancel.is_cancelled();
-                cancel.cancel();
-                let outcome = completion(running.await);
-                let (kind, message) = match error {
-                    _ if was_cancelled => (FailureKind::Cancelled, "start cancelled".to_owned()),
-                    ReadinessError::Runtime(RuntimeError::Cancelled) => {
-                        (FailureKind::Cancelled, "start cancelled".to_owned())
+            };
+            let (outcome, failed) = match first {
+                First::Ready(Ok(())) => {
+                    // A stop may race the last readiness check; never publish Running after Stopping.
+                    if !self.publish(&id, Lifecycle::Running, None) {
+                        (
+                            completion(running.await),
+                            Some(failure(FailureKind::Cancelled, None, "start cancelled")),
+                        )
+                    } else {
+                        restarts = 0;
+                        lease.take();
+                        if let Some(started) = started.take() {
+                            let _ = started.send(Ok(self.inner.hub.status()));
+                        }
+                        (completion(running.await), None)
                     }
-                    ReadinessError::Runtime(RuntimeError::Storage) => {
-                        (FailureKind::Persistence, RuntimeError::Storage.to_string())
+                }
+                First::Ready(Err(error)) => {
+                    let was_cancelled = cancel.is_cancelled();
+                    // The process already exited; cancelling would also end a Manager relaunch.
+                    if !matches!(error, ReadinessError::Exited) {
+                        cancel.cancel();
                     }
-                    ReadinessError::Runtime(other) => {
-                        (FailureKind::ReadinessTimeout, other.to_string())
-                    }
-                    ReadinessError::Exited => (
-                        if outcome.spawn_failed {
-                            FailureKind::Spawn
-                        } else {
-                            FailureKind::ExitBeforeReady
-                        },
-                        "ComfyUI exited before readiness".to_owned(),
-                    ),
-                    ReadinessError::TimedOut => (
-                        FailureKind::ReadinessTimeout,
-                        "ComfyUI readiness timed out".to_owned(),
-                    ),
-                };
-                (
-                    outcome.clone(),
-                    Some(failure(kind, outcome.exit_code, &message)),
-                )
-            }
-            First::Exited(outcome) => {
-                // A stop that wins the race against the runner's exit is a cancellation, not a crash.
-                let (kind, message) = if outcome.spawn_failed {
-                    (FailureKind::Spawn, "ComfyUI exited before readiness")
-                } else if cancel.is_cancelled() {
-                    (FailureKind::Cancelled, "start cancelled")
-                } else {
+                    let outcome = completion(running.await);
+                    let (kind, message) = match error {
+                        _ if was_cancelled => {
+                            (FailureKind::Cancelled, "start cancelled".to_owned())
+                        }
+                        ReadinessError::Runtime(RuntimeError::Cancelled) => {
+                            (FailureKind::Cancelled, "start cancelled".to_owned())
+                        }
+                        ReadinessError::Runtime(RuntimeError::Storage) => {
+                            (FailureKind::Persistence, RuntimeError::Storage.to_string())
+                        }
+                        ReadinessError::Runtime(other) => {
+                            (FailureKind::ReadinessTimeout, other.to_string())
+                        }
+                        ReadinessError::Exited => (
+                            if outcome.spawn_failed {
+                                FailureKind::Spawn
+                            } else {
+                                FailureKind::ExitBeforeReady
+                            },
+                            "ComfyUI exited before readiness".to_owned(),
+                        ),
+                        ReadinessError::TimedOut => (
+                            FailureKind::ReadinessTimeout,
+                            "ComfyUI readiness timed out".to_owned(),
+                        ),
+                    };
                     (
-                        FailureKind::ExitBeforeReady,
-                        "ComfyUI exited before readiness",
+                        outcome.clone(),
+                        Some(failure(kind, outcome.exit_code, &message)),
                     )
-                };
-                let code = outcome.exit_code;
-                (outcome, Some(failure(kind, code, message)))
+                }
+                First::Exited(outcome) => {
+                    // A stop that wins the race against the runner's exit is a cancellation, not a crash.
+                    let (kind, message) = if outcome.spawn_failed {
+                        (FailureKind::Spawn, "ComfyUI exited before readiness")
+                    } else if cancel.is_cancelled() {
+                        (FailureKind::Cancelled, "start cancelled")
+                    } else {
+                        (
+                            FailureKind::ExitBeforeReady,
+                            "ComfyUI exited before readiness",
+                        )
+                    };
+                    let code = outcome.exit_code;
+                    (outcome, Some(failure(kind, code, message)))
+                }
+            };
+            // ComfyUI-Manager asks for a restart with exit code 0 and the marker; a bare exit 0
+            // stays what it was (a crash).
+            let restart = restarts < MANAGER_RESTARTS_BEFORE_READY
+                && !cancel.is_cancelled()
+                && outcome.cleanup_verified
+                && outcome.exit_code == Some(0)
+                && tokio::fs::remove_file(&marker).await.is_ok();
+            if !restart {
+                break (outcome, failed);
             }
+            restarts += 1;
+            tracing::info!("ComfyUI-Manager requested a restart; relaunching ComfyUI");
         };
+        let _ = tokio::fs::remove_file(&marker).await;
         if !outcome.cleanup_verified {
             failed = Some(failure(
                 FailureKind::Termination,
